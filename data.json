@@ -1,14 +1,4 @@
 {
-  "roles": {
-    "1398213064431632486": {
-      "role_id": 1415007244046700585,
-      "name": "cricket",
-      "color_type": "normal",
-      "color": "#7DB9E7",
-      "created_at": "2025-09-09T21:43:39.072160+05:30",
-      "icon_type": "custom",
-      "icon_value": "1409160597039480912"
-    }
-  },
+  "roles": {},
   "blacklist": []
 }
