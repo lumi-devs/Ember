@@ -172,19 +172,39 @@ async def create_role(interaction: discord.Interaction, name: str, color: str = 
             except Exception as e:
                 await interaction.followup.send(f"⚠️ Icon failed: {e}", ephemeral=True)
 
+
+        IST = timezone(timedelta(hours=5, minutes=30))
+        now_ist = datetime.now(IST)
+        sidebar_color = role.color if role.color.value != 0 else Colour.light_grey()
         embed = Embed(
-            title="✅ Role Created!",
-            description=f"Your role {role.name} has been created successfully.",
-            color=role.color
+            color=sidebar_color,
+            timestamp=now_ist
         )
+
+        embed.set_author(
+            name="New Booster Role created!",
+            icon_url=interaction.user.avatar.url if interaction.user.avatar else None
+        )
+
         embed.add_field(name="Name", value=str(role), inline=True)
-        embed.add_field(name="Primary Color", value=color or "Default", inline=True)
+        embed.add_field(name="Primary color", value=color or "Default", inline=True)
+
         if secondary_colour:
-            embed.add_field(name="Secondary Color", value=secondary_colour, inline=True)
+            embed.add_field(name="Secondary color", value=secondary_colour, inline=True)
+        else:
+            embed.add_field(name="Secondary color", value="None", inline=True)
+
         if icon:
-            embed.add_field(name="Icon", value=icon, inline=True)
-        embed.set_footer(text=f"Created for {interaction.user}\nThanks for boosting!")
+            embed.add_field(name="Emoji", value=icon, inline=True)
+        else:
+            embed.add_field(name="Emoji", value="None", inline=True)
+        embed.set_footer(
+            text="Thanks for boosting",
+            icon_url=interaction.guild.icon.url if interaction.guild.icon else None
+        )
+        embed.set_image(url="https://cdn.discordapp.com/attachments/1393171142436458558/1415000838329339945/GWygmv0.gif?ex=68c19db9&is=68c04c39&hm=2adc901f6d163cc2c5de0f93ddcc0510f9ae77a9964942f16559c4caa36df20f&")
         await interaction.followup.send(embed=embed)
+
 
     except Exception as e:
         await interaction.followup.send(f"❌ Role creation failed: {e}", ephemeral=True)
