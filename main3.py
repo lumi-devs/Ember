@@ -151,7 +151,7 @@ async def create_role(interaction: discord.Interaction, name: str, color: str = 
             colour=primary_color,
             reason=f"Custom role for {interaction.user}"
         )
-        await role=interaction.guild.fetch_role(role)
+        role=await interaction.guild.fetch_role(role)
         await role.edit(position=interaction.guild.get_role(1413538764684267725).position - 1)
         await interaction.user.add_roles(role)
 
