@@ -9,6 +9,16 @@
       "secondary_colour": "white",
       "icon_type": "custom",
       "icon_value": "1410874366081761341"
+    },
+    "1398213064431632486": {
+      "role_id": 1415023500758093844,
+      "name": "Watermelon",
+      "color_type": "gradient",
+      "color": "#38b91c",
+      "created_at": "2025-09-09T22:48:15.176989+05:30",
+      "secondary_colour": "#1c5c0e",
+      "icon_type": "unicode",
+      "icon_value": "\ud83c\udf49"
     }
   },
   "blacklist": []
