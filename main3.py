@@ -117,7 +117,6 @@ async def blacklist(interaction: discord.Interaction, action: str, user: discord
     name="Name of your role",
     color="Color hex like #ff0000 (optional)",
     secondary_colour="Secondary color if you want a gradient",
-    icon="Emoji for role icon (optional)"
 )
 async def create_role(interaction: discord.Interaction, name: str, color: str = None, secondary_colour: str = None, icon: str = None):
     await interaction.response.defer(ephemeral=False)
@@ -152,7 +151,8 @@ async def create_role(interaction: discord.Interaction, name: str, color: str = 
             colour=primary_color,
             reason=f"Custom role for {interaction.user}"
         )
-        await role.edit(position=interaction.guild.get_role(ROLE_BELOW).position - 1)
+        await role=interaction.guild.fetch_role(role)
+        await role.edit(position=interaction.guild.get_role(1413538764684267725).position - 1)
         await interaction.user.add_roles(role)
 
         # Gradient
@@ -164,18 +164,10 @@ async def create_role(interaction: discord.Interaction, name: str, color: str = 
             except Exception:
                 await interaction.followup.send("⚠️ Secondary color invalid. Only primary applied.", ephemeral=True)
 
-        # Icon
-        icon_type, icon_value = None, None
-        if icon:
-            try:
-                icon_type, icon_value = await set_role_icon(role, icon)
-            except Exception as e:
-                await interaction.followup.send(f"⚠️ Icon failed: {e}", ephemeral=True)
-
 
         IST = timezone(timedelta(hours=5, minutes=30))
         now_ist = datetime.now(IST)
-        sidebar_color = role.color if role.color.value != 0 else Colour.light_grey()
+        sidebar_color = role.color if role.color.value != 0 else Color.light_grey()
         embed = Embed(
             color=sidebar_color,
             timestamp=now_ist
@@ -194,10 +186,6 @@ async def create_role(interaction: discord.Interaction, name: str, color: str = 
         else:
             embed.add_field(name="Secondary color", value="None", inline=True)
 
-        if icon:
-            embed.add_field(name="Emoji", value=icon, inline=True)
-        else:
-            embed.add_field(name="Emoji", value="None", inline=True)
         embed.set_footer(
             text="Thanks for boosting",
             icon_url=interaction.guild.icon.url if interaction.guild.icon else None
