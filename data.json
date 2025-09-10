@@ -5,7 +5,9 @@
       "name": "meow",
       "color": "#ffffff",
       "created_at": "2025-09-10T12:21:52.023717+05:30",
-      "requested_by": "_.notrebi._"
+      "requested_by": "_.notrebi._",
+      "secondary_colour": "#000000",
+      "color_type": "gradient"
     }
   },
   "blacklist": []
