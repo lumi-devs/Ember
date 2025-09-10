@@ -8,7 +8,8 @@
       "requested_by": "nakkkssshhh",
       "icon_type": "unicode",
       "icon_value": "\ud83c\udf49",
-      "color_type": "normal"
+      "color_type": "gradient",
+      "secondary_colour": "#ff0000"
     }
   },
   "blacklist": []
