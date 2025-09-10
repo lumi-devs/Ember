@@ -1,4 +1,12 @@
 {
-  "roles": {},
+  "roles": {
+    "1296550727652610189": {
+      "role_id": 1415228254100389909,
+      "name": "meow",
+      "color": "#ffffff",
+      "created_at": "2025-09-10T12:21:52.023717+05:30",
+      "requested_by": "_.notrebi._"
+    }
+  },
   "blacklist": []
 }
