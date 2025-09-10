@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 import re
 from github import Github, Auth
 import threading
+import time
 from flask import Flask
 
 # --- CONFIG ---
@@ -16,7 +17,7 @@ REPO_NAME = "reejit/discord-data"
 FILE_PATH = "data.json"
 BRANCH = "main"
 GUILD_ID = 1388612461703467128
-BOOSTER_ROLE_ID = 1388962512820637786
+BOOSTER_ROLE_ID = 1393170995157798983
 ROLE_BELOW = 1413538764684267725
 MOD_IDS = [1296550727652610189, 987654321098765432]
 
@@ -110,15 +111,13 @@ async def blacklist(interaction: discord.Interaction, action: str, user: discord
         await interaction.followup.send(f"✅ {user.mention} has been removed from blacklist.")
     else:
         await interaction.followup.send("❌ Invalid action. Use add, remove, or list.")
-
-# --- Create Role ---
-@bot.tree.command(name="create_role", description="Create a custom role")
+    
+@bot.tree.command(name="create_role", description="Create a custom booster role")
 @app_commands.describe(
     name="Name of your role",
-    color="Color hex like #ff0000 (optional)",
-    secondary_colour="Secondary color if you want a gradient",
+    color="Color hex like #ff0000 (optional)"
 )
-async def create_role(interaction: discord.Interaction, name: str, color: str = None, secondary_colour: str = None, icon: str = None):
+async def create_role(interaction: discord.Interaction, name: str, color: str = None):
     await interaction.response.defer(ephemeral=False)
 
     booster_role = interaction.guild.get_role(BOOSTER_ROLE_ID)
@@ -136,63 +135,45 @@ async def create_role(interaction: discord.Interaction, name: str, color: str = 
         await interaction.followup.send("❌ You already have a role.")
         return
 
-    color_type = "normal"
     role = None
-
     try:
         primary_color = Color.from_str(color) if color else Color.default()
     except Exception:
-        await interaction.followup.send("❌ Invalid primary color format.", ephemeral=True)
+        await interaction.followup.send("❌ Invalid color format. Use hex like #ff0000", ephemeral=True)
         return
 
     try:
         role = await interaction.guild.create_role(
             name=name,
             colour=primary_color,
-            reason=f"Custom role for {interaction.user}"
+            reason=f"Custom booster role for {interaction.user}"
         )
-        role=await interaction.guild.fetch_role(role.id)
+
+        # Place role just below a specific role
         await role.edit(position=interaction.guild.get_role(1413538764684267725).position - 1)
         await interaction.user.add_roles(role)
 
-        # Gradient
-        if color and secondary_colour:
-            try:
-                secondary_colour_obj = Color.from_str(secondary_colour)
-                await role.edit(colour=primary_color, secondary_colour=secondary_colour_obj)
-                color_type = "gradient"
-            except Exception:
-                await interaction.followup.send("⚠️ Secondary color invalid. Only primary applied.", ephemeral=True)
-
-
+        # Embed confirmation
         IST = timezone(timedelta(hours=5, minutes=30))
         now_ist = datetime.now(IST)
         sidebar_color = role.color if role.color.value != 0 else Color.light_grey()
+
         embed = Embed(
             color=sidebar_color,
             timestamp=now_ist
         )
-
         embed.set_author(
             name="New Booster Role created!",
             icon_url=interaction.user.avatar.url if interaction.user.avatar else None
         )
-
         embed.add_field(name="Name", value=str(role), inline=True)
-        embed.add_field(name="Primary color", value=color or "Default", inline=True)
-
-        if secondary_colour:
-            embed.add_field(name="Secondary color", value=secondary_colour, inline=True)
-        else:
-            embed.add_field(name="Secondary color", value="None", inline=True)
-
+        embed.add_field(name="Color", value=color or "Default", inline=True)
         embed.set_footer(
             text="Thanks for boosting",
             icon_url=interaction.guild.icon.url if interaction.guild.icon else None
         )
         embed.set_image(url="https://cdn.discordapp.com/attachments/1393171142436458558/1415000838329339945/GWygmv0.gif?ex=68c19db9&is=68c04c39&hm=2adc901f6d163cc2c5de0f93ddcc0510f9ae77a9964942f16559c4caa36df20f&")
         await interaction.followup.send(embed=embed)
-
 
     except Exception as e:
         await interaction.followup.send(f"❌ Role creation failed: {e}", ephemeral=True)
@@ -203,24 +184,24 @@ async def create_role(interaction: discord.Interaction, name: str, color: str = 
     db["roles"][str(interaction.user.id)] = {
         "role_id": role.id,
         "name": name,
-        "color_type": color_type,
         "color": color or "default",
-        "created_at": ist_time.isoformat()
+        "created_at": ist_time.isoformat(),
+        "requested_by": str(interaction.user)  # Username + discriminator
     }
-    if secondary_colour:
-        db["roles"][str(interaction.user.id)]["secondary_colour"] = str(secondary_colour)
-    if icon:
-        db["roles"][str(interaction.user.id)]["icon_type"] = icon_type
-        db["roles"][str(interaction.user.id)]["icon_value"] = icon_value
     save_db(db, file)
+
 
 @bot.tree.command(name="me", description="View your custom role info")
 async def me(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=False)
+    await interaction.response.defer(ephemeral=True)
     db, file = load_db()
+
+    # Blacklist check
     if str(interaction.user.id) in db.get("blacklist", []):
         await interaction.followup.send("🚫 You are blacklisted and cannot use this command.")
         return
+
+    # Role check
     role_data = db["roles"].get(str(interaction.user.id))
     if not role_data:
         await interaction.followup.send("❌ You don't have a role.")
@@ -230,12 +211,6 @@ async def me(interaction: discord.Interaction):
     if not role:
         await interaction.followup.send("⚠️ Role not found.")
         return
-
-    # --- Build info ---
-    info = f"**Your Role Info**\n"
-    info += f"👤 Name: {role.name}\n"
-    info += f"🎨 Primary: {role_data['color']}\n"
-    info += f"🌈 Type: {role_data.get('color_type', 'normal')}\n"
 
     # --- Handle icon rendering ---
     icon_value = role_data.get("icon_value")
@@ -251,29 +226,41 @@ async def me(interaction: discord.Interaction):
             icon_value = str(role.display_icon.id)
 
     # Render the icon properly
+    icon_display = "None"
     if icon_value:
         if icon_type == "unicode":
-            info += f"🔹 Icon: {icon_value}\n"
+            icon_display = icon_value
         elif icon_type == "custom":
             emoji_obj = interaction.guild.get_emoji(int(icon_value))
-            if emoji_obj:
-                info += f"🔹 Icon: {emoji_obj}\n"
-            else:
-                info += f"🔹 Icon: (not found)\n"
-    else:
-        info += f"🔹 Icon: None\n"
+            icon_display = str(emoji_obj) if emoji_obj else "(not found)"
 
-    await interaction.followup.send(info)
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
+    # --- Build embed ---
+    embed = discord.Embed(
+        title="🌟 Your Role Info",
+        color=discord.Color.from_str(role_data["color"]) if role_data.get("color") else discord.Color.blurple()
+    )
+    embed.add_field(name="👤 Name", value=role.name, inline=True)
+    embed.add_field(name="🎨 Primary Color", value=role_data.get("color", "None"), inline=True)
+    embed.add_field(name="🌈 Type", value=role_data.get("color_type", "normal"), inline=True)
+
+    # Add secondary color if gradient
+    if role_data.get("color_type") == "gradient":
+        embed.add_field(name="🎨 Secondary Color", value=role_data.get("secondary_color", "None"), inline=True)
+
+    embed.add_field(name="🔹 Icon", value=icon_display, inline=True)
+
+    # Footer with timestamp + guild icon
+    if interaction.guild.icon:
+        embed.set_footer(
+            text=f"{interaction.guild.name} • {datetime.now().strftime('%d-%m-%Y %I:%M %p IST')}",
+            icon_url=interaction.guild.icon.url
+        )
+    else:
+        embed.set_footer(
+            text=f"{interaction.guild.name} • {datetime.now().strftime('%d-%m-%Y %I:%M %p IST')}"
+        )
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
     
     
 
@@ -446,7 +433,7 @@ bot.tree.add_command(update_group)
 @app_commands.describe(user="User whose role to delete (mods only)")
 async def delete_role(interaction: discord.Interaction, user: discord.User = None):
     db, file = load_db()
-    await interaction.response.defer(ephemeral=False)
+    await interaction.response.defer(ephemeral=True)
     if str(interaction.user.id) in db.get("blacklist", []):
         await interaction.followup.send("🚫 You are blacklisted and cannot use this command.", ephemeral=True)
         return
@@ -495,7 +482,7 @@ async def delete_role(interaction: discord.Interaction, user: discord.User = Non
         view.add_item(delete_btn)
         view.add_item(cancel_btn)
 
-        await interaction.followup.send("⚠️ Are you sure you want to delete your role?", view=view, ephemeral=True)
+        await interaction.followup.send("⚠️ Are you sure you want to delete your role?",view=view, ephemeral=True)
 
     else:
         # --- Mod immediate delete ---
@@ -503,6 +490,90 @@ async def delete_role(interaction: discord.Interaction, user: discord.User = Non
         save_db(db, file)
         await role.delete(reason=f"Deleted by mod {interaction.user}")
         await interaction.followup.send(f"✅ Deleted {target_user.mention}'s role.", ephemeral=True)
+        
+        
+        
+        
+        
+        
+        
+@bot.tree.command(name="help", description="Get help for custom role commands")
+async def help_command(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    embed = discord.Embed(
+    title="📘 Custom Roles Help",
+    description="Here’s everything you need to know about managing your custom booster role!",
+    color=discord.Color.blurple()
+    )
+
+    embed.add_field(
+    name="✨ Create a Role",
+    value="`/create_role name:<name> color:<#hex>`\n"
+          "Example: `/create_role name:CoolBooster color:#ff0000`\n\n",
+    inline=False
+    )
+
+    embed.add_field(
+    name="🛠 Update Role",
+    value="`/update name <new name>` → Change role name\n"
+          "`/update color <#hex>` → Change primary color\n"
+          "`/update secondary <#hex>` → Add or update secondary color\n"
+          "`/update icon <emoji>` → Set or update role icon\n\n",
+    inline=False
+    )
+
+    embed.add_field(
+    name="ℹ️ Role Info",
+    value="`/me` → Shows your role details (name, colors, icon, etc.)\n\n",
+    inline=False
+    )
+    embed.add_field(
+    name="🗑 Delete Role",
+    value="`/delete_role` → Delete your own role\n"
+          "Mods can also delete other users’ roles with `/delete_role user:<@user>`\n\n",
+    inline=False
+    )
+
+    embed.add_field(
+    name="🚫 Blacklist (Mods only)",
+    value="`/blacklist add <@user>` → Add to blacklist\n"
+          "`/blacklist remove <@user>` → Remove from blacklist\n"
+          "`/blacklist list` → Show all blacklisted users\n\n",
+    inline=False
+    )
+
+    embed.add_field(
+    name="🎨 Colors Guide",
+    value="• Colors **must begin with `#`** (hex format)\n"
+          "• Example: `#ff0000` (red), `#00ff00` (green), `#7289da` (Discord blurple)\n"
+          "• You can add a **secondary color** for gradient storage (visual only, not applied in Discord).\n\n",
+    inline=False
+    )
+
+    embed.add_field(
+    name="😀 Emoji Guide",
+    value="• You can use **default emojis** like 😎 🎉 ❤️\n"
+          "• Or **custom emojis from this server**: <:cutepepe:1400771649728548904>\n"
+          "• If you want a custom emoji added, please ask a mod.\n\n",
+    inline=False
+    )
+
+    embed.add_field(
+    name="🧹 Removing Gradient & Icon",
+    value="• To **remove gradient**, run `/update secondary` and leave it empty.\n"
+          "• To **remove role icon/emoji**, run `/update icon` and leave it empty.\n\n",
+    inline=False
+    )
+
+    embed.set_footer(
+    text=f"Requested by {interaction.user.display_name} | Need help? Ask a mod!",
+    icon_url=interaction.guild.icon.url if interaction.guild.icon else None
+    )
+
+    await interaction.followup.send(embed=embed)
+
+
 
 
 # ---------------- On Ready ----------------
