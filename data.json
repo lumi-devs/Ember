@@ -6,7 +6,9 @@
       "color_type": "gradient",
       "color": "#ff0000",
       "created_at": "2025-09-10T11:39:45.473038+05:30",
-      "secondary_colour": "#0000ff"
+      "secondary_colour": "#0000ff",
+      "icon_type": "custom",
+      "icon_value": "1392117349666128014"
     }
   },
   "blacklist": []
