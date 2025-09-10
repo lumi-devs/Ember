@@ -1,14 +1,4 @@
 {
-  "roles": {
-    "1398213064431632486": {
-      "role_id": 1415233364276940800,
-      "name": "\ud83d\udcdb",
-      "color": "#ff0000",
-      "created_at": "2025-09-10T12:42:09.975740+05:30",
-      "requested_by": "nakkkssshhh",
-      "color_type": "gradient",
-      "secondary_colour": "#00ff00"
-    }
-  },
+  "roles": {},
   "blacklist": []
 }
