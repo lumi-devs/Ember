@@ -16,7 +16,9 @@
       "name": "MALIK",
       "color": "#69537e",
       "created_at": "2025-09-10T15:42:43.054903+05:30",
-      "requested_by": "param_74"
+      "requested_by": "param_74",
+      "icon_type": "custom",
+      "icon_value": "1410874366081761341"
     }
   },
   "blacklist": []
