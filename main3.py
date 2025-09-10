@@ -150,6 +150,8 @@ async def create_role(interaction: discord.Interaction, name: str, color: str = 
         )
 
         # Place role just below a specific role
+        time.sleep(2)
+        role = await interaction.guild.fetch_role(role.id)
         await role.edit(position=interaction.guild.get_role(1413538764684267725).position - 1)
         await interaction.user.add_roles(role)
 
