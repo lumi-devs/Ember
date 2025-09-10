@@ -247,7 +247,7 @@ async def me(interaction: discord.Interaction):
 
     # Add secondary color if gradient
     if role_data.get("color_type") == "gradient":
-        embed.add_field(name="🎨 Secondary Color", value=role_data.get("secondary_color", "None"), inline=True)
+        embed.add_field(name="🎨 Secondary Color", value=role_data.get("secondary_colour", "None"), inline=True)
 
     embed.add_field(name="🔹 Icon", value=icon_display, inline=True)
 
@@ -353,7 +353,7 @@ async def update_secondary(interaction: discord.Interaction, secondary: str = ''
             role_data["color_type"] = "gradient"
 
             # NOTE: Discord roles don’t support gradients natively, so we just store it in DB
-            await role.edit(colour=primary_obj, secondary_color=secondary_obj)
+            await role.edit(colour=primary_obj, secondary_colour=secondary_obj)
 
             save_db(db, file)
             await interaction.followup.send(
