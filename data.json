@@ -8,15 +8,6 @@
       "requested_by": "param_74",
       "icon_type": "custom",
       "icon_value": "1410874366081761341"
-    },
-    "1398213064431632486": {
-      "role_id": 1415683002792673362,
-      "name": "Watermelon",
-      "color": "default",
-      "created_at": "2025-09-11T18:28:54.272929+05:30",
-      "requested_by": "nakkkssshhh",
-      "icon_type": "unicode",
-      "icon_value": "\ud83c\udf49"
     }
   },
   "blacklist": []
