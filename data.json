@@ -14,7 +14,9 @@
       "name": "Watermelon",
       "color": "default",
       "created_at": "2025-09-14T12:28:13.270440+05:30",
-      "requested_by": "nakkkssshhh"
+      "requested_by": "nakkkssshhh",
+      "icon_type": "unicode",
+      "icon_value": "\ud83c\udf49"
     }
   },
   "blacklist": []
