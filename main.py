@@ -28,7 +28,7 @@ intents.message_content = True
 intents.guild_reactions = True
 intents.members = True
 
-bot = commands.Bot(command_prefix="A!", intents=intents)
+bot = commands.Bot(command_prefix="-", intents=intents)
 
 GUILD_ID = int(os.environ.get("GUILD_ID"))  # Add your test server ID
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -45,7 +45,7 @@ async def on_ready():
 
     try:
         guild_obj = discord.Object(id=GUILD_ID)
-        synced = await bot.tree.sync(guild=guild_obj)
+        synced = await bot.tree.sync()
         print(f"🔗 Synced {len(synced)} slash commands to guild {GUILD_ID}")
         print("📜 Registered app commands:")
         for cmd in bot.tree.walk_commands():

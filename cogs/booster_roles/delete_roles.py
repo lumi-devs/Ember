@@ -12,9 +12,9 @@ async def setup(bot: discord.Client):
     )
     @app_commands.describe(user="User whose role to delete (mods only)")
     async def delete_role(interaction: discord.Interaction, user: discord.User = None):
-        db, file = load_db()
         await interaction.response.defer(ephemeral=True)
-
+        db, file = load_db()
+        
         # --- Blacklist check ---
         if str(interaction.user.id) in db.get("blacklist", []):
             await interaction.followup.send(
@@ -52,7 +52,7 @@ async def setup(bot: discord.Client):
 
             async def delete_callback(i: discord.Interaction):
                 if i.user.id != interaction.user.id:
-                    await i.followup.send("❌ Not your button.", ephemeral=True)
+                    await i.response.send_message("❌ Not your button.", ephemeral=True)
                     return
                 db["roles"].pop(str(target_user.id), None)
                 save_db(db, file)
@@ -83,4 +83,3 @@ async def setup(bot: discord.Client):
             await interaction.followup.send(
                 f"✅ Deleted {target_user.mention}'s role.", ephemeral=True
             )
-

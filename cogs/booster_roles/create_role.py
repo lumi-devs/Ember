@@ -43,7 +43,9 @@ async def setup(bot: discord.Client):
             )
 
             # Place role below a fixed role
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
+            role = await interaction.guild.fetch_role(role.id)
+            await asyncio.sleep(1)
             role = await interaction.guild.fetch_role(role.id)
             fixed_role = interaction.guild.get_role(int(os.environ.get("FIXED_ROLE_ID", 0)))
             if fixed_role:
