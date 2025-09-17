@@ -1,8 +1,16 @@
+import os
 import discord
 from discord.ext import commands
 
 # Track active requests (requester_id, target_id)
 active_requests = set()
+
+# Get blacklisted voice role IDs from environment variable
+BLACKLISTED_VOICE_IDS = set()
+if os.environ.get("BLACKLISTED_VOICE_ROLES"):
+    BLACKLISTED_VOICE_IDS = set(
+        int(rid.strip()) for rid in os.environ["BLACKLISTED_VOICE_ROLES"].split(",") if rid.strip()
+    )
 
 async def setup(bot: commands.Bot):
     @bot.tree.command(name="dragme", description="Request to be dragged into another user's VC")
@@ -11,20 +19,35 @@ async def setup(bot: commands.Bot):
         requester = interaction.user
         target = user
 
+        # --- Check blacklist ---
+        if any(role.id in BLACKLISTED_VOICE_IDS for role in requester.roles):
+            return await interaction.response.send_message(
+                "❌ You are not allowed to use this command.", ephemeral=True
+            )
+
+        # --- Check if requester is in a VC ---
+        if not requester.voice or not requester.voice.channel:
+            return await interaction.response.send_message(
+                "❌ You must join a voice channel first to use this command.", ephemeral=True
+            )
+
+        # --- Check if target is in a VC ---
         if not target.voice or not target.voice.channel:
             return await interaction.response.send_message(
                 f"❌ {target.mention} must be in a voice channel.", ephemeral=True
             )
 
-        if requester.voice and requester.voice.channel == target.voice.channel:
+        # --- Already in same VC ---
+        if requester.voice.channel == target.voice.channel:
             return await interaction.response.send_message(
                 f"⚠️ You’re already in {target.mention}'s VC.", ephemeral=True
             )
 
+        # --- Check active requests ---
         request_key = (requester.id, target.id)
         if request_key in active_requests:
             return await interaction.response.send_message(
-                f"⚠️ You already have an active request pending with {target.mention}.",
+                f"⚠️ You already have an active request pending with {target.mention}.\nTimes out after 3 minutes.",
                 ephemeral=True
             )
 
@@ -36,8 +59,7 @@ async def setup(bot: commands.Bot):
         view = discord.ui.View(timeout=180)  # 3 minutes
 
         async def cleanup(msg, new_content):
-            if request_key in active_requests:
-                active_requests.remove(request_key)
+            active_requests.discard(request_key)
             await msg.edit(content=new_content, view=None)
 
         async def accept_callback(i: discord.Interaction):

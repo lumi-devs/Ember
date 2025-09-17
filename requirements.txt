@@ -2,3 +2,4 @@ discord.py
 PyGithub
 flask
 python-dotenv
+yt-dlp
