@@ -21,5 +21,11 @@
       "icon_value": "1410874366081761341"
     }
   },
-  "blacklist": []
+  "blacklist": [],
+  "stickies": {
+    "1393171140293296218": {
+      "message_id": 1417913602375024680,
+      "content": "meow meow"
+    }
+  }
 }
