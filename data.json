@@ -25,7 +25,9 @@
       "name": "emoewk",
       "color": "#ff0000",
       "created_at": "2025-09-18T02:16:40.779410+05:30",
-      "requested_by": "_.notrebi._"
+      "requested_by": "_.notrebi._",
+      "secondary_colour": "#00ff00",
+      "color_type": "gradient"
     }
   },
   "blacklist": [],
