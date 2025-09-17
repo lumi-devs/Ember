@@ -16,6 +16,7 @@ def run_flask():
 
 
 # --- Discord bot setup ------------------------------------------
+intents=discord.Intents.default()
 intents.guilds = True
 intents.guild_messages = True
 intents.message_content = True
