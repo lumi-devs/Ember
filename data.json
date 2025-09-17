@@ -24,6 +24,11 @@
   "blacklist": [],
   "stickies": {},
   "omegle": {
-    "queue": []
+    "queue": [
+      {
+        "user_id": 1266026947457191988,
+        "choice": "male"
+      }
+    ]
   }
 }
