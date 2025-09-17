@@ -1,5 +1,6 @@
 from github import Github, Auth
-
+import os
+import json
 
 auth = Auth.Token(os.environ.get("GITHUB_TOKEN"))
 g = Github(auth=auth)
@@ -7,7 +8,7 @@ repo = g.get_repo(os.environ.get("REPO_NAME"))
 
 def load_db():
     try:
-        file = repo.get_contents(FILE_PATH, ref=BRANCH)
+        file = repo.get_contents(os.environ.get("FILE_PATH"), ref=os.environ.get("BRANCH"))
         data = json.loads(file.decoded_content.decode())
         return data, file
     except Exception:
@@ -21,12 +22,12 @@ def save_db(data, file=None):
             message="update data.json",
             content=new_content,
             sha=file.sha,
-            branch=BRANCH
+            branch=os.environ.get("BRANCH")
         )
     else:
         repo.create_file(
-            path=FILE_PATH,
+            path=os.environ.get("FILE_PATH"),
             message="create data.json",
             content=new_content,
-            branch=BRANCH
+            branch=os.environ.get("BRANCH")
         )

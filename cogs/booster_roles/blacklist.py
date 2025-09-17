@@ -1,50 +1,54 @@
+import os
 import discord
-from helpers.github_data import load_db,save_db
+from discord import app_commands
+from helpers.github_data import load_db, save_db
 
-@bot.tree.command(name="blacklist", description="Manage the blacklist (mods only)")
-@app_commands.describe(
-    action="Action: add, remove, or list",
-    user="User to add/remove (ignored for list)"
-)
-async def blacklist(interaction: discord.Interaction, action: str, user: discord.User = None):
-    await interaction.response.defer(ephemeral=False)
-    if interaction.user.id not in MOD_IDS:
-        await interaction.followup.send("🚫 You are not allowed to use this command.")
-        return
+async def setup(bot: discord.Client):
 
-    db, file = load_db()
+    @bot.tree.command(name="blacklist", description="Manage the blacklist (mods only)")
+    @app_commands.describe(
+        action="Action: add, remove, or list",
+        user="User to add/remove (ignored for list)"
+    )
+    async def blacklist(interaction: discord.Interaction, action: str, user: discord.User = None):
+        await interaction.response.defer(ephemeral=False)
 
-    if action.lower() == "list":
-        bl_users = db.get("blacklist", [])
-        if not bl_users:
-            await interaction.followup.send("📜 Blacklist is empty.")
+        # MOD_IDS stored as comma-separated string in .env, e.g. "123,456,789"
+        mod_ids = [int(x) for x in os.environ.get("MOD_IDS", "").split(",") if x.strip()]
+        if interaction.user.id not in mod_ids:
+            await interaction.followup.send("🚫 You are not allowed to use this command.", ephemeral=True)
             return
-        mentions = [f"<@{uid}>" for uid in bl_users]
-        await interaction.followup.send("📜 **Blacklisted Users:**\n" + "\n".join(mentions))
-        return
 
-    if not user:
-        await interaction.followup.send("❌ You must specify a user for this action.")
-        return
+        db, file = load_db()
+        action = action.lower()
 
-    if action.lower() == "add":
-        if str(user.id) in db["blacklist"]:
-            await interaction.followup.send("⚠️ User already blacklisted.")
+        if action == "list":
+            bl_users = db.get("blacklist", [])
+            if not bl_users:
+                await interaction.followup.send("📜 Blacklist is empty.", ephemeral=True)
+                return
+            mentions = [f"<@{uid}>" for uid in bl_users]
+            await interaction.followup.send("📜 **Blacklisted Users:**\n" + "\n".join(mentions), ephemeral=True)
             return
-        db["blacklist"].append(str(user.id))
-        save_db(db, file)
-        await interaction.followup.send(f"✅ {user.mention} has been blacklisted.")
 
-    elif action.lower() == "remove":
-        if str(user.id) not in db["blacklist"]:
-            await interaction.followup.send("⚠️ User not in blacklist.")
+        if not user:
+            await interaction.followup.send("❌ You must specify a user for this action.", ephemeral=True)
             return
-        db["blacklist"].remove(str(user.id))
-        save_db(db, file)
-        await interaction.followup.send(f"✅ {user.mention} has been removed from blacklist.")
-    else:
-        await interaction.followup.send("❌ Invalid action. Use add, remove, or list.")
-    
 
-async def setup(bot: commands.Bot):
-    bot.tree.add_command(blacklist)
+        if action == "add":
+            if str(user.id) in db["blacklist"]:
+                await interaction.followup.send("⚠️ User already blacklisted.", ephemeral=True)
+                return
+            db["blacklist"].append(str(user.id))
+            save_db(db, file)
+            await interaction.followup.send(f"✅ {user.mention} has been blacklisted.", ephemeral=True)
+
+        elif action == "remove":
+            if str(user.id) not in db["blacklist"]:
+                await interaction.followup.send("⚠️ User not in blacklist.", ephemeral=True)
+                return
+            db["blacklist"].remove(str(user.id))
+            save_db(db, file)
+            await interaction.followup.send(f"✅ {user.mention} has been removed from blacklist.", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ Invalid action. Use add, remove, or list.", ephemeral=True)
