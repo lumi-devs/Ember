@@ -22,7 +22,14 @@
     }
   },
   "blacklist": [],
-  "stickies": {},
+  "stickies": {
+    "1417923188083654916": {
+      "message_id": 1417976496680730806,
+      "content": "lols",
+      "embed": false,
+      "active": true
+    }
+  },
   "omegle": {
     "queue": []
   }
