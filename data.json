@@ -25,18 +25,6 @@
   "stickies": {},
   "omegle": {
     "queue": [
-      {
-        "user_id": 1296550727652610189,
-        "choice": "male"
-      },
-      {
-        "user_id": 1034001809217421342,
-        "choice": "male"
-      },
-      {
-        "user_id": 1034001809217421342,
-        "choice": "any"
-      }
     ]
   }
 }
