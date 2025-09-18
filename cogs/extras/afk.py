@@ -32,6 +32,7 @@ class AFK(commands.Cog):
     @commands.command(name="afk")
     async def afk(self, ctx: commands.Context, *, reason: str = "AFK"):
         user = ctx.author
+        await ctx.message.delete()
         since = datetime.now(timezone.utc).isoformat()
         self.afk[str(user.id)] = {"reason": reason, "since": since}
         save_db(self.afk, self.afk_file, "afk.json")
@@ -69,7 +70,7 @@ class AFK(commands.Cog):
                     since_dt = datetime.fromisoformat(afk_entry["since"])
                     duration = human_timedelta(since_dt)
                     embed = discord.Embed(
-                        title=f"[AFK] {u.display_name} is AFK 💤",
+                        title=f"{u.display_name[len("[AFK] "):]} is AFK 💤",
                         description=f"**Reason:** {afk_entry['reason']}\n**Since:** {duration} ago",
                         color=discord.Color.orange()
                     )
