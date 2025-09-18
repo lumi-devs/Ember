@@ -78,7 +78,7 @@ class AFK(commands.Cog):
                     since_dt = datetime.fromisoformat(afk_entry["since"])
                     duration = human_timedelta(since_dt)
                     embed = discord.Embed(
-                        title = f"{afk_strip(u.display_name)} is AFK 💤
+                        title = afk_strip(u.display_name)+" is AFK 💤",
                         description=f"**Reason:** {afk_entry['reason']}\n**Since:** {duration} ago",
                         color=discord.Color.orange()
                     )
