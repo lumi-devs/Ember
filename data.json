@@ -22,7 +22,14 @@
     }
   },
   "blacklist": [],
-  "stickies": {},
+  "stickies": {
+    "1417923188083654916": {
+      "message_id": 1418299283467407493,
+      "content": "Send media text auto delte",
+      "embed": true,
+      "active": true
+    }
+  },
   "omegle": {
     "queue": []
   }
