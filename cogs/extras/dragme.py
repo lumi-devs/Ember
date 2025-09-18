@@ -54,7 +54,7 @@ async def setup(bot: commands.Bot):
         active_requests.add(request_key)
 
         channel = target.voice.channel
-        msg_text = f"🔔 {target.mention}, {requester.mention} wants to join your VC (**{channel.name}**). Accept?"
+        msg_text = f"🔔 {target.mention}, {requester.mention} wants to join your VC {channel.mention}. Accept?"
 
         view = discord.ui.View(timeout=180)  # 3 minutes
 
@@ -67,7 +67,7 @@ async def setup(bot: commands.Bot):
                 return await i.response.send_message("Not your request!", ephemeral=True)
 
             await requester.move_to(channel)
-            await cleanup(msg, f"✅ {target.mention} accepted. {requester.mention} has been moved to **{channel.name}**.")
+            await cleanup(msg, f"✅ {target.mention} accepted. {requester.mention} has been moved to {channel.mention}.")
             view.stop()
 
         async def decline_callback(i: discord.Interaction):

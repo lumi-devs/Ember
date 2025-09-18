@@ -3,3 +3,4 @@ PyGithub
 flask
 python-dotenv
 yt-dlp
+aiofiles
