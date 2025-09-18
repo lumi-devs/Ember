@@ -29,7 +29,7 @@ intents.message_content = True
 intents.guild_reactions = True
 intents.members = True
 
-bot = commands.Bot(command_prefix="-", intents=intents)
+bot = commands.Bot(command_prefix=".", intents=intents)
 
 GUILD_ID = int(os.environ.get("GUILD_ID"))  # Add your test server ID
 BOT_TOKEN = os.environ.get("BOT_TOKEN")

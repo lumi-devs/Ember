@@ -1,0 +1,80 @@
+import discord
+from discord.ext import commands
+from helpers.github_data import load_db, save_db
+from datetime import datetime, timezone
+
+def human_timedelta(dt: datetime) -> str:
+    now = datetime.now(timezone.utc)
+    delta = now - dt
+    days = delta.days
+    seconds = delta.seconds
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    parts = []
+    if days:
+        parts.append(f"{days} day{'s' if days != 1 else ''}")
+    if hours:
+        parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+    if minutes:
+        parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
+    if seconds and not parts:
+        parts.append(f"{seconds} second{'s' if seconds != 1 else ''}")
+    return " ".join(parts) if parts else "just now"
+
+class AFK(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.afk, self.afk_file = load_db("afk.json")
+        if not isinstance(self.afk, dict):
+            self.afk = {}
+        print("✅ AFK cog loaded")
+
+    @commands.command(name="afk")
+    async def afk(self, ctx: commands.Context, *, reason: str = "AFK"):
+        user = ctx.author
+        since = datetime.now(timezone.utc).isoformat()
+        self.afk[str(user.id)] = {"reason": reason, "since": since}
+        save_db(self.afk, self.afk_file, "afk.json")
+        if ctx.guild:
+            try:
+                if not user.display_name.startswith("[AFK]"):
+                    await user.edit(nick=f"[AFK] {user.display_name}")
+            except discord.Forbidden:
+                pass
+        msg = await ctx.send(f"✅ {user.mention} You are now AFK: **{reason}**")
+        await msg.delete(delay=5)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot:
+            return
+        if str(message.author.id) in self.afk:
+            afk_entry = self.afk.pop(str(message.author.id))
+            save_db(self.afk, self.afk_file, "afk.json")
+            if message.guild and message.author.display_name.startswith("[AFK]"):
+                new = message.author.display_name[len("[AFK] "):]
+                try:
+                    await message.author.edit(nick=new)
+                except discord.Forbidden:
+                    pass
+            try:
+                msg = await message.channel.send(f"👋 Welcome back {message.author.mention}, AFK removed.")
+                await msg.delete(delay=5)
+            except Exception:
+                pass
+        if message.mentions:
+            for u in message.mentions:
+                if str(u.id) in self.afk:
+                    afk_entry = self.afk[str(u.id)]
+                    since_dt = datetime.fromisoformat(afk_entry["since"])
+                    duration = human_timedelta(since_dt)
+                    embed = discord.Embed(
+                        title=f"[AFK] {u.display_name} is AFK 💤",
+                        description=f"**Reason:** {afk_entry['reason']}\n**Since:** {duration} ago",
+                        color=discord.Color.orange()
+                    )
+                    await message.channel.send(embed=embed)
+        await self.bot.process_commands(message)
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(AFK(bot))

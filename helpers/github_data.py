@@ -10,39 +10,38 @@ FILE_PATH = os.environ.get("FILE_PATH")
 BRANCH = os.environ.get("BRANCH")
 
 
-def load_db():
+def load_db(file_path: str = None):
     """
     Always return latest file + sha from GitHub.
     """
     try:
-        file = repo.get_contents(FILE_PATH, ref=BRANCH)
+        file_path = file_path if file_path else FILE_PATH
+        file = repo.get_contents(file_path, ref=BRANCH)
         data = json.loads(file.decoded_content.decode())
         return data, file
     except Exception:
         return {"roles": {}, "blacklist": []}, None
 
 
-def save_db(data, file=None):
-    """
-    Save to GitHub.
-    If file is stale, refetch before updating.
-    """
+def save_db(data, file=None, file_path: str = None):
     new_content = json.dumps(data, indent=2)
+    file_path = file_path if file_path else FILE_PATH
 
-    if file:
-        # Always refresh sha before update
-        latest = repo.get_contents(FILE_PATH, ref=BRANCH)
+    try:
+        latest = repo.get_contents(file_path, ref=BRANCH)
+        # File exists → update
         repo.update_file(
             path=latest.path,
-            message="update data.json",
+            message=f"update {file_path}",
             content=new_content,
             sha=latest.sha,
             branch=BRANCH,
         )
-    else:
+    except Exception:
+        # File does not exist → create
         repo.create_file(
-            path=FILE_PATH,
-            message="create data.json",
+            path=file_path,
+            message=f"create {file_path}",
             content=new_content,
             branch=BRANCH,
         )
