@@ -1,113 +1,133 @@
+# cogs/omegle/omegle_cog.py
 import discord
 from discord.ext import commands, tasks
-from discord import app_commands
+from datetime import datetime
 from cogs.omegle.omegle_matchmaker import Matchmaker
 from cogs.omegle.omegle_ui import StartButtonView, PrivateChatView
-from datetime import datetime
+from helpers.github_data import load_db, save_db
 import os
 
+# CONFIG — replace with your IDs
 MALE_ROLE = 1393171022047350845
 FEMALE_ROLE = 1393171023024881735
-ANYONE_ROLES = [1393171022047350845, FEMALE_ROLE, 1409995872611209376, 1393171031660957838]
-HUB_CHANNEL_ID = 1417923188083654916  # hub channel for threads
-LOG_CHANNEL_ID = 1393171149038293023  # channel where chat logs will be uploaded
-
+ANYONE_ROLES = [1393171022047350845, 1393171023024881735, 1409995872611209376, 1393171031660957838]
+HUB_CHANNEL_ID = 1417923188083654916
+LOG_CHANNEL_ID = 1393171149038293023
 
 class OmegleCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.matchmaker = Matchmaker(bot, MALE_ROLE, FEMALE_ROLE, ANYONE_ROLES, HUB_CHANNEL_ID)
-        self.active_views = []  # store all active PrivateChatViews
+        # active_chats maps thread.id -> PrivateChatView
+        self.active_chats = {}
         self.check_queue_loop.start()
 
     def cog_unload(self):
         self.check_queue_loop.cancel()
 
+
     @commands.Cog.listener()
     async def on_ready(self):
-        # Register persistent Start button
-        self.bot.add_view(StartButtonView(self.matchmaker))
-        print("[DEBUG] Persistent StartButtonView registered")
+        # Register persistent start button view (so the button works across restarts)
+        try:
+            self.bot.add_view(StartButtonView(self.matchmaker))
+            print("[OMEGLE] Registered persistent StartButtonView")
+        except Exception as e:
+            print("[OMEGLE] add_view failed:", e)
 
-    @app_commands.command(name="omegle_send", description="Send the Omegle start button")
-    async def omegle_send(self, interaction: discord.Interaction, channel: discord.TextChannel):
-        if not interaction.user.guild_permissions.manage_messages:
-            await interaction.response.send_message(":x: You cannot use this.", ephemeral=True)
-            return
-
+    @commands.hybrid_command(name="omegle_send")
+    @commands.has_permissions(manage_messages=True)
+    async def omegle_send(self, ctx: commands.Context, channel: discord.TextChannel):
+        """Send the start button interface to a channel (mod only)."""
         start_view = StartButtonView(self.matchmaker)
-        await channel.send(":speech_balloon: Click the button below to start a private chat!", view=start_view)
-        await interaction.response.send_message(":white_check_mark: Omegle start interface sent.", ephemeral=True)
+        await channel.send(":speech_balloon: Click to start a private chat with a random member", view=start_view)
+        try:
+            await ctx.reply("✅ Interface sent.", ephemeral=True)
+        except Exception:
+            # fallback
+            await ctx.send("✅ Interface sent.", delete_after=5)
 
     @tasks.loop(seconds=5)
     async def check_queue_loop(self):
+        if not self.bot.is_ready():
+            return
         for guild in self.bot.guilds:
-            #print(f"[DEBUG] Current queue: {self.matchmaker.queue}")
-            #print(f"[DEBUG] check_queue_loop tick at {datetime.now()}")
-
+            print(f"[DEBUG] check_queue_loop tick {datetime.utcnow().isoformat()} queue={self.matchmaker.queue}")
             while True:
                 u1, u2 = await self.matchmaker.find_match(guild)
                 if not u1 or not u2:
                     break
 
-                print(f"[DEBUG] Match found: {u1} + {u2} in {guild.name}")
-
-                # Create thread first
-                thread = await self.matchmaker.create_chat(guild, u1, u2)
-                if thread is None:
-                    print(f"[DEBUG] Thread creation failed for {u1} + {u2} in {guild.name}")
+                print(f"[DEBUG] Matched {u1} with {u2} in guild {guild.name}")
+                thread = await self.matchmaker.create_chat_thread(guild, u1, u2)
+                if not thread:
+                    print("[OMEGLE] Failed to create private thread for match")
                     continue
 
-                print(f"[DEBUG] Thread created: {thread.name} ({thread.id})")
+                # create PrivateChatView and register active chat
+                private_view = PrivateChatView(self.matchmaker, thread, u1, u2, LOG_CHANNEL_ID)
+                self.active_chats[thread.id] = private_view
 
-                # Remove users from queue & update DB
-                self.matchmaker.queue = [
-                    u for u in self.matchmaker.queue if u["user_id"] not in (u1.id, u2.id)
-                ]
-                from helpers.github_data import load_db, save_db
-                db, file = load_db()
-                db["omegle"]["queue"] = self.matchmaker.queue
-                save_db(db, file)
-
-                # Create a single PrivateChatView with logging
-                private_view = PrivateChatView(self.matchmaker, thread, u1, u2)
-                self.active_views.append(private_view)
-
-                # Send matched message + Leave+Skip view
+                # send introduction message with view
                 try:
-                    await thread.send(
-                        f":wave: {u1.mention} and {u2.mention} matched! Say hi!",
-                        view=private_view
-                    )
+                    await thread.send(f":wave: {u1.mention} and {u2.mention} matched! Say hi!", view=private_view)
                 except Exception as e:
-                    print(f"[DEBUG] Failed to send message in thread: {e}")
+                    print("[OMEGLE] Failed to send match message:", e)
 
-                # DM notification
-                for user in [u1, u2]:
+                # DM notifications
+                for m in (u1, u2):
                     try:
-                        await user.send(f"You have been matched with {u1.mention if user != u1 else u2.mention} in {guild.name}!")
-                        print(f"[DEBUG] DM sent to {user}")
-                    except Exception as e:
-                        print(f"[DEBUG] Failed to DM {user}: {e}")
+                        await m.send(f"You've been matched in **{guild.name}** — check the private thread: {thread.mention}")
+                    except Exception:
+                        pass
+
+    @check_queue_loop.before_loop
+    async def before_queue(self):
+        await self.bot.wait_until_ready()
+
+    # Track messages in active private threads (text, attachments, stickers)
     @commands.Cog.listener()
-    async def on_message(self, message):
+    async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
-        if not hasattr(self, "active_views"):
+        tid = message.channel.id
+        view = self.active_chats.get(tid)
+        if not view:
             return
-        for view in self.active_views:
-            if message.channel.id == view.thread.id:
-                timestamp = message.created_at.strftime("%H:%M:%S")
-                # Log text
-                if message.content:
-                    view.chat_log.append((f"[{timestamp}] {message.author.display_name}", message.content))
-                # Log attachments
-                for attach in message.attachments:
-                    view.chat_log.append((f"[{timestamp}] {message.author.display_name}", attach.url))
-                # Log stickers
-                for sticker in message.stickers:
-                    view.chat_log.append((f"[{timestamp}] {message.author.display_name}", f"<Sticker: {sticker.name}>"))
+
+        ts = message.created_at.strftime("%H:%M:%S")
+        # text
+        if message.content:
+            view.chat_log.append((ts, message.author.display_name, message.content))
+        # attachments
+        for att in message.attachments:
+            view.chat_log.append((ts, message.author.display_name, att.url))
+        # stickers (StickerItem)
+        for st in getattr(message, "stickers", []):
+            try:
+                view.chat_log.append((ts, message.author.display_name, f"<Sticker: {st.name}>"))
+            except Exception:
+                view.chat_log.append((ts, message.author.display_name, "<Sticker>"))
+
+        # If the thread was deleted by some external process, remove from active_chats
+        try:
+            if isinstance(message.channel, discord.Thread) and message.channel.archived:
+                # keep it — only cleanup on explicit delete via buttons
+                pass
+        except Exception:
+            pass
+
+    # Clean up active_chats entry when thread deleted externally
+    @commands.Cog.listener()
+    async def on_thread_delete(self, thread: discord.Thread):
+        if thread.id in self.active_chats:
+            try:
+                self.active_chats.pop(thread.id, None)
+            except Exception:
+                pass
 
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(OmegleCog(bot))
+
+
