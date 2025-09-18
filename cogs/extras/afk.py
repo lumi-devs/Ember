@@ -3,6 +3,14 @@ from discord.ext import commands
 from helpers.github_data import load_db, save_db
 from datetime import datetime, timezone
 
+
+
+def afk_strip(name: str) -> str:
+    if name.startswith("[AFK]"):
+        # Remove prefix and any extra space
+        return name[len("[AFK]"):].lstrip()
+    return name
+
 def human_timedelta(dt: datetime) -> str:
     now = datetime.now(timezone.utc)
     delta = now - dt
@@ -70,7 +78,7 @@ class AFK(commands.Cog):
                     since_dt = datetime.fromisoformat(afk_entry["since"])
                     duration = human_timedelta(since_dt)
                     embed = discord.Embed(
-                        title=f"{u.display_name[len("[AFK] "):]} is AFK 💤",
+                        title = f"{afk_strip(u.display_name)} is AFK 💤
                         description=f"**Reason:** {afk_entry['reason']}\n**Since:** {duration} ago",
                         color=discord.Color.orange()
                     )
