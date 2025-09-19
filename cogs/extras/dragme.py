@@ -27,16 +27,16 @@ async def setup(bot: commands.Bot):
                 "❌ You are not allowed to use this command.", ephemeral=True
             )
 
+        if interaction.channel_id != DRAGME_CHANNEL_ID"
+            return await interaction.response.send_message(
+                f"You can only use this command in <#{DRAGME_CHANNEL_ID}>", ephemeral=True
+            )
         # --- Check if requester is in a VC ---
         if not requester.voice or not requester.voice.channel:
             return await interaction.response.send_message(
                 "❌ You must join a voice channel first to use this command.", ephemeral=True
             )
-        # --- Check if the used channel is dragme ----
-        if interaction.channel_id != DRAGME_CHANNEL_ID"
-            return await interaction.response.send_message(
-                f"You can only use this command in <#{DRAGME_CHANNEL_ID}>", ephemeral=True
-            )
+
 
         # --- Check if target is in a VC ---
         if not target.voice or not target.voice.channel:
