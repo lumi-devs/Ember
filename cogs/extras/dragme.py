@@ -84,7 +84,7 @@ async def setup(bot: commands.Bot):
         )
 
         channel = target.voice.channel
-        msg_text = f"🔔 {target.mention}, {requester.mention} wants to join your VC {channel.mention}. Accept?"
+        msg_text = f"🔔 {target.mention}, {requester.mention} wants to join your VC- {channel.name}. Accept?"
 
         class DragmeView(discord.ui.View):
             def __init__(self):
