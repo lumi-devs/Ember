@@ -18,7 +18,7 @@ async def setup(bot: discord.Client):
             await interaction.followup.send("🚫 Booster role required.")
             return
 
-        db, file = load_db()
+        db, file = load_db(file_path="custom_roles.json")
 
         if str(interaction.user.id) in db.get("blacklist", []):
             await interaction.followup.send("🚫 You are blacklisted and cannot use this command.", ephemeral=True)
@@ -85,7 +85,7 @@ async def setup(bot: discord.Client):
         }
 
         try:
-            save_db(db, file)
+            save_db(db,file,file_path="custom_roles.json")
             print("saved to db")
         except Exception as e:
            print(f"Failed to save db: {e}")

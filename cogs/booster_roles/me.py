@@ -8,7 +8,7 @@ async def setup(bot: discord.Client):
     @bot.tree.command(name="me", description="View your custom role info")
     async def me(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        db, file = load_db()
+        db, file = load_db(file_path="custom_roles.json")
 
         # --- Blacklist check ---
         if str(interaction.user.id) in db.get("blacklist", []):
