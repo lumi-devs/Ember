@@ -54,11 +54,18 @@ async def setup(bot: commands.Bot):
                 ephemeral=True,
             )
 
+        # --- Add request ---
         active_requests.add(request_key)
+
+        # --- Ephemeral confirmation to requester ---
+        await interaction.response.send_message(
+            "✅ Your request was sent.", ephemeral=True
+        )
+
+        # --- Public message in dragme channel ---
         channel = target.voice.channel
         msg_text = f"🔔 {target.mention}, {requester.mention} wants to join your VC {channel.mention}. Accept?"
 
-        # --- View subclass ---
         class DragmeView(discord.ui.View):
             def __init__(self):
                 super().__init__(timeout=TIMEOUT_DURATION)
@@ -77,7 +84,6 @@ async def setup(bot: commands.Bot):
                     active_requests.discard(request_key)
                     await self.msg.edit(content="⌛ Request timed out.", view=None)
 
-            # --- Buttons ---
             @discord.ui.button(style=discord.ButtonStyle.green, label="Accept")
             async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
                 if interaction.user.id != target.id:
@@ -98,5 +104,6 @@ async def setup(bot: commands.Bot):
                 )
 
         view = DragmeView()
-        await interaction.response.send_message(msg_text, view=view)
-        view.msg = await interaction.original_response()
+        # send the public interactive message in the same channel
+        dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
+        view.msg = await dragme_channel.send(msg_text, view=view)
