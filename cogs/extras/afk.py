@@ -50,7 +50,7 @@ class AFK(commands.Cog):
             except discord.Forbidden:
                 pass
         msg = await ctx.send(f"✅ {user.mention} You are now AFK: **{reason}**")
-        await msg.delete(delay=5)
+        await msg.delete(delay=10)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -66,8 +66,10 @@ class AFK(commands.Cog):
                 except discord.Forbidden:
                     pass
             try:
-                msg = await message.channel.send(f"👋 Welcome back {message.author.mention}, AFK removed.")
-                await msg.delete(delay=5)
+                since_dt = datetime.fromisoformat(afk_entry["since"])
+                duration = human_timedelta(since_dt)
+                msg = await message.channel.send(f"👋 Welcome back {message.author.mention}, AFK removed.\nYou had been afk since **{duration}**")
+                await msg.delete(delay=10)
             except Exception:
                 pass
         if message.mentions:
@@ -82,7 +84,7 @@ class AFK(commands.Cog):
                         color=discord.Color.orange()
                     )
                     msg=await message.channel.send(embed=embed)
-                    await msg.delete(delay=60)
+                    await msg.delete(delay=120)
         await self.bot.process_commands(message)
 
 async def setup(bot: commands.Bot):
