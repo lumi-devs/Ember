@@ -35,7 +35,6 @@ class AFK(commands.Cog):
         self.afk, self.afk_file = load_db("afk.json")
         if not isinstance(self.afk, dict):
             self.afk = {}
-        print("✅ AFK cog loaded")
 
     @commands.command(name="afk")
     async def afk(self, ctx: commands.Context, *, reason: str = "AFK"):
@@ -82,7 +81,8 @@ class AFK(commands.Cog):
                         description=f"**Reason:** {afk_entry['reason']}\n**Since:** {duration} ago",
                         color=discord.Color.orange()
                     )
-                    await message.channel.send(embed=embed)
+                    await msg=message.channel.send(embed=embed)
+                    await msg.delete(delay=60)
         await self.bot.process_commands(message)
 
 async def setup(bot: commands.Bot):
