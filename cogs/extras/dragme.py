@@ -1,10 +1,11 @@
 import os
+import json
 import discord
 from discord.ext import commands
 
-active_requests = set()
 DRAGME_CHANNEL_ID = 1418501302626816010
 TIMEOUT_DURATION = 60  # seconds
+REQUESTS_FILE = "active_requests.json"
 
 BLACKLISTED_VOICE_IDS = set()
 if os.environ.get("BLACKLISTED_VOICE_ROLES"):
@@ -13,6 +14,26 @@ if os.environ.get("BLACKLISTED_VOICE_ROLES"):
         for rid in os.environ["BLACKLISTED_VOICE_ROLES"].split(",")
         if rid.strip()
     )
+
+
+# --- Persistence helpers ---
+def load_requests():
+    if not os.path.exists(REQUESTS_FILE):
+        return []
+    try:
+        with open(REQUESTS_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def save_requests(requests):
+    with open(REQUESTS_FILE, "w") as f:
+        json.dump(requests, f)
+
+
+# Always start fresh on restart
+active_requests = []
 
 
 async def setup(bot: commands.Bot):
@@ -47,7 +68,7 @@ async def setup(bot: commands.Bot):
                 f"⚠️ You’re already in {target.mention}'s VC.", ephemeral=True
             )
 
-        request_key = (requester.id, target.id)
+        request_key = {"requester": requester.id, "target": target.id}
         if request_key in active_requests:
             return await interaction.response.send_message(
                 f"⚠️ You already have an active request pending with {target.mention}",
@@ -55,14 +76,13 @@ async def setup(bot: commands.Bot):
             )
 
         # --- Add request ---
-        active_requests.add(request_key)
+        active_requests.append(request_key)
+        save_requests(active_requests)
 
-        # --- Ephemeral confirmation to requester ---
         await interaction.response.send_message(
             "✅ Your request was sent.", ephemeral=True
         )
 
-        # --- Public message in dragme channel ---
         channel = target.voice.channel
         msg_text = f"🔔 {target.mention}, {requester.mention} wants to join your VC {channel.mention}. Accept?"
 
@@ -72,16 +92,22 @@ async def setup(bot: commands.Bot):
                 self.msg: discord.Message | None = None
                 self.finished = False
 
+            def remove_request(self):
+                nonlocal request_key
+                if request_key in active_requests:
+                    active_requests.remove(request_key)
+                    save_requests(active_requests)
+
             async def finish(self, content: str):
                 self.finished = True
-                active_requests.discard(request_key)
+                self.remove_request()
                 if self.msg:
                     await self.msg.edit(content=content, view=None)
                 self.stop()
 
             async def on_timeout(self):
                 if not self.finished and self.msg:
-                    active_requests.discard(request_key)
+                    self.remove_request()
                     await self.msg.edit(content="⌛ Request timed out.", view=None)
 
             @discord.ui.button(style=discord.ButtonStyle.green, label="Accept")
@@ -104,6 +130,5 @@ async def setup(bot: commands.Bot):
                 )
 
         view = DragmeView()
-        # send the public interactive message in the same channel
         dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
         view.msg = await dragme_channel.send(msg_text, view=view)
