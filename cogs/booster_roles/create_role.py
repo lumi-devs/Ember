@@ -41,9 +41,6 @@ async def setup(bot: discord.Client):
                 colour=primary_color,
                 reason=f"Custom booster role for {interaction.user}"
             )
-
-            # Place role below a fixed role
-            role = await interaction.guild.fetch_role(role.id)
             await asyncio.sleep(2)
             role = await interaction.guild.fetch_role(role.id)
             fixed_role = interaction.guild.get_role(int(os.environ.get("FIXED_ROLE_ID", 0)))
