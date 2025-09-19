@@ -13,7 +13,6 @@ async def setup(bot: discord.Client):
     )
     async def create_role(interaction: discord.Interaction, name: str, color: str = None):
         await interaction.response.defer(ephemeral=False)
-
         booster_role = interaction.guild.get_role(int(os.environ.get("BOOSTER_ROLE_ID")))
         if booster_role not in interaction.user.roles:
             await interaction.followup.send("🚫 Booster role required.")

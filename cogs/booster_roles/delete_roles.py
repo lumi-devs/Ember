@@ -15,14 +15,11 @@ async def setup(bot: discord.Client):
         await interaction.response.defer(ephemeral=True)
         db, file = load_db()
         
-        # --- Blacklist check ---
         if str(interaction.user.id) in db.get("blacklist", []):
             await interaction.followup.send(
                 "🚫 You are blacklisted and cannot use this command.", ephemeral=True
             )
             return
-
-        # --- Determine target user ---
         target_user = interaction.user
         if user:
             if interaction.user.id not in mod_ids:
