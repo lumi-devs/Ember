@@ -4,7 +4,7 @@ from discord.ext import commands
 
 active_requests = set()
 DRAGME_CHANNEL_ID = 1418501302626816010
-TIMEOUT_DURATION = 20  # seconds
+TIMEOUT_DURATION = 180  # seconds
 
 BLACKLISTED_VOICE_IDS = set()
 if os.environ.get("BLACKLISTED_VOICE_ROLES"):
