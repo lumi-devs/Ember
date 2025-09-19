@@ -46,8 +46,8 @@ async def setup(bot: discord.Client):
 
         # --- Confirmation for own role ---
         if target_user.id == interaction.user.id:
-            delete_btn = discord.ui.Button(label="✅ Yes", style=discord.ButtonStyle.green)
-            cancel_btn = discord.ui.Button(label="❌ No", style=discord.ButtonStyle.red)
+            delete_btn = discord.ui.Button(label="Yes", style=discord.ButtonStyle.green)
+            cancel_btn = discord.ui.Button(label="No", style=discord.ButtonStyle.red)
             view = discord.ui.View(timeout=60)
 
             async def delete_callback(i: discord.Interaction):

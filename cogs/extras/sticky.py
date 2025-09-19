@@ -8,9 +8,6 @@ import logging
 MOD_IDS = list(map(int, os.environ.get("MOD_IDS", "").split(",")))
 logging.basicConfig(level=logging.WARNING)
 
-# ----------------------------
-# Permission check decorator
-# ----------------------------
 def is_mod():
     async def predicate(interaction: discord.Interaction):
         return (
@@ -67,9 +64,6 @@ class StickyManager(commands.Cog):
         db["stickies"] = self.stickies
         save_db(db, file)
 
-    # ----------------------------
-    # Maintain stickies
-    # ----------------------------
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot:
