@@ -28,8 +28,8 @@ class CustomStatusRotator(commands.Cog):
     async def update_status(self):
         next_status = next(self.status_cycle)
         # Set custom status
-        activity = discord.CustomActivity(name=next_status)
-        await self.bot.change_presence(activity=activity)
+        activity = discord.CustomActivity(status=discord.Status.dnd, name=next_status)
+        await self.bot.change_presence(status=activity=activity)
         print(f"✅ Custom status updated to: {next_status}")
 
     @update_status.before_loop

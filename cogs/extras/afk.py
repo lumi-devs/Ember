@@ -68,7 +68,7 @@ class AFK(commands.Cog):
             try:
                 since_dt = datetime.fromisoformat(afk_entry["since"])
                 duration = human_timedelta(since_dt)
-                msg = await message.channel.send(f"👋 Welcome back {message.author.mention}, AFK removed.\nYou had been afk since **{duration}**")
+                msg = await message.channel.send(f"👋 Welcome back {message.author.mention}, AFK removed.\nYou had been afk since **{duration}**.")
                 await msg.delete(delay=10)
             except Exception:
                 pass

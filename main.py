@@ -41,8 +41,6 @@ async def on_ready():
     try:
         guild_obj = discord.Object(id=GUILD_ID)
         synced = await bot.tree.sync()
-    #Fashion shit
-        await bot.change_presence(status=discord.Status.dnd)
         voice_channel = bot.get_channel(int(os.environ.get("VOICE_CHANNEL_ID_ON_START")))
         print(voice_channel)
         voice_client = await voice_channel.connect()
