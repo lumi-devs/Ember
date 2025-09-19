@@ -53,7 +53,7 @@ class ActivityRoles(commands.Cog):
 
         for activity in after.activities:
             if isinstance(activity, discord.CustomActivity):
-                continue  # Ignore custom statuses
+                continue
             if isinstance(activity, discord.Spotify):
                 active_roles.add(spotify_role)
             elif getattr(activity, "name", None) == "YouTube":
