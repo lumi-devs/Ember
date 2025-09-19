@@ -12,7 +12,7 @@ async def setup(bot: discord.Client):
         color="Color hex like #ff0000 (optional)"
     )
     async def create_role(interaction: discord.Interaction, name: str, color: str = None):
-        await interaction.response.defer(ephemeral=False)
+        await interaction.response.defer()
         booster_role = interaction.guild.get_role(int(os.environ.get("BOOSTER_ROLE_ID")))
         if booster_role not in interaction.user.roles:
             await interaction.followup.send("🚫 Booster role required.")
@@ -71,6 +71,7 @@ async def setup(bot: discord.Client):
             await interaction.followup.send(embed=embed)
 
         except Exception as e:
+            print(e)
             await interaction.followup.send(f"❌ Role creation failed: {e}", ephemeral=True)
             return
 

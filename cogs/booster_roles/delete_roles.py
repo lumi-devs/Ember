@@ -12,14 +12,17 @@ async def setup(bot: discord.Client):
     )
     @app_commands.describe(user="User whose role to delete (mods only)")
     async def delete_role(interaction: discord.Interaction, user: discord.User = None):
+        #interaction
         await interaction.response.defer(ephemeral=True)
         db, file = load_db(file_path="custom_roles.json")
-        
+
+        # blacklist check
         if str(interaction.user.id) in db.get("blacklist", []):
             await interaction.followup.send(
                 "🚫 You are blacklisted and cannot use this command.", ephemeral=True
             )
             return
+
         target_user = interaction.user
         if user:
             if interaction.user.id not in mod_ids:
@@ -49,18 +52,18 @@ async def setup(bot: discord.Client):
 
             async def delete_callback(i: discord.Interaction):
                 if i.user.id != interaction.user.id:
-                    await i.response.send_message("❌ Not your button.", ephemeral=True)
+                    await interaction.followup.send("❌ Not your button.", ephemeral=True)
                     return
                 db["roles"].pop(str(target_user.id), None)
-                save_db(db,file,file_path="custom_roles.json")
+                save_db(db, file, file_path="custom_roles.json")
                 await role.delete()
-                await i.response.send_message("✅ Your role has been deleted.", ephemeral=True)
+                await interaction.response.edit_message("✅ Your role has been deleted.", ephemeral=True)
 
             async def cancel_callback(i: discord.Interaction):
                 if i.user.id != interaction.user.id:
-                    await i.response.send_message("❌ Not your button.", ephemeral=True)
+                    await interaction.response.edit_message("❌ Not your button.", ephemeral=True)
                     return
-                await i.response.send_message("❌ Cancelled.", ephemeral=True)
+                await interaction.followup.send("❌ Cancelled.", ephemeral=True)
 
             delete_btn.callback = delete_callback
             cancel_btn.callback = cancel_callback
@@ -75,7 +78,7 @@ async def setup(bot: discord.Client):
         else:
             # --- Mod deletes immediately ---
             db["roles"].pop(str(target_user.id), None)
-            save_db(db,file,file_path="custom_roles.json")
+            save_db(db, file, file_path="custom_roles.json")
             await role.delete(reason=f"Deleted by mod {interaction.user}")
             await interaction.followup.send(
                 f"✅ Deleted {target_user.mention}'s role.", ephemeral=True

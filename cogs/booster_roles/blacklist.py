@@ -11,7 +11,7 @@ async def setup(bot: discord.Client):
         user="User to add/remove (ignored for list)"
     )
     async def blacklist(interaction: discord.Interaction, action: str, user: discord.User = None):
-        await interaction.response.defer(ephemeral=False)
+        await interaction.response.defer()
 
         # MOD_IDS stored as comma-separated string in .env, e.g. "123,456,789"
         mod_ids = [int(x) for x in os.environ.get("MOD_IDS", "").split(",") if x.strip()]

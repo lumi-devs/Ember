@@ -24,7 +24,7 @@ async def setup(bot: discord.Client):
     # --- /update name ---
     @update_group.command(name="name", description="Update your role name")
     async def update_name(interaction: discord.Interaction, new_name: str):
-        await interaction.response.defer(ephemeral=False)
+        await interaction.response.defer()
         db, file, result = get_role_data(interaction)
         if not db:
             await interaction.followup.send(result, ephemeral=True)
@@ -38,7 +38,7 @@ async def setup(bot: discord.Client):
     # --- /update color (primary) ---
     @update_group.command(name="color", description="Update your role primary color")
     async def update_color(interaction: discord.Interaction, color: str):
-        await interaction.response.defer(ephemeral=False)
+        await interaction.response.defer()
         db, file, result = get_role_data(interaction)
         if not db:
             await interaction.followup.send(result, ephemeral=True)
@@ -60,7 +60,7 @@ async def setup(bot: discord.Client):
     # --- /update secondary ---
     @update_group.command(name="secondary", description="Update or remove secondary color")
     async def update_secondary(interaction: discord.Interaction, secondary: str = ''):
-        await interaction.response.defer(ephemeral=False)
+        await interaction.response.defer()
         db, file, result = get_role_data(interaction)
         if not db:
             await interaction.followup.send(result, ephemeral=True)
@@ -132,7 +132,7 @@ async def setup(bot: discord.Client):
     # --- /update icon ---
     @update_group.command(name="icon", description="Update or remove role icon")
     async def update_icon(interaction: discord.Interaction, icon: str = None):
-        await interaction.response.defer(ephemeral=False)
+        await interaction.response.defer()
         db, file, result = get_role_data(interaction)
         if not db:
             await interaction.followup.send(result, ephemeral=True)

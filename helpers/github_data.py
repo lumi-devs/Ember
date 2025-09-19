@@ -6,7 +6,6 @@ auth = Auth.Token(os.environ.get("GITHUB_TOKEN"))
 g = Github(auth=auth)
 repo = g.get_repo(os.environ.get("REPO_NAME"))
 
-FILE_PATH = os.environ.get("FILE_PATH")
 BRANCH = os.environ.get("BRANCH")
 
 
@@ -15,7 +14,6 @@ def load_db(file_path: str = None):
     Always return latest file + sha from GitHub.
     """
     try:
-        file_path = file_path if file_path else FILE_PATH
         file = repo.get_contents(file_path, ref=BRANCH)
         data = json.loads(file.decoded_content.decode())
         return data, file
@@ -25,7 +23,6 @@ def load_db(file_path: str = None):
 
 def save_db(data, file=None, file_path: str = None):
     new_content = json.dumps(data, indent=2)
-    file_path = file_path if file_path else FILE_PATH
 
     try:
         latest = repo.get_contents(file_path, ref=BRANCH)
@@ -37,6 +34,7 @@ def save_db(data, file=None, file_path: str = None):
             sha=latest.sha,
             branch=BRANCH,
         )
+        print("updated "+ file_path)
     except Exception:
         # File does not exist → create
         repo.create_file(
@@ -45,3 +43,4 @@ def save_db(data, file=None, file_path: str = None):
             content=new_content,
             branch=BRANCH,
         )
+        print("created "+file_path)
