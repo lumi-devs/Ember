@@ -81,7 +81,7 @@ class AFK(commands.Cog):
                         description=f"**Reason:** {afk_entry['reason']}\n**Since:** {duration} ago",
                         color=discord.Color.orange()
                     )
-                    await msg=message.channel.send(embed=embed)
+                    msg=await message.channel.send(embed=embed)
                     await msg.delete(delay=60)
         await self.bot.process_commands(message)
 
