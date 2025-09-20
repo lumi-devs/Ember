@@ -18,6 +18,50 @@ def is_mod():
     return app_commands.check(predicate)
 
 
+class StickyEmbedModal(discord.ui.Modal, title="Create Sticky Embed"):
+    title_input = discord.ui.TextInput(label="Title", required=False, max_length=256)
+    description_input = discord.ui.TextInput(label="Description", style=discord.TextStyle.paragraph, required=True, max_length=2000)
+    image_input = discord.ui.TextInput(label="Image URL", required=False)
+    author_name_input = discord.ui.TextInput(label="Author Name", required=False)
+    author_image_input = discord.ui.TextInput(label="Author Image URL", required=False)
+    color_input = discord.ui.TextInput(label="Embed Color (Hex, e.g., #FF0000)", required=False, max_length=7)
+    footer_input = discord.ui.TextInput(label="Footer", required=False, max_length=2048)
+
+    def __init__(self, sticky_manager: "StickyManager", channel: discord.TextChannel):
+        super().__init__()
+        self.sticky_manager = sticky_manager
+        self.channel = channel
+
+    async def on_submit(self, interaction: discord.Interaction):
+        color = 0x747c8b  # default
+        if self.color_input.value:
+            try:
+                color = int(self.color_input.value.lstrip("#"), 16)
+            except ValueError:
+                await interaction.response.send_message("Invalid hex color! Using default.", ephemeral=True)
+
+        embed = discord.Embed(
+            title=self.title_input.value or None,
+            description=self.description_input.value,
+            color=color,
+        )
+        if self.image_input.value:
+            embed.set_image(url=self.image_input.value)
+        if self.author_name_input.value:
+            embed.set_author(name=self.author_name_input.value, icon_url=self.author_image_input.value or None)
+        if self.footer_input.value:
+            embed.set_footer(text=self.footer_input.value)
+
+        await self.sticky_manager.set_sticky(
+            self.channel,
+            self.description_input.value,
+            embed_mode=True,
+            title=self.title_input.value or None,
+            footer=self.footer_input.value
+        )
+        await interaction.response.send_message("✅ Sticky embed set!", ephemeral=True)
+
+
 class StickyManager(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -130,17 +174,11 @@ class StickyManager(commands.Cog):
         await self.set_sticky(interaction.channel, content, embed_mode=False)
         await interaction.response.send_message("✅ Sticky message set!", ephemeral=True)
 
-    @sticky.command(name="set_embed", description="Set a sticky message (embed)")
+    @sticky.command(name="set_embed", description="Set a sticky message (embed) via modal")
     @is_mod()
-    async def sticky_set_embed(
-        self,
-        interaction: discord.Interaction,
-        content: str,
-        title: str | None = None,
-        footer: str | None = None,
-    ):
-        await self.set_sticky(interaction.channel, content, embed_mode=True, title=title, footer=footer)
-        await interaction.response.send_message("✅ Sticky embed set!", ephemeral=True)
+    async def sticky_set_embed(self, interaction: discord.Interaction):
+        """Open modal for embed creation"""
+        await interaction.response.send_modal(StickyEmbedModal(self, interaction.channel))
 
     @sticky.command(name="remove", description="Remove sticky in this channel")
     @is_mod()
