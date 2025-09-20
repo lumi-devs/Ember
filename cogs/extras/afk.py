@@ -3,11 +3,13 @@ from discord.ext import commands
 from helpers.github_data import load_db, save_db
 from datetime import datetime, timezone
 
+AFK_SET_COLOR = discord.Color.orange()        # Orangish
+AFK_REMOVED_COLOR = discord.Color.gold()      # Yellowish
+AFK_MENTION_COLOR = discord.Color.from_rgb(255, 200, 0)  # Golden tone
 
 
 def afk_strip(name: str) -> str:
     if name.startswith("[AFK]"):
-        # Remove prefix and any extra space
         return name[len("[AFK]"):].lstrip()
     return name
 
@@ -49,13 +51,21 @@ class AFK(commands.Cog):
                     await user.edit(nick=f"[AFK] {user.display_name}")
             except discord.Forbidden:
                 pass
-        msg = await ctx.send(f"✅ {user.mention} You are now AFK: **{reason}**")
+        
+        embed = discord.Embed(
+            title="✅ AFK Set",
+            description=f"{user.mention}, you are now AFK: **{reason}**",
+            color=AFK_SET_COLOR
+        )
+        msg = await ctx.send(embed=embed)
         await msg.delete(delay=10)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
+
+        # Remove AFK if user sends a message
         if str(message.author.id) in self.afk:
             afk_entry = self.afk.pop(str(message.author.id))
             save_db(self.afk, self.afk_file, "afk.json")
@@ -68,10 +78,17 @@ class AFK(commands.Cog):
             try:
                 since_dt = datetime.fromisoformat(afk_entry["since"])
                 duration = human_timedelta(since_dt)
-                msg = await message.channel.send(f"👋 Welcome back {message.author.mention}, AFK removed.\nYou had been afk since **{duration}**.")
+                embed = discord.Embed(
+                    title="👋 Welcome Back!",
+                    description=f"{message.author.mention}, AFK removed.\nYou had been AFK for **{duration}**.",
+                    color=AFK_REMOVED_COLOR
+                )
+                msg = await message.channel.send(embed=embed)
                 await msg.delete(delay=10)
             except Exception:
                 pass
+
+        # Notify if mentioned someone who is AFK
         if message.mentions:
             for u in message.mentions:
                 if str(u.id) in self.afk:
@@ -79,12 +96,13 @@ class AFK(commands.Cog):
                     since_dt = datetime.fromisoformat(afk_entry["since"])
                     duration = human_timedelta(since_dt)
                     embed = discord.Embed(
-                        title = afk_strip(u.display_name)+" is AFK 💤",
+                        title=f"{afk_strip(u.display_name)} is AFK 💤",
                         description=f"**Reason:** {afk_entry['reason']}\n**Since:** {duration} ago",
-                        color=discord.Color.orange()
+                        color=AFK_MENTION_COLOR
                     )
-                    msg=await message.channel.send(embed=embed)
+                    msg = await message.channel.send(embed=embed)
                     await msg.delete(delay=120)
+
         await self.bot.process_commands(message)
 
 async def setup(bot: commands.Bot):
