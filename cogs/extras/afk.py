@@ -44,7 +44,7 @@ class AFK(commands.Cog):
         await ctx.message.delete()
         since = datetime.now(timezone.utc).isoformat()
         self.afk[str(user.id)] = {"reason": reason, "since": since}
-        save_db(self.afk, self.afk_file, "afk.json")
+        save_db(self.afk, "afk.json")
         if ctx.guild:
             try:
                 if not user.display_name.startswith("[AFK]"):
