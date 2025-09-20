@@ -8,7 +8,15 @@ from flask import Flask
 import discord
 from discord.ext import commands
 from discord import Activity, ActivityType
-from pathlib import Path
+import logging
+
+# ------------------ LOGGING ------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger("BotLogger")
 
 # ------------------ FLASK ------------------
 app = Flask(__name__)
@@ -18,6 +26,7 @@ def home():
     return "Flask server is running 🚀"
 
 def run_flask():
+    logger.info("Starting Flask server on 0.0.0.0:5000")
     app.run(host="0.0.0.0", port=5000)
 
 
@@ -36,26 +45,28 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 @bot.event
 async def on_ready():
-    print(f"✅ Logged in as {bot.user}")
+    logger.info(f"✅ Logged in as {bot.user}")
 
     try:
         guild_obj = discord.Object(id=GUILD_ID)
         synced = await bot.tree.sync()
+        logger.info(f"🔗 Synced {len(synced)} slash commands to guild {GUILD_ID}")
+
+        logger.info("📜 Registered app commands:")
+        for cmd in bot.tree.walk_commands():
+            logger.info(f"- {cmd.qualified_name}")
+
         voice_channel = bot.get_channel(int(os.environ.get("VOICE_CHANNEL_ID_ON_START")))
-        print(voice_channel)
+        logger.info(f"Connecting to voice channel: {voice_channel}")
         voice_client = await voice_channel.connect()
         await voice_client.guild.change_voice_state(
-                    channel=voice_channel, 
-                    self_mute=True, 
-                    self_deaf=True
+            channel=voice_channel, 
+            self_mute=True, 
+            self_deaf=True
         )
-
-        print(f"🔗 Synced {len(synced)} slash commands to guild {GUILD_ID}")
-        print("📜 Registered app commands:")
-        for cmd in bot.tree.walk_commands():
-            print(f"- {cmd.qualified_name}")
+        logger.info(f"✅ Connected to voice channel {voice_channel.name}")
     except Exception as e:
-        print(f"❌ Error syncing commands: {e}")
+        logger.error(f"❌ Error syncing commands or connecting voice: {e}")
 
 
 # ------------------ LOAD COGS ------------------
@@ -67,8 +78,9 @@ async def load_cogs():
         module = ".".join(py_file.with_suffix("").parts)
         try:
             await bot.load_extension(module)
+            logger.info(f"✅ Loaded cog: {module}")
         except Exception as e:
-            print(f"Failed to load {module}: {e}")
+            logger.error(f"❌ Failed to load {module}: {e}")
 
 
 # ------------------ MAIN ------------------
