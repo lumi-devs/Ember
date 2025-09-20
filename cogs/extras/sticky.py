@@ -85,41 +85,55 @@ class StickyManager(commands.Cog):
         db["stickies"] = self.stickies
         save_db(db, file_path="sticky.json")
 
-    async def _post_sticky(self, channel: discord.TextChannel, content: str, embed_mode=False, title=None, footer=None):
-        """Send a sticky message to channel"""
-        if embed_mode:
-            embed = discord.Embed(description=content, color=discord.Color(0x747c8b))
-            if title:
-                embed.title = title
-            if footer:
-                embed.set_footer(text=footer)
-            return await channel.send(embed=embed)
-        else:
-            return await channel.send(content)
+    async def _post_sticky(self, channel: discord.TextChannel, content: str, embed_mode=False, title=None, footer=None, color=None, author_icon=None):
+     if embed_mode:
+        embed_color = color or 0x747c8b  # default
+        embed = discord.Embed(description=content, color=discord.Color(embed_color))
+        if title:
+            embed.title = title
+        if footer:
+            embed.set_footer(text=footer)
+        if author_icon:
+            embed.set_author(icon_url=author_icon)
+        return await channel.send(embed=embed)
+     else:
+        return await channel.send(content)
 
-    async def set_sticky(self, channel: discord.TextChannel, content: str, embed_mode=False, title=None, footer=None):
-        cid = str(channel.id)
 
-        # delete old sticky if exists
-        if cid in self.stickies:
-            try:
-                prev = await channel.fetch_message(self.stickies[cid]["message_id"])
-                await prev.delete()
-            except discord.NotFound:
-                pass
+    async def set_sticky(self, channel: discord.TextChannel, content: str, embed_mode=False, title=None, footer=None, color=None, author_icon=None):
+     cid = str(channel.id)
 
-        msg = await self._post_sticky(channel, content, embed_mode, title, footer)
+    # delete old sticky if exists
+     if cid in self.stickies:
+        try:
+            prev = await channel.fetch_message(self.stickies[cid]["message_id"])
+            await prev.delete()
+        except discord.NotFound:
+            pass
 
-        # store
-        self.stickies[cid] = {
-            "message_id": msg.id,
-            "content": content,
-            "embed": embed_mode,
-            "title": title,
-            "footer": footer,
-            "active": True,
-        }
-        self.save()
+     await self.sticky_manager.set_sticky(
+    self.channel,
+    self.description_input.value,
+    embed_mode=True,
+    title=self.title_input.value or None,
+    color=color,
+    author_icon=self.author_image_input.value or None
+     )
+
+
+    # store
+    self.stickies[cid] = {
+        "message_id": msg.id,
+        "content": content,
+        "embed": embed_mode,
+        "title": title,
+        "footer": footer,
+        "color": color,
+        "author_icon": author_icon,
+        "active": True,
+    }
+    self.save()
+
 
     async def repost_sticky(self, channel: discord.TextChannel, info: dict):
         """Delete old sticky and re-send"""
