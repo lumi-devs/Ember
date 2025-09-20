@@ -40,7 +40,7 @@ async def setup(bot: discord.Client):
                 await interaction.followup.send("⚠️ User already blacklisted.", ephemeral=True)
                 return
             db["blacklist"].append(str(user.id))
-            save_db(db,file,file_path="custom_roles.json")
+            save_db(db,file_path="custom_roles.json")
             await interaction.followup.send(f"✅ {user.mention} has been blacklisted.", ephemeral=True)
 
         elif action == "remove":
@@ -48,7 +48,7 @@ async def setup(bot: discord.Client):
                 await interaction.followup.send("⚠️ User not in blacklist.", ephemeral=True)
                 return
             db["blacklist"].remove(str(user.id))
-            save_db(db,file,file_path="custom_roles.json")
+            save_db(db,file_path="custom_roles.json")
             await interaction.followup.send(f"✅ {user.mention} has been removed from blacklist.", ephemeral=True)
         else:
             await interaction.followup.send("❌ Invalid action. Use add, remove, or list.", ephemeral=True)

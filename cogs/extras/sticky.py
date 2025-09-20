@@ -29,7 +29,7 @@ class StickyManager(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        db, _ = load_db()
+        db, _ = load_db("sticky.json")
         self.stickies = db.get("stickies", {})
         print(f"[StickyManager] Loaded stickies for {len(self.stickies)} channels.")
 
@@ -37,9 +37,9 @@ class StickyManager(commands.Cog):
     # Helpers
     # ----------------------------
     def save(self):
-        db, file = load_db()
+        db, file = load_db("sticky.json")
         db["stickies"] = self.stickies
-        save_db(db, file, file_path="sticky.json")
+        save_db(db, file_path="sticky.json")
 
     async def _post_sticky(self, channel: discord.TextChannel, content: str, embed_mode=False, title=None, footer=None):
         """Send a sticky message to channel"""

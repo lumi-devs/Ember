@@ -86,7 +86,7 @@ async def setup(bot: discord.Client):
         }
 
         try:
-            save_db(db,file,file_path="custom_roles.json")
+            save_db(db,file_path="custom_roles.json")
             print("saved to db")
         except Exception as e:
            print(f"Failed to save db: {e}")

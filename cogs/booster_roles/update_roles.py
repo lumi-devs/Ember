@@ -32,7 +32,7 @@ async def setup(bot: discord.Client):
         role, role_data = result
         await role.edit(name=new_name)
         role_data["name"] = new_name
-        save_db(db,file,file_path="custom_roles.json")
+        save_db(db,file_path="custom_roles.json")
         await interaction.followup.send(f"✅ Role name updated to **{new_name}**!")
 
     # --- /update color (primary) ---
@@ -52,7 +52,7 @@ async def setup(bot: discord.Client):
                 role_data["color_type"] = "gradient"
             else:
                 role_data["color_type"] = "normal"
-            save_db(db,file,file_path="custom_roles.json")
+            save_db(db,file_path="custom_roles.json")
             await interaction.followup.send(f"✅ Primary color updated to `{color}`!")
         except Exception as e:
             await interaction.followup.send(f"❌ Invalid color: {e}", ephemeral=True)
@@ -88,7 +88,7 @@ async def setup(bot: discord.Client):
                 # NOTE: Discord roles don’t support gradients natively, so we just store it in DB
                 await role.edit(colour=primary_obj, secondary_colour=secondary_obj)
 
-                save_db(db,file,file_path="custom_roles.json")
+                save_db(db,file_path="custom_roles.json")
                 await interaction.followup.send(
                     f"✅ Secondary color set to `{secondary}` (gradient stored in DB)."
                 )
@@ -103,7 +103,7 @@ async def setup(bot: discord.Client):
 
                 await role.edit(colour=primary_obj)  # reset to primary only
 
-                save_db(db,file,file_path="custom_roles.json")
+                save_db(db,file_path="custom_roles.json")
                 await interaction.followup.send("ℹ️ Secondary color removed, role is now primary only.")
             else:
                 await interaction.followup.send("ℹ️ No secondary color set.", ephemeral=True)
@@ -145,7 +145,7 @@ async def setup(bot: discord.Client):
                 icon_type, icon_value = await set_role_icon(role, icon)
                 role_data["icon_type"] = icon_type
                 role_data["icon_value"] = icon_value
-                save_db(db,file,file_path="custom_roles.json")
+                save_db(db,file_path="custom_roles.json")
                 await interaction.followup.send("✅ Icon updated!")
             except Exception as e:
                 await interaction.followup.send(f"❌ Invalid icon: {e}", ephemeral=True)
@@ -154,7 +154,7 @@ async def setup(bot: discord.Client):
                 await role.edit(display_icon=None) 
                 role_data.pop("icon_type", None) 
                 role_data.pop("icon_value", None) 
-                save_db(db,file,file_path="custom_roles.json") 
+                save_db(db,file_path="custom_roles.json") 
                 await interaction.followup.send("ℹ️ Icon removed.") 
             else: 
                 await interaction.followup.send("ℹ️ No icon set.", ephemeral=True)
