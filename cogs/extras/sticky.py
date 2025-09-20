@@ -42,24 +42,17 @@ class StickyEmbedModal(discord.ui.Modal, title="Create Sticky Embed"):
                     "Invalid hex color! Using default.", ephemeral=True
                 )
 
-        embed = discord.Embed(
-            title=self.title_input.value or None,
-            description=self.description_input.value,
-            color=color,
-        )
-        if self.image_input.value:
-            embed.set_image(url=self.image_input.value)
-        if self.author_image_input.value:
-            embed.set_author(icon_url=self.author_image_input.value)
-
         await self.sticky_manager.set_sticky(
             self.channel,
             self.description_input.value,
             embed_mode=True,
             title=self.title_input.value or None,
+            color=color,
+            author_icon=self.author_image_input.value or None,
+            image_url=self.image_input.value or None
         )
-        await interaction.response.send_message("✅ Sticky embed set!", ephemeral=True)
 
+        await interaction.response.send_message("✅ Sticky embed set!", ephemeral=True)
 
 
 class StickyManager(commands.Cog):
@@ -85,55 +78,51 @@ class StickyManager(commands.Cog):
         db["stickies"] = self.stickies
         save_db(db, file_path="sticky.json")
 
-    async def _post_sticky(self, channel: discord.TextChannel, content: str, embed_mode=False, title=None, footer=None, color=None, author_icon=None):
-     if embed_mode:
-        embed_color = color or 0x747c8b  # default
-        embed = discord.Embed(description=content, color=discord.Color(embed_color))
-        if title:
-            embed.title = title
-        if footer:
-            embed.set_footer(text=footer)
-        if author_icon:
-            embed.set_author(icon_url=author_icon)
-        return await channel.send(embed=embed)
-     else:
-        return await channel.send(content)
+    async def _post_sticky(self, channel: discord.TextChannel, content: str, embed_mode=False,
+                           title=None, footer=None, color=None, author_icon=None, image_url=None):
+        if embed_mode:
+            embed_color = color or 0x747c8b
+            embed = discord.Embed(description=content, color=discord.Color(embed_color))
+            if title:
+                embed.title = title
+            if footer:
+                embed.set_footer(text=footer)
+            if author_icon:
+                embed.set_author(icon_url=author_icon)
+            if image_url:
+                embed.set_image(url=image_url)
+            return await channel.send(embed=embed)
+        else:
+            return await channel.send(content)
 
+    async def set_sticky(self, channel: discord.TextChannel, content: str, embed_mode=False,
+                         title=None, footer=None, color=None, author_icon=None, image_url=None):
+        cid = str(channel.id)
 
-    async def set_sticky(self, channel: discord.TextChannel, content: str, embed_mode=False, title=None, footer=None, color=None, author_icon=None):
-     cid = str(channel.id)
+        # delete old sticky if exists
+        if cid in self.stickies:
+            try:
+                prev = await channel.fetch_message(self.stickies[cid]["message_id"])
+                await prev.delete()
+            except discord.NotFound:
+                pass
 
-    # delete old sticky if exists
-     if cid in self.stickies:
-        try:
-            prev = await channel.fetch_message(self.stickies[cid]["message_id"])
-            await prev.delete()
-        except discord.NotFound:
-            pass
+        # send the sticky
+        msg = await self._post_sticky(channel, content, embed_mode, title, footer, color, author_icon, image_url)
 
-     await self.sticky_manager.set_sticky(
-    self.channel,
-    self.description_input.value,
-    embed_mode=True,
-    title=self.title_input.value or None,
-    color=color,
-    author_icon=self.author_image_input.value or None
-     )
-
-
-    # store
-    self.stickies[cid] = {
-        "message_id": msg.id,
-        "content": content,
-        "embed": embed_mode,
-        "title": title,
-        "footer": footer,
-        "color": color,
-        "author_icon": author_icon,
-        "active": True,
-    }
-    self.save()
-
+        # store
+        self.stickies[cid] = {
+            "message_id": msg.id,
+            "content": content,
+            "embed": embed_mode,
+            "title": title,
+            "footer": footer,
+            "color": color,
+            "author_icon": author_icon,
+            "image_url": image_url,
+            "active": True,
+        }
+        self.save()
 
     async def repost_sticky(self, channel: discord.TextChannel, info: dict):
         """Delete old sticky and re-send"""
@@ -144,7 +133,16 @@ class StickyManager(commands.Cog):
             except discord.NotFound:
                 pass
 
-        msg = await self._post_sticky(channel, info["content"], info.get("embed"), info.get("title"), info.get("footer"))
+        msg = await self._post_sticky(
+            channel,
+            info["content"],
+            info.get("embed"),
+            info.get("title"),
+            info.get("footer"),
+            info.get("color"),
+            info.get("author_icon"),
+            info.get("image_url")
+        )
         self.stickies[str(channel.id)]["message_id"] = msg.id
         self.save()
 
