@@ -58,7 +58,7 @@ class AFK(commands.Cog):
             color=AFK_SET_COLOR
         )
         msg = await ctx.send(embed=embed)
-        await msg.delete(delay=10)
+        await msg.delete(delay=20)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -84,7 +84,7 @@ class AFK(commands.Cog):
                     color=AFK_REMOVED_COLOR
                 )
                 msg = await message.channel.send(embed=embed)
-                await msg.delete(delay=10)
+                await msg.delete(delay=20)
             except Exception:
                 pass
 
@@ -101,7 +101,7 @@ class AFK(commands.Cog):
                         color=AFK_MENTION_COLOR
                     )
                     msg = await message.channel.send(embed=embed)
-                    await msg.delete(delay=120)
+                    await msg.delete(delay=600)
 
         await self.bot.process_commands(message)
 
