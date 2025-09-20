@@ -20,12 +20,12 @@ def is_mod():
 
 class StickyEmbedModal(discord.ui.Modal, title="Create Sticky Embed"):
     title_input = discord.ui.TextInput(label="Title", required=False, max_length=256)
-    description_input = discord.ui.TextInput(label="Description", style=discord.TextStyle.paragraph, required=True, max_length=2000)
+    description_input = discord.ui.TextInput(
+        label="Description", style=discord.TextStyle.paragraph, required=True, max_length=2000
+    )
     image_input = discord.ui.TextInput(label="Image URL", required=False)
-    author_name_input = discord.ui.TextInput(label="Author Name", required=False)
     author_image_input = discord.ui.TextInput(label="Author Image URL", required=False)
     color_input = discord.ui.TextInput(label="Embed Color (Hex, e.g., #FF0000)", required=False, max_length=7)
-    footer_input = discord.ui.TextInput(label="Footer", required=False, max_length=2048)
 
     def __init__(self, sticky_manager: "StickyManager", channel: discord.TextChannel):
         super().__init__()
@@ -38,7 +38,9 @@ class StickyEmbedModal(discord.ui.Modal, title="Create Sticky Embed"):
             try:
                 color = int(self.color_input.value.lstrip("#"), 16)
             except ValueError:
-                await interaction.response.send_message("Invalid hex color! Using default.", ephemeral=True)
+                await interaction.response.send_message(
+                    "Invalid hex color! Using default.", ephemeral=True
+                )
 
         embed = discord.Embed(
             title=self.title_input.value or None,
@@ -47,19 +49,17 @@ class StickyEmbedModal(discord.ui.Modal, title="Create Sticky Embed"):
         )
         if self.image_input.value:
             embed.set_image(url=self.image_input.value)
-        if self.author_name_input.value:
-            embed.set_author(name=self.author_name_input.value, icon_url=self.author_image_input.value or None)
-        if self.footer_input.value:
-            embed.set_footer(text=self.footer_input.value)
+        if self.author_image_input.value:
+            embed.set_author(icon_url=self.author_image_input.value)
 
         await self.sticky_manager.set_sticky(
             self.channel,
             self.description_input.value,
             embed_mode=True,
             title=self.title_input.value or None,
-            footer=self.footer_input.value
         )
         await interaction.response.send_message("✅ Sticky embed set!", ephemeral=True)
+
 
 
 class StickyManager(commands.Cog):
