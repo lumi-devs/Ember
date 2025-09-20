@@ -68,7 +68,7 @@ class AFK(commands.Cog):
         # Remove AFK if user sends a message
         if str(message.author.id) in self.afk:
             afk_entry = self.afk.pop(str(message.author.id))
-            save_db(self.afk, self.afk_file, "afk.json")
+            save_db(self.afk, self.afk_file)
             if message.guild and message.author.display_name.startswith("[AFK]"):
                 new = message.author.display_name[len("[AFK] "):]
                 try:
