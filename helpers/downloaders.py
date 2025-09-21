@@ -96,7 +96,7 @@ reddit = praw.Reddit(
 )
 
 
-def download_reddit_praw(url: str):
+def download_reddit(url: str):
     temp_dir = DOWNLOADS_DIR / str(uuid.uuid4())
     temp_dir.mkdir(parents=True, exist_ok=True)
     files = []
