@@ -96,24 +96,39 @@ reddit = praw.Reddit(
 )
 
 
-def download_reddit(url: str):
+def download_reddit_praw(url: str):
     temp_dir = DOWNLOADS_DIR / str(uuid.uuid4())
     temp_dir.mkdir(parents=True, exist_ok=True)
+    files = []
+    caption = ""
+
+    print(f"🔹 Starting download for Reddit URL: {url}")
     try:
         submission = reddit.submission(url=url)
-        files = []
-        if submission.url.endswith((".jpg", ".png", ".gif", ".mp4")):
-            filename = temp_dir / submission.url.split("/")[-1].split("?")[0]
-            resp = requests.get(submission.url, headers={"User-Agent": REDDIT_USER_AGENT})
+        print(f"🔹 Fetched submission: {submission.title} ({submission.id})")
+
+        caption = f"{submission.title}\n\n{submission.selftext}".strip()
+        print(f"🔹 Caption length: {len(caption)} chars")
+
+        # Detect media type
+        media_url = submission.url
+        print(f"🔹 Submission URL: {media_url}")
+
+        if media_url.endswith((".jpg", ".png", ".gif", ".mp4")):
+            filename = temp_dir / media_url.split("/")[-1].split("?")[0]
+            print(f"🔹 Downloading media to: {filename}")
+
+            resp = requests.get(media_url, headers={"User-Agent": REDDIT_USER_AGENT})
+            resp.raise_for_status()
             with open(filename, "wb") as f:
                 f.write(resp.content)
             files.append(str(filename))
+            print(f"✅ Downloaded {len(files)} file(s)")
+        else:
+            print("⚠️ Media type not supported or no media found")
 
-        # Caption = title + selftext
-        caption = f"{submission.title}\n\n{submission.selftext}".strip()
-        return files, caption
     except Exception as e:
-        print("❌ Failed to fetch Reddit post:", e)
-        return [], ""
+        print(f"❌ Failed to fetch Reddit post: {e}")
 
-
+    print(f"🔹 Returning {len(files)} files, caption length {len(caption)}")
+    return files, caption
