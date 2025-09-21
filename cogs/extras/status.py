@@ -16,7 +16,8 @@ class CustomStatusRotator(commands.Cog):
             "Hannan the fiddler",
             "LEMME CATCH THE CATS!!",
             "Mother HONEY??",
-            "Watching Morax's Feet Pics"
+            "Watching Morax's Feet Pics",
+            
         ]
         self.status_cycle = itertools.cycle(self.statuses)
         self.update_status.start()

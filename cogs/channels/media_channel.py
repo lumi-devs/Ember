@@ -1,14 +1,14 @@
 import discord
 from discord.ext import commands
 
-WATCH_CHANNEL_ID = 1417923188083654916  # Replace with your channel ID
+WATCH_CHANNEL_IDS = [1393171137017413712]  # Replace with your channel ID
 
 async def setup(bot: commands.Bot):    
     @bot.event
     async def on_message(message: discord.Message):
         if message.author.bot:
             return
-        if message.channel.id != WATCH_CHANNEL_ID:
+        if message.channel.id not in WATCH_CHANNEL_IDS:
             return
 
         if isinstance(message.channel, discord.Thread):
