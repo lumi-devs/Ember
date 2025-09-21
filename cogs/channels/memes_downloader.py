@@ -118,7 +118,10 @@ class MediaFetcher(commands.Cog):
             for f in files:
                 f = ensure_str(f)
                 if Path(f).exists():
-                    os.remove(f)
+                    try:
+                        os.remove(f)
+                    except:
+                        pass
             return
 
         # Prepare Discord files
@@ -155,7 +158,10 @@ class MediaFetcher(commands.Cog):
             
         # Clean up files
         for f in files:
-            os.remove(ensure_str(f))
+            try:
+                os.remove(ensure_str(f))
+            except:
+                pass
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(MediaFetcher(bot))

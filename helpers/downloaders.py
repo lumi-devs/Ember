@@ -245,5 +245,5 @@ def download_reddit(url: str) -> Tuple[List[str], str, str]:
 
     except Exception as e:
         print(f"❌ Failed to fetch Reddit post: {e}")
-
+    print(files)
     return files, title, caption
