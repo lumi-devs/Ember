@@ -1,0 +1,93 @@
+import discord
+from discord.ext import commands
+import re
+import os
+import asyncio
+from helpers.downloaders import download_youtube, download_instagram, download_reddit
+import shutil
+
+MAX_FILE_SIZE = 8 * 1024 * 1024  # 8MB
+TARGET_CHANNEL_ID = 1393171137017413712  # Replace with your channel ID
+
+class MediaFetcher(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        downloads_path = "downloads"
+
+        # Delete the folder if it exists
+        if os.path.exists(downloads_path):
+            shutil.rmtree(downloads_path)
+
+        # Recreate the folder
+        os.makedirs(downloads_path, exist_ok=True)
+        print("✅ MediaFetcher cog initialized (downloads folder cleared)")
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        if message.channel.id != TARGET_CHANNEL_ID or message.author.bot:
+            return
+
+        urls = self.extract_urls(message.content)
+        if not urls:
+            return
+
+        for url in urls:
+            await self.process_url(url, message.channel, message)
+
+    def extract_urls(self, text):
+        pattern = r"(https?://(?:www\.)?(?:youtube\.com/watch\?v=[\w-]+|youtu\.be/[\w-]+|youtube\.com/shorts/[\w-]+|instagram\.com/(?:p|reel)/[\w-]+/?|reddit\.com/r/[\w-]+/comments/[\w-]+))"
+        return re.findall(pattern, text)
+
+    async def process_url(self, url, channel, message):
+        msg_og = await channel.send(f"⏳ Fetching content from {url}...")
+
+        loop = asyncio.get_event_loop()
+        try:
+            if "youtube.com" in url or "youtu.be" in url:
+                filepath = await loop.run_in_executor(None, download_youtube, url)
+                caption = None
+            elif "instagram.com" in url:
+                filepath = await loop.run_in_executor(None, download_instagram, url)
+                caption = None
+            elif "reddit.com" in url:
+                filepath, caption = await loop.run_in_executor(None, download_reddit, url)
+            else:
+                await channel.send("❌ Unsupported URL.")
+                return
+        except Exception as e:
+            await channel.send(f"❌ Failed to download: {e}")
+            await msg_og.delete()
+            return
+        await msg_og.delete()
+
+        if not filepath:
+            await channel.send("❌ Could not retrieve media.")
+            return
+
+        files_to_send = []
+        if isinstance(filepath, list):
+            for f in filepath:
+                if os.path.exists(f) and os.path.getsize(f) <= MAX_FILE_SIZE:
+                    files_to_send.append(discord.File(f))
+        else:
+            if os.path.exists(filepath) and os.path.getsize(filepath) <= MAX_FILE_SIZE:
+                files_to_send.append(discord.File(filepath))
+
+        if files_to_send:
+            msg = await channel.send(files=files_to_send)
+            thread = await msg.create_thread(
+               name=f"Media by {message.author.name}", auto_archive_duration=60
+            )
+            if caption:
+                await thread.send(caption)
+            try:
+                await message.delete()
+            except:
+                pass
+            for f in files_to_send:
+                os.remove(f.fp.name)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(MediaFetcher(bot))
+    print("✅ MediaFetcher cog setup complete")
