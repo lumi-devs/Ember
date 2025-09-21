@@ -114,6 +114,20 @@ def download_reddit(url: str):
         media_url = submission.url
         print(f"🔹 Submission URL: {media_url}")
 
+
+        if getattr(submission, "is_gallery") and submission.is_gallery:
+            media_metadata = submission.media_metadata
+            for item in media_metadata.values():
+            if item.get("e") == "Image":
+                img_url = item["s"]["u"].split("?")[0]
+                filename = os.path.join(base_dir, os.path.basename(img_url))
+                print(f"📷 Downloading gallery image: {img_url}")
+                r = requests.get(img_url, headers={"User-Agent": "discord-bot"}, timeout=15)
+                if r.ok:
+                    with open(filename, "wb") as f:
+                        f.write(r.content)
+                    files.append(filename)
+
         if getattr(submission, "is_video", False):
            reddit_video_url = submission.media["reddit_video"]["fallback_url"]
            filename = temp_dir / reddit_video_url.split("/")[-1].split("?")[0]
