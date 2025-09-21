@@ -37,6 +37,7 @@ intents.guild_messages = True
 intents.message_content = True
 intents.guild_reactions = True
 intents.members = True
+intents.messages = True 
 
 bot = commands.Bot(command_prefix=".", intents=intents)
 
