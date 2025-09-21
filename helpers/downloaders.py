@@ -93,7 +93,10 @@ def download_instagram(url: str) -> Tuple[List[str], Optional[str]]:
 
             if media_url:
                 filename = temp_dir / f"{media.get('pk')}{file_ext}"
-                filename = wget.download(media_url, out=str(filename))
+                r = requests.get(media_url, headers={"User-Agent": USER_AGENT}, timeout=20)
+                r.raise_for_status()
+                with open(filename, "wb") as f:
+                    f.write(r.content)
                 files.append(str(filename))
 
         # Handle album / carousel (media_type = 8)
@@ -110,7 +113,10 @@ def download_instagram(url: str) -> Tuple[List[str], Optional[str]]:
 
                 if media_url:
                     filename = temp_dir / f"{media.get('pk')}_{i}{file_ext}"
-                    filename=wget.download(media_url, out=str(filename))
+                    r = requests.get(media_url, headers={"User-Agent": USER_AGENT}, timeout=20)
+                    r.raise_for_status()
+                    with open(filename, "wb") as f:
+                        f.write(r.content)
                     files.append(str(filename))
 
     except Exception as e:
@@ -239,5 +245,5 @@ def download_reddit(url: str) -> Tuple[List[str], str, str]:
 
     except Exception as e:
         print(f"❌ Failed to fetch Reddit post: {e}")
-    print('returned')
+
     return files, title, caption
