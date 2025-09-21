@@ -4,3 +4,5 @@ flask
 python-dotenv
 yt-dlp
 aiofiles
+instaloader
+pytube
