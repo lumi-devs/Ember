@@ -44,15 +44,16 @@ class MediaFetcher(commands.Cog):
         loop = asyncio.get_event_loop()
         try:
             if "youtube.com" in url or "youtu.be" in url:
-                filepath = await loop.run_in_executor(None, download_youtube, url)
+                files = await loop.run_in_executor(None, lambda: [download_youtube(url)])
                 caption = None
             elif "instagram.com" in url:
-                filepath = await loop.run_in_executor(None, download_instagram, url)
+                files = await loop.run_in_executor(None, download_instagram, url)
                 caption = None
             elif "reddit.com" in url:
-                filepath, caption = await loop.run_in_executor(None, download_reddit, url)
+                files, caption = await loop.run_in_executor(None, download_reddit, url)
             else:
                 await channel.send("❌ Unsupported URL.")
+                await msg_og.delete()
                 return
         except Exception as e:
             await channel.send(f"❌ Failed to download: {e}")
@@ -60,32 +61,28 @@ class MediaFetcher(commands.Cog):
             return
         await msg_og.delete()
 
-        if not filepath:
+        files_to_send = []
+        for f in files:
+            if f and os.path.exists(f) and os.path.getsize(f) <= MAX_FILE_SIZE:
+                files_to_send.append(discord.File(f))
+
+        if not files_to_send:
             await channel.send("❌ Could not retrieve media.")
             return
 
-        files_to_send = []
-        if isinstance(filepath, list):
-            for f in filepath:
-                if os.path.exists(f) and os.path.getsize(f) <= MAX_FILE_SIZE:
-                    files_to_send.append(discord.File(f))
-        else:
-            if os.path.exists(filepath) and os.path.getsize(filepath) <= MAX_FILE_SIZE:
-                files_to_send.append(discord.File(filepath))
+        msg = await channel.send(files=files_to_send)
+        thread = await msg.create_thread(
+        name=f"Media by {message.author.display_name}", auto_archive_duration=60
+        )
+        if caption:
+            await thread.send(caption)
+        try:
+            await message.delete()
+        except:
+            pass
+        for f in files_to_send:
+            os.remove(f.fp.name)
 
-        if files_to_send:
-            msg = await channel.send(files=files_to_send)
-            thread = await msg.create_thread(
-               name=f"Media by {message.author.display_name}", auto_archive_duration=60
-            )
-            if caption:
-                await thread.send(caption)
-            try:
-                await message.delete()
-            except:
-                pass
-            for f in files_to_send:
-                os.remove(f.fp.name)
 
 
 async def setup(bot: commands.Bot):
