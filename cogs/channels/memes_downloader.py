@@ -62,26 +62,34 @@ class MediaFetcher(commands.Cog):
         await msg_og.delete()
 
         files_to_send = []
+        file_paths = []  # keep track of actual file paths
+
         for f in files:
-            if f and os.path.exists(f) and os.path.getsize(f) <= MAX_FILE_SIZE:
-                files_to_send.append(discord.File(f))
+          if f and os.path.exists(f) and os.path.getsize(f) <= MAX_FILE_SIZE:
+            files_to_send.append(discord.File(f))
+            file_paths.append(f)  # store path separately
 
         if not files_to_send:
-            await channel.send("❌ Could not retrieve media.")
-            return
+         await channel.send("❌ Could not retrieve media.")
+         return
 
         msg = await channel.send(files=files_to_send)
         thread = await msg.create_thread(
-        name=f"Media by {message.author.display_name}", auto_archive_duration=60
+             name=f"Media by {message.author.display_name}", auto_archive_duration=60
         )
         if caption:
-            await thread.send(caption)
+         await thread.send(caption)
+
         try:
-            await message.delete()
+          await message.delete()
         except:
-            pass
-        for f in files_to_send:
-            os.remove(f.fp.name)
+         pass
+
+        for f in file_paths:
+        try:
+            os.remove(f)
+        except Exception as e:
+             print(f"⚠️ Could not delete {f}: {e}")
 
 
 
