@@ -33,6 +33,7 @@ class MediaFetcher(commands.Cog):
         # Ignore bots and other channels
         if message.author.bot or message.channel.id != TARGET_CHANNEL_ID:
             return
+        print(f"🟢 Saw message: {message.content}")
 
         urls = self.extract_urls(message.content)
         print(urls)
