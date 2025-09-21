@@ -11,7 +11,7 @@ from typing import List, Tuple, Optional
 from helpers.downloaders import download_youtube, download_instagram, download_reddit
 
 MAX_FILE_SIZE = 8 * 1024 * 1024  # 8 MB
-TARGET_CHANNEL_ID = 1393171137017413712  # Replace with your channel ID if needed
+TARGET_CHANNEL_ID = 1393171137017413712
 DOWNLOADS_DIR = Path("downloads")
 
 
@@ -30,10 +30,9 @@ class MediaFetcher(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # Ignore bots and other channels
+        print(f"🟢 Saw message: {message.content}")
         if message.author.bot or message.channel.id != TARGET_CHANNEL_ID:
             return
-        print(f"🟢 Saw message: {message.content}")
 
         urls = self.extract_urls(message.content)
         print(f"🔗 Extracted URLs: {urls}")
