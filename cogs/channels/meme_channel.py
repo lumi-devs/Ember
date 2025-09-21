@@ -16,7 +16,11 @@ class MediaFetcher(commands.Cog):
             'format': 'bestvideo+bestaudio/best',
             'merge_output_format': 'mp4',
             'noplaylist': True,
-            'cookies': "cookies.txt",
+            'quiet': True,
+            'no_warnings': True,
+            'ignoreerrors': True,
+            'username': os.environ.get("YT_USER"),
+            'password': os.environ.get("YT_PASS"),
         }
         os.makedirs("downloads", exist_ok=True)
         print("✅ MediaFetcher cog initialized")
