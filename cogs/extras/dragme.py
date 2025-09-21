@@ -117,7 +117,7 @@ async def setup(bot: commands.Bot):
 
                 await requester.move_to(channel)
                 await self.finish(
-                    f"✅ {target.mention} accepted. {requester.mention} has been moved to {channel.mention}"
+                    f"✅ {target.mention} accepted. {requester.mention} has been moved to {channel.name}"
                 )
 
             @discord.ui.button(style=discord.ButtonStyle.red, label="Decline")
