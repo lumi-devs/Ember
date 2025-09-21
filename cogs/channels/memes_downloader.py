@@ -76,7 +76,7 @@ class MediaFetcher(commands.Cog):
         if files_to_send:
             msg = await channel.send(files=files_to_send)
             thread = await msg.create_thread(
-               name=f"Media by {message.author.name}", auto_archive_duration=60
+               name=f"Media by {message.author.display_name}", auto_archive_duration=60
             )
             if caption:
                 await thread.send(caption)
