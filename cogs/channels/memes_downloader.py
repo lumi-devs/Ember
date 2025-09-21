@@ -42,7 +42,7 @@ class MediaFetcher(commands.Cog):
             await self.process_url(url, message.channel, message)
 
     def extract_urls(self, text: str) -> List[str]:
-        pattern = r"(https?://(?:www\.)?(?:youtube\.com/watch\?v=[\w-]+|youtu\.be/[\w-]+|youtube\.com/shorts/[\w-]+|instagram\.com/(?:p|reel)/[\w-]+/?|reddit\.com/r/[\w-]+/comments/[\w-]+|v\.redd\.it/[\w-]+))"
+        pattern = r"(https?://(?:www\.)?(?:youtube\.com/watch\?v=[\w-]+|youtu\.be/[\w-]+|youtube\.com/shorts/[\w-]+|instagram\.com/(?:p|reel)/[\w-]+/?|reddit\.com/r/[\w-]+/comments/[\w-]+[^\s]*|v\.redd\.it/[\w-]+))"
         return re.findall(pattern, text)
 
     async def process_url(self, url: str, channel: discord.TextChannel, message: discord.Message):
