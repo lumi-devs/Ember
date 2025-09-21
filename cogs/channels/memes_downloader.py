@@ -39,17 +39,17 @@ class MediaFetcher(commands.Cog):
             return
 
         for url in urls:
+            print(url)
             await self.process_url(url, message.channel, message)
 
     def extract_urls(self, text: str) -> List[str]:
         pattern = r"(https?://(?:www\.)?(?:youtube\.com/watch\?v=[\w-]+|youtu\.be/[\w-]+|youtube\.com/shorts/[\w-]+|instagram\.com/(?:p|reel)/[\w-]+/?|reddit\.com/r/[\w-]+/comments/[\w-]+[^\s]*|v\.redd\.it/[\w-]+))"
+        print(pattern)
         return re.findall(pattern, text)
 
     async def process_url(self, url: str, channel: discord.TextChannel, message: discord.Message):
         msg_og = await channel.send(f"⏳ Fetching content from {url}...")
         loop = asyncio.get_running_loop()
-
-        # Download stage (blocking work moved to executor)
         try:
             if "youtube.com" in url or "youtu.be" in url:
                 result = await loop.run_in_executor(None, download_youtube, url)
