@@ -86,9 +86,9 @@ class MediaFetcher(commands.Cog):
          pass
 
         for f in file_paths:
-        try:
+         try:
             os.remove(f)
-        except Exception as e:
+         except Exception as e:
              print(f"⚠️ Could not delete {f}: {e}")
 
 
