@@ -69,10 +69,6 @@ class MediaFetcher(commands.Cog):
             files_to_send.append(discord.File(f))
             file_paths.append(f)  # store path separately
 
-        if not files_to_send:
-         await channel.send("❌ Could not retrieve media.")
-         return
-
         msg = await channel.send(files=files_to_send)
         thread = await msg.create_thread(
              name=f"Media by {message.author.display_name}", auto_archive_duration=60
