@@ -16,7 +16,7 @@ class WelcomePing(commands.Cog):
             channel = self.bot.get_channel(channel_id)
             if channel:
                 msg = await channel.send(f"{member.mention}")
-                await msg.delete(delay=2)
+                await msg.delete(delay=5)
 
 # Setup function to load the cog
 async def setup(bot):
