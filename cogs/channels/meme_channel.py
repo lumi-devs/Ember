@@ -16,7 +16,7 @@ class MediaFetcher(commands.Cog):
             'format': 'bestvideo+bestaudio/best',
             'merge_output_format': 'mp4',
             'noplaylist': True,
-            cookies': './cookies.txt',
+            'cookies': "cookies.txt",
         }
         os.makedirs("downloads", exist_ok=True)
         print("✅ MediaFetcher cog initialized")
