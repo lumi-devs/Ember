@@ -61,7 +61,15 @@ import requests, wget
 from instagrapi import Client
 
 def download_instagram(url: str) -> Tuple[List[str], Optional[str]]:
-    temp_dir = _create_temp_dir()
+    """
+    Download Instagram media (photo, video, or carousel) to a temp folder.
+    Returns:
+        files: list of downloaded file paths
+        caption: post caption
+    """
+    temp_dir = Path("downloads") / str(uuid.uuid4())
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
     files: List[str] = []
     caption: Optional[str] = None
 
@@ -69,59 +77,56 @@ def download_instagram(url: str) -> Tuple[List[str], Optional[str]]:
         cl = Client()
         if Path("ig_settings.json").exists():
             cl.load_settings("ig_settings.json")
-        cl.login(IG_USER, IG_PASS)
+        cl.login("***IG_USER_REMOVED***", "***IG_PASS_REMOVED***")
         cl.dump_settings("ig_settings.json")
 
-        # Get media info (dict, not Media object)
         media_pk = cl.media_pk_from_url(url)
         data = cl.private_request(f"media/{media_pk}/info/")
         media = data["items"][0]
 
-        # Extract caption safely
         caption = media.get("caption", {}).get("text", "")
 
-        # Handle single photo or video
+        # Helper to download a single media URL
+        def _download_file(media_url: str, filename: Path):
+            r = requests.get(media_url, headers={"User-Agent": USER_AGENT}, timeout=20)
+            r.raise_for_status()
+            with open(filename, "wb") as f:
+                f.write(r.content)
+            files.append(str(filename))
+
+        # Single photo or video
         if media.get("media_type") in [1, 2]:
             if media.get("media_type") == 2:  # video
                 versions = media.get("video_versions", [])
-                media_url = versions[0].get("url") if versions else None
-                file_ext = ".mp4"
+                media_url = versions[0]["url"] if versions else None
+                ext = ".mp4"
             else:  # image
                 versions = media.get("image_versions2", {}).get("candidates", [])
-                media_url = versions[0].get("url") if versions else None
-                file_ext = ".jpg"
+                media_url = versions[0]["url"] if versions else None
+                ext = ".jpg"
 
             if media_url:
-                filename = temp_dir / f"{media.get('pk')}{file_ext}"
-                r = requests.get(media_url, headers={"User-Agent": USER_AGENT}, timeout=20)
-                r.raise_for_status()
-                with open(filename, "wb") as f:
-                    f.write(r.content)
-                files.append(str(filename))
+                filename = temp_dir / f"{media.get('pk')}{ext}"
+                _download_file(media_url, filename)
 
-        # Handle album / carousel (media_type = 8)
+        # Carousel / album
         elif media.get("media_type") == 8:
             for i, item in enumerate(media.get("carousel_media", [])):
                 if item.get("media_type") == 2:  # video
                     versions = item.get("video_versions", [])
-                    media_url = versions[0].get("url") if versions else None
-                    file_ext = ".mp4"
-                else:  # image
+                    media_url = versions[0]["url"] if versions else None
+                    ext = ".mp4"
+                else:
                     versions = item.get("image_versions2", {}).get("candidates", [])
-                    media_url = versions[0].get("url") if versions else None
-                    file_ext = ".jpg"
+                    media_url = versions[0]["url"] if versions else None
+                    ext = ".jpg"
 
                 if media_url:
-                    filename = temp_dir / f"{media.get('pk')}_{i}{file_ext}"
-                    r = requests.get(media_url, headers={"User-Agent": USER_AGENT}, timeout=20)
-                    r.raise_for_status()
-                    with open(filename, "wb") as f:
-                        f.write(r.content)
-                    files.append(str(filename))
+                    filename = temp_dir / f"{media.get('pk')}_{i}{ext}"
+                    _download_file(media_url, filename)
 
     except Exception as e:
-        print(f"❌ Failed to download Instagram media: {e}")
-    return files, caption
+        print(f"❌ Failed to download Instagram media: {e}"
 
 # -------------------------------
 # Reddit Downloader

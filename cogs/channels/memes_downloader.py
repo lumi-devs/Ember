@@ -155,7 +155,7 @@ class MediaFetcher(commands.Cog):
             
         # Clean up files
         for f in files:
-            os.remove(f)
+            os.remove(ensure_str(f))
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(MediaFetcher(bot))
