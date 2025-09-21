@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 
-WATCH_CHANNEL_IDS = []  # Replace with your channel ID
+WATCH_CHANNEL_IDS = [1393171137017413712]  # Replace with your channel ID
 
 async def setup(bot: commands.Bot):    
     @bot.event
