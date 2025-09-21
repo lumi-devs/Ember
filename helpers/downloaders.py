@@ -126,7 +126,7 @@ def download_instagram(url: str) -> Tuple[List[str], Optional[str]]:
                     _download_file(media_url, filename)
 
     except Exception as e:
-        print(f"❌ Failed to download Instagram media: {e}"
+        print(f"❌ Failed to download Instagram media: {e}")
 
 # -------------------------------
 # Reddit Downloader
