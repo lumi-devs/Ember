@@ -88,24 +88,42 @@ class MediaFetcher(commands.Cog):
         valid_files = []
         oversized_files = []
         
+        valid_files = []
+        oversized_files = []
+
+        # Helper to convert single-element lists to string
+        def ensure_str(f):
+            if isinstance(f, list):
+                return f[0] if f else ""
+            return f
+
         for file_path in files:
-            if isinstance(file_path, list):
-                return file_path[0] if file_path else ""
+            file_path = ensure_str(file_path)
+            if not file_path or not Path(file_path).exists():
+                continue
             size = Path(file_path).stat().st_size
-            (valid_files if size <= MAX_FILE_SIZE else oversized_files).append((file_path, size))
-        print(1)
+            if size <= MAX_FILE_SIZE:
+                valid_files.append((file_path, size))
+            else:
+                oversized_files.append((file_path, size))
+
         # Notify about oversized files
         if oversized_files:
             oversized_info = "\n".join([f"{f} ({s} bytes)" for f, s in oversized_files])
-            embed=discord.Embed(description=f"File was too Large.", color=discord.Color.orange())
+            embed = discord.Embed(description=f"File was too large.", color=discord.Color.orange())
             await channel.send(url, embed=embed)
-            
+
+        # If no valid files, clean up and return
         if not valid_files:
             for f in files:
-                os.remove(f)
+                f = ensure_str(f)
+                if Path(f).exists():
+                    os.remove(f)
             return
+
+        # Prepare Discord files
         discord_files = [discord.File(str(f)) for f, _ in valid_files]
-        print(1)        
+
         # Send message with files
         try:
             # Truncate caption if needed
