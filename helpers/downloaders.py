@@ -114,16 +114,25 @@ def download_reddit(url: str):
         media_url = submission.url
         print(f"🔹 Submission URL: {media_url}")
 
-        if media_url.endswith((".jpg", ".jpeg", ".png", ".gif", ".mp4")):
-            filename = temp_dir / media_url.split("/")[-1].split("?")[0]
-            print(f"🔹 Downloading media to: {filename}")
+        if getattr(submission, "is_video", False):
+           reddit_video_url = submission.media["reddit_video"]["fallback_url"]
+           filename = temp_dir / reddit_video_url.split("/")[-1].split("?")[0]
+           resp = requests.get(reddit_video_url, headers={"User-Agent": REDDIT_USER_AGENT})
+           resp.raise_for_status()
+           with open(filename, "wb") as f:
+               f.write(resp.content)
+           files.append(str(filename))
+           print(f"✅ Downloaded Reddit video: {filename}")
 
-            resp = requests.get(media_url, headers={"User-Agent": "DiscordBot/1.0"})
-            resp.raise_for_status()
-            with open(filename, "wb") as f:
-                f.write(resp.content)
-            files.append(str(filename))
-            print(f"✅ Downloaded {len(files)} file(s)")
+        elif media_url.endswith((".jpg", ".jpeg", ".png", ".gif", ".mp4")):
+             filename = temp_dir / media_url.split("/")[-1].split("?")[0]
+             resp = requests.get(media_url, headers={"User-Agent": REDDIT_USER_AGENT})
+             resp.raise_for_status()
+             with open(filename, "wb") as f:
+                 f.write(resp.content)
+             files.append(str(filename))
+             print(f"✅ Downloaded Reddit media: {filename}")
+
         else:
             print("⚠️ Media type not supported or no media found")
 
