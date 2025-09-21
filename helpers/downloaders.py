@@ -117,7 +117,7 @@ def download_reddit(url: str):
         if getattr(submission, "is_video", False):
            reddit_video_url = submission.media["reddit_video"]["fallback_url"]
            filename = temp_dir / reddit_video_url.split("/")[-1].split("?")[0]
-           resp = requests.get(reddit_video_url, headers={"User-Agent": REDDIT_USER_AGENT})
+           resp = requests.get(reddit_video_url, headers={"User-Agent": "DiscordBot/1.0"})
            resp.raise_for_status()
            with open(filename, "wb") as f:
                f.write(resp.content)
@@ -126,7 +126,7 @@ def download_reddit(url: str):
 
         elif media_url.endswith((".jpg", ".jpeg", ".png", ".gif", ".mp4")):
              filename = temp_dir / media_url.split("/")[-1].split("?")[0]
-             resp = requests.get(media_url, headers={"User-Agent": REDDIT_USER_AGENT})
+             resp = requests.get(media_url, headers={"User-Agent": "DiscordBot/1.0"})
              resp.raise_for_status()
              with open(filename, "wb") as f:
                  f.write(resp.content)
