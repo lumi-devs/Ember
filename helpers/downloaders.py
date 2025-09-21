@@ -118,7 +118,7 @@ def download_reddit(url: str):
             filename = temp_dir / media_url.split("/")[-1].split("?")[0]
             print(f"🔹 Downloading media to: {filename}")
 
-            resp = requests.get(media_url, headers={"User-Agent": REDDIT_USER_AGENT})
+            resp = requests.get(media_url, headers={"User-Agent": "DiscordBot/1.0"})
             resp.raise_for_status()
             with open(filename, "wb") as f:
                 f.write(resp.content)
