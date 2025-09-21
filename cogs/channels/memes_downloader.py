@@ -35,6 +35,7 @@ class MediaFetcher(commands.Cog):
             return
 
         urls = self.extract_urls(message.content)
+        print(urls)
         if not urls:
             return
 
