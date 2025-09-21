@@ -92,6 +92,7 @@ REDDIT_CLIENT_SECRET = "***REDDIT_SECRET_REMOVED***"
 reddit = praw.Reddit(
     client_id=REDDIT_CLIENT_ID,
     client_secret=REDDIT_CLIENT_SECRET,
+    user_agent="DiscordBot/1.0"
 )
 
 
