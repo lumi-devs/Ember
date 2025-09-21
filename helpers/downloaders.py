@@ -1,10 +1,16 @@
 import os
-from pathlib import Path
-import shutil
+import re
 import uuid
+import shutil
+from pathlib import Path
+
 import instaloader
 import requests
+from pytubefix import YouTube
 
+# -------------------------------
+# Global directories & session
+# -------------------------------
 DOWNLOADS_DIR = Path("downloads")
 DOWNLOADS_DIR.mkdir(exist_ok=True)
 
@@ -12,19 +18,18 @@ IG_USERNAME = os.environ.get("IG_USER")
 IG_PASSWORD = os.environ.get("IG_PASS")
 SESSION_FILE = Path("session.json")
 
+# -------------------------------
+# Helper functions
+# -------------------------------
 def _create_temp_dir() -> Path:
     """Create a unique temporary folder for each download."""
     temp_dir = DOWNLOADS_DIR / str(uuid.uuid4())
     temp_dir.mkdir(parents=True, exist_ok=True)
     return temp_dir
 
-import re
-import os
-from pytubefix import YouTube
-
-DOWNLOADS_DIR = "downloads"
-os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-
+# -------------------------------
+# YouTube Downloader
+# -------------------------------
 def download_youtube(url: str) -> str:
     """
     Download YouTube video (including shorts) using pytubefix and return filepath.
@@ -38,14 +43,15 @@ def download_youtube(url: str) -> str:
     try:
         yt = YouTube(url)
         stream = yt.streams.get_highest_resolution()
-        out_file = stream.download(output_path=DOWNLOADS_DIR)
+        out_file = stream.download(output_path=str(DOWNLOADS_DIR))
         return out_file
     except Exception as e:
         print(f"❌ Failed to download YouTube video: {e}")
         return None
 
-
-
+# -------------------------------
+# Instagram Downloader
+# -------------------------------
 def download_instagram(url: str) -> list[str]:
     temp_dir = _create_temp_dir()
     L = instaloader.Instaloader(
@@ -57,9 +63,13 @@ def download_instagram(url: str) -> list[str]:
         post_metadata_txt_pattern=""
     )
 
-    # Optional login
-    if SESSION_FILE.exists():
-        L.load_session_from_file(IG_USERNAME, str(SESSION_FILE))
+    # Optional login for private reels
+    if IG_USERNAME and IG_PASSWORD:
+        try:
+            L.load_session_from_file(IG_USERNAME, str(SESSION_FILE))
+        except FileNotFoundError:
+            L.login(IG_USERNAME, IG_PASSWORD)
+            L.save_session_to_file(SESSION_FILE)
 
     target_files = []
     try:
@@ -74,20 +84,28 @@ def download_instagram(url: str) -> list[str]:
         print("❌ Failed to download Instagram media:", e)
         return []
 
+# -------------------------------
+# Reddit Downloader
+# -------------------------------
 def download_reddit(url: str):
-    """Download Reddit media and return files + formatted caption"""
-    import requests
-    import os
-    from pathlib import Path
-    import uuid
-
-    temp_dir = Path("downloads") / str(uuid.uuid4())
+    """
+    Download Reddit media and return list of files + formatted caption
+    """
+    temp_dir = DOWNLOADS_DIR / str(uuid.uuid4())
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    headers = {"User-Agent": "DiscordBot"}
-    r = requests.get(url + ".json", headers=headers)
-    r.raise_for_status()
-    data = r.json()[0]["data"]["children"][0]["data"]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/115.0 Safari/537.36"
+    }
+    try:
+        r = requests.get(url + ".json", headers=headers)
+        r.raise_for_status()
+        data = r.json()[0]["data"]["children"][0]["data"]
+    except Exception as e:
+        print(f"❌ Failed to fetch Reddit JSON: {e}")
+        return [], ""
 
     # Media
     media_url = None
@@ -99,10 +117,13 @@ def download_reddit(url: str):
     files = []
     if media_url:
         filename = temp_dir / media_url.split("/")[-1].split("?")[0]
-        resp = requests.get(media_url, headers=headers)
-        with open(filename, "wb") as f:
-            f.write(resp.content)
-        files.append(str(filename))
+        try:
+            resp = requests.get(media_url, headers=headers)
+            with open(filename, "wb") as f:
+                f.write(resp.content)
+            files.append(str(filename))
+        except Exception as e:
+            print(f"❌ Failed to download Reddit media: {e}")
 
     # Format caption as: {title}\n\n{selftext}
     title = data.get("title") or ""
@@ -110,3 +131,4 @@ def download_reddit(url: str):
     caption = f"{title}\n\n{selftext}".strip()
 
     return files, caption
+
