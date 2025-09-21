@@ -114,7 +114,7 @@ def download_reddit(url: str):
         media_url = submission.url
         print(f"🔹 Submission URL: {media_url}")
 
-        if media_url.endswith((".jpg", ".png", ".gif", ".mp4")):
+        if media_url.endswith((".jpg", ".jpeg", ".png", ".gif", ".mp4")):
             filename = temp_dir / media_url.split("/")[-1].split("?")[0]
             print(f"🔹 Downloading media to: {filename}")
 
