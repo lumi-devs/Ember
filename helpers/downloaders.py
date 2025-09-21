@@ -3,7 +3,7 @@ import re
 import uuid
 import shutil
 from pathlib import Path
-
+import praw
 import instaloader
 import requests
 from pytubefix import YouTube
@@ -86,49 +86,33 @@ def download_instagram(url: str) -> list[str]:
 
 # -------------------------------
 # Reddit Downloader
-# -------------------------------
+# ------------------------------
+REDDIT_CLIENT_ID = "***REDDIT_ID_REMOVED***"
+REDDIT_CLIENT_SECRET = "***REDDIT_SECRET_REMOVED***"
+reddit = praw.Reddit(
+    client_id=REDDIT_CLIENT_ID,
+    client_secret=REDDIT_CLIENT_SECRET,
+)
+
+
 def download_reddit(url: str):
-    """
-    Download Reddit media and return list of files + formatted caption
-    """
     temp_dir = DOWNLOADS_DIR / str(uuid.uuid4())
     temp_dir.mkdir(parents=True, exist_ok=True)
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/115.0 Safari/537.36"
-    }
     try:
-        r = requests.get(url + ".json", headers=headers)
-        r.raise_for_status()
-        data = r.json()[0]["data"]["children"][0]["data"]
-    except Exception as e:
-        print(f"❌ Failed to fetch Reddit JSON: {e}")
-        return [], ""
-
-    # Media
-    media_url = None
-    if "url_overridden_by_dest" in data:
-        media_url = data["url_overridden_by_dest"]
-    elif "media" in data and data["media"] and "reddit_video" in data["media"]:
-        media_url = data["media"]["reddit_video"]["fallback_url"]
-
-    files = []
-    if media_url:
-        filename = temp_dir / media_url.split("/")[-1].split("?")[0]
-        try:
-            resp = requests.get(media_url, headers=headers)
+        submission = reddit.submission(url=url)
+        files = []
+        if submission.url.endswith((".jpg", ".png", ".gif", ".mp4")):
+            filename = temp_dir / submission.url.split("/")[-1].split("?")[0]
+            resp = requests.get(submission.url, headers={"User-Agent": REDDIT_USER_AGENT})
             with open(filename, "wb") as f:
                 f.write(resp.content)
             files.append(str(filename))
-        except Exception as e:
-            print(f"❌ Failed to download Reddit media: {e}")
 
-    # Format caption as: {title}\n\n{selftext}
-    title = data.get("title") or ""
-    selftext = data.get("selftext") or ""
-    caption = f"{title}\n\n{selftext}".strip()
+        # Caption = title + selftext
+        caption = f"{submission.title}\n\n{submission.selftext}".strip()
+        return files, caption
+    except Exception as e:
+        print("❌ Failed to fetch Reddit post:", e)
+        return [], ""
 
-    return files, caption
 
