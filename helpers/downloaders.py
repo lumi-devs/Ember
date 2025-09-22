@@ -76,6 +76,7 @@ def download_instagram(url: str) -> Tuple[List[str], Optional[str]]:
         media_pk = cl.media_pk_from_url(url)
         data = cl.private_request(f"media/{media_pk}/info/")
         media = data["items"][0]
+        print(media.get("media_type"))
 
         # Extract caption safely
         caption = media.get("caption", {}).get("text", "")
