@@ -5,8 +5,7 @@ import os
 import json
 import logging
 from pathlib import Path
-
-MOD_IDS = list(map(int, os.environ.get("MOD_IDS", "").split(",")))
+from helpers.is_mod import is_mod
 logging.basicConfig(level=logging.WARNING)
 
 DATA_FILE = Path("data/sticky.json")
@@ -22,15 +21,6 @@ def load_sticky_db() -> dict:
 
 def save_sticky_db(data: dict):
     DATA_FILE.write_text(json.dumps(data, indent=2))
-
-
-def is_mod():
-    async def predicate(interaction: discord.Interaction):
-        return (
-            interaction.user.id in MOD_IDS
-            or getattr(interaction.user.guild_permissions, "manage_messages", False)
-        )
-    return app_commands.check(predicate)
 
 
 class StickyEmbedModal(discord.ui.Modal, title="Create Sticky Embed"):
