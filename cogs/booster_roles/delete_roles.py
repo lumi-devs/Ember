@@ -57,11 +57,11 @@ async def setup(bot: discord.Client):
                 db["roles"].pop(str(target_user.id), None)
                 save_db(db, file_path="custom_roles.json")
                 await role.delete()
-                await interaction.response.edit_message("✅ Your role has been deleted.", ephemeral=True)
+                await interaction.response.edit_message("✅ Your role has been deleted.")
 
             async def cancel_callback(i: discord.Interaction):
                 if i.user.id != interaction.user.id:
-                    await interaction.response.edit_message("❌ Not your button.", ephemeral=True)
+                    await interaction.response.edit_message("❌ Not your button.")
                     return
                 await interaction.followup.send("❌ Cancelled.", ephemeral=True)
 
