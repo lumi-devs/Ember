@@ -96,7 +96,7 @@ class MediaFetcher(commands.Cog):
             if isinstance(f, list):
                 return f[0] if f else ""
             return f
-
+        print(files)
         for file_path in files:
             file_path = ensure_str(file_path)
             if not file_path or not Path(file_path).exists():
@@ -113,7 +113,6 @@ class MediaFetcher(commands.Cog):
             embed = discord.Embed(description=f"File was too large.", color=discord.Color.orange())
             await channel.send(url, embed=embed)
 
-        # If no valid files, clean up and return
         if not valid_files:
             for f in files:
                 f = ensure_str(f)
