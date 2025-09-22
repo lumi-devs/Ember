@@ -187,7 +187,7 @@ class StickyManager(commands.Cog):
             return
         await self.repost_sticky(message.channel, info)
 
-    @tasks.loop(minutes=1)
+    @tasks.loop(seconds=30)
     async def check_stickies_loop(self):
         for cid, info in list(self.stickies.items()):
             if not info.get("active", True):
