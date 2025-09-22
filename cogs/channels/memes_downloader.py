@@ -81,8 +81,8 @@ class MediaFetcher(commands.Cog):
                 return
 
         except Exception as e:
-            await status_msg.edit(content=f"{url}")
-            await asyncio.sleep(3)
+            await status_msg.edit(content=f"Not supported {url}")
+            await asyncio.sleep(10)
             await status_msg.delete()
             return
 
@@ -91,7 +91,7 @@ class MediaFetcher(commands.Cog):
         # Remove invalid or empty files
         files = [str(f) for f in files if f and os.path.exists(str(f))]
         if not files:
-            await channel.send(f"❌ Failed to download media from `{url}`")
+            await channel.send(f"Failed\n{url}")
             return
 
         valid_files = []
