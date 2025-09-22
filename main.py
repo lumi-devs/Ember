@@ -56,7 +56,6 @@ async def on_ready():
         logger.info("📜 Registered app commands:")
         for cmd in bot.tree.walk_commands():
             logger.info(f"- {cmd.qualified_name}")
-
         voice_channel = bot.get_channel(int(os.environ.get("VOICE_CHANNEL_ID_ON_START")))
         logger.info(f"Connecting to voice channel: {voice_channel}")
         voice_client = await voice_channel.connect()
@@ -88,7 +87,6 @@ async def load_cogs():
 async def main():
     # Start Flask server in a separate thread
     threading.Thread(target=run_flask, daemon=True).start()
-
     async with bot:
         await load_cogs()
         await bot.start(BOT_TOKEN)
