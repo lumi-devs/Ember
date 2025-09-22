@@ -82,6 +82,7 @@ def download_instagram(url: str) -> Tuple[List[str], Optional[str]]:
 
         # Handle single photo or video
         if media.get("media_type") in [1, 2]:
+            print("single")
             if media.get("media_type") == 2:  # video
                 versions = media.get("video_versions", [])
                 media_url = versions[0].get("url") if versions else None
@@ -101,6 +102,7 @@ def download_instagram(url: str) -> Tuple[List[str], Optional[str]]:
 
         # Handle album / carousel (media_type = 8)
         elif media.get("media_type") == 8:
+            print("Gallery")
             for i, item in enumerate(media.get("carousel_media", [])):
                 if item.get("media_type") == 2:  # video
                     versions = item.get("video_versions", [])
