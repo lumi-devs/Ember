@@ -81,7 +81,7 @@ class MediaFetcher(commands.Cog):
                 return
 
         except Exception as e:
-            await status_msg.edit(content=f"{url})
+            await status_msg.edit(content=f"{url}")
             await asyncio.sleep(3)
             await status_msg.delete()
             return
