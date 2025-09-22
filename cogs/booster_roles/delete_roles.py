@@ -55,7 +55,7 @@ async def setup(bot: discord.Client):
                     await interaction.followup.send("❌ Not your button.", ephemeral=True)
                     return
                 db["roles"].pop(str(target_user.id), None)
-                save_db(db, file, file_path="custom_roles.json")
+                save_db(db, file_path="custom_roles.json")
                 await role.delete()
                 await interaction.response.edit_message("✅ Your role has been deleted.", ephemeral=True)
 

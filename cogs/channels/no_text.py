@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 
 WATCH_CHANNEL_IDS = [
-    1418501302626816010,
+    1418501302626816010, #dragrequest
     
 ]
 
