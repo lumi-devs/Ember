@@ -55,15 +55,11 @@ def download_youtube(url: str) -> Optional[str]:
 # -------------------------------
 # Instagram Downloader
 # -------------------------------
-from typing import List, Optional, Tuple
-from pathlib import Path
-import requests, wget
-from instagrapi import Client
-
-def download_instagram(url: str) -> Tuple[List[str], Optional[str]]:
+def download_instagram(url: str) -> Tuple[List[str], str, str]:
     temp_dir = _create_temp_dir()
     files: List[str] = []
-    caption: Optional[str] = None
+    title = ""  # Instagram doesn't have titles, so we'll return empty string
+    caption = ""
 
     try:
         cl = Client()
@@ -72,18 +68,16 @@ def download_instagram(url: str) -> Tuple[List[str], Optional[str]]:
         cl.login(IG_USER, IG_PASS)
         cl.dump_settings("ig_settings.json")
 
-        # Get media info (dict, not Media object)
+        # Get media info
         media_pk = cl.media_pk_from_url(url)
         data = cl.private_request(f"media/{media_pk}/info/")
         media = data["items"][0]
-        print(media.get("media_type"))
 
         # Extract caption safely
         caption = media.get("caption", {}).get("text", "")
 
         # Handle single photo or video
         if media.get("media_type") in [1, 2]:
-            print("single")
             if media.get("media_type") == 2:  # video
                 versions = media.get("video_versions", [])
                 media_url = versions[0].get("url") if versions else None
@@ -103,7 +97,6 @@ def download_instagram(url: str) -> Tuple[List[str], Optional[str]]:
 
         # Handle album / carousel (media_type = 8)
         elif media.get("media_type") == 8:
-            print("Gallery")
             for i, item in enumerate(media.get("carousel_media", [])):
                 if item.get("media_type") == 2:  # video
                     versions = item.get("video_versions", [])
@@ -124,8 +117,8 @@ def download_instagram(url: str) -> Tuple[List[str], Optional[str]]:
 
     except Exception as e:
         print(f"❌ Failed to download Instagram media: {e}")
-    return files, caption
-
+    
+    return files, title, caption  # Now returns triple (files, title, caption)
 # -------------------------------
 # Reddit Downloader
 # -------------------------------
