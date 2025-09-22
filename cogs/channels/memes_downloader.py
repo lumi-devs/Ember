@@ -111,7 +111,7 @@ class MediaFetcher(commands.Cog):
                             "\n".join([f"`{os.path.basename(f)}` ({s//1024} KB)" for f, s in oversized_files]),
                 color=discord.Color.orange()
             )
-            await channel.send(f"⚠️ Media from `{url}` skipped:", embed=embed)
+            await channel.send(f"⚠️ Media from {url} skipped:", embed=embed)
 
         if not valid_files:
             # Clean up
