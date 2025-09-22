@@ -9,7 +9,7 @@ import os
 from helpers.downloaders import download_youtube, download_instagram, download_reddit
 
 MAX_FILE_SIZE = 8 * 1024 * 1024  # 8 MB
-TARGET_CHANNEL_ID = 1419396753907646696
+TARGET_CHANNEL_ID = 1393171137017413712
 DOWNLOADS_DIR = Path("downloads")
 
 class MediaFetcher(commands.Cog):
@@ -39,16 +39,16 @@ class MediaFetcher(commands.Cog):
             await self.process_url(url, message.channel, message)
 
     def extract_urls(self, text: str) -> List[str]:
-            KNOWN_DOMAINS = [
+        KNOWN_DOMAINS = [
             "youtube.com",
             "youtu.be",
             "instagram.com",
             "reddit.com",
             "v.redd.it",
             "i.redd.it",
-            ]
-            urls = re.findall(r"https?://[^\s]+", text)
-            return [url for url in urls if any(domain in url for domain in KNOWN_DOMAINS)]
+        ]
+        urls = re.findall(r"https?://[^\s]+", text)
+        return [url for url in urls if any(domain in url for domain in KNOWN_DOMAINS)]
 
     async def process_url(self, url: str, channel: discord.TextChannel, message: discord.Message):
         # Send initial message
@@ -57,12 +57,17 @@ class MediaFetcher(commands.Cog):
         try:
             # Determine downloader based on URL
             if "youtube.com" in url or "youtu.be" in url:
-                files = [await self.bot.loop.run_in_executor(None, download_youtube, url)]
-                caption = None
+                file_path = await self.bot.loop.run_in_executor(None, download_youtube, url)
+                files = [file_path] if file_path else []
+                caption = ""
             elif "instagram.com" in url:
-                files = await self.bot.loop.run_in_executor(None, download_instagram, url)
-                caption = None
-            elif "reddit.com" in url or "v.redd.it" in url:
+                # Instagram downloader now returns (files, title, caption)
+                files, title, caption_text = await self.bot.loop.run_in_executor(None, download_instagram, url)
+                title=""
+                # Convert any Path objects to strings
+                files = [str(f) for f in files if f]
+                caption = f"{title}\n\n{caption_text}" if caption_text else title
+            elif "reddit.com" in url or "v.redd.it" in url or "i.redd.it" in url:
                 files, title, caption_text = await self.bot.loop.run_in_executor(None, download_reddit, url)
                 caption = f"{title}\n\n{caption_text}" if caption_text else title
             else:
@@ -78,34 +83,28 @@ class MediaFetcher(commands.Cog):
             return
             
         await status_msg.delete()
-        files = [f for f in files]
+        
+        # Filter out any empty file entries
+        files = [f for f in files if f and isinstance(f, (str, Path))]
         
         if not files:
             await channel.send(f"❌ Failed to download media from {url}")
             return
-        print(1)
             
         valid_files = []
         oversized_files = []
-        
-        valid_files = []
-        oversized_files = []
 
-        # Helper to convert single-element lists to string
-        def ensure_str(f):
-            if isinstance(f, list):
-                return f[0] if f else ""
-            return f
-        print(files)
+        # Convert all file paths to strings and check file sizes
         for file_path in files:
-            file_path = ensure_str(file_path)
-            if not file_path or not Path(file_path).exists():
+            file_path_str = str(file_path)
+            if not os.path.exists(file_path_str):
                 continue
-            size = Path(file_path).stat().st_size
+                
+            size = os.path.getsize(file_path_str)
             if size <= MAX_FILE_SIZE:
-                valid_files.append((file_path, size))
+                valid_files.append((file_path_str, size))
             else:
-                oversized_files.append((file_path, size))
+                oversized_files.append((file_path_str, size))
 
         # Notify about oversized files
         if oversized_files:
@@ -114,37 +113,37 @@ class MediaFetcher(commands.Cog):
             await channel.send(url, embed=embed)
 
         if not valid_files:
-            for f in files:
-                f = ensure_str(f)
-                if Path(f).exists():
-                    try:
-                        os.remove(f)
-                    except:
-                        pass
+            # Clean up files
+            for file_path in files:
+                try:
+                    if isinstance(file_path, (str, Path)):
+                        os.remove(str(file_path))
+                except:
+                    pass
             return
 
         # Prepare Discord files
-        discord_files = [discord.File(str(f)) for f, _ in valid_files]
+        discord_files = [discord.File(f) for f, _ in valid_files]
 
         # Send message with files
         try:
             # Truncate caption if needed
             if caption and len(caption) > 2000:
                 caption = caption[:1997] + "..."
+                
             sent_msg = await channel.send(files=discord_files)
-            print(1)
             
-            # Create thread for media
+            # Create thread for media if caption exists
             try:
-                embed=discord.Embed(description=caption, colour=discord.Color.gold())
-                thread = await sent_msg.create_thread(
-                    name=f"Media by {message.author.display_name}"[:100],
-                    auto_archive_duration=60
-                )
                 if caption:
+                    embed = discord.Embed(description=caption, colour=discord.Color.gold())
+                    thread = await sent_msg.create_thread(
+                        name=f"Media by {message.author.display_name}"[:100],
+                        auto_archive_duration=60
+                    )
                     await thread.send(embed=embed)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Failed to create thread: {e}")
                 
             # Try to delete original message
             try:
@@ -156,9 +155,10 @@ class MediaFetcher(commands.Cog):
             await channel.send(f"❌ Failed to upload files: {e}")
             
         # Clean up files
-        for f in files:
+        for file_path in files:
             try:
-                os.remove(ensure_str(f))
+                if isinstance(file_path, (str, Path)):
+                    os.remove(str(file_path))
             except:
                 pass
 

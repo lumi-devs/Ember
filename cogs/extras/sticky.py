@@ -1,12 +1,27 @@
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-from helpers.github_data import load_db, save_db
 import os
+import json
 import logging
+from pathlib import Path
 
 MOD_IDS = list(map(int, os.environ.get("MOD_IDS", "").split(",")))
 logging.basicConfig(level=logging.WARNING)
+
+DATA_FILE = Path("data/sticky.json")
+DATA_FILE.parent.mkdir(exist_ok=True)
+
+def load_sticky_db() -> dict:
+    if DATA_FILE.exists():
+        try:
+            return json.loads(DATA_FILE.read_text())
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+def save_sticky_db(data: dict):
+    DATA_FILE.write_text(json.dumps(data, indent=2))
 
 
 def is_mod():
@@ -66,7 +81,7 @@ class StickyManager(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        db, _ = load_db("sticky.json")
+        db = load_sticky_db()
         self.stickies = db.get("stickies", {})
         print(f"[StickyManager] Loaded stickies for {len(self.stickies)} channels.")
 
@@ -74,9 +89,9 @@ class StickyManager(commands.Cog):
     # Helpers
     # ----------------------------
     def save(self):
-        db, file = load_db("sticky.json")
+        db = load_sticky_db()
         db["stickies"] = self.stickies
-        save_db(db, file_path="sticky.json")
+        save_sticky_db(db)
 
     async def _post_sticky(self, channel: discord.TextChannel, content: str, embed_mode=False,
                            title=None, footer=None, color=None, author_icon=None, image_url=None):

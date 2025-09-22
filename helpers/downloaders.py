@@ -55,14 +55,17 @@ def download_youtube(url: str) -> Optional[str]:
 # Instagram Downloader
 # -------------------------------
 import os
+import instaloader
 from typing import List, Tuple
 
-def download_instagram(url: str) -> Tuple[List[str], str, str]:
-    temp_dir = _create_temp_dir()
+def download_instagram(
+    url: str,
+    session_file: str = "instagram_session",
+    caption: str = ""
+) -> Tuple[List[str], str, str]:
+    temp_dir = str(_create_temp_dir())
     files: List[str] = []
-    title = ""  # Instagram doesn't have titles, so we'll return empty string
-    caption = ""
-
+    title = ""
     try:
         # Create Instaloader instance
         L = instaloader.Instaloader(
@@ -75,39 +78,23 @@ def download_instagram(url: str) -> Tuple[List[str], str, str]:
             download_comments=False,
             compress_json=False
         )
-        
-        # Try to load session if exists
-        session_file = "instagram_session"
-        if os.path.exists(session_file):
-            L.load_session_from_file(IG_USER, session_file)
-        else:
-            L.login(IG_USER, IG_PASS)
-            L.save_session_to_file(session_file)
-        
-        # Get shortcode from URL
-        shortcode = instaloader.Post.get_shortcode_from_url(url)
-        
-        # Get post
+
+        L.load_session_from_file(username="reejit.biswas", filename=session_file)
+        shortcode = url.split("/")[4] if any(x in url for x in ["/p/", "/reels/", "/tv/"]) else None
+        if not shortcode:
+            raise ValueError("Could not extract shortcode from URL")
         post = instaloader.Post.from_shortcode(L.context, shortcode)
-        
-        # Get caption
-        caption = post.caption if post.caption else ""
-        
-        # Download the post
+        caption = post.caption or ""
+
         L.download_post(post, target=temp_dir)
-        
-        # Find all downloaded files
-        for file in os.listdir(temp_dir):
-            if file.startswith(f"{shortcode}"):
-                files.append(os.path.join(temp_dir, file))
-        
-        # For videos, Instaloader downloads both the video and a thumbnail
-        # We only want the video file, so filter out thumbnails
-        files = [f for f in files if not f.endswith('_thumbnails.jpg')]
-        
+        for f in os.listdir(temp_dir):
+                files.append(os.path.join(temp_dir, f))
+        files = [f for f in files if not f.endswith('_thumbnails.jpg') and not f.endswith('.txt')]
+
+        print(files)
+
     except Exception as e:
         print(f"❌ Failed to download Instagram media: {e}")
-    
     return files, title, caption
 # -------------------------------
 # Reddit Downloader

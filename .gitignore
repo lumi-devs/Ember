@@ -4,3 +4,4 @@ __pycache__/
 .vscode/
 .vscode/settings.json
 cogs/channels/__pycache__/
+data/

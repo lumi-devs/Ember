@@ -1,19 +1,49 @@
 import discord
 from discord.ext import commands
-from helpers.github_data import load_db, save_db
 from datetime import datetime, timezone
+from pathlib import Path
+import json
 
-AFK_SET_COLOR = discord.Color.orange()        # Orangish
-AFK_REMOVED_COLOR = discord.Color.gold()      # Yellowish
-AFK_MENTION_COLOR = discord.Color.from_rgb(255, 200, 0)  # Golden tone
+# Colors for embeds
+AFK_SET_COLOR = discord.Color.orange()
+AFK_REMOVED_COLOR = discord.Color.gold()
+AFK_MENTION_COLOR = discord.Color.from_rgb(255, 200, 0)
 
+# AFK storage file
+AFK_FILE = Path("data/afk.json")
+AFK_FILE.parent.mkdir(exist_ok=True)  # Ensure 'data' folder exists
+
+# --- Helper functions --- #
+
+def load_afk() -> dict:
+    """Load the AFK JSON safely."""
+    if AFK_FILE.exists():
+        try:
+            return json.loads(AFK_FILE.read_text())
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+def save_afk_entry(user_id: int, reason: str, since: str):
+    """Save a single AFK entry without overwriting others."""
+    data = load_afk()  # Load fresh
+    data[str(user_id)] = {"reason": reason, "since": since}
+    AFK_FILE.write_text(json.dumps(data, indent=2))
+
+def remove_afk_entry(user_id: int):
+    """Remove a single AFK entry."""
+    data = load_afk()
+    data.pop(str(user_id), None)
+    AFK_FILE.write_text(json.dumps(data, indent=2))
 
 def afk_strip(name: str) -> str:
+    """Remove [AFK] prefix from a name."""
     if name.startswith("[AFK]"):
-        return name[len("[AFK]"):].lstrip()
+        return name[len("[AFK] "):].lstrip()
     return name
 
 def human_timedelta(dt: datetime) -> str:
+    """Convert datetime to a human-readable difference."""
     now = datetime.now(timezone.utc)
     delta = now - dt
     days = delta.days
@@ -31,27 +61,32 @@ def human_timedelta(dt: datetime) -> str:
         parts.append(f"{seconds} second{'s' if seconds != 1 else ''}")
     return " ".join(parts) if parts else "just now"
 
+# --- AFK Cog --- #
+
 class AFK(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.afk, self.afk_file = load_db("afk.json")
-        if not isinstance(self.afk, dict):
-            self.afk = {}
+        self.afk = load_afk()  # In-memory cache
 
     @commands.command(name="afk")
-    async def afk(self, ctx: commands.Context, *, reason: str = "AFK"):
+    async def set_afk(self, ctx: commands.Context, *, reason: str = "AFK"):
+        """Set AFK for the author."""
         user = ctx.author
         await ctx.message.delete()
         since = datetime.now(timezone.utc).isoformat()
+
+        # Save safely to file and in-memory
+        save_afk_entry(user.id, reason, since)
         self.afk[str(user.id)] = {"reason": reason, "since": since}
-        save_db(self.afk, "afk.json")
+
+        # Update nickname if in guild
         if ctx.guild:
             try:
                 if not user.display_name.startswith("[AFK]"):
                     await user.edit(nick=f"[AFK] {user.display_name}")
             except discord.Forbidden:
                 pass
-        
+
         embed = discord.Embed(
             title="✅ AFK Set",
             description=f"{user.mention}, you are now AFK: **{reason}**",
@@ -65,22 +100,24 @@ class AFK(commands.Cog):
         if message.author.bot:
             return
 
-        # Remove AFK if user sends a message
+        # --- Remove AFK if author sends a message --- #
         if str(message.author.id) in self.afk:
             afk_entry = self.afk.pop(str(message.author.id))
-            save_db(self.afk, "afk.json")
+            remove_afk_entry(message.author.id)
+
             if message.guild and message.author.display_name.startswith("[AFK]"):
-                new = message.author.display_name[len("[AFK] "):]
+                new_name = afk_strip(message.author.display_name)
                 try:
-                    await message.author.edit(nick=new)
+                    await message.author.edit(nick=new_name)
                 except discord.Forbidden:
                     pass
+
             try:
                 since_dt = datetime.fromisoformat(afk_entry["since"])
                 duration = human_timedelta(since_dt)
                 embed = discord.Embed(
                     title="👋 Welcome Back!",
-                    description=f"{message.author.mention}, AFK removed.\nYou had been AFK for **{duration}**.",
+                    description=f"{message.author.mention}, AFK removed.\nYou were AFK for **{duration}**.",
                     color=AFK_REMOVED_COLOR
                 )
                 msg = await message.channel.send(embed=embed)
@@ -88,7 +125,7 @@ class AFK(commands.Cog):
             except Exception:
                 pass
 
-        # Notify if mentioned someone who is AFK
+        # --- Notify if mentioned someone AFK --- #
         if message.mentions:
             for u in message.mentions:
                 if str(u.id) in self.afk:
