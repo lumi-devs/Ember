@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 import requests
 import instaloader
-from instagrapi import Client
 from pytubefix import YouTube
 import praw
 import wget
@@ -55,6 +54,9 @@ def download_youtube(url: str) -> Optional[str]:
 # -------------------------------
 # Instagram Downloader
 # -------------------------------
+import os
+from typing import List, Tuple
+
 def download_instagram(url: str) -> Tuple[List[str], str, str]:
     temp_dir = _create_temp_dir()
     files: List[str] = []
@@ -62,63 +64,51 @@ def download_instagram(url: str) -> Tuple[List[str], str, str]:
     caption = ""
 
     try:
-        cl = Client()
-        if Path("ig_settings.json").exists():
-            cl.load_settings("ig_settings.json")
-        cl.login(IG_USER, IG_PASS)
-        cl.dump_settings("ig_settings.json")
-
-        # Get media info
-        media_pk = cl.media_pk_from_url(url)
-        data = cl.private_request(f"media/{media_pk}/info/")
-        media = data["items"][0]
-
-        # Extract caption safely
-        caption = media.get("caption", {}).get("text", "")
-
-        # Handle single photo or video
-        if media.get("media_type") in [1, 2]:
-            if media.get("media_type") == 2:  # video
-                versions = media.get("video_versions", [])
-                media_url = versions[0].get("url") if versions else None
-                file_ext = ".mp4"
-            else:  # image
-                versions = media.get("image_versions2", {}).get("candidates", [])
-                media_url = versions[0].get("url") if versions else None
-                file_ext = ".jpg"
-
-            if media_url:
-                filename = temp_dir / f"{media.get('pk')}{file_ext}"
-                r = requests.get(media_url, headers={"User-Agent": USER_AGENT}, timeout=20)
-                r.raise_for_status()
-                with open(filename, "wb") as f:
-                    f.write(r.content)
-                files.append(str(filename))
-
-        # Handle album / carousel (media_type = 8)
-        elif media.get("media_type") == 8:
-            for i, item in enumerate(media.get("carousel_media", [])):
-                if item.get("media_type") == 2:  # video
-                    versions = item.get("video_versions", [])
-                    media_url = versions[0].get("url") if versions else None
-                    file_ext = ".mp4"
-                else:  # image
-                    versions = item.get("image_versions2", {}).get("candidates", [])
-                    media_url = versions[0].get("url") if versions else None
-                    file_ext = ".jpg"
-
-                if media_url:
-                    filename = temp_dir / f"{media.get('pk')}_{i}{file_ext}"
-                    r = requests.get(media_url, headers={"User-Agent": USER_AGENT}, timeout=20)
-                    r.raise_for_status()
-                    with open(filename, "wb") as f:
-                        f.write(r.content)
-                    files.append(str(filename))
-
+        # Create Instaloader instance
+        L = instaloader.Instaloader(
+            dirname_pattern=temp_dir,
+            save_metadata=False,
+            download_pictures=True,
+            download_videos=True,
+            download_video_thumbnails=False,
+            download_geotags=False,
+            download_comments=False,
+            compress_json=False
+        )
+        
+        # Try to load session if exists
+        session_file = "instagram_session"
+        if os.path.exists(session_file):
+            L.load_session_from_file(IG_USER, session_file)
+        else:
+            L.login(IG_USER, IG_PASS)
+            L.save_session_to_file(session_file)
+        
+        # Get shortcode from URL
+        shortcode = instaloader.Post.get_shortcode_from_url(url)
+        
+        # Get post
+        post = instaloader.Post.from_shortcode(L.context, shortcode)
+        
+        # Get caption
+        caption = post.caption if post.caption else ""
+        
+        # Download the post
+        L.download_post(post, target=temp_dir)
+        
+        # Find all downloaded files
+        for file in os.listdir(temp_dir):
+            if file.startswith(f"{shortcode}"):
+                files.append(os.path.join(temp_dir, file))
+        
+        # For videos, Instaloader downloads both the video and a thumbnail
+        # We only want the video file, so filter out thumbnails
+        files = [f for f in files if not f.endswith('_thumbnails.jpg')]
+        
     except Exception as e:
         print(f"❌ Failed to download Instagram media: {e}")
     
-    return files, title, caption  # Now returns triple (files, title, caption)
+    return files, title, caption
 # -------------------------------
 # Reddit Downloader
 # -------------------------------
