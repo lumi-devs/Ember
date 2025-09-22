@@ -110,22 +110,33 @@ class StickyManager(commands.Cog):
         else:
             return await channel.send(content)
 
-    async def set_sticky(self, channel: discord.TextChannel, content: str, embed_mode=False,
-                         title=None, footer=None, color=None, author_icon=None, image_url=None):
+    async def set_sticky(
+        self,
+        channel: discord.TextChannel,
+        content: str,
+        embed_mode=False,
+        title=None,
+        footer=None,
+        color=None,
+        author_icon=None,
+        image_url=None
+    ):
         cid = str(channel.id)
 
-        # delete old sticky if exists
+        # Delete previous sticky if exists
         if cid in self.stickies:
             try:
-                prev = await channel.fetch_message(self.stickies[cid]["message_id"])
-                await prev.delete()
+                prev_msg_id = self.stickies[cid].get("message_id")
+                if prev_msg_id:
+                    prev = await channel.fetch_message(prev_msg_id)
+                    await prev.delete()
             except discord.NotFound:
                 pass
 
-        # send the sticky
+        # Send new sticky
         msg = await self._post_sticky(channel, content, embed_mode, title, footer, color, author_icon, image_url)
 
-        # store
+        # Store the new sticky info
         self.stickies[cid] = {
             "message_id": msg.id,
             "content": content,
@@ -137,7 +148,9 @@ class StickyManager(commands.Cog):
             "image_url": image_url,
             "active": True,
         }
+
         self.save()
+
 
     async def repost_sticky(self, channel: discord.TextChannel, info: dict):
         """Delete old sticky and re-send"""

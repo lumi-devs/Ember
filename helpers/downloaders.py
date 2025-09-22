@@ -33,8 +33,11 @@ def _create_temp_dir() -> Path:
 # -------------------------------
 # YouTube Downloader
 # -------------------------------
-def download_youtube(url: str) -> Optional[str]:
-    """Download YouTube video and return the local file path."""
+def download_youtube(url: str) -> Tuple[List[str], str, str]:
+    """
+    Download a YouTube video and return a tuple:
+    (list_of_file_paths, title, description)
+    """
     # Normalize Shorts URLs
     shorts_match = re.search(r"youtube\.com/shorts/([\w-]+)", url)
     if shorts_match:
@@ -45,12 +48,14 @@ def download_youtube(url: str) -> Optional[str]:
         yt = YouTube(url)
         stream = yt.streams.get_highest_resolution()
         out_file = stream.download(output_path=str(DOWNLOADS_DIR))
+        title = yt.title or ""
+        description = yt.description or ""
         print(f"✅ Downloaded YouTube video: {out_file}")
-        return out_file
+        return [str(out_file)], title, description
+
     except Exception as e:
         print(f"❌ Failed to download YouTube video: {e}")
-        return None
-
+        return [], "", ""
 # -------------------------------
 # Instagram Downloader
 # -------------------------------
