@@ -17,7 +17,6 @@ def is_mod():
         perms = interaction.user.guild_permissions
         return (
             interaction.user.id in MOD_IDS
-            or getattr(perms, "manage_messages", False)
             or getattr(perms, "administrator", False)
         )
     return app_commands.check(predicate)
