@@ -179,8 +179,8 @@ class StickyManager(commands.Cog):
     # ----------------------------
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.bot and not message.attachments:
-            return
+#        if message.author.bot and not message.attachments:
+ #           return
         cid = str(message.channel.id)
         info = self.stickies.get(cid)
         if not info or not info.get("active", True):
