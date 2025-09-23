@@ -51,23 +51,13 @@ class Moderation(commands.Cog):
             return await ctx.send(embed=embed)
 
         embed = discord.Embed(title="🔇 Member Muted", color=discord.Color.orange())
-        embed.add_field(name="User", value=member.mention)
-        embed.add_field(name="Moderator", value=ctx.author.mention)
-        embed.add_field(name="Duration", value=duration if duration else "Indefinite")
-        embed.add_field(name="Reason", value=reason)
+        embed.add_field(name="User", value=member.mention, inline=True)
+        embed.add_field(name="Moderator", value=ctx.author.mention, inline=True)
+        embed.add_field(name="Duration", value=duration if duration else "Indefinite", inline=True)
+        embed.add_field(name="Reason", value=reason, inline=True)
         await ctx.send(embed=embed)
 
         # Optional auto-unmute message
-        if seconds:
-            await asyncio.sleep(seconds)
-            try:
-                await member.timeout(until=None, reason="Auto-unmute")
-                embed = discord.Embed(title="🔊 Member Unmuted (Auto)", color=discord.Color.green())
-                embed.add_field(name="User", value=member.mention)
-                embed.add_field(name="Moderator", value="System")
-                await ctx.send(embed=embed)
-            except:
-                pass
 
     # --- UNMUTE ---
     @commands.command(name="unmute")
@@ -85,8 +75,8 @@ class Moderation(commands.Cog):
             return await ctx.send(embed=embed)
 
         embed = discord.Embed(title="🔊 Member Unmuted", color=discord.Color.green())
-        embed.add_field(name="User", value=member.mention)
-        embed.add_field(name="Moderator", value=ctx.author.mention)
+        embed.add_field(name="User", value=member.mention, inline=True)
+        embed.add_field(name="Moderator", value=ctx.author.mention, inline=True)
         await ctx.send(embed=embed)
 
     # --- KICK ---
@@ -108,9 +98,9 @@ class Moderation(commands.Cog):
             return await ctx.send(embed=embed)
 
         embed = discord.Embed(title="👢 Member Kicked", color=discord.Color.red())
-        embed.add_field(name="User", value=member.mention)
-        embed.add_field(name="Moderator", value=ctx.author.mention)
-        embed.add_field(name="Reason", value=reason)
+        embed.add_field(name="User", value=member.mention, inline=True)
+        embed.add_field(name="Moderator", value=ctx.author.mention, inline=True)
+        embed.add_field(name="Reason", value=reason, inline=True)
         await ctx.send(embed=embed)
 
     # --- BAN ---
@@ -132,9 +122,9 @@ class Moderation(commands.Cog):
             return await ctx.send(embed=embed)
 
         embed = discord.Embed(title="🔨 Member Banned", color=discord.Color.dark_red())
-        embed.add_field(name="User", value=member.mention)
-        embed.add_field(name="Moderator", value=ctx.author.mention)
-        embed.add_field(name="Reason", value=reason)
+        embed.add_field(name="User", value=member.mention, inline=True)
+        embed.add_field(name="Moderator", value=ctx.author.mention, inline=True)
+        embed.add_field(name="Reason", value=reason, inline=True)
         await ctx.send(embed=embed)
 
     # --- UNBAN ---
