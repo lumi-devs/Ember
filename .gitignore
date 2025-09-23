@@ -1,3 +1,4 @@
+skip/
 logs/*
 downloads/*
 __pycache__/
