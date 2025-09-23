@@ -71,6 +71,25 @@ class AFK(commands.Cog):
         self.afk = load_afk()  # load from file once on startup
 
 
+
+    @commands.command()
+    @commands.is_owner()
+    async def afklist(self, ctx):
+        """Bot owner only: shows all AFK users and reasons"""
+        if not self.afk_list:
+            return await ctx.send("📭 No one is AFK right now.")
+
+        embed = discord.Embed(
+            title="AFK List",
+            description="Here are the users currently marked as AFK:",
+            color=discord.Color.blurple()
+        )
+
+        for uid, reason in self.afk_list.items():
+            user = self.bot.get_user(int(uid))
+            name = user.name if user else f"Unknown ({uid})"
+            embed.add_field(name=name, value=reason, inline=False)
+
     @commands.is_owner()
     @commands.command(name="afkload")
     async def reload_afk(self, ctx: commands.Context):
