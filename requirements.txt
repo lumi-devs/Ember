@@ -1,4 +1,5 @@
 discord.py
+dateparser
 PyGithub
 flask
 python-dotenv
