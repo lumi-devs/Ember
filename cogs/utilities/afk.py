@@ -73,7 +73,7 @@ class AFK(commands.Cog):
 
 
     @commands.command()
-    @commands.is_owner()
+    @commands.is_owner(name="afklist")
     async def afklist(self, ctx):
         """Bot owner only: shows all AFK users and reasons"""
         if not self.afk_list:
