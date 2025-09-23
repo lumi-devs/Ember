@@ -70,6 +70,14 @@ class AFK(commands.Cog):
         self.bot = bot
         self.afk = load_afk()  # load from file once on startup
 
+
+    @commands.is_owner()
+    @commands.command(name="afkload")
+    async def reload_afk(self, ctx: commands.Context):
+        """Reload AFK data from file into memory (owner only)."""
+        self.afk = load_afk()
+        await ctx.send("✅ AFK data reloaded from file.", delete_after=10)
+
     @commands.command(name="afk")
     async def set_afk(self, ctx: commands.Context, *, reason: str = "AFK"):
         user = ctx.author
