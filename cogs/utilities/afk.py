@@ -3,6 +3,8 @@ from discord.ext import commands
 from datetime import datetime, timezone
 from pathlib import Path
 import json
+import asyncio
+
 
 # Colors for embeds
 AFK_SET_COLOR = discord.Color.orange()
@@ -66,20 +68,19 @@ def human_timedelta(dt: datetime) -> str:
 class AFK(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.afk = load_afk()  # In-memory cache
+        self.afk = load_afk()  # load from file once on startup
 
     @commands.command(name="afk")
     async def set_afk(self, ctx: commands.Context, *, reason: str = "AFK"):
-        """Set AFK for the author."""
         user = ctx.author
         await ctx.message.delete()
         since = datetime.now(timezone.utc).isoformat()
 
-        # Save safely to file and in-memory
-        save_afk_entry(user.id, reason, since)
+        # Save to memory + file
         self.afk[str(user.id)] = {"reason": reason, "since": since}
+        AFK_FILE.write_text(json.dumps(self.afk, indent=2))
 
-        # Update nickname if in guild
+        # Update nickname
         if ctx.guild:
             try:
                 if not user.display_name.startswith("[AFK]"):
@@ -100,10 +101,10 @@ class AFK(commands.Cog):
         if message.author.bot:
             return
 
-        # --- Remove AFK if author sends a message --- #
+        # --- Remove AFK if author is AFK ---
         if str(message.author.id) in self.afk:
             afk_entry = self.afk.pop(str(message.author.id))
-            remove_afk_entry(message.author.id)
+            AFK_FILE.write_text(json.dumps(self.afk, indent=2))
 
             if message.guild and message.author.display_name.startswith("[AFK]"):
                 new_name = afk_strip(message.author.display_name)
@@ -125,7 +126,7 @@ class AFK(commands.Cog):
             except Exception:
                 pass
 
-        # --- Notify if mentioned someone AFK --- #
+        # --- Notify if mentions someone AFK ---
         if message.mentions:
             for u in message.mentions:
                 if str(u.id) in self.afk:
@@ -142,5 +143,7 @@ class AFK(commands.Cog):
 
         await self.bot.process_commands(message)
 
+
 async def setup(bot: commands.Bot):
+    await asyncio.sleep(5)
     await bot.add_cog(AFK(bot))

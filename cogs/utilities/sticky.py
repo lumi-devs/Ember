@@ -270,4 +270,5 @@ class StickyManager(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
+    await asyncio.sleep(5)
     await bot.add_cog(StickyManager(bot))
