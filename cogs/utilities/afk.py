@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import json
 import asyncio
-from cogs.github_sync import GitHubSync
+from cogs.utilities.github_sync import GitHubSync
 
 # Colors for embeds
 AFK_SET_COLOR = discord.Color.orange()
