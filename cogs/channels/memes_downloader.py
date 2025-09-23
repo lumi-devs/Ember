@@ -91,7 +91,7 @@ class MediaFetcher(commands.Cog):
         # Remove invalid or empty files
         files = [str(f) for f in files if f and os.path.exists(str(f))]
         if not files:
-            await channel.send(f"Failed\n{url}")
+            await channel.send(f"{message.author.mention}\n{url}")
             return
 
         valid_files = []
