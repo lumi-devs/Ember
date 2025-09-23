@@ -4,17 +4,24 @@ import os
 from pathlib import Path
 import asyncio
 import threading
-from flask import Flask
+from flask import Flask, Response
 import discord
 from discord.ext import commands
-from discord import Activity, ActivityType
 import logging
+import time
 
 # ------------------ LOGGING ------------------
+LOG_FILE = Path("logs/bot.log")
+LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger("BotLogger")
 
@@ -23,11 +30,46 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Flask server is running 🚀"
+    return """
+    <html>
+    <head>
+        <title>Bot Logs</title>
+        <style>
+            body { background: #111; color: #0f0; font-family: monospace; }
+            pre { white-space: pre-wrap; }
+        </style>
+    </head>
+    <body>
+        <h2>📜 Live Bot Logs</h2>
+        <pre id="logs"></pre>
+        <script>
+            const evtSource = new EventSource("/logs");
+            evtSource.onmessage = function(e) {
+                const logs = document.getElementById("logs");
+                logs.textContent += e.data + "\\n";
+                window.scrollTo(0, document.body.scrollHeight);
+            };
+        </script>
+    </body>
+    </html>
+    """
+
+@app.route("/logs")
+def stream_logs():
+    def generate():
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            f.seek(0, os.SEEK_END)  # jump to end of file
+            while True:
+                line = f.readline()
+                if line:
+                    yield f"data: {line.strip()}\n\n"
+                else:
+                    time.sleep(0.5)
+    return Response(generate(), mimetype="text/event-stream")
 
 def run_flask():
     logger.info("Starting Flask server on 0.0.0.0:5000")
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=5000, threaded=True)
 
 
 # ------------------ DISCORD BOT ------------------
@@ -49,13 +91,13 @@ async def on_ready():
     logger.info(f"✅ Logged in as {bot.user}")
 
     try:
-        guild_obj = discord.Object(id=GUILD_ID)
         synced = await bot.tree.sync()
         logger.info(f"🔗 Synced {len(synced)} slash commands to guild {GUILD_ID}")
 
         logger.info("📜 Registered app commands:")
         for cmd in bot.tree.walk_commands():
             logger.info(f"- {cmd.qualified_name}")
+
         voice_channel = bot.get_channel(int(os.environ.get("VOICE_CHANNEL_ID_ON_START")))
         logger.info(f"Connecting to voice channel: {voice_channel}")
         voice_client = await voice_channel.connect()

@@ -125,12 +125,11 @@ class AFK(commands.Cog):
                 pass
 
         embed = discord.Embed(
-            title="✅ AFK Set",
-            description=f"{user.mention}, you are now AFK: **{reason}**",
+            description=f"✅ AFK Set! {user.mention}, you are now AFK: **{reason}**",
             color=AFK_SET_COLOR
         )
         msg = await ctx.send(embed=embed)
-        await msg.delete(delay=20)
+        await msg.delete(delay=10)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -153,12 +152,11 @@ class AFK(commands.Cog):
                 since_dt = datetime.fromisoformat(afk_entry["since"])
                 duration = human_timedelta(since_dt)
                 embed = discord.Embed(
-                    title="👋 Welcome Back!",
-                    description=f"{message.author.mention}, AFK removed.\nYou were AFK for **{duration}**.",
+                    description=f"👋 Welcome Back! {message.author.mention}, AFK removed.\nYou were AFK for **{duration}**.",
                     color=AFK_REMOVED_COLOR
                 )
                 msg = await message.channel.send(embed=embed)
-                await msg.delete(delay=20)
+                await msg.delete(delay=10)
             except Exception:
                 pass
 
@@ -175,7 +173,7 @@ class AFK(commands.Cog):
                         color=AFK_MENTION_COLOR
                     )
                     msg = await message.channel.send(embed=embed)
-                    await msg.delete(delay=600)
+                    await msg.delete(delay=180)
 
         await self.bot.process_commands(message)
 
