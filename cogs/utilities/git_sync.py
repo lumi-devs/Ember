@@ -9,7 +9,7 @@ import logging
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("REPO_NAME")
 DATA_FOLDER = Path("data")
-SYNC_INTERVAL_MINUTES = 5
+SYNC_INTERVAL_SECCONDS = 45
 
 logging.basicConfig(level=logging.INFO)
 
@@ -82,7 +82,7 @@ class GitHubSync(commands.Cog):
 
 
 
-    @tasks.loop(minutes=SYNC_INTERVAL_MINUTES)
+    @tasks.loop(seconds=SYNC_INTERVAL_SECCONDS)
     async def sync_loop(self):
         """Periodic push to GitHub every N minutes."""
         await self.sync_to_github()
