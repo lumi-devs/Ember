@@ -53,7 +53,7 @@ def parse_time_expression(expr: str, base_dt: datetime = None):
 
     settings = {
         "RETURN_AS_TIMEZONE_AWARE": True,
-        "TIMEZONE": "Asia/Kolkata",  # ✅ Force IST parsing
+        "TIMEZONE": "Asia/Kolkata",
         "TO_TIMEZONE": "Asia/Kolkata",
         "PREFER_DATES_FROM": "future",
     }
@@ -159,12 +159,121 @@ class ReminderCog(commands.Cog):
         else:
             await self._remove_reminder_by_id(rem["id"])
 
-    # ... rest unchanged ...
+    async def _reschedule(self, rem: dict):
+        interval = rem.get("repeat_interval")
+        if not interval:
+            await self._remove_reminder_by_id(rem["id"])
+            return
+
+        try:
+            interval_sec = int(interval)
+        except Exception:
+            await self._remove_reminder_by_id(rem["id"])
+            return
+
+        next_time = datetime.fromisoformat(rem["time"]).astimezone(IST) + timedelta(seconds=interval_sec)
+        rem["time"] = next_time.isoformat()
+        save_reminders(self.reminders)
+
+        delay = (next_time - datetime.now(IST)).total_seconds()
+        task = self.bot.loop.create_task(self._reminder_worker(rem, delay))
+        self._tasks[rem["id"]] = task
+
+    async def _remove_reminder_by_id(self, reminder_id: int):
+        async with self._lock:
+            self.reminders = [r for r in self.reminders if r.get("id") != reminder_id]
+            save_reminders(self.reminders)
+
+            task = self._tasks.pop(reminder_id, None)
+            if task:
+                task.cancel()
+
+    @commands.command(name="remind")
+    async def remind(self, ctx: commands.Context, *, time_and_message: str):
+        """Set a reminder. Usage: .remind <time> <message>"""
+        try:
+            parts = time_and_message.strip().split(maxsplit=1)
+            if not parts:
+                await ctx.send("⚠️ Please provide a time.")
+                return
+
+            time_expr = parts[0]
+            message = parts[1] if len(parts) > 1 else "(no message)"
+            target_time = parse_time_expression(time_expr)
+
+            if not target_time:
+                await ctx.send("⚠️ Could not parse the time.")
+                return
+
+            reminder = {
+                "id": next(ID_COUNTER),
+                "author_id": ctx.author.id,
+                "channel_id": ctx.channel.id,
+                "message": message,
+                "time": target_time.isoformat(),
+                "targets": [],
+                "repeat": False,
+            }
+
+            self.reminders.append(reminder)
+            save_reminders(self.reminders)
+
+            delay = (target_time - datetime.now(IST)).total_seconds()
+            task = self.bot.loop.create_task(self._reminder_worker(reminder, delay))
+            self._tasks[reminder["id"]] = task
+
+            await ctx.send(f"✅ Reminder set for {human_dt(target_time)}")
+
+        except Exception as e:
+            await ctx.send(f"⚠️ Error setting reminder: {e}")
+
+    @commands.command(name="reminders")
+    async def reminders_cmd(self, ctx: commands.Context):
+        """List your active reminders."""
+        user_reminders = [r for r in self.reminders if r.get("author_id") == ctx.author.id]
+        if not user_reminders:
+            await ctx.send("📭 You have no active reminders.")
+            return
+
+        lines = []
+        for r in user_reminders:
+            dt = datetime.fromisoformat(r["time"]).astimezone(IST)
+            lines.append(f"🆔 {r['id']} | {human_dt(dt)} | {r['message']}")
+
+        await ctx.send("\n".join(lines))
+
+    @commands.command(name="delreminder")
+    async def delreminder(self, ctx: commands.Context, reminder_id: int):
+        """Delete a reminder (only if you created it, or you're the server/bot owner)."""
+        reminder = next((r for r in self.reminders if r.get("id") == reminder_id), None)
+        if not reminder:
+            return await ctx.send(f"⚠️ No reminder found with ID `{reminder_id}`.")
+
+        # Check permissions
+        is_author = reminder.get("author_id") == ctx.author.id
+        is_guild_owner = ctx.guild and ctx.author.id == ctx.guild.owner_id
+        is_bot_owner = await self.bot.is_owner(ctx.author)
+
+        if not (is_author or is_guild_owner or is_bot_owner):
+            return await ctx.send("❌ You don’t have permission to delete this reminder.")
+
+        # Cancel running task if exists
+        task = self._tasks.pop(reminder_id, None)
+        if task:
+            task.cancel()
+
+        # Remove from list + save
+        async with self._lock:
+            self.reminders = [r for r in self.reminders if r.get("id") != reminder_id]
+            save_reminders(self.reminders)
+
+        await ctx.send(f"🗑️ Reminder `{reminder_id}` deleted successfully.")
+
 
     @commands.command(name="reloadreminders")
     @commands.is_owner()
     async def reloadreminders(self, ctx: commands.Context):
-        """Force pull from GitHub + reload reminders (like AFK load)."""
+        """Force pull from GitHub + reload reminders."""
         github_cog = self.bot.get_cog("GitHubSync")
         if github_cog:
             try:
