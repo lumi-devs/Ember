@@ -85,7 +85,7 @@ def download_instagram(
         )
 
         L.load_session_from_file(username="reejit.biswas", filename=session_file)
-        shortcode = url.split("/")[4] if any(x in url for x in ["/p/", "/reels/", "/tv/"]) else None
+        shortcode = url.split("/")[4].split("?")[0] if any(x in url for x in ["/p/", "/reel/", "/reels/", "/tv/"]) else None
         if not shortcode:
             raise ValueError("Could not extract shortcode from URL")
         post = instaloader.Post.from_shortcode(L.context, shortcode)
