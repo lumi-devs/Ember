@@ -1,8 +1,24 @@
 import discord
 import os
 from discord import app_commands
-from helpers.github_data import load_db, save_db
+from pathlib import Path
+import json
 
+# --- Local DB helpers ---
+DATA_FILE = Path("data/custom_roles.json")
+DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+def load_db():
+    if DATA_FILE.exists():
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"roles": {}, "blacklist": []}
+
+def save_db(db):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(db, f, indent=4)
+
+# --- Command setup ---
 async def setup(bot: discord.Client):
     mod_ids = [int(x) for x in os.environ.get("MOD_IDS", "").split(",") if x]
 
@@ -12,9 +28,8 @@ async def setup(bot: discord.Client):
     )
     @app_commands.describe(user="User whose role to delete (mods only)")
     async def delete_role(interaction: discord.Interaction, user: discord.User = None):
-        #interaction
         await interaction.response.defer(ephemeral=True)
-        db, file = load_db(file_path="custom_roles.json")
+        db = load_db()
 
         # blacklist check
         if str(interaction.user.id) in db.get("blacklist", []):
@@ -55,7 +70,7 @@ async def setup(bot: discord.Client):
                     await interaction.followup.send("❌ Not your button.", ephemeral=True)
                     return
                 db["roles"].pop(str(target_user.id), None)
-                save_db(db, file_path="custom_roles.json")
+                save_db(db)
                 await role.delete()
                 await interaction.followup.send(content="✅ Your role has been deleted.", ephemeral=True)
 
@@ -78,7 +93,7 @@ async def setup(bot: discord.Client):
         else:
             # --- Mod deletes immediately ---
             db["roles"].pop(str(target_user.id), None)
-            save_db(db, file, file_path="custom_roles.json")
+            save_db(db)
             await role.delete(reason=f"Deleted by mod {interaction.user}")
             await interaction.followup.send(
                 f"✅ Deleted {target_user.mention}'s role.", ephemeral=True

@@ -1,9 +1,27 @@
 import asyncio
 from datetime import datetime, timezone, timedelta
 import os
+import json
+from pathlib import Path
 import discord
 from discord import app_commands, Color, Embed
-from helpers.github_data import load_db, save_db
+
+# Ensure data folder exists
+DATA_FILE = Path("data/custom_roles.json")
+DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+# --- Load DB ---
+def load_db():
+    if DATA_FILE.exists():
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    else:
+        return {"roles": {}, "blacklist": []}
+
+# --- Save DB ---
+def save_db(db):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(db, f, indent=4)
 
 async def setup(bot: discord.Client):
     @bot.tree.command(name="create_role", description="Create a custom booster role")
@@ -18,7 +36,7 @@ async def setup(bot: discord.Client):
             await interaction.followup.send("🚫 Booster role required.")
             return
 
-        db, file = load_db(file_path="custom_roles.json")
+        db = load_db()
 
         if str(interaction.user.id) in db.get("blacklist", []):
             await interaction.followup.send("🚫 You are blacklisted and cannot use this command.", ephemeral=True)
@@ -28,6 +46,7 @@ async def setup(bot: discord.Client):
             await interaction.followup.send("❌ You already have a role.")
             return
 
+        # Validate color
         try:
             primary_color = Color.from_str(color) if color else Color.default()
         except Exception:
@@ -35,6 +54,7 @@ async def setup(bot: discord.Client):
             return
 
         try:
+            # Create role
             role = await interaction.guild.create_role(
                 name=name,
                 colour=primary_color,
@@ -42,9 +62,12 @@ async def setup(bot: discord.Client):
             )
             role = await interaction.guild.fetch_role(role.id)
             await asyncio.sleep(2)
+
+            # Fix role position
             fixed_role = interaction.guild.get_role(int(os.environ.get("FIXED_ROLE_ID", 0)))
             if fixed_role:
                 await role.edit(position=fixed_role.position)
+
             await interaction.user.add_roles(role)
 
             # Embed confirmation
@@ -75,7 +98,7 @@ async def setup(bot: discord.Client):
             await interaction.followup.send(f"❌ Role creation failed: {e}", ephemeral=True)
             return
 
-        # --- Save to DB ---
+        # --- Save to DB locally ---
         ist_time = datetime.now(timezone(timedelta(hours=5, minutes=30)))
         db["roles"][str(interaction.user.id)] = {
             "role_id": role.id,
@@ -86,7 +109,7 @@ async def setup(bot: discord.Client):
         }
 
         try:
-            save_db(db,file_path="custom_roles.json")
-            print("saved to db")
+            save_db(db)
+            print("Saved to data/custom_roles.json")
         except Exception as e:
-           print(f"Failed to save db: {e}")
+            print(f"Failed to save DB: {e}")
