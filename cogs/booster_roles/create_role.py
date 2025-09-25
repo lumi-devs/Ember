@@ -44,7 +44,7 @@ async def setup(bot: discord.Client):
             await asyncio.sleep(2)
             fixed_role = interaction.guild.get_role(int(os.environ.get("FIXED_ROLE_ID", 0)))
             if fixed_role:
-                await role.edit(position=fixed_role.position - 1)
+                await role.edit(position=fixed_role.position)
             await interaction.user.add_roles(role)
 
             # Embed confirmation
