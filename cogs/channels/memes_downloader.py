@@ -91,7 +91,13 @@ class MediaFetcher(commands.Cog):
         # Remove invalid or empty files
         files = [str(f) for f in files if f and os.path.exists(str(f))]
         if not files:
-            await channel.send(f"{message.author.mention}\n{url}")
+            x=await channel.send(f"{message.author.mention}\n{url}")
+            thread = await x.channel.create_thread(
+                    name=thread_name,
+                    message=x,
+                    type=discord.ChannelType.public_thread,
+                    auto_archive_duration=60
+            )
             return
 
         valid_files = []
