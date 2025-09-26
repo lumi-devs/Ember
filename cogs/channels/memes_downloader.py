@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 from typing import List, Optional
 import os
+import logging
 from helpers.downloaders import download_youtube, download_instagram, download_reddit
 
 MAX_FILE_SIZE = 8 * 1024 * 1024  # 8 MB
@@ -20,22 +21,21 @@ class MediaFetcher(commands.Cog):
         if DOWNLOADS_DIR.exists():
             shutil.rmtree(DOWNLOADS_DIR, ignore_errors=True)
         DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
-        print("✅ MediaFetcher cog initialized")
+        logging.info("✅ MediaFetcher cog initialized")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or message.channel.id != TARGET_CHANNEL_ID:
             return
 
-        print(f"🟢 Saw message: {message.content}")
         urls = self.extract_urls(message.content)
-        print(f"🔗 Extracted URLs: {urls}")
+        logging.info(f"🔗 Extracted URLs: {urls}")
 
         if not urls:
             return
 
         for url in urls:
-            print(f"➡️ Processing URL: `{url}`")
+            logging.info(f"➡️ Processing URL: `{url}`")
             await self.process_url(url, message.channel, message)
 
     def extract_urls(self, text: str) -> List[str]:
@@ -81,6 +81,7 @@ class MediaFetcher(commands.Cog):
                 return
 
         except Exception as e:
+            logging.exception(f"❌ Error processing URL {url}: {e}")
             await status_msg.edit(content=f"Not supported {url}")
             await asyncio.sleep(10)
             await status_msg.delete()
@@ -91,9 +92,9 @@ class MediaFetcher(commands.Cog):
         # Remove invalid or empty files
         files = [str(f) for f in files if f and os.path.exists(str(f))]
         if not files:
-            x=await channel.send(f"{message.author.mention}\n{url}")
+            x = await channel.send(f"{message.author.mention}\n{url}")
             thread = await x.channel.create_thread(
-                    name=thread_name,
+                    name=f"Media by {message.author.display_name}"[:100],
                     message=x,
                     type=discord.ChannelType.public_thread,
                     auto_archive_duration=60
@@ -140,6 +141,7 @@ class MediaFetcher(commands.Cog):
                 )
                 await thread.send(embed=embed)
         except Exception as e:
+            logging.exception(f"❌ Failed to upload files from `{url}`: {e}")
             await channel.send(f"❌ Failed to upload files from `{url}`: {e}")
 
         # Clean up
