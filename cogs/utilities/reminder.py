@@ -50,29 +50,31 @@ def parse_simple_duration(s: str):
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
-from datetime import datetime, timedelta, timezone
-import dateparser
-
-IST = timezone(timedelta(hours=5, minutes=30))
-
 def parse_time_expression(expr: str):
+    # handle simple durations like 10m, 2h
     sec = parse_simple_duration(expr)
     if sec is not None:
         return datetime.now(IST) + timedelta(seconds=sec)
 
+    # use IST as base for relative calculations
+    now_ist = datetime.now(IST)
+
     settings = {
         "RETURN_AS_TIMEZONE_AWARE": True,
-        "TO_TIMEZONE": "Asia/Kolkata",  # Parse in IST
+        "TIMEZONE": "Asia/Kolkata",
+        "TO_TIMEZONE": "Asia/Kolkata",
         "PREFER_DATES_FROM": "future",
+        "RELATIVE_BASE": now_ist
     }
 
     parsed = dateparser.parse(expr, settings=settings)
     if parsed:
-        # Force tzinfo to IST if dateparser doesn't set it
+        # ensure tzinfo=IST
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=IST)
         return parsed.replace(microsecond=0)
     return None
+
 
 def human_dt(dt: datetime):
     if dt.tzinfo is None:
@@ -219,20 +221,26 @@ class ReminderCog(commands.Cog):
     @commands.command(name="remindme")
     async def remindme(self, ctx: commands.Context, *, args: str):
         """One-time reminder for any user, auto-detects time expression."""
-        # Try splitting at first valid parse
+        # Try parsing the longest possible prefix as time
         words = args.split()
-        for i in range(1, len(words)+1):
+        when = None
+        message = None
+        for i in range(len(words), 0, -1):
             time_expr = " ".join(words[:i])
-            message = " ".join(words[i:])
-            when = parse_time_expression(time_expr)
-            if when:
+            m = " ".join(words[i:])
+            parsed = parse_time_expression(time_expr)
+            if parsed:
+                when = parsed
+                message = m
                 break
-        else:
+
+        if not when:
             return await ctx.send("❌ Couldn't parse time/expression.")
 
         if not message:
             return await ctx.send("❌ Please provide a reminder message.")
 
+        # schedule reminder
         rid = next(ID_COUNTER)
         rem = {
             "id": rid,
@@ -245,7 +253,7 @@ class ReminderCog(commands.Cog):
             "repeat_type": None,
             "interval_seconds": 0,
             "repeat_expr": None,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(IST).isoformat(),
             "owner_only": False
         }
 
@@ -253,7 +261,7 @@ class ReminderCog(commands.Cog):
             self.reminders.append(rem)
             save_reminders(self.reminders)
 
-        delay = (when - datetime.now(timezone.utc)).total_seconds()
+        delay = (when - datetime.now(IST)).total_seconds()
         task = self.bot.loop.create_task(self._reminder_worker(rem, max(delay, 0)))
         self._tasks[rid] = task
 
