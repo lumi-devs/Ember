@@ -3,12 +3,10 @@ load_dotenv()
 import os
 from pathlib import Path
 import asyncio
-import threading
-from flask import Flask, Response
+import logging
+from quart import Quart, Response
 import discord
 from discord.ext import commands
-import logging
-import time
 
 # ------------------ LOGGING ------------------
 LOG_FILE = Path("logs/bot.log")
@@ -25,11 +23,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BotLogger")
 
-# ------------------ FLASK ------------------
-app = Flask(__name__)
+# ------------------ QUART (async Flask) ------------------
+app = Quart(__name__)
 
 @app.route("/")
-def home():
+async def home():
     return """
     <html>
     <head>
@@ -55,45 +53,35 @@ def home():
     """
 
 @app.route("/logs")
-def stream_logs():
-    def generate():
+async def stream_logs():
+    async def generate():
         with open(LOG_FILE, "r", encoding="utf-8") as f:
-            f.seek(0, os.SEEK_END)  # jump to end of file
+            f.seek(0, os.SEEK_END)
             while True:
                 line = f.readline()
                 if line:
                     yield f"data: {line.strip()}\n\n"
                 else:
-                    time.sleep(0.5)
+                    await asyncio.sleep(0.5)
     return Response(generate(), mimetype="text/event-stream")
 
-def run_flask():
-    logger.info("Starting Flask server on 0.0.0.0:5000")
-    app.run(host="0.0.0.0", port=5000, threaded=True)
-
+async def run_quart():
+    logger.info("Starting Quart server on 0.0.0.0:5000")
+    await app.run_task(host="0.0.0.0", port=5000)
 
 # ------------------ DISCORD BOT ------------------
 intents = discord.Intents.all()
-intents.guilds = True
-intents.guild_messages = True
-intents.message_content = True
-intents.guild_reactions = True
-intents.members = True
-intents.messages = True 
-
 bot = commands.Bot(command_prefix=".", intents=intents)
 
-GUILD_ID = int(os.environ.get("GUILD_ID"))  # Add your test server ID
+GUILD_ID = int(os.environ.get("GUILD_ID"))
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 @bot.event
 async def on_ready():
     logger.info(f"✅ Logged in as {bot.user}")
-
     try:
         synced = await bot.tree.sync()
         logger.info(f"🔗 Synced {len(synced)} slash commands to guild {GUILD_ID}")
-
         logger.info("📜 Registered app commands:")
         for cmd in bot.tree.walk_commands():
             logger.info(f"- {cmd.qualified_name}")
@@ -102,18 +90,15 @@ async def on_ready():
         logger.info(f"Connecting to voice channel: {voice_channel}")
         voice_client = await voice_channel.connect()
         await voice_client.guild.change_voice_state(
-            channel=voice_channel, 
-            self_mute=True, 
-            self_deaf=True
+            channel=voice_channel, self_mute=True, self_deaf=True
         )
         logger.info(f"✅ Connected to voice channel {voice_channel.name}")
     except Exception as e:
         logger.error(f"❌ Error syncing commands or connecting voice: {e}")
 
-
 # ------------------ LOAD COGS ------------------
 async def load_cogs():
-    cogs_path = Path("cogs")  # root folder for cogs
+    cogs_path = Path("cogs")
     for py_file in cogs_path.rglob("*.py"):
         if py_file.name == "__init__.py":
             continue
@@ -124,15 +109,13 @@ async def load_cogs():
         except Exception as e:
             logger.error(f"❌ Failed to load {module}: {e}")
 
-
 # ------------------ MAIN ------------------
 async def main():
-    # Start Flask server in a separate thread
-    threading.Thread(target=run_flask, daemon=True).start()
+    # Start Quart server in background task
+    asyncio.create_task(run_quart())
     async with bot:
         await load_cogs()
         await bot.start(BOT_TOKEN)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
