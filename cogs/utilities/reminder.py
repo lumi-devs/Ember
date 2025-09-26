@@ -49,6 +49,7 @@ def parse_simple_duration(s: str):
 
 
 def parse_time_expression(expr: str, base_dt: datetime = None):
+    # Handle shorthand like "10m" / "2h"
     sec = parse_simple_duration(expr)
     if sec is not None:
         target = datetime.now(timezone.utc) + timedelta(seconds=sec)
@@ -56,14 +57,18 @@ def parse_time_expression(expr: str, base_dt: datetime = None):
 
     settings = {
         "RETURN_AS_TIMEZONE_AWARE": True,
-        "TO_TIMEZONE": "UTC",
+        "TO_TIMEZONE": "UTC",           # always normalize to UTC internally
         "PREFER_DATES_FROM": "future",
+        "TIMEZONE": "Asia/Kolkata",     # 👈 assume user input is IST
     }
     if base_dt:
-        settings["RELATIVE_BASE"] = base_dt.astimezone(timezone.utc)
+        # convert base_dt into IST before feeding
+        base_dt_ist = base_dt.astimezone(timezone(timedelta(hours=5, minutes=30)))
+        settings["RELATIVE_BASE"] = base_dt_ist
 
     parsed = dateparser.parse(expr, settings=settings)
     if parsed:
+        # normalize to UTC for scheduling
         return parsed.astimezone(timezone.utc).replace(microsecond=0)
     return None
 
@@ -197,11 +202,21 @@ class ReminderCog(commands.Cog):
 
     # ---------- Commands ----------
     @commands.command(name="remindme")
-    async def remindme(self, ctx: commands.Context, time_expr: str, *, message: str):
-        """One-time reminder for any user"""
-        when = parse_time_expression(time_expr)
-        if not when:
+    async def remindme(self, ctx: commands.Context, *, args: str):
+        """One-time reminder for any user, auto-detects time expression."""
+        # Try splitting at first valid parse
+        words = args.split()
+        for i in range(1, len(words)+1):
+            time_expr = " ".join(words[:i])
+            message = " ".join(words[i:])
+            when = parse_time_expression(time_expr)
+            if when:
+                break
+        else:
             return await ctx.send("❌ Couldn't parse time/expression.")
+
+        if not message:
+            return await ctx.send("❌ Please provide a reminder message.")
 
         rid = next(ID_COUNTER)
         rem = {
@@ -232,6 +247,8 @@ class ReminderCog(commands.Cog):
         embed.add_field(name="When", value=human_dt(when), inline=False)
         embed.set_footer(text=f"Reminder ID: {rid}")
         await ctx.send(embed=embed)
+
+
 
     @commands.command(name="remind")
     @commands.is_owner()
