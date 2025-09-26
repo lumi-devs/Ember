@@ -50,15 +50,10 @@ def parse_simple_duration(s: str):
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
+IST = timezone(timedelta(hours=5, minutes=30))
+
 def parse_time_expression(expr: str):
-    # handle simple durations like 10m, 2h
-    sec = parse_simple_duration(expr)
-    if sec is not None:
-        return datetime.now(IST) + timedelta(seconds=sec)
-
-    # use IST as base for relative calculations
     now_ist = datetime.now(IST)
-
     settings = {
         "RETURN_AS_TIMEZONE_AWARE": True,
         "TIMEZONE": "Asia/Kolkata",
@@ -66,27 +61,12 @@ def parse_time_expression(expr: str):
         "PREFER_DATES_FROM": "future",
         "RELATIVE_BASE": now_ist
     }
-
     parsed = dateparser.parse(expr, settings=settings)
     if parsed:
-        # ensure tzinfo=IST
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=IST)
         return parsed.replace(microsecond=0)
     return None
-
-
-def human_dt(dt: datetime):
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=IST)
-    return dt.strftime("%Y-%m-%d %H:%M:%S IST")
-
-
-def human_dt(dt: datetime):
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=IST)
-    ist_str = dt.strftime("%Y-%m-%d %H:%M:%S IST")
-    return ist_str
 
 
 
