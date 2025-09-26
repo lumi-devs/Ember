@@ -9,3 +9,4 @@ instaloader
 pytubefix
 praw
 wget
+quart
