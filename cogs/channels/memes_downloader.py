@@ -75,9 +75,7 @@ class MediaFetcher(commands.Cog):
                 caption = f"{title}\n\n{caption_text}" if caption_text else title
 
             else:
-                await status_msg.edit(content=f"❌ Unsupported URL: `{url}`")
-                await asyncio.sleep(3)
-                await status_msg.delete()
+                await status_msg.edit(content=f"`{url}`")
                 return
 
         except Exception as e:
