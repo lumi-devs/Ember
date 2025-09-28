@@ -52,6 +52,9 @@ class MediaFetcher(commands.Cog):
 
     
     async def process_url(self, url: str, channel: discord.TextChannel, message: discord.Message):
+        # Normalize the URL
+        url = url.strip().lower()
+
         # Send initial status message
         status_msg = await channel.send(f"⏳ Fetching content from `{url}`...")
 
@@ -64,23 +67,23 @@ class MediaFetcher(commands.Cog):
                 files, title, caption_text = await self.bot.loop.run_in_executor(None, download_youtube, url)
                 caption = f"{title}\n\n{caption_text}" if caption_text else title
 
-            # Instagram
-            elif "instagram.com" in url:
+            # Instagram (reels, posts, stories, etc.)
+            elif any(x in url for x in ["instagram.com/reel", "instagram.com/p", "instagram.com/stories", "instagram.com/tv"]):
                 files, title, caption_text = await self.bot.loop.run_in_executor(None, download_instagram, url)
                 caption = f"{title}\n\n{caption_text}" if caption_text else title
 
             # Reddit
-            elif "reddit.com" in url or "v.redd.it" in url or "i.redd.it" in url:
+            elif any(x in url for x in ["reddit.com", "v.redd.it", "i.redd.it"]):
                 files, title, caption_text = await self.bot.loop.run_in_executor(None, download_reddit, url)
                 caption = f"{title}\n\n{caption_text}" if caption_text else title
 
             else:
-                await status_msg.edit(content=f"`{url}`")
+                await status_msg.edit(content=f"❌ Unsupported URL: `{url}`")
                 return
 
         except Exception as e:
             logging.exception(f"❌ Error processing URL {url}: {e}")
-            await status_msg.edit(content=f"Not supported {url}")
+            await status_msg.edit(content=f"⚠️ Error while processing `{url}`")
             await asyncio.sleep(10)
             await status_msg.delete()
             return
