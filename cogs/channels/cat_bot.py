@@ -4,7 +4,7 @@ from discord.ext import commands, tasks
 import asyncio
 
 BOT_ID = 966695034340663367 
-DELETE_DELAY = 3000
+DELETE_DELAY = 3600
 
 
 class AutoDelete(commands.Cog):

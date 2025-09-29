@@ -2,8 +2,8 @@ import discord
 from discord.ext import commands
 
 WATCH_CHANNEL_IDS = [
-    1418501302626816010, #dragrequest
-    
+    1418501302626816010,  # dragrequest
+    1399658407178272798
 ]
 
 class DeleteAll(commands.Cog):
@@ -12,7 +12,16 @@ class DeleteAll(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.id==self.bot.user.id or message.channel.id not in WATCH_CHANNEL_IDS:
+        # Ignore bots
+        if message.author.bot:
+            return
+        
+        # Ignore threads
+        if isinstance(message.channel, discord.Thread):
+            return
+
+        # Ignore messages outside watched channels
+        if message.channel.id not in WATCH_CHANNEL_IDS:
             return
 
         try:
