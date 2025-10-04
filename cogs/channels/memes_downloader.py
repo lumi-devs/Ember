@@ -10,7 +10,7 @@ import logging
 from helpers.downloaders import download_youtube, download_instagram, download_reddit
 
 MAX_FILE_SIZE = 8 * 1024 * 1024  # 8 MB
-TARGET_CHANNEL_ID = 1393171137017413712
+TARGET_CHANNEL_ID = 99
 DOWNLOADS_DIR = Path("downloads")
 
 class MediaFetcher(commands.Cog):
