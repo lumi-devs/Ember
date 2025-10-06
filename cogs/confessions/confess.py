@@ -12,7 +12,7 @@ from cogs.confessions.reply import ReplyModal
 # Channels
 CONFESSION_CHANNEL_ID = 1399658407178272798
 REPORT_CHANNEL_ID = 1393171149038293023
-LOG_CHANNEL_ID = 1393171149038293023
+LOG_CHANNEL_ID = 1424792373837172899
 MEDIA_CHANNEL_ID =  1424139009931743382
 ALLOWED_ROLE_IDS=[1393171037562077196, 1393171036635402354, 1393171035695612055, 1393171034701561908, 1393171033774624848, 1393171032726306966]
 
@@ -61,8 +61,6 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             await db.execute("UPDATE confessions SET message_id=? WHERE id=?", (msg.id, confession_id))
             await db.commit()
 
-        # Unlock channel for attachments
-        await channel.set_permissions(interaction.user, send_messages=True)
         await interaction.response.send_message(
             "✅ Confession submitted! You have 20s to send an image/URL or type `skip`.", ephemeral=True
         )
@@ -70,8 +68,6 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
         if cleaner_cog:
            self.bot.loop.create_task(cleaner_cog.temporarily_allow_user(self.user_id, 20))
 
-
-        await channel.set_permissions(interaction.user, send_messages=True)
         def check(m):
             return m.author.id == self.user_id and m.channel.id == CONFESSION_CHANNEL_ID
 

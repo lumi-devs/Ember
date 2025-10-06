@@ -23,7 +23,6 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
         self.user_id = interaction.user.id
         channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
 
-        await channel.set_permissions(interaction.user, send_messages=True)
 
         await interaction.response.send_message(
             "✅ Reply submitted! You have 20s to send an image/URL or type `skip`.", ephemeral=True
@@ -45,7 +44,6 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             if 'msg_received' in locals():
                 await msg_received.delete()
                 # Lock channel again
-                await channel.set_permissions(interaction.user, overwrite=None)
 
         # Embed for reply
         embed = discord.Embed(
