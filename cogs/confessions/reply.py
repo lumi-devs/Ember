@@ -83,8 +83,8 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                 await log_channel.send(f'Reply #{self.confession_id}', embed=log_embed)
 
             async with aiosqlite.connect(DB_PATH) as db:
-            cursor = await db.execute("SELECT user_id FROM confessions WHERE id=?", (self.confession_id,))
-            row = await cursor.fetchone()
+                cursor = await db.execute("SELECT user_id FROM confessions WHERE id=?", (self.confession_id,))
+                row = await cursor.fetchone()
 
             if row:
                 author_id = row[0]
