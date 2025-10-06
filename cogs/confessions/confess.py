@@ -67,13 +67,14 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
         )
         cleaner_cog = self.bot.get_cog("ConfessionCleaner")
         if cleaner_cog:
-           self.bot.loop.create_task(cleaner_cog.temporarily_allow_user(user.id, 20))
+            await cleaner_cog.allow_user_once(user.id)
 
         def check(m):
             return m.author.id == user.id and m.channel.id == CONFESSION_CHANNEL_ID
 
         try:
             msg_received = await self.bot.wait_for("message", timeout=20.0, check=check)
+            allow_user_once()
             image_url = await process_media(self.bot, msg_received.content, msg_received.attachments, MEDIA_CHANNEL_ID)
         except asyncio.TimeoutError:
             image_url = None

@@ -29,7 +29,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
         )
         cleaner_cog = self.bot.get_cog("ConfessionCleaner")
         if cleaner_cog:
-           self.bot.loop.create_task(cleaner_cog.temporarily_allow_user(user.id, 20))
+            await cleaner_cog.allow_user_once(user.id)
 
         def check(m):
             return m.author.id == user.id and m.channel.id == CONFESSION_CHANNEL_ID
