@@ -74,7 +74,6 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
 
         try:
             msg_received = await self.bot.wait_for("message", timeout=20.0, check=check)
-            allow_user_once()
             image_url = await process_media(self.bot, msg_received.content, msg_received.attachments, MEDIA_CHANNEL_ID)
         except asyncio.TimeoutError:
             image_url = None
