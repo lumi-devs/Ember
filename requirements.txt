@@ -10,3 +10,5 @@ pytubefix
 praw
 wget
 quart
+aiosqlite
+
