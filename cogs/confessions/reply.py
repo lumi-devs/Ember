@@ -35,7 +35,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             return m.author.id == self.user_id and m.channel.id == CONFESSION_CHANNEL_ID
 
         try:
-            msg_received = await self.bot.wait_for("message", timeout=10.0, check=check)
+            msg_received = await self.bot.wait_for("message", timeout=20.0, check=check)
             image_url = await process_media(self.bot, msg_received.content, msg_received.attachments, MEDIA_CHANNEL_ID)
         except asyncio.TimeoutError:
             image_url = None
@@ -69,6 +69,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                 )
             await thread.send(embed=embed)
 
+            # Log channel
             log_channel = self.bot.get_channel(LOG_CHANNEL_ID)
             if log_channel:
                 log_embed = discord.Embed(
@@ -81,7 +82,15 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                 log_embed.add_field(name="User", value=user.mention, inline=False)
                 if image_url:
                     log_embed.set_image(url=image_url)
-                await log_channel.send(f'Reply #{self.confession_id}',embed=log_embed)
+                await log_channel.send(f'Reply #{self.confession_id}', embed=log_embed)
+
+            # DM the confession author
+            confession_author = confession_msg.author
+            try:
+                await confession_author.send(embed=embed)
+            except discord.Forbidden:
+                # User has DMs closed
+                pass
 
         except Exception as e:
             await interaction.followup.send(f"❌ Failed to post reply: {e}", ephemeral=True)
