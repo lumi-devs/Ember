@@ -79,7 +79,10 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
         finally:
             # delete user’s message to keep channel clean
             if 'msg_received' in locals():
-                await msg_received.delete()
+                try:
+                    await msg_received.delete()
+                except:
+                    pass
 
         if image_url:
             embed.set_image(url=image_url)

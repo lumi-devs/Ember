@@ -41,7 +41,7 @@ class ConfessionCleaner(commands.Cog):
         channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
         member = channel.guild.get_member(user_id)
         if member:
-            await channel.set_permissions(member, send_messages=True)
+            #await channel.set_permissions(member, send_messages=True)
 
         # Wait for duration
         await asyncio.sleep(duration)
@@ -50,8 +50,6 @@ class ConfessionCleaner(commands.Cog):
         self.allowed_users.discard(user_id)
 
         # Remove explicit permission (locks channel again for user)
-        if member:
-            await channel.set_permissions(member, send_messages=False)
 
 
 async def setup(bot):
