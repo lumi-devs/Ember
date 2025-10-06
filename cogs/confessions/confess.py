@@ -30,10 +30,11 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
         self.user_id = interaction.user.id
         channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
         log_channel = self.bot.get_channel(LOG_CHANNEL_ID)
+        user = await self.bot.fetch_user(self.user_id)
 
         # Check blacklist
         async with aiosqlite.connect(DB_PATH) as db:
-            cursor = await db.execute("SELECT 1 FROM confessban WHERE user_id=?", (self.user_id,))
+            cursor = await db.execute("SELECT 1 FROM confessban WHERE user_id=?", (user.id,))
             if await cursor.fetchone():
                 return await interaction.response.send_message("❌ You are banned.", ephemeral=True)
 
@@ -41,7 +42,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute(
                 "INSERT INTO confessions (user_id, title, description) VALUES (?, ?, ?)",
-                (self.user_id, self.title_input.value, self.description_input.value)
+                (user.id, self.title_input.value, self.description_input.value)
             )
             await db.commit()
             confession_id = cursor.lastrowid
@@ -66,10 +67,10 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
         )
         cleaner_cog = self.bot.get_cog("ConfessionCleaner")
         if cleaner_cog:
-           self.bot.loop.create_task(cleaner_cog.temporarily_allow_user(self.user_id, 20))
+           self.bot.loop.create_task(cleaner_cog.temporarily_allow_user(user.id, 20))
 
         def check(m):
-            return m.author.id == self.user_id and m.channel.id == CONFESSION_CHANNEL_ID
+            return m.author.id == user.id and m.channel.id == CONFESSION_CHANNEL_ID
 
         try:
             msg_received = await self.bot.wait_for("message", timeout=20.0, check=check)
@@ -98,7 +99,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 color=discord.Color.purple(),
                 timestamp=datetime.utcnow()
             )
-            user = await self.bot.fetch_user(self.user_id)
+            user = await self.bot.fetch_user(user.id)
             log_embed.add_field(name="User", value=user.mention, inline=False)
             if image_url:
                 log_embed.set_image(url=image_url)
