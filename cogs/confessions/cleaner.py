@@ -37,19 +37,6 @@ class ConfessionCleaner(commands.Cog):
         """Temporarily allow a user to send messages in the confession channel."""
         self.allowed_users.add(user_id)
 
-        # Give user explicit send_messages permission in channel
-        channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
-        member = channel.guild.get_member(user_id)
-        if member:
-            #await channel.set_permissions(member, send_messages=True)
-
-        # Wait for duration
-        await asyncio.sleep(duration)
-
-        # Remove user from allowed list
-        self.allowed_users.discard(user_id)
-
-        # Remove explicit permission (locks channel again for user)
 
 
 async def setup(bot):
