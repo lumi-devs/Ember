@@ -57,39 +57,39 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
         )
         if image_url:
             embed.set_image(url=image_url)
-    try:
-        confession_msg = await channel.fetch_message(self.message_id)
-        thread = confession_msg.thread
-        if not thread:
-            thread = await confession_msg.create_thread(
-                name=f"Confession #{self.confession_id} Replies",
-                auto_archive_duration=60
-            )
-        await thread.send(embed=embed)
-
-        # Log channel
-        log_channel = self.bot.get_channel(LOG_CHANNEL_ID)
-        if log_channel:
-            log_embed = discord.Embed(
-                title=f"Reply to Confession #{self.confession_id}",
-                description=self.reply_input.value,
-                color=discord.Color.purple(),
-                timestamp=datetime.utcnow()
-            )
-            user = await self.bot.fetch_user(self.user_id)
-            log_embed.add_field(name="User", value=user.mention, inline=False)
-            if image_url:
-                log_embed.set_image(url=image_url)
-            await log_channel.send(f'Reply #{self.confession_id}', embed=log_embed)
-
-        # DM the confession author
-        confession_author = confession_msg.author
         try:
-            await confession_author.send(embed=embed)
-        except discord.Forbidden:
-            # User has DMs closed
-            pass
+            confession_msg = await channel.fetch_message(self.message_id)
+            thread = confession_msg.thread
+            if not thread:
+                thread = await confession_msg.create_thread(
+                    name=f"Confession #{self.confession_id} Replies",
+                    auto_archive_duration=60
+                )
+            await thread.send(embed=embed)
 
-    except Exception as e:
-        await interaction.followup.send(f"❌ Failed to post reply: {e}", ephemeral=True)
+            # Log channel
+            log_channel = self.bot.get_channel(LOG_CHANNEL_ID)
+            if log_channel:
+                log_embed = discord.Embed(
+                    title=f"Reply to Confession #{self.confession_id}",
+                    description=self.reply_input.value,
+                    color=discord.Color.purple(),
+                    timestamp=datetime.utcnow()
+                )
+                user = await self.bot.fetch_user(self.user_id)
+                log_embed.add_field(name="User", value=user.mention, inline=False)
+                if image_url:
+                    log_embed.set_image(url=image_url)
+                await log_channel.send(f'Reply #{self.confession_id}', embed=log_embed)
+
+            # DM the confession author
+            confession_author = confession_msg.author
+            try:
+                await confession_author.send(embed=embed)
+            except discord.Forbidden:
+                # User has DMs closed
+                pass
+
+        except Exception as e:
+            await interaction.followup.send(f"❌ Failed to post reply: {e}", ephemeral=True)
 
