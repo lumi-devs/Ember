@@ -35,7 +35,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             return m.author.id == user.id and m.channel.id == CONFESSION_CHANNEL_ID
 
         try:
-            msg_received = await self.bot.wait_for("message", timeout=10.0, check=check)
+            msg_received = await self.bot.wait_for("message", timeout=20.0, check=check)
             image_url = await process_media(self.bot, msg_received.content, msg_received.attachments, MEDIA_CHANNEL_ID)
         except asyncio.TimeoutError:
             image_url = None
