@@ -42,7 +42,10 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
         finally:
             # delete user’s message to keep channel clean
             if 'msg_received' in locals():
-                await msg_received.delete()
+                try:
+                    await msg_received.delete()
+                except:
+                    pass
                 # Lock channel again
 
         # Embed for reply
