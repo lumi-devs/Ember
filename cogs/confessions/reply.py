@@ -58,7 +58,6 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
         if image_url:
             embed.set_image(url=image_url)
 
-        # Fetch original confession message
         try:
             confession_msg = await channel.fetch_message(self.message_id)
             thread = confession_msg.thread
@@ -84,13 +83,23 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                     log_embed.set_image(url=image_url)
                 await log_channel.send(f'Reply #{self.confession_id}', embed=log_embed)
 
-            # DM the confession author
-            confession_author = confession_msg.author
-            try:
-                await confession_author.send(embed=embed)
-            except discord.Forbidden:
-                # User has DMs closed
-                pass
+            # DM the actual confession owner (from DB)
+            import aiosqlite
+            async with aiosqlite.connect(DB_PATH) as db:
+                async with db.execute(
+                    "SELECT user_id FROM confessions WHERE id = ?", (self.confession_id,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    if row:
+                        confession_owner_id = row[0]
+                        # Skip if owner is a bot (safety)
+                        if confession_owner_id != self.bot.user.id:
+                            try:
+                                owner = await self.bot.fetch_user(confession_owner_id)
+                                await owner.send(embed=embed)
+                            except discord.Forbidden:
+                                # Owner has DMs closed
+                                pass
 
         except Exception as e:
             await interaction.followup.send(f"❌ Failed to post reply: {e}", ephemeral=True)
