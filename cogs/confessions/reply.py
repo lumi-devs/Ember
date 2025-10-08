@@ -43,7 +43,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             # delete user’s message to keep channel clean
             if 'msg_received' in locals():
                 try:
-                    await async.sleep(2)
+                    await asyncio.sleep(2)
                     await msg_received.delete()
                 except:
                     pass
