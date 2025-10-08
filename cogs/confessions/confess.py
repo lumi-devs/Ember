@@ -81,6 +81,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             # delete user’s message to keep channel clean
             if 'msg_received' in locals():
                 try:
+                    await asyncio.sleep(2)
                     await msg_received.delete()
                 except:
                     pass
