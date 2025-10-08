@@ -37,6 +37,7 @@ class ConfessionCleaner(commands.Cog):
         else:
             # Delete immediately
             try:
+                await asyncio.sleep(2)
                 await message.delete()
             except:
                 pass
