@@ -1,8 +1,10 @@
 import discord
+import asyncio
 from discord.ext import commands
 
 WATCH_CHANNEL_IDS = [
     1418501302626816010,  # dragrequest
+    1399658407178272798 
 ]
 
 class DeleteAll(commands.Cog):
@@ -24,9 +26,11 @@ class DeleteAll(commands.Cog):
             return
 
         try:
+            await asyncio.sleep(2)
             await message.delete()
         except Exception as e:
             print(f"[DeleteAll] Failed to delete message: {e}")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(DeleteAll(bot))
+
