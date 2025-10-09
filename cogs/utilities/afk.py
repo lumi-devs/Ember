@@ -36,7 +36,7 @@ def human_timedelta(dt: datetime) -> str:
 class AFK(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db_path = "afk.db"
+        self.db_path = "data/afk.db"
         self.bot.loop.create_task(self.init_db())
 
     async def init_db(self):
