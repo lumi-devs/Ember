@@ -135,6 +135,7 @@ class RoleUpdate(commands.Cog):
         # Remove secondary color
         if secondary is None or secondary.lower() == 'remove':
             if role_data.get("secondary_colour"):
+                await role.edit(color=primary, secondary_color=None)
                 role_data.pop("secondary_colour", None)
                 role_data["color_type"] = "normal"
                 save_db(db)
@@ -159,31 +160,114 @@ class RoleUpdate(commands.Cog):
     async def tasicon(self, ctx, *, icon: str = None):
         """Update or remove role icon. Usage: .TASicon <emoji> or .TASicon remove"""
         db, file, result = self.get_role_data(ctx)
-        if not db:
-            await ctx.send(result, ephemeral=True)
+        if isinstance(result, Embed):
+            await ctx.send(embed=result, ephemeral=True)
             return
 
         role, role_data = result
 
         if icon and icon.lower() != 'remove':
             try:
-                icon_type, icon_value = await self.set_role_icon(role, icon)
+                # Check if it's a custom emoji like <:smile:1234567890>
+                match = re.match(r"<a?:(\w+):(\d+)>", icon)
+                if match:
+                    emoji_name, emoji_id = match.groups()
+                    emoji_id = int(emoji_id)
+                    
+                    # Try to get emoji from guild first
+                    emoji = discord.utils.get(ctx.guild.emojis, id=emoji_id)
+                    if emoji:
+                        # Use the emoji directly if it's in the guild
+                        emoji_bytes = await emoji.read()
+                        await role.edit(display_icon=emoji_bytes)
+                        icon_type = "custom"
+                        icon_value = str(emoji_id)
+                    else:
+                        # If emoji not in guild, try to download it
+                        emoji_url = f"https://cdn.discordapp.com/emojis/{emoji_id}.{'gif' if icon.startswith('<a:') else 'png'}"
+                        try:
+                            async with aiohttp.ClientSession() as session:
+                                async with session.get(emoji_url) as resp:
+                                    if resp.status == 200:
+                                        emoji_bytes = await resp.read()
+                                        await role.edit(display_icon=emoji_bytes)
+                                        icon_type = "custom"
+                                        icon_value = str(emoji_id)
+                                    else:
+                                        raise ValueError("Could not download emoji image")
+                        except Exception as e:
+                            raise ValueError(f"Custom emoji not found or inaccessible: {e}")
+                else:
+                    # For unicode emojis, we need to convert them to images
+                    # Using Twemoji CDN to convert unicode to image
+                    try:
+                        # Convert unicode emoji to codepoints
+                        codepoints = '-'.join([f'{ord(c):x}' for c in icon])
+                        emoji_url = f"https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/{codepoints}.png"
+                        
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(emoji_url) as resp:
+                                if resp.status == 200:
+                                    emoji_bytes = await resp.read()
+                                    await role.edit(display_icon=emoji_bytes)
+                                    icon_type = "unicode"
+                                    icon_value = icon
+                                else:
+                                    # Alternative: use another emoji service
+                                    alt_url = f"https://emojiapi.dev/api/v1/{icon}.png"
+                                    async with session.get(alt_url) as alt_resp:
+                                        if alt_resp.status == 200:
+                                            emoji_bytes = await alt_resp.read()
+                                            await role.edit(display_icon=emoji_bytes)
+                                            icon_type = "unicode"
+                                            icon_value = icon
+                                        else:
+                                            raise ValueError("Unicode emoji could not be converted to image")
+                    except Exception as e:
+                        raise ValueError(f"Could not set unicode emoji: {e}")
+
+                # Save to database
                 role_data["icon_type"] = icon_type
                 role_data["icon_value"] = icon_value
                 save_db(db)
-                await ctx.send("✅ Role icon updated!", ephemeral=True)
+                
+                embed = self.create_success_embed(
+                    "✅ Role Icon Updated",
+                    f"Your role icon has been updated to: {icon}"
+                )
+                await ctx.send(embed=embed, ephemeral=True)
+                
             except Exception as e:
-                await ctx.send(f"❌ Failed to set icon: {e}", ephemeral=True)
+                embed = self.create_error_embed(
+                    f"❌ Failed to set icon: {str(e)}"
+                )
+                await ctx.send(embed=embed, ephemeral=True)
+                
         else: 
             # Remove icon
             if role_data.get("icon_value"): 
-                await role.edit(unicode_emoji=None, display_icon=None)
-                role_data.pop("icon_type", None) 
-                role_data.pop("icon_value", None) 
-                save_db(db)
-                await ctx.send("✅ Role icon removed!", ephemeral=True) 
+                try:
+                    await role.edit(display_icon=None)
+                    role_data.pop("icon_type", None) 
+                    role_data.pop("icon_value", None) 
+                    save_db(db)
+                    
+                    embed = self.create_success_embed(
+                        "✅ Role Icon Removed",
+                        "Your role icon has been successfully removed."
+                    )
+                    await ctx.send(embed=embed, ephemeral=True) 
+                except Exception as e:
+                    embed = self.create_error_embed(
+                        f"❌ Failed to remove icon: {str(e)}"
+                    )
+                    await ctx.send(embed=embed, ephemeral=True)
             else: 
-                await ctx.send("ℹ️ No icon set.", ephemeral=True)
+                embed = self.create_info_embed(
+                    "ℹ️ No Icon Set",
+                    "No role icon is currently set."
+                )
+                await ctx.send(embed=embed, ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(RoleUpdate(bot))
