@@ -18,7 +18,7 @@ def save_db(db):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(db, f, indent=4)
 
-class CustomRoles(commands.Cog):
+class CustomRoleDelete(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.mod_ids = [int(x) for x in os.environ.get("MOD_IDS", "").split(",") if x]
@@ -62,4 +62,4 @@ class CustomRoles(commands.Cog):
             await ctx.send(f"✅ Deleted {target_user.mention}'s role.")
 
 async def setup(bot):
-    await bot.add_cog(CustomRoles(bot))
+    await bot.add_cog(CustomRoleDelete(bot))

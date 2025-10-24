@@ -57,12 +57,8 @@ class CustomRoles(commands.Cog):
             # Get the placed above role
             placed_above_role = ctx.guild.get_role(int(os.environ.get("FIXED_ROLE_ID")))
             
-            if placed_above_role:
-                # Position the new role above the specified role
-                await role.edit(position=placed_above_role.position + 1)
-            else:
-                # Fallback: position below booster role if placed_above_role not found
-                await role.edit(position=booster_role.position - 1)
+
+            await role.edit(position=placed_above_role.position)
 
             await ctx.author.add_roles(role)
 
