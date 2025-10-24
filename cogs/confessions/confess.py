@@ -144,7 +144,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 color=discord.Color.purple(),
                 timestamp=datetime.utcnow()
             )
-            log_embed.add_field(name="User", value=f"{user} ({user.id})", inline=False)
+            log_embed.add_field(name="User", value=f"{user.mention} ({user.id})", inline=False)
             if image_url:
                 log_embed.set_image(url=image_url)
             await log_channel.send(embed=log_embed)

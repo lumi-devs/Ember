@@ -1,178 +1,188 @@
 import os
 import discord
-from discord import app_commands, Color
 from discord.ext import commands
+from discord import Color
 import re
 import json
+import aiohttp
+import io
 
-async def setup(bot: discord.Client):
-    update_group = app_commands.Group(name="update", description="Update your custom role")
+# --- Local JSON helpers ---
+def load_db(file_path="data/custom_roles.json"):
+    """Load database from local JSON file"""
+    try:
+        with open(file_path, 'r') as f:
+            return json.load(f), file_path
+    except FileNotFoundError:
+        # Return empty database structure if file doesn't exist
+        return {"roles": {}, "blacklist": []}, file_path
 
-    # --- Local JSON helpers ---
-    def load_db(file_path="data/ustom_roles.json"):
-        """Load database from local JSON file"""
-        try:
-            with open(file_path, 'r') as f:
-                return json.load(f), file_path
-        except FileNotFoundError:
-            # Return empty database structure if file doesn't exist
-            return {"roles": {}, "blacklist": []}, file_path
+def save_db(db, file_path="data/custom_roles.json"):
+    """Save database to local JSON file"""
+    with open(file_path, 'w') as f:
+        json.dump(db, f, indent=4)
 
-    def save_db(db, file_path="custom_roles.json"):
-        """Save database to local JSON file"""
-        with open(file_path, 'w') as f:
-            json.dump(db, f, indent=4)
+class RoleUpdate(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
 
     # --- Helper ---
-    def get_role_data(interaction):
+    def get_role_data(self, ctx):
         db, file = load_db()
-        if str(interaction.user.id) in db.get("blacklist", []):
+        if str(ctx.author.id) in db.get("blacklist", []):
             return None, None, "🚫 You are blacklisted and cannot use this command."
-        role_data = db["roles"].get(str(interaction.user.id))
+        role_data = db["roles"].get(str(ctx.author.id))
         if not role_data:
             return None, None, "❌ You don't have a role."
-        role = interaction.guild.get_role(role_data["role_id"])
+        role = ctx.guild.get_role(role_data["role_id"])
         if not role:
             return None, None, "⚠️ Role not found."
         return db, file, (role, role_data)
 
-    # --- /update name ---
-    @update_group.command(name="name", description="Update your role name")
-    async def update_name(interaction: discord.Interaction, new_name: str):
-        await interaction.response.defer()
-        db, file, result = get_role_data(interaction)
+    async def download_emoji_image(self, emoji_url):
+        """Download emoji image and return as bytes"""
+        async with aiohttp.ClientSession() as session:
+            async with session.get(emoji_url) as resp:
+                if resp.status == 200:
+                    return await resp.read()
+                else:
+                    raise ValueError(f"Failed to download emoji image: {resp.status}")
+
+    async def set_role_icon(self, role: discord.Role, emoji_input: str):
+        """Sets the role icon based on input emoji. Returns (icon_type, icon_value) for DB storage."""
+        if not emoji_input:
+            await role.edit(unicode_emoji=None, display_icon=None)
+            return None, None
+
+        # Check if custom emoji like <:smile:1234567890>
+        match = re.match(r"<a?:(\w+):(\d+)>", emoji_input)
+        if match:
+            emoji_name, emoji_id = match.groups()
+            emoji_id = int(emoji_id)
+            
+            # Try to get emoji from guild
+            emoji = discord.utils.get(role.guild.emojis, id=emoji_id)
+            if emoji:
+                # Use the emoji directly if it's in the guild
+                emoji_bytes = await emoji.read()
+                await role.edit(display_icon=emoji_bytes)
+                return "custom", str(emoji_id)
+            else:
+                # If emoji not in guild, try to download it
+                emoji_url = f"https://cdn.discordapp.com/emojis/{emoji_id}.{'gif' if emoji_input.startswith('<a:') else 'png'}"
+                try:
+                    emoji_bytes = await self.download_emoji_image(emoji_url)
+                    await role.edit(display_icon=emoji_bytes)
+                    return "custom", str(emoji_id)
+                except Exception as e:
+                    raise ValueError(f"Could not use custom emoji: {e}")
+
+        # Otherwise assume unicode emoji
+        await role.edit(unicode_emoji=emoji_input, display_icon=None)
+        return "unicode", emoji_input
+
+    # --- .TASname ---
+    @commands.command(name='TASname', description='Update your role name')
+    async def tasname(self, ctx, *, new_name: str):
+        """Update your role name. Usage: .TASname <new name>"""
+        db, file, result = self.get_role_data(ctx)
         if not db:
-            await interaction.followup.send(result, ephemeral=True)
+            await ctx.send(result, ephemeral=True)
             return
         role, role_data = result
         await role.edit(name=new_name)
         role_data["name"] = new_name
         save_db(db)
-        await interaction.followup.send(f"✅ Role name updated to **{new_name}**!")
+        await ctx.send(f"✅ Role name updated to **{new_name}**!", ephemeral=True)
 
-    # --- /update color (primary) ---
-    @update_group.command(name="color", description="Update your role primary color")
-    async def update_color(interaction: discord.Interaction, color: str):
-        await interaction.response.defer()
-        db, file, result = get_role_data(interaction)
+    # --- .TASprimary ---
+    @commands.command(name='TASprimary', description='Update your role primary color')
+    async def tasprimary(self, ctx, color: str):
+        """Update your role primary color. Usage: .TASprimary #hexcolor"""
+        db, file, result = self.get_role_data(ctx)
         if not db:
-            await interaction.followup.send(result, ephemeral=True)
+            await ctx.send(result, ephemeral=True)
             return
         role, role_data = result
         try:
             primary = Color.from_str(color)
             await role.edit(colour=primary)
             role_data["color"] = color
-            if role_data.get("secondary_colour"):
-                role_data["color_type"] = "gradient"
-            else:
-                role_data["color_type"] = "normal"
+            role_data["color_type"] = "normal"  # Reset to normal when setting primary
             save_db(db)
-            await interaction.followup.send(f"✅ Primary color updated to `{color}`!")
+            await ctx.send(f"✅ Primary color updated to `{color}`!", ephemeral=True)
         except Exception as e:
-            await interaction.followup.send(f"❌ Invalid color: {e}", ephemeral=True)
+            await ctx.send(f"❌ Invalid color format. Use hex like #ff0000", ephemeral=True)
 
-    # --- /update secondary ---
-    @update_group.command(name="secondary", description="Update or remove secondary color")
-    async def update_secondary(interaction: discord.Interaction, secondary: str = ''):
-        await interaction.response.defer()
-        db, file, result = get_role_data(interaction)
+    # --- .TASsecondary ---
+    @commands.command(name='TASsecondary', description='Update or remove secondary color')
+    async def tassecondary(self, ctx, secondary: str = None):
+        """Update or remove secondary color. Usage: .TASsecondary [#hexcolor] or .TASsecondary remove"""
+        db, file, result = self.get_role_data(ctx)
         if not db:
-            await interaction.followup.send(result, ephemeral=True)
+            await ctx.send(result, ephemeral=True)
             return
+        
         role, role_data = result
+        
         # Check if primary color exists
         primary_hex = role_data.get("color")
-        if not primary_hex or primary_hex.lower() == "default":
-            await interaction.followup.send("⚠️ Please set a primary color first using `/update color`.", ephemeral=True)
+        if not primary_hex:
+            await ctx.send("⚠️ Please set a primary color first using `.TASprimary`.", ephemeral=True)
             return
-        try:
-            primary_obj = Color.from_str(primary_hex)
-        except Exception:
-            await interaction.followup.send("❌ Stored primary color is invalid. Please set it again with `/update color`.", ephemeral=True)
-            return
-        # --- If secondary provided ---
-        if secondary.strip():
-            try:
-                secondary_obj = Color.from_str(secondary)
-
-                # save in DB
-                role_data["secondary_colour"] = secondary
-                role_data["color_type"] = "gradient"
-
-                # NOTE: Discord roles don't support gradients natively, so we just store it in DB
-                await role.edit(colour=primary_obj)
-
-                save_db(db)
-                await interaction.followup.send(
-                    f"✅ Secondary color set to `{secondary}` (gradient stored in DB)."
-                )
-            except Exception as e:
-                await interaction.followup.send(f"❌ Invalid secondary color: {e}", ephemeral=True)
-
-        # --- If no secondary (remove gradient) ---
-        else:
+        
+        # Remove secondary color
+        if secondary is None or secondary.lower() == 'remove':
             if role_data.get("secondary_colour"):
                 role_data.pop("secondary_colour", None)
                 role_data["color_type"] = "normal"
-
-                await role.edit(colour=primary_obj, secondary_colour=secondary_obj)  # reset to primary only
-
                 save_db(db)
-                await interaction.followup.send("ℹ️ Secondary color removed, role is now primary only.")
+                await ctx.send("✅ Secondary color removed!", ephemeral=True)
             else:
-                await interaction.followup.send("ℹ️ No secondary color set.", ephemeral=True)
+                await ctx.send("ℹ️ No secondary color set.", ephemeral=True)
+            return
 
-    async def set_role_icon(role: discord.Role, emoji_str: str):
-        """ Sets the role icon based on input emoji. Returns (icon_type, icon_value) for DB storage. """
-        if not emoji_str:
-            await role.edit(unicode_emoji=None, display_icon=None)
-            return None, None
+        # Set secondary color
+        try:
+            secondary_obj = Color.from_str(secondary)
+            await role.edit(secondary_color=secondary_obj)
+            role_data["secondary_colour"] = secondary
+            role_data["color_type"] = "gradient"
+            save_db(db)
+            await ctx.send(f"✅ Secondary color set to `{secondary}`!", ephemeral=True)
+        except Exception as e:
+            await ctx.send(f"❌ Invalid color format. Use hex like #ff0000", ephemeral=True)
 
-        # Check if custom emoji like <:smile:1234567890>
-        match = re.match(r"<a?:\w+:(\d+)>", emoji_str)
-        if match:
-            emoji_id = int(match.group(1))
-            emoji = discord.utils.get(role.guild.emojis, id=emoji_id)
-            if not emoji:
-                raise ValueError("Emoji not found in this server.")
-            emoji_bytes = await emoji.read()
-            await role.edit(display_icon=emoji_bytes)
-            return "custom", str(emoji_id)
-
-        # Otherwise assume unicode emoji
-        await role.edit(unicode_emoji=emoji_str, display_icon=None)
-        return "unicode", emoji_str
-
-    # --- /update icon ---
-    @update_group.command(name="icon", description="Update or remove role icon")
-    async def update_icon(interaction: discord.Interaction, icon: str = None):
-        await interaction.response.defer()
-        db, file, result = get_role_data(interaction)
+    # --- .TASicon ---
+    @commands.command(name='TASicon', description='Update or remove role icon')
+    async def tasicon(self, ctx, *, icon: str = None):
+        """Update or remove role icon. Usage: .TASicon <emoji> or .TASicon remove"""
+        db, file, result = self.get_role_data(ctx)
         if not db:
-            await interaction.followup.send(result, ephemeral=True)
+            await ctx.send(result, ephemeral=True)
             return
 
         role, role_data = result
 
-        if icon:
+        if icon and icon.lower() != 'remove':
             try:
-                icon_type, icon_value = await set_role_icon(role, icon)
+                icon_type, icon_value = await self.set_role_icon(role, icon)
                 role_data["icon_type"] = icon_type
                 role_data["icon_value"] = icon_value
                 save_db(db)
-                await interaction.followup.send("✅ Icon updated!")
+                await ctx.send("✅ Role icon updated!", ephemeral=True)
             except Exception as e:
-                await interaction.followup.send(f"❌ Invalid icon: {e}", ephemeral=True)
+                await ctx.send(f"❌ Failed to set icon: {e}", ephemeral=True)
         else: 
+            # Remove icon
             if role_data.get("icon_value"): 
                 await role.edit(unicode_emoji=None, display_icon=None)
                 role_data.pop("icon_type", None) 
                 role_data.pop("icon_value", None) 
                 save_db(db)
-                await interaction.followup.send("ℹ️ Icon removed.") 
+                await ctx.send("✅ Role icon removed!", ephemeral=True) 
             else: 
-                await interaction.followup.send("ℹ️ No icon set.", ephemeral=True)
+                await ctx.send("ℹ️ No icon set.", ephemeral=True)
 
-    # register the group
-    bot.tree.add_command(update_group)
+async def setup(bot):
+    await bot.add_cog(RoleUpdate(bot))

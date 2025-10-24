@@ -1,5 +1,5 @@
 import discord
-from discord import app_commands
+from discord.ext import commands
 from datetime import datetime
 from pathlib import Path
 import json
@@ -14,68 +14,55 @@ def load_db():
             return json.load(f)
     return {"roles": {}, "blacklist": []}
 
-# --- Setup ---
-async def setup(bot: discord.Client):
-    @bot.tree.command(name="me", description="View your custom role info")
-    async def me(interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+class RoleInfo(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @commands.command(name='TASrole', description='View your custom role info')
+    async def tasrole(self, ctx):
+        """View your custom role info. Usage: .TASrole"""
+        
         db = load_db()
 
         # --- Blacklist check ---
-        if str(interaction.user.id) in db.get("blacklist", []):
-            await interaction.followup.send("🚫 You are blacklisted and cannot use this command.", ephemeral=True)
+        if str(ctx.author.id) in db.get("blacklist", []):
+            await ctx.send("🚫 You are blacklisted and cannot use this command.", ephemeral=True)
             return
 
         # --- Role check ---
-        role_data = db["roles"].get(str(interaction.user.id))
+        role_data = db["roles"].get(str(ctx.author.id))
         if not role_data:
-            await interaction.followup.send("❌ You don't have a role.", ephemeral=True)
+            await ctx.send("❌ You don't have a role.", ephemeral=True)
             return
 
-        role = interaction.guild.get_role(role_data["role_id"])
+        role = ctx.guild.get_role(role_data["role_id"])
         if not role:
-            await interaction.followup.send("⚠️ Role not found.", ephemeral=True)
+            await ctx.send("⚠️ Role not found.", ephemeral=True)
             return
-
-        # --- Handle icon rendering ---
-        icon_value = role_data.get("icon_value")
-        icon_type = role_data.get("icon_type")
-
-        if not icon_value:
-            if role.unicode_emoji:
-                icon_type = "unicode"
-                icon_value = role.unicode_emoji
-            elif role.display_icon:
-                icon_type = "custom"
-                icon_value = str(role.display_icon.id)
-
-        icon_display = "None"
-        if icon_value:
-            if icon_type == "unicode":
-                icon_display = icon_value
-            elif icon_type == "custom":
-                emoji_obj = interaction.guild.get_emoji(int(icon_value))
-                icon_display = str(emoji_obj) if emoji_obj else "(not found)"
 
         # --- Build embed ---
         embed = discord.Embed(
             title="🌟 Your Role Info",
-            color=discord.Color.from_str(role_data["color"]) if role_data.get("color") else discord.Color.blurple()
+            color=discord.Color.orange()
         )
-        embed.add_field(name="👤 Name", value=role.name, inline=True)
-        embed.add_field(name="🎨 Primary Color", value=role_data.get("color", "None"), inline=True)
-        embed.add_field(name="🌈 Type", value=role_data.get("color_type", "normal"), inline=True)
-
-        if role_data.get("color_type") == "gradient":
-            embed.add_field(name="🎨 Secondary Color", value=role_data.get("secondary_colour", "None"), inline=True)
-
-        embed.add_field(name="🔹 Icon", value=icon_display, inline=True)
+        embed.add_field(name="👤 Role Name", value=role.name, inline=True)
+        embed.add_field(name="🆔 Role ID", value=role.id, inline=True)
+        embed.add_field(name="🎨 Color", value=str(role.color), inline=True)
+        
+        # Add creation date if available
+        if role_data.get("created_at"):
+            embed.add_field(name="📅 Created", value=role_data["created_at"][:10], inline=True)
+        
+        embed.add_field(name="👤 Created For", value=ctx.author.mention, inline=True)
 
         # --- Footer with timestamp + guild icon ---
         timestamp = datetime.now().strftime('%d-%m-%Y %I:%M %p IST')
-        if interaction.guild.icon:
-            embed.set_footer(text=f"{interaction.guild.name} • {timestamp}", icon_url=interaction.guild.icon.url)
+        if ctx.guild.icon:
+            embed.set_footer(text=f"{ctx.guild.name} • {timestamp}", icon_url=ctx.guild.icon.url)
         else:
-            embed.set_footer(text=f"{interaction.guild.name} • {timestamp}")
+            embed.set_footer(text=f"{ctx.guild.name} • {timestamp}")
 
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await ctx.send(embed=embed, ephemeral=True)
+
+async def setup(bot):
+    await bot.add_cog(RoleInfo(bot))

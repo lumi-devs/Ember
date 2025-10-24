@@ -4,7 +4,8 @@ import os
 import json
 from pathlib import Path
 import discord
-from discord import app_commands, Color, Embed
+from discord.ext import commands
+from discord import Color, Embed
 
 # Ensure data folder exists
 DATA_FILE = Path("data/custom_roles.json")
@@ -23,89 +24,82 @@ def save_db(db):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(db, f, indent=4)
 
-async def setup(bot: discord.Client):
-    @bot.tree.command(name="create_role", description="Create a custom booster role")
-    @app_commands.describe(
-        name="Name of your role",
-        color="Color hex like #ff0000 (optional)"
-    )
-    async def create_role(interaction: discord.Interaction, name: str, color: str = None):
-        await interaction.response.defer()
-        booster_role = interaction.guild.get_role(int(os.environ.get("BOOSTER_ROLE_ID")))
-        if booster_role not in interaction.user.roles:
-            await interaction.followup.send("🚫 Booster role required.")
+class CustomRoles(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @commands.command(name='TAScreate', description='Create a custom booster role')
+    async def tascreate(self, ctx, *, name: str):
+        """Create a custom booster role. Usage: .TAScreate <role_name>"""
+        
+        booster_role = ctx.guild.get_role(int(os.environ.get("BOOSTER_ROLE_ID")))
+        if booster_role not in ctx.author.roles:
+            await ctx.send("🚫 Booster role required.")
             return
 
         db = load_db()
 
-        if str(interaction.user.id) in db.get("blacklist", []):
-            await interaction.followup.send("🚫 You are blacklisted and cannot use this command.", ephemeral=True)
+        if str(ctx.author.id) in db.get("blacklist", []):
+            await ctx.send("🚫 You are blacklisted and cannot use this command.")
             return
 
-        if str(interaction.user.id) in db["roles"]:
-            await interaction.followup.send("❌ You already have a role.")
-            return
-
-        # Validate color
-        try:
-            primary_color = Color.from_str(color) if color else Color.default()
-        except Exception:
-            await interaction.followup.send("❌ Invalid color format. Use hex like #ff0000", ephemeral=True)
+        if str(ctx.author.id) in db["roles"]:
+            await ctx.send("❌ You already have a role.")
             return
 
         try:
-            # Create role
-            role = await interaction.guild.create_role(
+            # Create role with default color
+            role = await ctx.guild.create_role(
                 name=name,
-                colour=primary_color,
-                reason=f"Custom booster role for {interaction.user}"
+                reason=f"Custom booster role for {ctx.author}"
             )
-            role = await interaction.guild.fetch_role(role.id)
-            await asyncio.sleep(2)
+            
+            # Get the placed above role
+            placed_above_role = ctx.guild.get_role(int(os.environ.get("PLACED_ABOVE_ROLE_ID")))
+            
+            if placed_above_role:
+                # Position the new role above the specified role
+                await role.edit(position=placed_above_role.position + 1)
+            else:
+                # Fallback: position below booster role if placed_above_role not found
+                await role.edit(position=booster_role.position - 1)
 
-            # Fix role position
-            fixed_role = interaction.guild.get_role(int(os.environ.get("FIXED_ROLE_ID", 0)))
-            if fixed_role:
-                await role.edit(position=fixed_role.position)
-
-            await interaction.user.add_roles(role)
+            await ctx.author.add_roles(role)
 
             # Embed confirmation
             IST = timezone(timedelta(hours=5, minutes=30))
             now_ist = datetime.now(IST)
-            sidebar_color = role.color if role.color.value != 0 else Color.light_grey()
 
             embed = Embed(
-                color=sidebar_color,
+                color=Color.gold(),
                 timestamp=now_ist
             )
             embed.set_author(
                 name="New Booster Role created!",
-                icon_url=interaction.user.avatar.url if interaction.user.avatar else None
+                icon_url=ctx.author.avatar.url if ctx.author.avatar else None
             )
-            embed.add_field(name="Name", value=str(role), inline=True)
-            embed.add_field(name="Color", value=color or "Default", inline=True)
+            embed.add_field(name="Role Name", value=name, inline=True)
+            embed.add_field(name="Created For", value=ctx.author.mention, inline=True)
             embed.set_footer(
                 text="Thanks for boosting",
-                icon_url=interaction.guild.icon.url if interaction.guild.icon else None
+                icon_url=ctx.guild.icon.url if ctx.guild.icon else None
             )
             embed.set_image(url="https://cdn.discordapp.com/attachments/1393171142436458558/1415000838329339945/GWygmv0.gif")
 
-            await interaction.followup.send(embed=embed)
+            await ctx.send(embed=embed)
 
         except Exception as e:
             print(e)
-            await interaction.followup.send(f"❌ Role creation failed: {e}", ephemeral=True)
+            await ctx.send(f"❌ Role creation failed: {e}")
             return
 
         # --- Save to DB locally ---
         ist_time = datetime.now(timezone(timedelta(hours=5, minutes=30)))
-        db["roles"][str(interaction.user.id)] = {
+        db["roles"][str(ctx.author.id)] = {
             "role_id": role.id,
             "name": name,
-            "color": color or "default",
             "created_at": ist_time.isoformat(),
-            "requested_by": str(interaction.user)
+            "requested_by": str(ctx.author)
         }
 
         try:
@@ -113,3 +107,6 @@ async def setup(bot: discord.Client):
             print("Saved to data/custom_roles.json")
         except Exception as e:
             print(f"Failed to save DB: {e}")
+
+async def setup(bot):
+    await bot.add_cog(CustomRoles(bot))

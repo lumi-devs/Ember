@@ -1,50 +1,48 @@
 import discord
+from discord.ext import commands
 
-async def setup(bot: discord.Client):
-    @bot.tree.command(name="help", description="Get help for custom role commands")
-    async def help_command(interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+class HelpCommand(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @commands.command(name='TAShelp', description='Get help for custom role commands')
+    async def tashelp(self, ctx):
+        """Get help for TAS role commands. Usage: .TAShelp"""
 
         embed = discord.Embed(
-            title="📘 Custom Roles Help",
-            description="Here’s everything you need to know about managing your custom booster role!",
-            color=discord.Color.blurple()
+            title="🎨 TAS Custom Roles Help",
+            description="Here's everything you need to know about managing your custom booster role!",
+            color=discord.Color.orange()
         )
 
         embed.add_field(
             name="✨ Create a Role",
-            value="`/create_role name:<name> color:<#hex>`\n"
-                  "Example: `/create_role name:CoolBooster color:#ff0000`\n\n",
+            value="`.TAScreate <role name>`\n"
+                  "Example: `.TAScreate CoolBooster`\n\n",
             inline=False
         )
 
         embed.add_field(
-            name="🛠 Update Role",
-            value="`/update name <new name>` → Change role name\n"
-                  "`/update color <#hex>` → Change primary color\n"
-                  "`/update secondary <#hex>` → Add or update secondary color\n"
-                  "`/update icon <emoji>` → Set or update role icon\n\n",
+            name="🔄 Update Role",
+            value="`.TASname <new name>` → Change role name\n"
+                  "`.TASprimary #hexcolor` → Change primary color\n"
+                  "`.TASsecondary #hexcolor` → Add secondary color\n"
+                  "`.TASsecondary remove` → Remove secondary color\n"
+                  "`.TASicon <emoji>` → Set role icon\n"
+                  "`.TASicon remove` → Remove role icon\n\n",
             inline=False
         )
 
         embed.add_field(
             name="ℹ️ Role Info",
-            value="`/me` → Shows your role details (name, colors, icon, etc.)\n\n",
+            value="`.TASrole` → Shows your role details\n\n",
             inline=False
         )
 
         embed.add_field(
             name="🗑 Delete Role",
-            value="`/delete_role` → Delete your own role\n"
-                  "Mods can also delete other users’ roles with `/delete_role user:<@user>`\n\n",
-            inline=False
-        )
-
-        embed.add_field(
-            name="🚫 Blacklist (Mods only)",
-            value="`/blacklist add <@user>` → Add to blacklist\n"
-                  "`/blacklist remove <@user>` → Remove from blacklist\n"
-                  "`/blacklist list` → Show all blacklisted users\n\n",
+            value="`.TASdelete` → Delete your own role\n"
+                  "Mods can also delete other users' roles with `.TASdelete @user`\n\n",
             inline=False
         )
 
@@ -52,28 +50,43 @@ async def setup(bot: discord.Client):
             name="🎨 Colors Guide",
             value="• Colors **must begin with `#`** (hex format)\n"
                   "• Example: `#ff0000` (red), `#00ff00` (green), `#7289da` (Discord blurple)\n"
-                  "• You can add a **secondary color** for gradient storage (visual only, not applied in Discord).\n\n",
+                  "• Secondary color is stored but not applied by Discord (gradient storage)\n\n",
             inline=False
         )
 
         embed.add_field(
             name="😀 Emoji Guide",
-            value="• You can use **default emojis** like 😎 🎉 ❤️\n"
-                  "• Or **custom emojis from this server**: <:cutepepe:1400771649728548904>\n"
-                  "• If you want a custom emoji added, please ask a mod.\n\n",
+            value="• Use **default emojis** like 😎 🎉 ❤️\n"
+                  "• Or **custom emojis**: `<:pepe:123456789>`\n"
+                  "• Custom emojis from any server are supported\n"
+                  "• Use `.TASicon remove` to remove icon\n\n",
             inline=False
         )
 
         embed.add_field(
-            name="🧹 Removing Gradient & Icon",
-            value="• To **remove gradient**, run `/update secondary` and leave it empty.\n"
-                  "• To **remove role icon/emoji**, run `/update icon` and leave it empty.\n\n",
+            name="📝 Requirements",
+            value="• Must have **booster role** to create custom roles\n"
+                  "• One custom role per user\n"
+                  "• Role names must follow server rules\n\n",
+            inline=False
+        )
+
+        embed.add_field(
+            name="⚡ Quick Tips",
+            value="• Use `.TAScreate YourRoleName` to get started\n"
+                  "• Set colors with `.TASprimary #color` and `.TASsecondary #color`\n"
+                  "• Add icons with `.TASicon 😎` or `.TASicon <:emoji:123>`\n"
+                  "• Contact mods if you encounter any issues\n\n",
             inline=False
         )
 
         embed.set_footer(
-            text=f"Requested by {interaction.user.display_name} | Need help? Ask a mod!",
-            icon_url=interaction.guild.icon.url if interaction.guild.icon else None
+            text=f"Requested by {ctx.author.display_name} | Need help? Ask a mod!",
+            icon_url=ctx.guild.icon.url if ctx.guild.icon else None
         )
 
-        await interaction.followup.send(embed=embed)
+        # Send as ephemeral message
+        await ctx.send(embed=embed, ephemeral=True)
+
+async def setup(bot):
+    await bot.add_cog(HelpCommand(bot))

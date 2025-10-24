@@ -185,7 +185,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             if not thread:
                 thread = await confession_msg.create_thread(
                     name=f"Confession #{self.confession_id} Replies",
-                    auto_archive_duration=60  # 24 hours
+                    auto_archive_duration=60
                 )
             
             # Send reply in thread
@@ -201,7 +201,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                     timestamp=datetime.utcnow()
                 )
                 user = await self.bot.fetch_user(self.user_id)
-                log_embed.add_field(name="User", value=f"{user} ({user.id})", inline=False)
+                log_embed.add_field(name="User", value=f"{user.mention} ({user.id})", inline=False)
                 if image_url:
                     log_embed.set_image(url=image_url)
                 await log_channel.send(embed=log_embed)
