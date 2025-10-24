@@ -55,7 +55,7 @@ class CustomRoles(commands.Cog):
             )
             
             # Get the placed above role
-            placed_above_role = ctx.guild.get_role(int(os.environ.get("PLACED_ABOVE_ROLE_ID")))
+            placed_above_role = ctx.guild.get_role(int(os.environ.get("FIXED_ROLE_ID")))
             
             if placed_above_role:
                 # Position the new role above the specified role
