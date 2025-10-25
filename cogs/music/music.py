@@ -18,20 +18,11 @@ except ImportError:
 
 # HD Quality Options
 YTDL_OPTIONS = {
-    "format": "bestaudio/best",
-    "noplaylist": True,
-    "extractaudio": True,
-    "audioformat": "mp3",
-    "quiet": True,
-    "no_warnings": True,
-    "default_search": "ytsearch",
-    "youtube_include_dash_manifest": False,
-    "youtube_include_hls_manifest": False,
-    "source_address": "0.0.0.0",
-    "postprocessors": [{
-        'key': 'FFmpegExtractAudio',
-        'preferredcodec': 'mp3',
-        'preferredquality': '128',
+        "format": "bestaudio/bestaudio",
+        "noplaylist": True,
+        "youtube_include_dash_manifest": False,
+        "youtube_include_hls_manifest": False,
+        "cookiefile": "cookies.txt",
     }],
 }
 
