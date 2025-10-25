@@ -18,7 +18,7 @@ except ImportError:
 
 # HD Quality Options
 YTDL_OPTIONS = {
-        "format": "bestaudio/bestaudio",
+        "format": "bestaudio[abr<=96]/bestaudio",
         "noplaylist": True,
         "youtube_include_dash_manifest": False,
         "youtube_include_hls_manifest": False,
