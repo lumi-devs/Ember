@@ -23,7 +23,6 @@ YTDL_OPTIONS = {
         "youtube_include_dash_manifest": False,
         "youtube_include_hls_manifest": False,
         "cookiefile": "cookies.txt",
-    }],
 }
 
 FFMPEG_OPTIONS = {
