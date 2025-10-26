@@ -1,6 +1,6 @@
 import discord
 from discord.ui import Button, View, Select, UserSelect
-from .modals import LimitModal, RenameModal, TransferModal
+from .modals import RenameModal, TransferModal  # removed LimitModal
 from .config import JOIN_CHANNELS, DB_PATH
 import aiosqlite
 
@@ -39,8 +39,7 @@ class BasicControlsView(ControlPanel):
         
         # Row 1: Basic Settings
         self.add_item(NameButton())
-        self.add_item(LimitButton())
-        self.add_item(PrivacyButton())
+        self.add_item(PrivacyButton())  # removed LimitButton()
         
         # Row 2: Member Management
         self.add_item(MembersButton())
@@ -65,19 +64,7 @@ class NameButton(Button):
         modal = RenameModal(view.cog, channel)
         await interaction.response.send_modal(modal)
 
-class LimitButton(Button):
-    def __init__(self):
-        super().__init__(label="👥 Limit", style=discord.ButtonStyle.secondary, custom_id="limit", row=0)
-    
-    async def callback(self, interaction: discord.Interaction):
-        view = self.view
-        channel = interaction.guild.get_channel(view.channel_id)
-        if not channel:
-            await interaction.response.send_message("❌ Channel not found!", ephemeral=True)
-            return
-        
-        modal = LimitModal(view.cog, channel)
-        await interaction.response.send_modal(modal)
+# completely removed LimitButton class
 
 class PrivacyButton(Button):
     def __init__(self):
