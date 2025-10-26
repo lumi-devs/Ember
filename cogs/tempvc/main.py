@@ -135,7 +135,7 @@ class TempVoice(commands.Cog):
             temp_vc = await guild.create_voice_channel(
                 name=vc_name,
                 category=join_channel.category,
-                position=join_channel.position,
+                position=join_channel.position+len(existing),
                 user_limit=limit,
                 reason=f"{base_name} channel created by {member.display_name}"
             )
