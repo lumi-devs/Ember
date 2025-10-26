@@ -32,8 +32,7 @@ def save_requests(requests):
         json.dump(requests, f)
 
 
-# Always start fresh on restart
-active_requests = []
+active_requests = []  # Always start fresh
 
 
 async def setup(bot: commands.Bot):
@@ -51,21 +50,37 @@ async def setup(bot: commands.Bot):
             return await interaction.response.send_message(
                 "❌ You are not allowed to use this command.", ephemeral=True
             )
+
         if interaction.channel_id != DRAGME_CHANNEL_ID:
             return await interaction.response.send_message(
                 f"You can only use this command in <#{DRAGME_CHANNEL_ID}>", ephemeral=True
             )
+
         if not requester.voice or not requester.voice.channel:
             return await interaction.response.send_message(
                 "❌ You must join a voice channel first.", ephemeral=True
             )
+
         if not target.voice or not target.voice.channel:
             return await interaction.response.send_message(
                 f"❌ {target.mention} must be in a voice channel.", ephemeral=True
             )
+
         if requester.voice.channel == target.voice.channel:
             return await interaction.response.send_message(
                 f"⚠️ You’re already in {target.mention}'s VC.", ephemeral=True
+            )
+
+        # --- Check VC user limit ---
+        channel = target.voice.channel
+        limit = channel.user_limit  # 0 if unlimited
+        current_users = len(channel.members)
+
+        if limit > 0 and current_users >= limit + 2:
+            return await interaction.response.send_message(
+                f"⚠️ Limit of {limit} users has been reached.\n"
+                f"Please move to a VC with a higher limit or make a private VC.",
+                ephemeral=True
             )
 
         request_key = {"requester": requester.id, "target": target.id}
@@ -79,12 +94,9 @@ async def setup(bot: commands.Bot):
         active_requests.append(request_key)
         save_requests(active_requests)
 
-        await interaction.response.send_message(
-            "✅ Your request was sent.", ephemeral=True
-        )
+        await interaction.response.send_message("✅ Your request was sent.", ephemeral=True)
 
-        channel = target.voice.channel
-        msg_text = f"🔔 {target.mention}, {requester.mention} wants to join your VC- {channel.name}. Accept?"
+        msg_text = f"🔔 {target.mention}, {requester.mention} wants to join your VC — **{channel.name}**. Accept?"
 
         class DragmeView(discord.ui.View):
             def __init__(self):
@@ -115,9 +127,19 @@ async def setup(bot: commands.Bot):
                 if interaction.user.id != target.id:
                     return await interaction.response.send_message("Not your request!", ephemeral=True)
 
-                await requester.move_to(channel)
+                # Re-check before moving (VC state might have changed)
+                updated_channel = target.voice.channel
+                if updated_channel and updated_channel.user_limit > 0:
+                    if len(updated_channel.members) >= updated_channel.user_limit + 2:
+                        return await interaction.response.send_message(
+                            f"⚠️ Limit of {updated_channel.user_limit} users has been reached.\n"
+                            f"Please move to a VC with a higher limit or make a private VC.",
+                            ephemeral=True
+                        )
+
+                await requester.move_to(updated_channel)
                 await self.finish(
-                    f"✅ {target.mention} accepted. {requester.mention} has been moved to {channel.name}"
+                    f"✅ {target.mention} accepted. {requester.mention} has been moved to **{updated_channel.name}**"
                 )
 
             @discord.ui.button(style=discord.ButtonStyle.red, label="Decline")
@@ -125,9 +147,7 @@ async def setup(bot: commands.Bot):
                 if interaction.user.id != target.id:
                     return await interaction.response.send_message("Not your request!", ephemeral=True)
 
-                await self.finish(
-                    f"❌ {target.mention} declined {requester.mention}'s request"
-                )
+                await self.finish(f"❌ {target.mention} declined {requester.mention}'s request")
 
         view = DragmeView()
         dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
