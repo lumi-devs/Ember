@@ -175,7 +175,6 @@ class TempVoice(commands.Cog):
                 "**🔒 Access Controls:**\n"
                 "• Lock/Unlock - Control who can join\n"
                 "• Hide/Unhide - Control visibility\n"
-                "• Limit - Set user limit\n"
                 "• Rename - Change channel name\n\n"
                 "**👥 Member Management:**\n"
                 "• Trust users - Allow specific users to join\n"
@@ -185,7 +184,7 @@ class TempVoice(commands.Cog):
                 "• Reset - Reset all settings\n"
                 "• Transfer - Give ownership to someone else"
             ),
-            color=discord.Color.blue()
+            color=discord.Color.orange()
         )
         embed.set_footer(text="Only the VC owner can use these controls")
         
