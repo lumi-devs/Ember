@@ -100,81 +100,80 @@ class TempVoice(commands.Cog):
                 self._cleanup_empty_vc(before.channel)
             )
 
-    async def _create_temp_vc(self, member, join_channel):
-        """Create a temporary voice channel"""
+    async def _create_temp_vc(self, member: discord.Member, join_channel: discord.VoiceChannel):
+        """Create a temporary voice channel with number reuse and correct ordering"""
         try:
-            base_name, limit = JOIN_CHANNELS[join_channel.id]
             guild = member.guild
             category = join_channel.category
+            base_name, user_limit = JOIN_CHANNELS.get(join_channel.id, ("Temp VC ", 0))
 
-            # ── Get all existing channels under same category ───────────────
+            # ── Get all existing channels with same prefix ──
             existing_channels = [
-                ch for ch in guild.voice_channels
-                if ch.name.startswith(base_name.rstrip())
-                and ch.category == category
+                c for c in category.voice_channels
+                if c.name.startswith(base_name)
             ]
 
-            # ── Extract numeric suffixes (e.g. "duo1 ‹3" → 1) ───────────────
-            numbers = []
+            # ── Find available numbers (reusable) ──
+            used_numbers = []
             for ch in existing_channels:
                 try:
-                    suffix = ch.name[len(base_name):].strip().split()[0]
+                    # Extract number after base_name (e.g. "duo 2" → 2)
+                    suffix = ch.name[len(base_name):].strip().split(" ")[0]
                     if suffix.isdigit():
-                        numbers.append(int(suffix))
+                        used_numbers.append(int(suffix))
                 except Exception:
                     continue
 
-            # ── Reuse lowest available number ───────────────────────────────
             vc_number = 1
-            while vc_number in numbers:
+            while vc_number in used_numbers:
                 vc_number += 1
 
-            vc_name = f"{base_name}{vc_number} ‹3"
+            vc_name = f"{base_name}{vc_number}"
 
-            # ── Position new channel correctly below last one ───────────────
-            if existing_channels:
-                sorted_existing = sorted(
-                    existing_channels,
-                    key=lambda ch: int(''.join(filter(str.isdigit, ch.name[len(base_name):])) or 0)
-                )
-                last_vc = sorted_existing[-1]
-                position = last_vc.position + 1
-            else:
-                position = join_channel.position + 1
-
-            # ── Create temp VC ──────────────────────────────────────────────
-            temp_vc = await guild.create_voice_channel(
-                name=vc_name,
-                category=category,
-                position=position,
-                user_limit=limit,
+            # ── Create the new VC ──
+            vc = await category.create_voice_channel(
+                vc_name,
+                user_limit=user_limit or None,
                 reason=f"{base_name} channel created by {member.display_name}"
             )
 
-            # ── Move member to new VC ───────────────────────────────────────
-            try:
-                await member.move_to(temp_vc)
-            except discord.HTTPException:
-                await temp_vc.delete(reason="Failed to move user to channel")
-                raise
+            # ── Proper positioning ──
+            related_channels = sorted(
+                [c for c in category.voice_channels if c.name.startswith(base_name)],
+                key=lambda c: (
+                    int(c.name[len(base_name):].strip().split(' ')[0])
+                    if c.name[len(base_name):].strip().split(' ')[0].isdigit() else 9999
+                )
+            )
 
-            # ── Save to database ────────────────────────────────────────────
+            # Ensure order numerically under same prefix
+            for i, ch in enumerate(related_channels):
+                await ch.edit(position=join_channel.position + i + 1)
+
+            # Move member into new VC
+            await member.move_to(vc)
+
+            # ── Record in DB ──
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute(
-                    "INSERT OR REPLACE INTO voiceChannel (userID, voiceID, channelName, channelLimit, locked, hidden) VALUES (?, ?, ?, ?, ?, ?)",
-                    (member.id, temp_vc.id, vc_name, limit, False, False)
+                    """
+                    INSERT OR REPLACE INTO voiceChannel (userID, voiceID, locked, hidden, channelName, channelLimit)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (member.id, vc.id, False, False, vc.name, user_limit)
                 )
                 await db.commit()
 
-            # ── Send control panel ──────────────────────────────────────────
-            await self._send_control_panel(temp_vc, member.id)
+            # ── Send control panel ──
+            await self._send_control_panel(vc, member.id)
 
+        except discord.Forbidden:
+            print(f"Missing permissions to create or move user in {guild.name}")
+        except discord.HTTPException as e:
+            print(f"HTTP Error creating temp VC for {member.display_name}: {e}")
         except Exception as e:
-            print(f"Error creating temp VC: {e}")
-            try:
-                await member.send("❌ Failed to create voice channel. Please try again.")
-            except:
-                pass
+            print(f"Unexpected error creating temp VC: {e}")
+
 
 
     async def _send_control_panel(self, channel, owner_id):
