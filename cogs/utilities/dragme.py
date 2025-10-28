@@ -9,11 +9,11 @@ REQUESTS_FILE = "active_requests.json"
 
 BLACKLISTED_VOICE_IDS = set()
 if os.environ.get("BLACKLISTED_VOICE_ROLES"):
-    BLACKLISTED_VOICE_IDS = {
+    BLACKLISTED_VOICE_IDS = set(
         int(rid.strip())
         for rid in os.environ["BLACKLISTED_VOICE_ROLES"].split(",")
         if rid.strip()
-    }
+    )
 
 
 # --- Persistence helpers ---
@@ -32,22 +32,25 @@ def save_requests(requests):
         json.dump(requests, f)
 
 
-active_requests = []  # always start fresh
+active_requests = []  # Always start fresh
 
 
 async def setup(bot: commands.Bot):
-    @bot.tree.command(name="dragme", description="Request to be dragged into another user's VC")
+    @bot.tree.command(
+        name="dragme",
+        description="Request to be dragged into another user's VC"
+    )
     @discord.app_commands.describe(user="The user whose VC you want to join")
     async def dragme(interaction: discord.Interaction, user: discord.Member):
+        await interaction.response.defer(ephemeral=True)
         requester = interaction.user
         target = user
 
-        # Acknowledge immediately (avoid interaction timeout)
-        await interaction.response.defer(ephemeral=True, thinking=True)
-
         # --- Checks ---
         if any(role.id in BLACKLISTED_VOICE_IDS for role in requester.roles):
-            return await interaction.followup.send("❌ You are not allowed to use this command.", ephemeral=True)
+            return await interaction.followup.send(
+                "❌ You are not allowed to use this command.", ephemeral=True
+            )
 
         if interaction.channel_id != DRAGME_CHANNEL_ID:
             return await interaction.followup.send(
@@ -55,7 +58,9 @@ async def setup(bot: commands.Bot):
             )
 
         if not requester.voice or not requester.voice.channel:
-            return await interaction.followup.send("❌ You must join a voice channel first.", ephemeral=True)
+            return await interaction.followup.send(
+                "❌ You must join a voice channel first.", ephemeral=True
+            )
 
         if not target.voice or not target.voice.channel:
             return await interaction.followup.send(
@@ -67,19 +72,18 @@ async def setup(bot: commands.Bot):
                 f"⚠️ You’re already in {target.mention}'s VC.", ephemeral=True
             )
 
-        # --- Check VC user limit ---
+        # --- Check VC user limit (allow up to limit × 2) ---
         channel = target.voice.channel
-        limit = channel.user_limit  # 0 if unlimited
+        limit = channel.user_limit  # 0 = unlimited
         current_users = len(channel.members)
 
-        if limit > 0 and current_users >= limit:
+        if limit > 0 and current_users >= (limit * 2):
             return await interaction.followup.send(
-                f"⚠️ {target.mention}'s VC **{channel.name}** is full "
-                f"(`{current_users}/{limit}` users). Try another channel.",
-                ephemeral=True,
+                f"⚠️ VC limit reached.\n"
+                f"This channel allows up to {limit * 2} users (2× the normal limit).",
+                ephemeral=True
             )
 
-        # --- Prevent duplicate requests ---
         request_key = {"requester": requester.id, "target": target.id}
         if request_key in active_requests:
             return await interaction.followup.send(
@@ -93,9 +97,10 @@ async def setup(bot: commands.Bot):
 
         await interaction.followup.send("✅ Your request was sent.", ephemeral=True)
 
-        msg_text = f"🔔 {target.mention}, {requester.mention} wants to join your VC — **{channel.name}**. Accept?"
+        msg_text = (
+            f"🔔 {target.mention}, {requester.mention} wants to join your VC — **{channel.name}**. Accept?"
+        )
 
-        # --- Interactive view ---
         class DragmeView(discord.ui.View):
             def __init__(self):
                 super().__init__(timeout=TIMEOUT_DURATION)
@@ -103,6 +108,7 @@ async def setup(bot: commands.Bot):
                 self.finished = False
 
             def remove_request(self):
+                nonlocal request_key
                 if request_key in active_requests:
                     active_requests.remove(request_key)
                     save_requests(active_requests)
@@ -120,25 +126,20 @@ async def setup(bot: commands.Bot):
                     await self.msg.edit(content="⌛ Request timed out.", view=None)
 
             @discord.ui.button(style=discord.ButtonStyle.green, label="Accept")
-            async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            async def accept_button(
+                self, interaction: discord.Interaction, button: discord.ui.Button
+            ):
                 if interaction.user.id != target.id:
                     return await interaction.response.send_message("Not your request!", ephemeral=True)
 
                 updated_channel = target.voice.channel
-                if not updated_channel:
-                    return await interaction.response.send_message(
-                        "⚠️ You are no longer in a voice channel.", ephemeral=True
-                    )
-
-                limit = updated_channel.user_limit
-                current_users = len(updated_channel.members)
-
-                if limit > 0 and current_users >= limit:
-                    return await interaction.response.send_message(
-                        f"⚠️ VC **{updated_channel.name}** is full "
-                        f"(`{current_users}/{limit}`). Cannot move {requester.mention}.",
-                        ephemeral=True,
-                    )
+                if updated_channel and updated_channel.user_limit > 0:
+                    if len(updated_channel.members) >= (updated_channel.user_limit * 2):
+                        return await interaction.response.send_message(
+                            f"⚠️ VC limit reached.\n"
+                            f"This channel allows up to {updated_channel.user_limit * 2} users (2× the normal limit).",
+                            ephemeral=True
+                        )
 
                 await requester.move_to(updated_channel)
                 await self.finish(
@@ -146,9 +147,12 @@ async def setup(bot: commands.Bot):
                 )
 
             @discord.ui.button(style=discord.ButtonStyle.red, label="Decline")
-            async def decline_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            async def decline_button(
+                self, interaction: discord.Interaction, button: discord.ui.Button
+            ):
                 if interaction.user.id != target.id:
                     return await interaction.response.send_message("Not your request!", ephemeral=True)
+
                 await self.finish(f"❌ {target.mention} declined {requester.mention}'s request")
 
         view = DragmeView()
