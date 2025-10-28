@@ -107,14 +107,14 @@ class TempVoice(commands.Cog):
             guild = member.guild
             category = join_channel.category
 
-            # ── Collect all existing channels ────────────────────────────────
+            # ── Get all existing channels under same category ───────────────
             existing_channels = [
                 ch for ch in guild.voice_channels
                 if ch.name.startswith(base_name.rstrip())
                 and ch.category == category
             ]
 
-            # ── Extract numeric suffixes ─────────────────────────────────────
+            # ── Extract numeric suffixes (e.g. "duo1 ‹3" → 1) ───────────────
             numbers = []
             for ch in existing_channels:
                 try:
@@ -124,27 +124,25 @@ class TempVoice(commands.Cog):
                 except Exception:
                     continue
 
-            # ── Find lowest available number (reuse freed ones) ─────────────
+            # ── Reuse lowest available number ───────────────────────────────
             vc_number = 1
             while vc_number in numbers:
                 vc_number += 1
 
             vc_name = f"{base_name}{vc_number} ‹3"
 
-            # ── Sort existing channels numerically ───────────────────────────
-            sorted_existing = sorted(
-                existing_channels,
-                key=lambda ch: int(''.join(filter(str.isdigit, ch.name[len(base_name):])) or 0)
-            )
-
-            # ── Keep order visually stacked ─────────────────────────────────
-            if sorted_existing:
+            # ── Position new channel correctly below last one ───────────────
+            if existing_channels:
+                sorted_existing = sorted(
+                    existing_channels,
+                    key=lambda ch: int(''.join(filter(str.isdigit, ch.name[len(base_name):])) or 0)
+                )
                 last_vc = sorted_existing[-1]
                 position = last_vc.position + 1
             else:
                 position = join_channel.position + 1
 
-            # ── Create VC ───────────────────────────────────────────────────
+            # ── Create temp VC ──────────────────────────────────────────────
             temp_vc = await guild.create_voice_channel(
                 name=vc_name,
                 category=category,
@@ -153,34 +151,20 @@ class TempVoice(commands.Cog):
                 reason=f"{base_name} channel created by {member.display_name}"
             )
 
-            # ── Move member into it ─────────────────────────────────────────
+            # ── Move member to new VC ───────────────────────────────────────
             try:
                 await member.move_to(temp_vc)
             except discord.HTTPException:
                 await temp_vc.delete(reason="Failed to move user to channel")
                 raise
 
-            # ── Store in DB ─────────────────────────────────────────────────
+            # ── Save to database ────────────────────────────────────────────
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute(
                     "INSERT OR REPLACE INTO voiceChannel (userID, voiceID, channelName, channelLimit, locked, hidden) VALUES (?, ?, ?, ?, ?, ?)",
                     (member.id, temp_vc.id, vc_name, limit, False, False)
                 )
                 await db.commit()
-
-            # ── Auto-rename existing channels to keep numeric order ─────────
-            all_vcs = sorted(
-                [ch for ch in category.voice_channels if ch.name.startswith(base_name.rstrip())],
-                key=lambda ch: int(''.join(filter(str.isdigit, ch.name[len(base_name):])) or 0)
-            )
-
-            for i, ch in enumerate(all_vcs, start=1):
-                correct_name = f"{base_name}{i} ‹3"
-                if ch.name != correct_name:
-                    try:
-                        await ch.edit(name=correct_name)
-                    except discord.HTTPException:
-                        pass
 
             # ── Send control panel ──────────────────────────────────────────
             await self._send_control_panel(temp_vc, member.id)
@@ -191,6 +175,7 @@ class TempVoice(commands.Cog):
                 await member.send("❌ Failed to create voice channel. Please try again.")
             except:
                 pass
+
 
     async def _send_control_panel(self, channel, owner_id):
         """Send interactive control panel to the voice channel"""
