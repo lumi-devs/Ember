@@ -1,3 +1,4 @@
+# In cogs/confessions/reply.py
 import discord
 from discord import ui
 import asyncio
@@ -17,7 +18,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
         self.bot = bot
         self.confession_id = confession_id
         self.confession_message_id = confession_message_id
-        self.confession_author_id = confession_author_id  # Store the author ID directly
+        self.confession_author_id = confession_author_id  # Store the author ID
         self.user_id = None
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -102,7 +103,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                     log_embed.set_image(url=image_url)
                 await log_channel.send(embed=log_embed)
 
-            # Notify confession author
+            # Notify confession author using the stored author ID
             try:
                 confession_author = await self.bot.fetch_user(self.confession_author_id)
                 notify_embed = discord.Embed(

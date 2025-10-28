@@ -115,6 +115,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             await log_channel.send(embed=log_embed)
 
 
+# In your main confessions.py file, update the reply method:
 class ConfessionView(ui.View):
     def __init__(self, bot, confession_id, message_id=None):
         super().__init__(timeout=None)
@@ -125,13 +126,15 @@ class ConfessionView(ui.View):
     @ui.button(label="Reply", style=discord.ButtonStyle.primary, custom_id="confession_reply")
     async def reply(self, interaction: discord.Interaction, button: ui.Button):
         async with aiosqlite.connect(DB_PATH) as db:
-            cursor = await db.execute("SELECT message_id FROM confessions WHERE id=?", (self.confession_id,))
+            # Get both message_id AND user_id (author_id)
+            cursor = await db.execute("SELECT message_id, user_id FROM confessions WHERE id=?", (self.confession_id,))
             row = await cursor.fetchone()
             if not row:
                 return await interaction.response.send_message("❌ Confession not found.", ephemeral=True)
-            message_id = row[0]
+            message_id, author_id = row
 
-        modal = ReplyModal(self.bot, self.confession_id, message_id)
+        # Pass the author_id to the modal
+        modal = ReplyModal(self.bot, self.confession_id, message_id, author_id)
         await interaction.response.send_modal(modal)
 
     @ui.button(label="Report", style=discord.ButtonStyle.danger, custom_id="confession_report")
