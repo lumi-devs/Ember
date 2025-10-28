@@ -14,36 +14,10 @@ CONFESSION_CHANNEL_ID = 1399658407178272798
 REPORT_CHANNEL_ID = 1393171149038293023
 LOG_CHANNEL_ID = 1424792373837172899
 MEDIA_CHANNEL_ID = 1424139009931743382
-ALLOWED_ROLE_IDS = [1393171037562077196, 1393171036635402354, 1393171035695612055, 1393171034701561908, 1393171033774624848, 1393171032726306966]
-
-
-class MediaInputView(ui.View):
-    def __init__(self, bot, confession_id, embed, user_id):
-        super().__init__(timeout=30.0)
-        self.bot = bot
-        self.confession_id = confession_id
-        self.embed = embed
-        self.user_id = user_id
-
-    @ui.button(label="Add Image URL", style=discord.ButtonStyle.secondary, emoji="🖼️")
-    async def add_image_url(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user.id != self.user_id:
-            return await interaction.response.send_message("❌ This is not for you!", ephemeral=True)
-        await interaction.response.send_message(
-            "Please send your image URL in the chat within 30 seconds. Type `skip` to cancel.", 
-            ephemeral=True
-        )
-
-    @ui.button(label="Skip Media", style=discord.ButtonStyle.danger, emoji="⏭️")
-    async def skip_media(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user.id != self.user_id:
-            return await interaction.response.send_message("❌ This is not for you!", ephemeral=True)
-        await interaction.response.send_message("Skipped media attachment.", ephemeral=True)
-        self.stop()
-
-    async def on_timeout(self):
-        # View times out - nothing needed as the main flow handles this
-        pass
+ALLOWED_ROLE_IDS = [
+    1393171037562077196, 1393171036635402354, 1393171035695612055,
+    1393171034701561908, 1393171033774624848, 1393171032726306966
+]
 
 
 class ConfessionModal(ui.Modal, title="Submit a Confession"):
@@ -76,7 +50,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             await db.commit()
             confession_id = cursor.lastrowid
 
-        # Create initial embed without image
+        # Create initial embed
         embed = discord.Embed(
             title=f"💌 {self.title_input.value or f'#{confession_id}'}",
             description=self.description_input.value,
@@ -84,10 +58,9 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             timestamp=datetime.utcnow()
         )
         embed.set_footer(text=f"Confession #{confession_id}")
-        
-        # Send initial message with media buttons
-        media_view = MediaInputView(self.bot, confession_id, embed, user.id)
-        msg = await channel.send(embed=embed, view=media_view)
+
+        # Send the initial message
+        msg = await channel.send(embed=embed)
 
         # Save message_id
         async with aiosqlite.connect(DB_PATH) as db:
@@ -95,44 +68,36 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             await db.commit()
 
         await interaction.response.send_message(
-            "✅ Confession submitted! You have 30s to send an image/URL or use the buttons above. Type `skip` to cancel.", 
+            "✅ Confession submitted! You have **30 seconds** to reply with an image URL or attachment. Type `skip` to continue without media.",
             ephemeral=True
         )
-        
-        # Allow user to send media
-        cleaner_cog = self.bot.get_cog("ConfessionCleaner")
-        if cleaner_cog:
-            await cleaner_cog.allow_user_once(user.id)
 
+        # Allow user message for media
         def check(m):
             return m.author.id == user.id and m.channel.id == interaction.channel.id
 
         image_url = None
         try:
             msg_received = await self.bot.wait_for("message", timeout=30.0, check=check)
-            
-            # Process media from message if not skip
+
             if msg_received.content.lower() != 'skip':
                 image_url = await process_media(self.bot, msg_received.content, msg_received.attachments, MEDIA_CHANNEL_ID)
-                
+
                 if image_url:
                     embed.set_image(url=image_url)
-                    # Update confession in database with image URL
                     async with aiosqlite.connect(DB_PATH) as db:
                         await db.execute("UPDATE confessions SET image_url=? WHERE id=?", (image_url, confession_id))
                         await db.commit()
-            
-            # Delete user's message after processing
+
             try:
                 await msg_received.delete()
             except:
                 pass
-                
+
         except asyncio.TimeoutError:
-            # Timeout - no media added
             pass
 
-        # Update the message with final embed and persistent buttons
+        # Finalize the confession
         final_view = ConfessionView(self.bot, confession_id, msg.id)
         await msg.edit(embed=embed, view=final_view)
 
@@ -202,7 +167,7 @@ class ConfessionView(ui.View):
         embed.add_field(name="Banned?", value="Yes" if banned else "No", inline=False)
         embed.add_field(name="Title", value=title or "No title", inline=False)
         embed.add_field(name="Content", value=description or "No content", inline=False)
-        
+
         if image_url:
             embed.set_image(url=image_url)
 
@@ -221,8 +186,7 @@ class Confessions(commands.Cog):
 
     async def load_views(self):
         await self.bot.wait_until_ready()
-        await asyncio.sleep(2)  # Ensure database is initialized
-        
+        await asyncio.sleep(2)
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute("SELECT id, message_id FROM confessions")
             rows = await cursor.fetchall()
@@ -232,7 +196,6 @@ class Confessions(commands.Cog):
 
     @app_commands.command(name="confess", description="Submit an anonymous confession")
     async def confess_command(self, interaction: discord.Interaction):
-        # 1️⃣ Check blacklist first
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute("SELECT 1 FROM confessban WHERE user_id=?", (interaction.user.id,))
             if await cursor.fetchone():
@@ -240,19 +203,16 @@ class Confessions(commands.Cog):
                     "❌ You are banned from making confessions.", ephemeral=True
                 )
 
-        # 2️⃣ Check channel
         if interaction.channel.id != CONFESSION_CHANNEL_ID:
             return await interaction.response.send_message(
                 f"❌ Please use this command in <#{CONFESSION_CHANNEL_ID}>.", ephemeral=True
             )
 
-        # 3️⃣ Check roles
         if not any(role.id in ALLOWED_ROLE_IDS for role in interaction.user.roles):
             return await interaction.response.send_message(
                 "❌ You do not have at least LVL 5 required to make confessions", ephemeral=True
             )
 
-        # 4️⃣ Show modal
         modal = ConfessionModal(self.bot)
         await interaction.response.send_modal(modal)
 
