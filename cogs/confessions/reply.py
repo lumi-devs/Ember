@@ -2,8 +2,7 @@ import discord
 from discord import ui
 import asyncio
 from datetime import datetime
-from cogs.confessions.helpers import DB_PATH, process_media
-import aiosqlite
+from cogs.confessions.helpers import process_media
 
 CONFESSION_CHANNEL_ID = 1399658407178272798
 LOG_CHANNEL_ID = 1424792373837172899
@@ -13,11 +12,12 @@ MEDIA_CHANNEL_ID = 1424139009931743382
 class ReplyModal(ui.Modal, title="Anonymous Reply"):
     reply_input = ui.TextInput(label="Reply", style=discord.TextStyle.paragraph, max_length=500)
 
-    def __init__(self, bot, confession_id, message_id):
+    def __init__(self, bot, confession_id, confession_message_id, confession_author_id):
         super().__init__()
         self.bot = bot
         self.confession_id = confession_id
-        self.message_id = message_id
+        self.confession_message_id = confession_message_id
+        self.confession_author_id = confession_author_id  # Store the author ID directly
         self.user_id = None
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -41,7 +41,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
         try:
             msg_received = await self.bot.wait_for("message", timeout=30.0, check=check)
 
-            # Process media if user didn’t type skip
+            # Process media if user didn't type skip
             if msg_received.content.lower() != 'skip':
                 image_url = await process_media(
                     self.bot, msg_received.content, msg_received.attachments, MEDIA_CHANNEL_ID
@@ -72,8 +72,10 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             embed.set_image(url=image_url)
 
         try:
-            # Get confession message and thread
-            confession_msg = await channel.fetch_message(self.message_id)
+            # Get confession message using the correct message ID
+            confession_msg = await channel.fetch_message(self.confession_message_id)
+            
+            # Get or create thread
             thread = confession_msg.thread
             if not thread:
                 thread = await confession_msg.create_thread(
@@ -84,7 +86,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             # Send reply to thread
             await thread.send(embed=embed)
 
-            # Log reply
+            # Log reply to log channel
             log_channel = self.bot.get_channel(LOG_CHANNEL_ID)
             if log_channel:
                 log_embed = discord.Embed(
@@ -94,42 +96,31 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                     timestamp=datetime.utcnow()
                 )
                 user = await self.bot.fetch_user(self.user_id)
-                log_embed.add_field(name="User", value=f"{user.mention} ({user.id})", inline=False)
+                log_embed.add_field(name="Replier", value=f"{user.mention} ({user.id})", inline=False)
+                log_embed.add_field(name="Confession Author", value=f"<@{self.confession_author_id}> ({self.confession_author_id})", inline=False)
                 if image_url:
                     log_embed.set_image(url=image_url)
                 await log_channel.send(embed=log_embed)
 
-            # Save reply in DB
-            async with aiosqlite.connect(DB_PATH) as db:
-                await db.execute(
-                    "INSERT INTO replies (confession_id, user_id, description, image_url) VALUES (?, ?, ?, ?)",
-                    (self.confession_id, self.user_id, self.reply_input.value, image_url)
-                )
-                await db.commit()
-
             # Notify confession author
-            async with aiosqlite.connect(DB_PATH) as db:
-                cursor = await db.execute("SELECT user_id FROM confessions WHERE id=?", (self.confession_id,))
-                row = await cursor.fetchone()
-
-            if row:
-                author_id = row[0]
-                try:
-                    confession_author = await self.bot.fetch_user(author_id)
-                    notify_embed = discord.Embed(
-                        title=f"💌 New Reply to Your Confession #{self.confession_id}",
-                        description=f"Someone replied: \"{self.reply_input.value[:100]}{'...' if len(self.reply_input.value) > 100 else ''}\"",
-                        color=discord.Color.blue(),
-                        timestamp=datetime.utcnow()
-                    )
-                    notify_embed.add_field(
-                        name="View Thread",
-                        value=f"[Click here to view the conversation]({confession_msg.jump_url})",
-                        inline=False
-                    )
-                    await confession_author.send(embed=notify_embed)
-                except discord.Forbidden:
-                    pass  # DMs off
+            try:
+                confession_author = await self.bot.fetch_user(self.confession_author_id)
+                notify_embed = discord.Embed(
+                    title=f"💌 New Reply to Your Confession #{self.confession_id}",
+                    description=f"Someone replied: \"{self.reply_input.value[:100]}{'...' if len(self.reply_input.value) > 100 else ''}\"",
+                    color=discord.Color.blue(),
+                    timestamp=datetime.utcnow()
+                )
+                notify_embed.add_field(
+                    name="View Thread",
+                    value=f"[Click here to view the conversation]({confession_msg.jump_url})",
+                    inline=False
+                )
+                await confession_author.send(embed=notify_embed)
+            except discord.Forbidden:
+                pass  # DMs off
+            except Exception as e:
+                print(f"Error notifying confession author: {e}")
 
         except Exception as e:
             print(f"Error finalizing reply: {e}")
