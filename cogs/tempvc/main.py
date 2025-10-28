@@ -101,23 +101,22 @@ class TempVoice(commands.Cog):
             )
 
     async def _create_temp_vc(self, member: discord.Member, join_channel: discord.VoiceChannel):
-        """Create a temporary voice channel with number reuse and correct ordering"""
+        """Create a temporary voice channel with number reuse and correct ordering (generator fixed)"""
         try:
             guild = member.guild
             category = join_channel.category
             base_name, user_limit = JOIN_CHANNELS.get(join_channel.id, ("Temp VC ", 0))
 
-            # ── Get all existing channels with same prefix ──
+            # ── Get all existing temp VCs for this base ──
             existing_channels = [
                 c for c in category.voice_channels
                 if c.name.startswith(base_name)
             ]
 
-            # ── Find available numbers (reusable) ──
+            # ── Find reusable numbers ──
             used_numbers = []
             for ch in existing_channels:
                 try:
-                    # Extract number after base_name (e.g. "duo 2" → 2)
                     suffix = ch.name[len(base_name):].strip().split(" ")[0]
                     if suffix.isdigit():
                         used_numbers.append(int(suffix))
@@ -130,14 +129,14 @@ class TempVoice(commands.Cog):
 
             vc_name = f"{base_name}{vc_number}"
 
-            # ── Create the new VC ──
+            # ── Create new VC ──
             vc = await category.create_voice_channel(
                 vc_name,
                 user_limit=user_limit or None,
                 reason=f"{base_name} channel created by {member.display_name}"
             )
 
-            # ── Proper positioning ──
+            # ── Proper Positioning (generator untouched) ──
             related_channels = sorted(
                 [c for c in category.voice_channels if c.name.startswith(base_name)],
                 key=lambda c: (
@@ -146,14 +145,20 @@ class TempVoice(commands.Cog):
                 )
             )
 
-            # Ensure order numerically under same prefix
-            for i, ch in enumerate(related_channels):
-                await ch.edit(position=join_channel.position + i + 1)
+            # Find the position *after* the generator channel
+            base_pos = join_channel.position
 
-            # Move member into new VC
+            # Reposition only temp VCs, skip moving the generator
+            for i, ch in enumerate(related_channels):
+                # ensure we never move the generator itself
+                if ch.id == join_channel.id:
+                    continue
+                await ch.edit(position=base_pos + i + 1)
+
+            # ── Move user into the new VC ──
             await member.move_to(vc)
 
-            # ── Record in DB ──
+            # ── Save in DB ──
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute(
                     """
@@ -173,6 +178,7 @@ class TempVoice(commands.Cog):
             print(f"HTTP Error creating temp VC for {member.display_name}: {e}")
         except Exception as e:
             print(f"Unexpected error creating temp VC: {e}")
+
 
 
 
