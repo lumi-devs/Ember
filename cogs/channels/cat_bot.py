@@ -1,10 +1,10 @@
 # cogs/auto_delete.py
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 import asyncio
 
-BOT_ID = 966695034340663367 
-DELETE_DELAY = 7200
+BOT_ID = 966695034340663367
+EDIT_DELETE_DELAY = 600  # 10 minutes
 
 
 class AutoDelete(commands.Cog):
@@ -12,17 +12,18 @@ class AutoDelete(commands.Cog):
         self.bot = bot
 
     @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        if message.author.id == BOT_ID:
-            await asyncio.sleep(DELETE_DELAY)
+    async def on_message_edit(self, before: discord.Message, after: discord.Message):
+        if after.author.id == BOT_ID:
+            await asyncio.sleep(EDIT_DELETE_DELAY)
             try:
-                await message.delete()
+                await after.delete()
             except discord.NotFound:
                 pass
             except discord.Forbidden:
-                print(f"❌ Missing permissions to delete message in {message.channel}")
+                print(f"❌ Missing permissions to delete edited message in {after.channel}")
             except Exception as e:
-                print(f"❌ Failed to delete message: {e}")
+                print(f"❌ Failed to delete edited message: {e}")
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AutoDelete(bot))
