@@ -2,9 +2,15 @@
 import discord
 from discord.ext import commands
 import asyncio
+import re
 
-BOT_ID = 966695034340663367
-EDIT_DELETE_DELAY = 600  # 10 minutes
+DELETE_DELAY = 600  # 10 minutes
+
+# Matches most "caught cat" message variants
+CAUGHT_CAT_PATTERN = re.compile(
+    r"(cought.*cat|cat.*cought|fella.*cought|☔.*cats|</rain:\d+>)",
+    re.IGNORECASE | re.DOTALL
+)
 
 
 class AutoDelete(commands.Cog):
@@ -12,17 +18,22 @@ class AutoDelete(commands.Cog):
         self.bot = bot
 
     @commands.Cog.listener()
-    async def on_message_edit(self, before: discord.Message, after: discord.Message):
-        if after.author.id == BOT_ID:
-            await asyncio.sleep(EDIT_DELETE_DELAY)
+    async def on_message(self, message: discord.Message):
+        if not message.author.bot:
+            return
+
+        # Check for "caught cat" messages of any pattern
+        if CAUGHT_CAT_PATTERN.search(message.content):
+            await asyncio.sleep(DELETE_DELAY)
             try:
-                await after.delete()
+                await message.delete()
+                print(f"🧹 Deleted a caught-cat message in #{message.channel}")
             except discord.NotFound:
                 pass
             except discord.Forbidden:
-                print(f"❌ Missing permissions to delete edited message in {after.channel}")
+                print(f"❌ Missing permissions to delete in {message.channel}")
             except Exception as e:
-                print(f"❌ Failed to delete edited message: {e}")
+                print(f"❌ Failed to delete caught-cat message: {e}")
 
 
 async def setup(bot: commands.Bot):
