@@ -18,10 +18,11 @@ class LimitModal(discord.ui.Modal, title="Set User Limit"):
         self.add_item(self.limit_input)
     
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         try:
             limit = int(self.limit_input.value)
             if limit < 0 or limit > 99:
-                await interaction.response.send_message("❌ Limit must be between 0 and 99!", ephemeral=True)
+                await interaction.followup.send("❌ Limit must be between 0 and 99!", ephemeral=True)
                 return
             
             await self.channel.edit(user_limit=limit)
@@ -30,13 +31,13 @@ class LimitModal(discord.ui.Modal, title="Set User Limit"):
                 await db.execute("UPDATE voiceChannel SET channelLimit = ? WHERE voiceID = ?", (limit, self.channel.id))
                 await db.commit()
             
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"✅ User limit set to {limit}!" if limit > 0 else "✅ User limit removed!", 
                 ephemeral=True
             )
             
         except ValueError:
-            await interaction.response.send_message("❌ Please enter a valid number!", ephemeral=True)
+            await interaction.followup.send("❌ Please enter a valid number!", ephemeral=True)
 
 class RenameModal(discord.ui.Modal, title="Rename Voice Channel"):
     def __init__(self, cog, channel):
@@ -54,9 +55,10 @@ class RenameModal(discord.ui.Modal, title="Rename Voice Channel"):
         self.add_item(self.name_input)
     
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         name = self.name_input.value.strip()
         if len(name) < 1:
-            await interaction.response.send_message("❌ Please provide a valid name!", ephemeral=True)
+            await interaction.followup.send("❌ Please provide a valid name!", ephemeral=True)
             return
         
         old_name = self.channel.name
@@ -66,7 +68,7 @@ class RenameModal(discord.ui.Modal, title="Rename Voice Channel"):
             await db.execute("UPDATE voiceChannel SET channelName = ? WHERE voiceID = ?", (name, self.channel.id))
             await db.commit()
         
-        await interaction.response.send_message(f"✏️ Renamed `{old_name}` to `{name}`", ephemeral=True)
+        await interaction.followup.send(f"✏️ Renamed `{old_name}` to `{name}`", ephemeral=True)
 
 class TransferModal(discord.ui.Modal, title="Transfer Voice Channel"):
     def __init__(self, cog, channel_id):
@@ -82,6 +84,7 @@ class TransferModal(discord.ui.Modal, title="Transfer Voice Channel"):
         self.add_item(self.user_input)
     
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         try:
             # Extract user ID from input (handles both ID and mention)
             input_text = self.user_input.value.strip()
@@ -93,23 +96,23 @@ class TransferModal(discord.ui.Modal, title="Transfer Voice Channel"):
             
             member = interaction.guild.get_member(user_id)
             if not member:
-                await interaction.response.send_message("❌ User not found!", ephemeral=True)
+                await interaction.followup.send("❌ User not found!", ephemeral=True)
                 return
             
             if member.bot:
-                await interaction.response.send_message("❌ You cannot transfer ownership to a bot!", ephemeral=True)
+                await interaction.followup.send("❌ You cannot transfer ownership to a bot!", ephemeral=True)
                 return
             
             channel = interaction.guild.get_channel(self.channel_id)
             if not channel:
-                await interaction.response.send_message("❌ Channel not found!", ephemeral=True)
+                await interaction.followup.send("❌ Channel not found!", ephemeral=True)
                 return
             
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute("UPDATE voiceChannel SET userID = ? WHERE voiceID = ?", (member.id, channel.id))
                 await db.commit()
             
-            await interaction.response.send_message(f"🔁 Ownership transferred to {member.mention}!", ephemeral=True)
+            await interaction.followup.send(f"🔁 Ownership transferred to {member.mention}!", ephemeral=True)
             
         except ValueError:
-            await interaction.response.send_message("❌ Please enter a valid user ID or mention!", ephemeral=True)
+            await interaction.followup.send("❌ Please enter a valid user ID or mention!", ephemeral=True)
