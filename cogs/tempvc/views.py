@@ -361,7 +361,15 @@ class UserSelectAction(UserSelect):
         self.action_type = action_type
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        try:
+            # Try to defer first with proper error handling
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            # Interaction already expired, send a new message
+            await interaction.followup.send("❌ This interaction has expired. Please use the control panel again.", ephemeral=True)
+            return
+
         successful = []
         for member in self.values:
             try:
@@ -374,7 +382,7 @@ class UserSelectAction(UserSelect):
                 elif self.action_type == "kick":
                     if member.voice and member.voice.channel == self.view.channel:
                         await member.move_to(None)
-                    successful.append(member.display_name)
+                        successful.append(member.display_name)
                 elif self.action_type == "block":
                     if member.voice and member.voice.channel == self.view.channel:
                         await member.move_to(None)
@@ -382,6 +390,7 @@ class UserSelectAction(UserSelect):
                     successful.append(member.display_name)
             except Exception as e:
                 print(f"Error in {self.action_type} for {getattr(member, 'id', 'unknown')}: {e}")
+
         if successful:
             action_text = {"grant": "granted access to", "revoke": "revoked access from", "kick": "kicked", "block": "blocked"}
             await interaction.followup.send(f"✅ {action_text[self.action_type]}: {', '.join(successful)}", ephemeral=True)
@@ -396,9 +405,19 @@ class KickButton(Button):
     async def callback(self, interaction: discord.Interaction):
         view: MembersMainView = self.view
         await interaction.response.defer(ephemeral=True)
-        vc_users = [m for m in view.channel.members if m.id != view.owner_id] if hasattr(view, 'channel') and isinstance(view.channel, discord.VoiceChannel) else []
+        
+        # Only get users currently in the voice channel (excluding owner)
+        vc_users = [m for m in view.channel.members if m.id != view.owner_id]
+        
         if vc_users:
-            await interaction.followup.send(view=UserSelectActionView(view.cog, view.channel_id, view.owner_id, view.channel, vc_users, "kick", "Select users to kick from VC..."), ephemeral=True)
+            # Use the custom dropdown instead of UserSelect for kick
+            await interaction.followup.send(
+                view=CustomUserDropdownView(
+                    view.cog, view.channel_id, view.owner_id, view.channel, 
+                    vc_users, "kick", "Select users to kick from VC..."
+                ), 
+                ephemeral=True
+            )
         else:
             await interaction.followup.send("❌ No users in VC to kick!", ephemeral=True)
 
