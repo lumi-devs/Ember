@@ -4,7 +4,7 @@ import re
 import asyncio
 import shutil
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 import os
 import logging
 from helpers.downloaders import download_youtube, download_instagram, download_reddit
@@ -13,10 +13,11 @@ MAX_FILE_SIZE = 8 * 1024 * 1024  # 8 MB
 TARGET_CHANNEL_ID = 99
 DOWNLOADS_DIR = Path("downloads")
 
+
 class MediaFetcher(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        
+
         # Clear downloads folder
         if DOWNLOADS_DIR.exists():
             shutil.rmtree(DOWNLOADS_DIR, ignore_errors=True)
@@ -36,6 +37,19 @@ class MediaFetcher(commands.Cog):
 
         for url in urls:
             logging.info(f"➡️ Processing URL: `{url}`")
+
+            # 🟣 If it's an Instagram URL — remove embed, skip downloading
+            if any(x in url for x in ["instagram.com/reel", "instagram.com/p", "instagram.com/stories", "instagram.com/tv"]):
+                try:
+                    # Wait briefly to ensure embed is generated, then remove
+                    await asyncio.sleep(1)
+                    await message.edit(suppress=True)
+                    logging.info(f"📸 Suppressed Instagram embed for {url}")
+                except Exception as e:
+                    logging.exception(f"⚠️ Failed to suppress embed for {url}: {e}")
+                continue  # Skip processing
+
+            # Otherwise, continue normal behavior
             await self.process_url(url, message.channel, message)
 
     def extract_urls(self, text: str) -> List[str]:
@@ -50,12 +64,9 @@ class MediaFetcher(commands.Cog):
         urls = re.findall(r"https?://[^\s]+", text)
         return [url for url in urls if any(domain in url for domain in KNOWN_DOMAINS)]
 
-    
     async def process_url(self, url: str, channel: discord.TextChannel, message: discord.Message):
-        # Normalize the URL
         url = url.strip().lower()
 
-        # Send initial status message
         status_msg = await channel.send(f"⏳ Fetching content from `{url}`...")
 
         files: List[str] = []
@@ -65,11 +76,6 @@ class MediaFetcher(commands.Cog):
             # YouTube
             if "youtube.com" in url or "youtu.be" in url:
                 files, title, caption_text = await self.bot.loop.run_in_executor(None, download_youtube, url)
-                caption = f"{title}\n\n{caption_text}" if caption_text else title
-
-            # Instagram (reels, posts, stories, etc.)
-            elif any(x in url for x in ["instagram.com/reel", "instagram.com/p", "instagram.com/stories", "instagram.com/tv"]):
-                files, title, caption_text = await self.bot.loop.run_in_executor(None, download_instagram, url)
                 caption = f"{title}\n\n{caption_text}" if caption_text else title
 
             # Reddit
@@ -90,15 +96,14 @@ class MediaFetcher(commands.Cog):
 
         await status_msg.delete()
 
-        # Remove invalid or empty files
         files = [str(f) for f in files if f and os.path.exists(str(f))]
         if not files:
             x = await channel.send(f"{message.author.mention}\n{url}")
             thread = await x.channel.create_thread(
-                    name=f"Media by {message.author.display_name}"[:100],
-                    message=x,
-                    type=discord.ChannelType.public_thread,
-                    auto_archive_duration=60
+                name=f"Media by {message.author.display_name}"[:100],
+                message=x,
+                type=discord.ChannelType.public_thread,
+                auto_archive_duration=60
             )
             return
 
@@ -112,7 +117,6 @@ class MediaFetcher(commands.Cog):
             else:
                 oversized_files.append((file_path, size))
 
-        # Notify about oversized files
         if oversized_files:
             embed = discord.Embed(
                 description=f"File(s) too large for Discord (<8MB):\n" +
@@ -122,7 +126,6 @@ class MediaFetcher(commands.Cog):
             await channel.send(f"⚠️ Media from {url} skipped:", embed=embed)
 
         if not valid_files:
-            # Clean up
             for f, _ in files:
                 try:
                     os.remove(f)
@@ -130,7 +133,6 @@ class MediaFetcher(commands.Cog):
                     pass
             return
 
-        # Send valid files
         discord_files = [discord.File(f) for f, _ in valid_files]
         try:
             sent_msg = await channel.send(files=discord_files)
@@ -145,12 +147,12 @@ class MediaFetcher(commands.Cog):
             logging.exception(f"❌ Failed to upload files from `{url}`: {e}")
             await channel.send(f"❌ Failed to upload files from `{url}`: {e}")
 
-        # Clean up
         for f, _ in valid_files:
             try:
                 os.remove(f)
             except:
                 pass
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(MediaFetcher(bot))

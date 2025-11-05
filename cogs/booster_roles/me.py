@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 from datetime import datetime
 from pathlib import Path
@@ -18,51 +19,71 @@ class RoleInfo(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @commands.command(name='TASrole', description='View your custom role info')
-    async def tasrole(self, ctx):
-        """View your custom role info. Usage: .TASrole"""
+    @app_commands.command(name="tasrole", description="View your custom booster role info")
+    async def tasrole(self, interaction: discord.Interaction):
+        """View your custom role info. Usage: /tasrole"""
         
         db = load_db()
+        user_id = str(interaction.user.id)
 
         # --- Blacklist check ---
-        if str(ctx.author.id) in db.get("blacklist", []):
-            await ctx.send("🚫 You are blacklisted and cannot use this command.", ephemeral=True)
+        if user_id in db.get("blacklist", []):
+            await interaction.response.send_message(
+                "🚫 You are blacklisted and cannot use this command.",
+                ephemeral=True
+            )
             return
 
         # --- Role check ---
-        role_data = db["roles"].get(str(ctx.author.id))
+        role_data = db["roles"].get(user_id)
         if not role_data:
-            await ctx.send("❌ You don't have a role.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ You don't have a custom role yet.",
+                ephemeral=True
+            )
             return
 
-        role = ctx.guild.get_role(role_data["role_id"])
+        role = interaction.guild.get_role(role_data["role_id"])
         if not role:
-            await ctx.send("⚠️ Role not found.", ephemeral=True)
+            await interaction.response.send_message(
+                "⚠️ Your saved role could not be found on the server.",
+                ephemeral=True
+            )
             return
 
         # --- Build embed ---
         embed = discord.Embed(
-            title="🌟 Your Role Info",
+            title="🌟 Your Custom Role Info",
             color=discord.Color.orange()
         )
         embed.add_field(name="👤 Role Name", value=role.name, inline=True)
-        embed.add_field(name="🆔 Role ID", value=role.id, inline=True)
+        embed.add_field(name="🆔 Role ID", value=str(role.id), inline=True)
         embed.add_field(name="🎨 Color", value=str(role.color), inline=True)
         
-        # Add creation date if available
         if role_data.get("created_at"):
-            embed.add_field(name="📅 Created", value=role_data["created_at"][:10], inline=True)
-        
-        embed.add_field(name="👤 Created For", value=ctx.author.mention, inline=True)
+            embed.add_field(
+                name="📅 Created",
+                value=role_data["created_at"][:10],
+                inline=True
+            )
 
-        # --- Footer with timestamp + guild icon ---
+        embed.add_field(
+            name="👑 Created For",
+            value=interaction.user.mention,
+            inline=True
+        )
+
+        # --- Footer ---
         timestamp = datetime.now().strftime('%d-%m-%Y %I:%M %p IST')
-        if ctx.guild.icon:
-            embed.set_footer(text=f"{ctx.guild.name} • {timestamp}", icon_url=ctx.guild.icon.url)
+        if interaction.guild.icon:
+            embed.set_footer(
+                text=f"{interaction.guild.name} • {timestamp}",
+                icon_url=interaction.guild.icon.url
+            )
         else:
-            embed.set_footer(text=f"{ctx.guild.name} • {timestamp}")
+            embed.set_footer(text=f"{interaction.guild.name} • {timestamp}")
 
-        await ctx.send(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(RoleInfo(bot))
