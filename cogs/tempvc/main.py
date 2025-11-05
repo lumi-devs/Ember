@@ -36,6 +36,35 @@ class TempVoice(commands.Cog):
         except aiosqlite.Error as e:
             print(f"Database initialization error: {e}")
 
+    async def _send_control_panel(self, channel, owner_id):
+        """Send interactive control panel to the voice channel"""
+        view = BasicControlsView(self, channel.id, owner_id)
+
+        embed = discord.Embed(
+            title="🎯 Voice Channel Controls",
+            description=(
+                "**Use the buttons below to manage your voice channel:**\n\n"
+                "**🔒 Access Controls:**\n"
+                "• Lock/Unlock - Control who can join\n"
+                "• Hide/Unhide - Control visibility\n"
+                "• Rename - Change channel name\n\n"
+                "**👥 Member Management:**\n"
+                "• Trust users - Allow specific users to join\n"
+                "• Ban users - Block specific users\n"
+                "• Kick users - Remove from VC\n\n"
+                "**🔄 Advanced:**\n"
+                "• Reset - Reset all settings\n"
+                "• Transfer - Give ownership to someone else"
+            ),
+            color=discord.Color.orange()
+        )
+        embed.set_footer(text="Only the VC owner can use these controls")
+
+        try:
+            await channel.send(embed=embed, view=view)
+        except Exception as e:
+            print(f"Failed to send control panel: {e}")
+
     def _check_cooldown(self, user_id):
         """Check if user is on cooldown, return remaining seconds or 0 if ready"""
         current_time = time.time()
