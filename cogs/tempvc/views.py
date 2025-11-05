@@ -17,7 +17,7 @@ class ControlPanel(View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
-            await interaction.followup.send(
+            await interaction.response.send_message(
                 "❌ Only the VC owner can use these controls!", ephemeral=True
             )
             return False
@@ -63,9 +63,8 @@ class NameButton(Button):
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
         channel = interaction.guild.get_channel(view.channel_id)
-        await interaction.response.defer(ephemeral=True, thinking=False)
         if not channel:
-            await interaction.followup.send("❌ Channel not found!", ephemeral=True)
+            await interaction.response.send_message("❌ Channel not found!", ephemeral=True)
             return
         modal = RenameModal(view.cog, channel)
         await interaction.response.send_modal(modal)
@@ -77,7 +76,7 @@ class PrivacyButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
-        await interaction.response.defer(ephemeral=True, thinking=False)
+        await interaction.response.defer(ephemeral=True)
         channel = interaction.guild.get_channel(view.channel_id)
         if not channel:
             await interaction.followup.send("❌ Channel not found!", ephemeral=True)
@@ -142,7 +141,7 @@ class LockButton(Button):
     async def callback(self, interaction: discord.Interaction):
         view: PrivacyView = self.view
         channel = view.channel
-        await interaction.response.defer(ephemeral=True, thinking=False)
+        await interaction.response.defer(ephemeral=True)
         # deny default role connect (keep view as-is)
         current_overwrites = channel.overwrites_for(interaction.guild.default_role)
         await channel.set_permissions(interaction.guild.default_role, connect=False, view_channel=current_overwrites.view_channel)
@@ -150,7 +149,7 @@ class LockButton(Button):
         if isinstance(channel, discord.VoiceChannel):
             await _grant_current_members(channel)
         await view.update_database(locked=True)
-        await interaction.response.edit_message(view=PrivacyView(view.cog, view.channel_id, view.owner_id, channel))
+        await interaction.edit_original_response(view=PrivacyView(view.cog, view.channel_id, view.owner_id, channel))
         await interaction.followup.send("🔒 Channel locked! Current members kept access.", ephemeral=True)
 
 
@@ -161,7 +160,7 @@ class UnlockButton(Button):
     async def callback(self, interaction: discord.Interaction):
         view: PrivacyView = self.view
         channel = view.channel
-        await interaction.response.defer(ephemeral=True, thinking=False)
+        await interaction.response.defer(ephemeral=True)
         # restore default connect True, keep view as-is
         current_overwrites = channel.overwrites_for(interaction.guild.default_role)
         await channel.set_permissions(interaction.guild.default_role, connect=True, view_channel=current_overwrites.view_channel)
@@ -169,7 +168,7 @@ class UnlockButton(Button):
         if isinstance(channel, discord.VoiceChannel):
             await _remove_member_allows(channel, preserve_ids={view.owner_id})
         await view.update_database(locked=False)
-        await interaction.response.edit_message(view=PrivacyView(view.cog, view.channel_id, view.owner_id, channel))
+        await interaction.edit_original_response(view=PrivacyView(view.cog, view.channel_id, view.owner_id, channel))
         await interaction.followup.send("🔓 Channel unlocked!", ephemeral=True)
 
 
@@ -180,13 +179,13 @@ class HideButton(Button):
     async def callback(self, interaction: discord.Interaction):
         view: PrivacyView = self.view
         channel = view.channel
-        await interaction.response.defer(ephemeral=True, thinking=False)
+        await interaction.response.defer(ephemeral=True)
         current_overwrites = channel.overwrites_for(interaction.guild.default_role)
         await channel.set_permissions(interaction.guild.default_role, view_channel=False, connect=current_overwrites.connect)
         if isinstance(channel, discord.VoiceChannel):
             await _grant_current_members(channel)
         await view.update_database(hidden=True)
-        await interaction.response.edit_message(view=PrivacyView(view.cog, view.channel_id, view.owner_id, channel))
+        await interaction.edit_original_response(view=PrivacyView(view.cog, view.channel_id, view.owner_id, channel))
         await interaction.followup.send("🕵️ Channel hidden! Current members can still see it.", ephemeral=True)
 
 
@@ -197,13 +196,13 @@ class UnhideButton(Button):
     async def callback(self, interaction: discord.Interaction):
         view: PrivacyView = self.view
         channel = view.channel
-        await interaction.response.defer(ephemeral=True, thinking=False)
+        await interaction.response.defer(ephemeral=True)
         current_overwrites = channel.overwrites_for(interaction.guild.default_role)
         await channel.set_permissions(interaction.guild.default_role, view_channel=True, connect=current_overwrites.connect)
         if isinstance(channel, discord.VoiceChannel):
             await _remove_member_allows(channel, preserve_ids={view.owner_id})
         await view.update_database(hidden=False)
-        await interaction.response.edit_message(view=PrivacyView(view.cog, view.channel_id, view.owner_id, channel))
+        await interaction.edit_original_response(view=PrivacyView(view.cog, view.channel_id, view.owner_id, channel))
         await interaction.followup.send("👀 Channel now visible!", ephemeral=True)
 
 
@@ -214,7 +213,7 @@ class MembersButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
-        await interaction.response.defer(ephemeral=True, thinking=False)
+        await interaction.response.defer(ephemeral=True)
         channel = interaction.guild.get_channel(view.channel_id)
         if not channel:
             await interaction.followup.send("❌ Channel not found!", ephemeral=True)
@@ -241,8 +240,8 @@ class GrantAccessButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: MembersMainView = self.view
+        await interaction.response.defer(ephemeral=True)
         users = []
-        await interaction.response.defer(ephemeral=True, thinking=False)
         for member in view.channel.guild.members:
             if member.id == view.owner_id or member.bot:
                 continue
@@ -261,8 +260,8 @@ class RevokeAccessButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: MembersMainView = self.view
+        await interaction.response.defer(ephemeral=True)
         users = []
-        await interaction.response.defer(ephemeral=True, thinking=False)
         for member in view.channel.guild.members:
             if member.id == view.owner_id or member.bot:
                 continue
@@ -281,8 +280,8 @@ class UnblockButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: MembersMainView = self.view
+        await interaction.response.defer(ephemeral=True)
         blocked = []
-        await interaction.response.defer(ephemeral=True, thinking=False)
         for member in view.channel.guild.members:
             if member.id == view.owner_id or member.bot:
                 continue
@@ -300,7 +299,6 @@ class CustomUserDropdownView(ControlPanel):
     def __init__(self, cog, channel_id: int, owner_id: int, channel: discord.abc.GuildChannel, users: List[discord.Member], action_type: str, placeholder: str):
         super().__init__(cog, channel_id, owner_id)
         self.channel = channel
-        await interaction.response.defer(ephemeral=True, thinking=False)
         self.action_type = action_type
         options = []
         for member in users:
@@ -325,8 +323,8 @@ class CustomUserDropdown(discord.ui.Select):
         self.action_type = action_type
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         successful = []
-        await interaction.response.defer(ephemeral=True, thinking=False)
         for user_id in self.values:
             try:
                 member = interaction.guild.get_member(int(user_id))
@@ -349,7 +347,6 @@ class UserSelectActionView(ControlPanel):
     def __init__(self, cog, channel_id: int, owner_id: int, channel: discord.abc.GuildChannel, users: List[discord.Member], action_type: str, placeholder: str):
         super().__init__(cog, channel_id, owner_id)
         self.channel = channel
-        await interaction.response.defer(ephemeral=True, thinking=False)
         self.action_type = action_type
         if users:
             self.add_item(UserSelectAction(users, action_type, placeholder))
@@ -364,8 +361,8 @@ class UserSelectAction(UserSelect):
         self.action_type = action_type
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         successful = []
-        await interaction.response.defer(ephemeral=True, thinking=False)
         for member in self.values:
             try:
                 if self.action_type == "grant":
@@ -398,11 +395,8 @@ class KickButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: MembersMainView = self.view
-        await interaction.response.defer(ephemeral=True, thinking=False)
-        vc_users = [m for m in getattr(view, 'channel', []).members if m.id != view.owner_id] if hasattr(view, 'channel') else []
-        # fallback safe build
-        if not vc_users and isinstance(view.channel, discord.VoiceChannel):
-            vc_users = [m for m in view.channel.members if m.id != view.owner_id]
+        await interaction.response.defer(ephemeral=True)
+        vc_users = [m for m in view.channel.members if m.id != view.owner_id] if hasattr(view, 'channel') and isinstance(view.channel, discord.VoiceChannel) else []
         if vc_users:
             await interaction.followup.send(view=UserSelectActionView(view.cog, view.channel_id, view.owner_id, view.channel, vc_users, "kick", "Select users to kick from VC..."), ephemeral=True)
         else:
@@ -415,8 +409,8 @@ class BlockButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: MembersMainView = self.view
+        await interaction.response.defer(ephemeral=True)
         users_to_block = []
-        await interaction.response.defer(ephemeral=True, thinking=False)
         for member in view.channel.guild.members:
             if member.id == view.owner_id or member.bot:
                 continue
@@ -435,9 +429,9 @@ class ViewAccessListButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: MembersMainView = self.view
+        await interaction.response.defer(ephemeral=True)
         users_with_access = []
         users_with_deny = []
-        await interaction.response.defer(ephemeral=True, thinking=False)
         for member in view.channel.guild.members:
             if member.id == view.owner_id or member.bot:
                 continue
@@ -464,8 +458,8 @@ class ViewBlockedButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: MembersMainView = self.view
+        await interaction.response.defer(ephemeral=True)
         blocked_users = []
-        await interaction.response.defer(ephemeral=True, thinking=False)
         for member in view.channel.guild.members:
             if member.id == view.owner_id or member.bot:
                 continue
@@ -483,7 +477,7 @@ class RegionButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
-        await interaction.response.defer(ephemeral=True, thinking=False)
+        await interaction.response.defer(ephemeral=True)
         channel = interaction.guild.get_channel(view.channel_id)
         if not channel:
             await interaction.followup.send("❌ Channel not found!", ephemeral=True)
@@ -513,7 +507,7 @@ class RegionSelectButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: RegionView = self.view
-        await interaction.response.defer(ephemeral=True, thinking=False)
+        await interaction.response.defer(ephemeral=True)
         try:
             await view.channel.edit(rtc_region=self.region)
             await interaction.followup.send(f"🌐 Voice region set to {self.label}!", ephemeral=True)
@@ -528,7 +522,6 @@ class TransferButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
-        await interaction.response.defer(ephemeral=True, thinking=False)
         modal = TransferModal(view.cog, view.channel_id)
         await interaction.response.send_modal(modal)
 
@@ -539,7 +532,7 @@ class ClaimButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
-        await interaction.response.defer(ephemeral=True, thinking=False)
+        await interaction.response.defer(ephemeral=True)
         if not interaction.user.voice or not interaction.user.voice.channel:
             await interaction.followup.send("❌ You must be in a voice channel to claim it!", ephemeral=True)
             return
@@ -570,7 +563,7 @@ class DeleteButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
-        await interaction.response.defer(ephemeral=True, thinking=False)
+        await interaction.response.defer(ephemeral=True)
         channel = interaction.guild.get_channel(view.channel_id)
         if not channel:
             await interaction.followup.send("❌ Channel not found!", ephemeral=True)
@@ -595,7 +588,7 @@ class ConfirmDeleteView(View):
 
     @discord.ui.button(label="✅ Confirm Delete", style=discord.ButtonStyle.danger)
     async def confirm_delete(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer(ephemeral=True, thinking=False)
+        await interaction.response.defer(ephemeral=True)
         try:
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (self.channel.id,))
