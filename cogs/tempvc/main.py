@@ -132,7 +132,7 @@ class TempVoice(commands.Cog):
                 user_limit=user_limit or None,
                 reason=f"{base_name} channel created by {member.display_name}"
             )
-
+            await vc.set_permissions(member, manage_channels=True, connect=True, speak=True)
             # ── Update related_channels list with new VC ──
             related_channels = [c for c in category.voice_channels if c.name.startswith(base_name)]
 
@@ -188,61 +188,33 @@ class TempVoice(commands.Cog):
 
 
 
-    async def _send_control_panel(self, channel, owner_id):
-        """Send interactive control panel to the voice channel"""
-        view = BasicControlsView(self, channel.id, owner_id)
-
-        embed = discord.Embed(
-            title="🎯 Voice Channel Controls",
-            description=(
-                "**Use the buttons below to manage your voice channel:**\n\n"
-                "**🔒 Access Controls:**\n"
-                "• Lock/Unlock - Control who can join\n"
-                "• Hide/Unhide - Control visibility\n"
-                "• Rename - Change channel name\n\n"
-                "**👥 Member Management:**\n"
-                "• Trust users - Allow specific users to join\n"
-                "• Ban users - Block specific users\n"
-                "• Kick users - Remove from VC\n\n"
-                "**🔄 Advanced:**\n"
-                "• Reset - Reset all settings\n"
-                "• Transfer - Give ownership to someone else"
-            ),
-            color=discord.Color.orange()
-        )
-        embed.set_footer(text="Only the VC owner can use these controls")
-
-        try:
-            await channel.send(embed=embed, view=view)
-        except Exception as e:
-            print(f"Failed to send control panel: {e}")
-
     async def _cleanup_empty_vc(self, channel: discord.VoiceChannel):
-        """Clean up empty temporary voice channels efficiently and safely."""
+        """Clean up empty temporary voice channels based on DB entry (works even if renamed)."""
         try:
             await asyncio.sleep(2)  # small buffer in case user reconnects quickly
-
-            # Re-fetch the channel to ensure it's still valid
             channel = self.bot.get_channel(channel.id)
             if not channel:
                 return
 
-            # Skip generator or non-temp channels
-            for base_name, _ in JOIN_CHANNELS.values():
-                if channel.name.startswith(base_name) and channel.id not in JOIN_CHANNELS:
-                    break
-            else:
-                return  # not a temp VC
+            # ── Check if this channel exists in DB ──
+            async with aiosqlite.connect(DB_PATH) as db:
+                async with db.execute(
+                    "SELECT userID FROM voiceChannel WHERE voiceID = ?", (channel.id,)
+                ) as cursor:
+                    row = await cursor.fetchone()
 
-            # ── Check if empty ──
-            if len(channel.members) > 0:
+            if not row:
+                return  # not a tracked temp VC
+
+            # ── Skip deletion if not empty ──
+            if channel.members:
                 return
 
-            # ── Delete channel ──
+            # ── Delete VC ──
             try:
                 await channel.delete(reason="Temp VC empty → auto-deleted")
             except discord.NotFound:
-                return
+                pass
             except discord.HTTPException as e:
                 print(f"Failed to delete channel {channel.id}: {e}")
                 return
@@ -252,17 +224,13 @@ class TempVoice(commands.Cog):
                 await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (channel.id,))
                 await db.commit()
 
-            # ── Optional: Force reuse availability ──
-            # (no need to store numbers; next creation auto-fills gap)
-
-            # ── Clean up task cache ──
             self.cleanup_tasks.pop(channel.id, None)
 
         except asyncio.CancelledError:
-            # task was cancelled because user rejoined
             return
         except Exception as e:
             print(f"Cleanup error: {e}")
+
 
     @commands.group(aliases=['voice', 'tempvc'], hidden=True)
     async def vc(self, ctx):

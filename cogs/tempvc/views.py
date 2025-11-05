@@ -17,7 +17,7 @@ class ControlPanel(View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ Only the VC owner can use these controls!", ephemeral=True
             )
             return False
@@ -63,8 +63,9 @@ class NameButton(Button):
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
         channel = interaction.guild.get_channel(view.channel_id)
+        await interaction.response.defer(ephemeral=True, thinking=False)
         if not channel:
-            await interaction.response.send_message("❌ Channel not found!", ephemeral=True)
+            await interaction.followup.send("❌ Channel not found!", ephemeral=True)
             return
         modal = RenameModal(view.cog, channel)
         await interaction.response.send_modal(modal)
@@ -76,11 +77,12 @@ class PrivacyButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
+        await interaction.response.defer(ephemeral=True, thinking=False)
         channel = interaction.guild.get_channel(view.channel_id)
         if not channel:
-            await interaction.response.send_message("❌ Channel not found!", ephemeral=True)
+            await interaction.followup.send("❌ Channel not found!", ephemeral=True)
             return
-        await interaction.response.send_message(view=PrivacyView(view.cog, view.channel_id, view.owner_id, channel), ephemeral=True)
+        await interaction.followup.send(view=PrivacyView(view.cog, view.channel_id, view.owner_id, channel), ephemeral=True)
 
 
 class PrivacyView(ControlPanel):
@@ -140,6 +142,7 @@ class LockButton(Button):
     async def callback(self, interaction: discord.Interaction):
         view: PrivacyView = self.view
         channel = view.channel
+        await interaction.response.defer(ephemeral=True, thinking=False)
         # deny default role connect (keep view as-is)
         current_overwrites = channel.overwrites_for(interaction.guild.default_role)
         await channel.set_permissions(interaction.guild.default_role, connect=False, view_channel=current_overwrites.view_channel)
@@ -158,6 +161,7 @@ class UnlockButton(Button):
     async def callback(self, interaction: discord.Interaction):
         view: PrivacyView = self.view
         channel = view.channel
+        await interaction.response.defer(ephemeral=True, thinking=False)
         # restore default connect True, keep view as-is
         current_overwrites = channel.overwrites_for(interaction.guild.default_role)
         await channel.set_permissions(interaction.guild.default_role, connect=True, view_channel=current_overwrites.view_channel)
@@ -176,6 +180,7 @@ class HideButton(Button):
     async def callback(self, interaction: discord.Interaction):
         view: PrivacyView = self.view
         channel = view.channel
+        await interaction.response.defer(ephemeral=True, thinking=False)
         current_overwrites = channel.overwrites_for(interaction.guild.default_role)
         await channel.set_permissions(interaction.guild.default_role, view_channel=False, connect=current_overwrites.connect)
         if isinstance(channel, discord.VoiceChannel):
@@ -192,6 +197,7 @@ class UnhideButton(Button):
     async def callback(self, interaction: discord.Interaction):
         view: PrivacyView = self.view
         channel = view.channel
+        await interaction.response.defer(ephemeral=True, thinking=False)
         current_overwrites = channel.overwrites_for(interaction.guild.default_role)
         await channel.set_permissions(interaction.guild.default_role, view_channel=True, connect=current_overwrites.connect)
         if isinstance(channel, discord.VoiceChannel):
@@ -208,11 +214,12 @@ class MembersButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
+        await interaction.response.defer(ephemeral=True, thinking=False)
         channel = interaction.guild.get_channel(view.channel_id)
         if not channel:
-            await interaction.response.send_message("❌ Channel not found!", ephemeral=True)
+            await interaction.followup.send("❌ Channel not found!", ephemeral=True)
             return
-        await interaction.response.send_message(view=MembersMainView(view.cog, view.channel_id, view.owner_id, channel), ephemeral=True)
+        await interaction.followup.send(view=MembersMainView(view.cog, view.channel_id, view.owner_id, channel), ephemeral=True)
 
 
 class MembersMainView(ControlPanel):
@@ -235,6 +242,7 @@ class GrantAccessButton(Button):
     async def callback(self, interaction: discord.Interaction):
         view: MembersMainView = self.view
         users = []
+        await interaction.response.defer(ephemeral=True, thinking=False)
         for member in view.channel.guild.members:
             if member.id == view.owner_id or member.bot:
                 continue
@@ -242,9 +250,9 @@ class GrantAccessButton(Button):
             if not view._has_allow(overwrite):
                 users.append(member)
         if users:
-            await interaction.response.send_message(view=UserSelectActionView(view.cog, view.channel_id, view.owner_id, view.channel, users, "grant", "Select users to grant access..."), ephemeral=True)
+            await interaction.followup.send(view=UserSelectActionView(view.cog, view.channel_id, view.owner_id, view.channel, users, "grant", "Select users to grant access..."), ephemeral=True)
         else:
-            await interaction.response.send_message("✅ All users already have explicit access permissions!", ephemeral=True)
+            await interaction.followup.send("✅ All users already have explicit access permissions!", ephemeral=True)
 
 
 class RevokeAccessButton(Button):
@@ -254,6 +262,7 @@ class RevokeAccessButton(Button):
     async def callback(self, interaction: discord.Interaction):
         view: MembersMainView = self.view
         users = []
+        await interaction.response.defer(ephemeral=True, thinking=False)
         for member in view.channel.guild.members:
             if member.id == view.owner_id or member.bot:
                 continue
@@ -261,9 +270,9 @@ class RevokeAccessButton(Button):
             if view._has_allow(overwrite):
                 users.append(member)
         if users:
-            await interaction.response.send_message(view=CustomUserDropdownView(view.cog, view.channel_id, view.owner_id, view.channel, users, "revoke", "Select users to revoke access..."), ephemeral=True)
+            await interaction.followup.send(view=CustomUserDropdownView(view.cog, view.channel_id, view.owner_id, view.channel, users, "revoke", "Select users to revoke access..."), ephemeral=True)
         else:
-            await interaction.response.send_message("❌ No users have special access permissions!", ephemeral=True)
+            await interaction.followup.send("❌ No users have special access permissions!", ephemeral=True)
 
 
 class UnblockButton(Button):
@@ -273,6 +282,7 @@ class UnblockButton(Button):
     async def callback(self, interaction: discord.Interaction):
         view: MembersMainView = self.view
         blocked = []
+        await interaction.response.defer(ephemeral=True, thinking=False)
         for member in view.channel.guild.members:
             if member.id == view.owner_id or member.bot:
                 continue
@@ -280,9 +290,9 @@ class UnblockButton(Button):
             if view._has_deny(overwrite):
                 blocked.append(member)
         if blocked:
-            await interaction.response.send_message(view=CustomUserDropdownView(view.cog, view.channel_id, view.owner_id, view.channel, blocked, "unblock", "Select users to unblock..."), ephemeral=True)
+            await interaction.followup.send(view=CustomUserDropdownView(view.cog, view.channel_id, view.owner_id, view.channel, blocked, "unblock", "Select users to unblock..."), ephemeral=True)
         else:
-            await interaction.response.send_message("✅ No users are currently blocked!", ephemeral=True)
+            await interaction.followup.send("✅ No users are currently blocked!", ephemeral=True)
 
 
 # Custom dropdown used for revoke/unblock (shows descriptions of perms)
@@ -290,6 +300,7 @@ class CustomUserDropdownView(ControlPanel):
     def __init__(self, cog, channel_id: int, owner_id: int, channel: discord.abc.GuildChannel, users: List[discord.Member], action_type: str, placeholder: str):
         super().__init__(cog, channel_id, owner_id)
         self.channel = channel
+        await interaction.response.defer(ephemeral=True, thinking=False)
         self.action_type = action_type
         options = []
         for member in users:
@@ -315,6 +326,7 @@ class CustomUserDropdown(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         successful = []
+        await interaction.response.defer(ephemeral=True, thinking=False)
         for user_id in self.values:
             try:
                 member = interaction.guild.get_member(int(user_id))
@@ -327,9 +339,9 @@ class CustomUserDropdown(discord.ui.Select):
                 print(f"Error in {self.action_type} action: {e}")
         if successful:
             action_text = {"revoke": "❌ Revoked access from", "unblock": "✅ Unblocked"}
-            await interaction.response.send_message(f"{action_text[self.action_type]}: {', '.join(successful)}", ephemeral=True)
+            await interaction.followup.send(f"{action_text[self.action_type]}: {', '.join(successful)}", ephemeral=True)
         else:
-            await interaction.response.send_message(f"❌ Failed to {self.action_type}!", ephemeral=True)
+            await interaction.followup.send(f"❌ Failed to {self.action_type}!", ephemeral=True)
 
 
 # Unified select view for grant/kick/block actions
@@ -337,6 +349,7 @@ class UserSelectActionView(ControlPanel):
     def __init__(self, cog, channel_id: int, owner_id: int, channel: discord.abc.GuildChannel, users: List[discord.Member], action_type: str, placeholder: str):
         super().__init__(cog, channel_id, owner_id)
         self.channel = channel
+        await interaction.response.defer(ephemeral=True, thinking=False)
         self.action_type = action_type
         if users:
             self.add_item(UserSelectAction(users, action_type, placeholder))
@@ -352,6 +365,7 @@ class UserSelectAction(UserSelect):
 
     async def callback(self, interaction: discord.Interaction):
         successful = []
+        await interaction.response.defer(ephemeral=True, thinking=False)
         for member in self.values:
             try:
                 if self.action_type == "grant":
@@ -373,9 +387,9 @@ class UserSelectAction(UserSelect):
                 print(f"Error in {self.action_type} for {getattr(member, 'id', 'unknown')}: {e}")
         if successful:
             action_text = {"grant": "granted access to", "revoke": "revoked access from", "kick": "kicked", "block": "blocked"}
-            await interaction.response.send_message(f"✅ {action_text[self.action_type]}: {', '.join(successful)}", ephemeral=True)
+            await interaction.followup.send(f"✅ {action_text[self.action_type]}: {', '.join(successful)}", ephemeral=True)
         else:
-            await interaction.response.send_message("❌ Failed to perform action!", ephemeral=True)
+            await interaction.followup.send("❌ Failed to perform action!", ephemeral=True)
 
 
 class KickButton(Button):
@@ -384,14 +398,15 @@ class KickButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: MembersMainView = self.view
+        await interaction.response.defer(ephemeral=True, thinking=False)
         vc_users = [m for m in getattr(view, 'channel', []).members if m.id != view.owner_id] if hasattr(view, 'channel') else []
         # fallback safe build
         if not vc_users and isinstance(view.channel, discord.VoiceChannel):
             vc_users = [m for m in view.channel.members if m.id != view.owner_id]
         if vc_users:
-            await interaction.response.send_message(view=UserSelectActionView(view.cog, view.channel_id, view.owner_id, view.channel, vc_users, "kick", "Select users to kick from VC..."), ephemeral=True)
+            await interaction.followup.send(view=UserSelectActionView(view.cog, view.channel_id, view.owner_id, view.channel, vc_users, "kick", "Select users to kick from VC..."), ephemeral=True)
         else:
-            await interaction.response.send_message("❌ No users in VC to kick!", ephemeral=True)
+            await interaction.followup.send("❌ No users in VC to kick!", ephemeral=True)
 
 
 class BlockButton(Button):
@@ -401,6 +416,7 @@ class BlockButton(Button):
     async def callback(self, interaction: discord.Interaction):
         view: MembersMainView = self.view
         users_to_block = []
+        await interaction.response.defer(ephemeral=True, thinking=False)
         for member in view.channel.guild.members:
             if member.id == view.owner_id or member.bot:
                 continue
@@ -408,9 +424,9 @@ class BlockButton(Button):
             if overwrite.connect is not False:
                 users_to_block.append(member)
         if users_to_block:
-            await interaction.response.send_message(view=UserSelectActionView(view.cog, view.channel_id, view.owner_id, view.channel, users_to_block, "block", "Select users to block..."), ephemeral=True)
+            await interaction.followup.send(view=UserSelectActionView(view.cog, view.channel_id, view.owner_id, view.channel, users_to_block, "block", "Select users to block..."), ephemeral=True)
         else:
-            await interaction.response.send_message("✅ All non-owner users are already blocked!", ephemeral=True)
+            await interaction.followup.send("✅ All non-owner users are already blocked!", ephemeral=True)
 
 
 class ViewAccessListButton(Button):
@@ -421,6 +437,7 @@ class ViewAccessListButton(Button):
         view: MembersMainView = self.view
         users_with_access = []
         users_with_deny = []
+        await interaction.response.defer(ephemeral=True, thinking=False)
         for member in view.channel.guild.members:
             if member.id == view.owner_id or member.bot:
                 continue
@@ -438,7 +455,7 @@ class ViewAccessListButton(Button):
             embed.add_field(name="❌ Users with Explicit Deny", value="\n".join(users_with_deny), inline=False)
         if not users_with_access and not users_with_deny:
             embed.description = "No users have explicit permissions"
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 class ViewBlockedButton(Button):
@@ -448,6 +465,7 @@ class ViewBlockedButton(Button):
     async def callback(self, interaction: discord.Interaction):
         view: MembersMainView = self.view
         blocked_users = []
+        await interaction.response.defer(ephemeral=True, thinking=False)
         for member in view.channel.guild.members:
             if member.id == view.owner_id or member.bot:
                 continue
@@ -455,7 +473,7 @@ class ViewBlockedButton(Button):
             if overwrite.connect is False:
                 blocked_users.append(member.display_name)
         embed = discord.Embed(title="🚫 Blocked Users", description=("\n".join(blocked_users) if blocked_users else "No users are blocked"), color=discord.Color.red())
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 # --------------------- Region / Transfer / Claim / Delete ---------------------
@@ -465,11 +483,12 @@ class RegionButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
+        await interaction.response.defer(ephemeral=True, thinking=False)
         channel = interaction.guild.get_channel(view.channel_id)
         if not channel:
-            await interaction.response.send_message("❌ Channel not found!", ephemeral=True)
+            await interaction.followup.send("❌ Channel not found!", ephemeral=True)
             return
-        await interaction.response.send_message(view=RegionView(view.cog, view.channel_id, view.owner_id, channel), ephemeral=True)
+        await interaction.followup.send(view=RegionView(view.cog, view.channel_id, view.owner_id, channel), ephemeral=True)
 
 
 class RegionView(ControlPanel):
@@ -494,12 +513,13 @@ class RegionSelectButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: RegionView = self.view
+        await interaction.response.defer(ephemeral=True, thinking=False)
         try:
             await view.channel.edit(rtc_region=self.region)
-            await interaction.response.send_message(f"🌐 Voice region set to {self.label}!", ephemeral=True)
+            await interaction.followup.send(f"🌐 Voice region set to {self.label}!", ephemeral=True)
         except Exception as e:
             print(f"Region change error: {e}")
-            await interaction.response.send_message("❌ Failed to change voice region! This region might not be available.", ephemeral=True)
+            await interaction.followup.send("❌ Failed to change voice region! This region might not be available.", ephemeral=True)
 
 
 class TransferButton(Button):
@@ -508,6 +528,7 @@ class TransferButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
+        await interaction.response.defer(ephemeral=True, thinking=False)
         modal = TransferModal(view.cog, view.channel_id)
         await interaction.response.send_modal(modal)
 
@@ -518,8 +539,9 @@ class ClaimButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
+        await interaction.response.defer(ephemeral=True, thinking=False)
         if not interaction.user.voice or not interaction.user.voice.channel:
-            await interaction.response.send_message("❌ You must be in a voice channel to claim it!", ephemeral=True)
+            await interaction.followup.send("❌ You must be in a voice channel to claim it!", ephemeral=True)
             return
         channel = interaction.user.voice.channel
         async with aiosqlite.connect(DB_PATH) as db:
@@ -529,7 +551,7 @@ class ClaimButton(Button):
                 owner_id = data[0]
                 owner = interaction.guild.get_member(owner_id)
                 if owner and owner in channel.members:
-                    await interaction.response.send_message("❌ This channel already has an active owner!", ephemeral=True)
+                    await interaction.followup.send("❌ This channel already has an active owner!", ephemeral=True)
                     return
             await db.execute("UPDATE voiceChannel SET userID = ? WHERE voiceID = ?", (interaction.user.id, channel.id))
             if db.total_changes == 0:
@@ -539,7 +561,7 @@ class ClaimButton(Button):
                     (interaction.user.id, channel.id, channel.name, limit),
                 )
             await db.commit()
-        await interaction.response.send_message(f"✅ Successfully claimed {channel.mention}!", ephemeral=True)
+        await interaction.followup.send(f"✅ Successfully claimed {channel.mention}!", ephemeral=True)
 
 
 class DeleteButton(Button):
@@ -548,11 +570,12 @@ class DeleteButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
+        await interaction.response.defer(ephemeral=True, thinking=False)
         channel = interaction.guild.get_channel(view.channel_id)
         if not channel:
-            await interaction.response.send_message("❌ Channel not found!", ephemeral=True)
+            await interaction.followup.send("❌ Channel not found!", ephemeral=True)
             return
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "⚠️ Are you sure you want to delete this voice channel? This action cannot be undone!",
             view=ConfirmDeleteView(view.cog, view.channel_id, view.owner_id, channel),
             ephemeral=True,
@@ -572,14 +595,15 @@ class ConfirmDeleteView(View):
 
     @discord.ui.button(label="✅ Confirm Delete", style=discord.ButtonStyle.danger)
     async def confirm_delete(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer(ephemeral=True, thinking=False)
         try:
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (self.channel.id,))
                 await db.commit()
             await self.channel.delete(reason="VC owner requested deletion")
-            await interaction.response.send_message("✅ Voice channel deleted!", ephemeral=True)
+            await interaction.followup.send("✅ Voice channel deleted!", ephemeral=True)
         except Exception:
-            await interaction.response.send_message("❌ Failed to delete channel!", ephemeral=True)
+            await interaction.followup.send("❌ Failed to delete channel!", ephemeral=True)
 
     @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
     async def cancel_delete(self, interaction: discord.Interaction, button: Button):
