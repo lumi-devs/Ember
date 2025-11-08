@@ -136,7 +136,7 @@ class RoleUpdate(commands.Cog):
 
         try:
             secondary_obj = Color.from_str(secondary)
-            await role.edit(secondary_color=secondary_obj)
+            await role.edit(color=primary, secondary_color=secondary_obj)
             role_data["secondary_colour"] = secondary
             role_data["color_type"] = "gradient"
             save_db(db)
