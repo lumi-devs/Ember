@@ -547,33 +547,64 @@ class TransferButton(Button):
 
 class ClaimButton(Button):
     def __init__(self):
-        super().__init__(label="🎯 Claim", style=discord.ButtonStyle.secondary, custom_id="claim", row=2)
+        super().__init__(
+            label="🎯 Claim",
+            style=discord.ButtonStyle.secondary,
+            custom_id="claim",
+            row=2
+        )
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
         await interaction.response.defer(ephemeral=True)
+
+        # User must be in VC
         if not interaction.user.voice or not interaction.user.voice.channel:
-            await interaction.followup.send("❌ You must be in a voice channel to claim it!", ephemeral=True)
-            return
+            return await interaction.followup.send(
+                "❌ You must be in a voice channel to claim it!",
+                ephemeral=True
+            )
+
         channel = interaction.user.voice.channel
+
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute("SELECT userID FROM voiceChannel WHERE voiceID = ?", (channel.id,)) as cursor:
                 data = await cursor.fetchone()
+
             if data:
                 owner_id = data[0]
                 owner = interaction.guild.get_member(owner_id)
+
+                # --- Case 1: Owner still in VC
                 if owner and owner in channel.members:
-                    await interaction.followup.send("❌ This channel already has an active owner!", ephemeral=True)
-                    return
-            await db.execute("UPDATE voiceChannel SET userID = ? WHERE voiceID = ?", (interaction.user.id, channel.id))
-            if db.total_changes == 0:
-                limit = channel.user_limit
+                    return await interaction.followup.send(
+                        f"❌ {owner.display_name} is still active in this VC. You can't claim it yet!",
+                        ephemeral=True
+                    )
+
+                # --- Case 2: Owner gone, transfer ownership
                 await db.execute(
-                    "INSERT INTO voiceChannel (userID, voiceID, channelName, channelLimit) VALUES (?, ?, ?, ?)",
-                    (interaction.user.id, channel.id, channel.name, limit),
+                    "UPDATE voiceChannel SET userID = ? WHERE voiceID = ?",
+                    (interaction.user.id, channel.id)
                 )
+                await db.commit()
+                return await interaction.followup.send(
+                    f"🔄 Ownership transferred to you for {channel.mention}.",
+                    ephemeral=True
+                )
+
+            # --- Case 3: No owner entry, create new
+            limit = channel.user_limit
+            await db.execute(
+                "INSERT INTO voiceChannel (userID, voiceID, channelName, channelLimit) VALUES (?, ?, ?, ?)",
+                (interaction.user.id, channel.id, channel.name, limit)
+            )
             await db.commit()
-        await interaction.followup.send(f"✅ Successfully claimed {channel.mention}!", ephemeral=True)
+
+        await interaction.followup.send(
+            f"✅ You have successfully claimed {channel.mention}!",
+            ephemeral=True
+        )
 
 
 class DeleteButton(Button):

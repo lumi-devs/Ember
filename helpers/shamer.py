@@ -130,7 +130,7 @@ class HallOfShame(commands.Cog):
                 if message.channel.permissions_for(me).create_public_threads:
                     # minimal thread name as requested
                     try:
-                        await message.create_thread(name=".", auto_archive_duration=1440)
+                        await message.create_thread(name=".", auto_archive_duration=60)
                     except Exception as e:
                         # sometimes thread creation fails if one already exists or perm issues - ignore
                         print(f"[HallOfShame] Thread creation error: {e}")
