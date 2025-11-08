@@ -2,6 +2,7 @@ import os
 import json
 import discord
 from discord.ext import commands
+import asyncio
 
 DRAGME_CHANNEL_ID = 1418501302626816010
 TIMEOUT_DURATION = 60  # seconds
@@ -9,12 +10,11 @@ REQUESTS_FILE = "active_requests.json"
 
 BLACKLISTED_VOICE_IDS = set()
 if os.environ.get("BLACKLISTED_VOICE_ROLES"):
-    BLACKLISTED_VOICE_IDS = set(
+    BLACKLISTED_VOICE_IDS = {
         int(rid.strip())
         for rid in os.environ["BLACKLISTED_VOICE_ROLES"].split(",")
         if rid.strip()
-    )
-
+    }
 
 # --- Persistence helpers ---
 def load_requests():
@@ -26,13 +26,17 @@ def load_requests():
     except Exception:
         return []
 
-
-def save_requests(requests):
-    with open(REQUESTS_FILE, "w") as f:
+def save_requests_safe(requests):
+    """Atomic save to prevent partial writes."""
+    tmp = REQUESTS_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(requests, f)
+    os.replace(tmp, REQUESTS_FILE)
 
 
-active_requests = []  # Always start fresh
+# ─── Global state ───────────────────────────────────────
+active_requests = load_requests()
+requests_lock = asyncio.Lock()  # prevent race conditions
 
 
 async def setup(bot: commands.Bot):
@@ -72,28 +76,26 @@ async def setup(bot: commands.Bot):
                 f"⚠️ You’re already in {target.mention}'s VC.", ephemeral=True
             )
 
-        # --- Check VC user limit (allow up to limit × 2) ---
+        # --- VC limit check (allow up to limit × 2) ---
         channel = target.voice.channel
-        limit = channel.user_limit  # 0 = unlimited
+        limit = channel.user_limit
         current_users = len(channel.members)
-
         if limit > 0 and current_users >= (limit * 2):
             return await interaction.followup.send(
-                f"⚠️ VC limit reached.\n"
-                f"This channel allows up to {limit * 2} users (2× the normal limit).",
+                f"⚠️ VC limit reached. (Max {limit * 2})",
                 ephemeral=True
             )
 
         request_key = {"requester": requester.id, "target": target.id}
-        if request_key in active_requests:
-            return await interaction.followup.send(
-                f"⚠️ You already have an active request pending with {target.mention}",
-                ephemeral=True,
-            )
 
-        # --- Add request ---
-        active_requests.append(request_key)
-        save_requests(active_requests)
+        async with requests_lock:
+            if request_key in active_requests:
+                return await interaction.followup.send(
+                    f"⚠️ You already have an active request with {target.mention}",
+                    ephemeral=True,
+                )
+            active_requests.append(request_key)
+            save_requests_safe(active_requests)
 
         await interaction.followup.send("✅ Your request was sent.", ephemeral=True)
 
@@ -107,22 +109,22 @@ async def setup(bot: commands.Bot):
                 self.msg: discord.Message | None = None
                 self.finished = False
 
-            def remove_request(self):
-                nonlocal request_key
-                if request_key in active_requests:
-                    active_requests.remove(request_key)
-                    save_requests(active_requests)
+            async def remove_request(self):
+                async with requests_lock:
+                    if request_key in active_requests:
+                        active_requests.remove(request_key)
+                        save_requests_safe(active_requests)
 
             async def finish(self, content: str):
                 self.finished = True
-                self.remove_request()
+                await self.remove_request()
                 if self.msg:
                     await self.msg.edit(content=content, view=None)
                 self.stop()
 
             async def on_timeout(self):
                 if not self.finished and self.msg:
-                    self.remove_request()
+                    await self.remove_request()
                     await self.msg.edit(content="⌛ Request timed out.", view=None)
 
             @discord.ui.button(style=discord.ButtonStyle.green, label="Accept")
@@ -136,14 +138,13 @@ async def setup(bot: commands.Bot):
                 if updated_channel and updated_channel.user_limit > 0:
                     if len(updated_channel.members) >= (updated_channel.user_limit * 2):
                         return await interaction.response.send_message(
-                            f"⚠️ VC limit reached.\n"
-                            f"This channel allows up to {updated_channel.user_limit * 2} users (2× the normal limit).",
+                            f"⚠️ VC limit reached. (Max {updated_channel.user_limit * 2})",
                             ephemeral=True
                         )
 
                 await requester.move_to(updated_channel)
                 await self.finish(
-                    f"✅ {target.mention} accepted. {requester.mention} has been moved to **{updated_channel.name}**"
+                    f"✅ {target.mention} accepted. {requester.mention} moved to **{updated_channel.name}**"
                 )
 
             @discord.ui.button(style=discord.ButtonStyle.red, label="Decline")
@@ -152,7 +153,6 @@ async def setup(bot: commands.Bot):
             ):
                 if interaction.user.id != target.id:
                     return await interaction.response.send_message("Not your request!", ephemeral=True)
-
                 await self.finish(f"❌ {target.mention} declined {requester.mention}'s request")
 
         view = DragmeView()
