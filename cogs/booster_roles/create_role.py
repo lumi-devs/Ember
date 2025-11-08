@@ -72,6 +72,9 @@ class CustomRoles(commands.Cog):
 
             placed_above_role = interaction.guild.get_role(int(os.environ.get("FIXED_ROLE_ID")))
             await role.edit(position=placed_above_role.position)
+            await asyncio.sleep(2)
+            role=await interaction.guild.get_role(role.id)
+            await role.edit(position=placed_above_role.position)
             await interaction.user.add_roles(role)
 
             # Embed confirmation

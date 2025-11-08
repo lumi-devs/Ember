@@ -10,7 +10,9 @@ class CustomStatusRotator(commands.Cog):
         self.statuses = [
             "Morax x PunPun when?",
             "Rebiz is a femboy",
-            "ChanChan is sus",
+            "Chilling at The Aakhri Station",
+            "Watching cat videos",
+            "Meow Meow Cuddles?",
             "honey bunny honey bunny",
             "avii is a professional yapper",
             "Hannan the fiddler",

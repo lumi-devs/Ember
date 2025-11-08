@@ -21,7 +21,7 @@ def save_db(db):
 # --- Command setup ---
 async def setup(bot: discord.Client):
 
-    @bot.tree.command(name="blacklist", description="Manage the blacklist (mods only)")
+    @bot.tree.command(name="tasblacklist", description="Manage the blacklist (mods only)")
     @app_commands.describe(
         action="Action: add, remove, or list",
         user="User to add/remove (ignored for list)"
