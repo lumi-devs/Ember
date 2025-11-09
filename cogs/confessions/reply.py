@@ -82,7 +82,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
 
         # Add footer if owner replied
         if is_owner_reply:
-            embed.set_footer(text="👑 Confession Owner Reply")
+            embed.set_footer(text="👑 OP")
 
         try:
             # Fetch original confession message
