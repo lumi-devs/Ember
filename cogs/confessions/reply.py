@@ -4,6 +4,7 @@ from discord import ui
 import asyncio
 from datetime import datetime
 from cogs.confessions.helpers import process_media
+from datetime import datetime, timezone
 
 CONFESSION_CHANNEL_ID = 1399658407178272798
 LOG_CHANNEL_ID = 1424792373837172899
@@ -74,7 +75,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             title=f"↩️ Reply to Confession #{self.confession_id}",
             description=self.reply_input.value,
             color=color,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.timezone.utc
         )
 
         if image_url:
@@ -113,8 +114,6 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                 log_embed.add_field(name="Confession Author", value=f"<@{self.confession_author_id}> ({self.confession_author_id})", inline=False)
                 if image_url:
                     log_embed.set_image(url=image_url)
-                if is_owner_reply:
-                    log_embed.set_footer(text="👑 Confession Owner Reply")
                 await log_channel.send(embed=log_embed)
 
             # --- NOTIFY CONFESSION AUTHOR ---
