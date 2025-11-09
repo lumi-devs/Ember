@@ -1,26 +1,22 @@
-# cogs/tempvoice.py
 import discord
 from discord.ext import commands
 import aiosqlite
 import asyncio
 import time
-
 from .config import JOIN_CHANNELS, DB_PATH
 from .views import BasicControlsView
 
-
 class TempVoice(commands.Cog):
     """Advanced Temp voice Cog with interactive buttons"""
-
+    
     def __init__(self, bot):
         self.bot = bot
         self.creation_cooldowns = {}
         self.cleanup_tasks = {}
         self.control_panels = {}
-
         # new: per-generator (join channel id) locks to serialize VC creation
         self.vc_creation_locks = {}  # join_channel.id -> asyncio.Lock()
-
+        
         # DB init will run in cog_load
         # (do not call long-running async from __init__)
 
@@ -56,15 +52,14 @@ class TempVoice(commands.Cog):
     async def _send_control_panel(self, channel, owner_id):
         """Send interactive control panel to the voice channel"""
         view = BasicControlsView(self, channel.id, owner_id)
-
         embed = discord.Embed(
             title="🎯 Voice Channel Controls",
             description=(
                 "**Use the buttons below to manage your voice channel:**\n\n"
                 "**🔒 Access Controls:**\n"
                 "• Lock/Unlock - Control who can join\n"
-                "• Hide/Unhide - Control visibility\n                "  # small spacing preserved
-                "\n**👥 Member Management:**\n"
+                "• Hide/Unhide - Control visibility\n"
+                "**👥 Member Management:**\n"
                 "• Trust users - Allow specific users to join\n"
                 "• Ban users - Block specific users\n"
                 "• Kick users - Remove from VC\n\n"
@@ -75,7 +70,7 @@ class TempVoice(commands.Cog):
             color=discord.Color.orange()
         )
         embed.set_footer(text="Only the VC owner can use these controls")
-
+        
         try:
             await channel.send(embed=embed, view=view)
         except Exception as e:
@@ -89,10 +84,10 @@ class TempVoice(commands.Cog):
         current_time = time.time()
         # keep only cooldowns within the last 300 seconds
         self.creation_cooldowns = {
-            uid: ts for uid, ts in self.creation_cooldowns.items()
+            uid: ts for uid, ts in self.creation_cooldowns.items() 
             if current_time - ts < 300
         }
-
+        
         if user_id in self.creation_cooldowns:
             last_creation = self.creation_cooldowns[user_id]
             cooldown_remaining = 15 - (current_time - last_creation)
@@ -109,11 +104,10 @@ class TempVoice(commands.Cog):
             async with aiosqlite.connect(DB_PATH) as db:
                 async with db.execute("SELECT voiceID FROM voiceChannel") as cursor:
                     channels = await cursor.fetchall()
-
+                    
                 for (voice_id,) in channels:
                     if not guild.get_channel(voice_id):
                         await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (voice_id,))
-
                 await db.commit()
         except aiosqlite.Error as e:
             print(f"Cleanup error: {e}")
@@ -124,7 +118,7 @@ class TempVoice(commands.Cog):
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         """Handle voice state updates for temp VC creation and cleanup"""
-
+        
         # CREATE TEMP VC: when user joins a generator channel listed in JOIN_CHANNELS
         if after and after.channel and after.channel.id in JOIN_CHANNELS:
             cooldown_remaining = self._check_cooldown(member.id)
@@ -145,9 +139,10 @@ class TempVoice(commands.Cog):
 
             # Get or create an asyncio.Lock for this generator channel id
             lock = self.vc_creation_locks.setdefault(after.channel.id, asyncio.Lock())
-
+            
             # optional small jitter to reduce simultaneous API bursts (0-600ms)
             jitter = (hash(member.id) % 3) * 0.2  # 0.0, 0.2, or 0.4 seconds
+            
             async with lock:
                 try:
                     if jitter:
@@ -159,114 +154,197 @@ class TempVoice(commands.Cog):
                     print(f"[TempVoice] Error during queued VC creation: {e}")
 
         # DELETE EMPTY TEMP VC: schedule cleanup task when member leaves a channel
-        if before and before.channel:
-            # Only schedule cleanup if this channel is tracked in DB (reduces task noise)
-            channel_id = before.channel.id
-            try:
-                async with aiosqlite.connect(DB_PATH) as db:
-                    async with db.execute("SELECT 1 FROM voiceChannel WHERE voiceID = ?", (channel_id,)) as cursor:
-                        exists = await cursor.fetchone()
-                if not exists:
-                    # not a temp VC managed by us — do nothing
-                    return
-            except Exception as e:
-                print(f"[TempVoice] DB check error when scheduling cleanup: {e}")
-                # If DB fails, still attempt scheduling (safer to try)
+        if before and before.channel and (not after or not after.channel or before.channel.id != (after.channel.id if after and after.channel else None)):
+            # Check if this is a tracked temp VC before scheduling cleanup
+            async with aiosqlite.connect(DB_PATH) as db:
+                async with db.execute("SELECT 1 FROM voiceChannel WHERE voiceID = ?", (before.channel.id,)) as cursor:
+                    is_tracked = await cursor.fetchone()
+            
+            if not is_tracked:
+                return  # Not a temp VC, skip cleanup
             
             # cancel any existing cleanup task for that channel to reset timer
-            if channel_id in self.cleanup_tasks:
+            if before.channel.id in self.cleanup_tasks:
                 try:
-                    self.cleanup_tasks[channel_id].cancel()
+                    self.cleanup_tasks[before.channel.id].cancel()
                 except Exception:
                     pass
-
-            # schedule new cleanup task (store by channel_id)
-            self.cleanup_tasks[channel_id] = asyncio.create_task(
-                self._cleanup_empty_vc(channel_id)
+            
+            # schedule new cleanup task
+            self.cleanup_tasks[before.channel.id] = asyncio.create_task(
+                self._cleanup_empty_vc(before.channel)
             )
 
     # -------------------------
-    # Cleanup empty VC
+    # Create temp VC (serialized per generator)
     # -------------------------
-    async def _cleanup_empty_vc(self, channel_id: int):
-        """Clean up empty temporary voice channels based on DB entry (works even if renamed)."""
+    async def _create_temp_vc(self, member: discord.Member, join_channel: discord.VoiceChannel):
+        """Create a temporary VC with number reuse, batching, and stable positioning."""
         try:
-            # small buffer in case user reconnects quickly
-            await asyncio.sleep(2)
+            guild = member.guild
+            category = join_channel.category
+            base_name, user_limit = JOIN_CHANNELS.get(join_channel.id, ("Temp VC ", 0))
 
-            # Re-fetch channel object by id each time (it may have been deleted)
-            channel = self.bot.get_channel(channel_id)
-            if not channel:
-                # channel already gone — ensure we clean the task entry and DB if necessary
-                self.cleanup_tasks.pop(channel_id, None)
-                # try to remove DB entry just in case (channel deleted but db still has it)
+            # Cache all category voice channels once
+            all_voice_channels = list(category.voice_channels)
+
+            # Identify related channels (same base)
+            related_channels = [c for c in all_voice_channels if c.name.startswith(base_name)]
+
+            # Find used numbers
+            used_numbers = []
+            for ch in related_channels:
+                suffix = ch.name[len(base_name):].strip().split(" ")[0]
+                if suffix.isdigit():
+                    used_numbers.append(int(suffix))
+
+            # Reuse smallest missing number
+            vc_number = 1
+            while vc_number in used_numbers:
+                vc_number += 1
+
+            vc_name = f"{base_name}{vc_number}"
+
+            # Create new VC
+            vc = await category.create_voice_channel(
+                vc_name,
+                user_limit=user_limit or None,
+                reason=f"{base_name} channel created by {member.display_name}"
+            )
+
+            # Give owner manage permission on the channel
+            await vc.set_permissions(member, manage_channels=True, connect=True, speak=True)
+
+            # Update related_channels list with new VC (re-query category)
+            related_channels = [c for c in category.voice_channels if c.name.startswith(base_name)]
+
+            # Sort them numerically by suffix
+            def _suffix_key(c):
+                rest = c.name[len(base_name):].strip().split(' ')[0]
+                return int(rest) if rest.isdigit() else 9999
+
+            related_channels.sort(key=_suffix_key)
+
+            # Find position of generator channel
+            base_pos = join_channel.position
+
+            # Batch reposition (skip generator)
+            edits = []
+            idx = 0
+            for ch in related_channels:
+                if ch.id == join_channel.id:
+                    continue
+                desired_pos = base_pos + idx + 1
+                idx += 1
+                if ch.position != desired_pos:
+                    edits.append((ch, desired_pos))
+
+            # Apply all position edits sequentially (only if needed)
+            for ch, pos in edits:
                 try:
-                    async with aiosqlite.connect(DB_PATH) as db:
-                        await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (channel_id,))
-                        await db.commit()
+                    await ch.edit(position=pos)
                 except Exception:
+                    # ignore position edit failures
                     pass
-                return
 
-            # Confirm that this channel is tracked in DB (double-check)
+            # Move member to new VC
+            try:
+                await member.move_to(vc)
+            except Exception:
+                # moving sometimes fails if member disconnected in between; ignore
+                pass
+
+            # Save to DB
             try:
                 async with aiosqlite.connect(DB_PATH) as db:
-                    async with db.execute(
-                        "SELECT userID FROM voiceChannel WHERE voiceID = ?", (channel_id,)
-                    ) as cursor:
-                        row = await cursor.fetchone()
+                    await db.execute(
+                        """
+                        INSERT OR REPLACE INTO voiceChannel (userID, voiceID, locked, hidden, channelName, channelLimit)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (member.id, vc.id, False, False, vc.name, user_limit)
+                    )
+                    await db.commit()
             except Exception as e:
-                print(f"[TempVoice] DB read error during cleanup for {channel_id}: {e}")
-                row = None
+                print(f"[TempVoice] DB write error on VC create: {e}")
 
-            if not row:
-                # not a tracked temp VC
+            # Send control panel
+            await self._send_control_panel(vc, member.id)
+
+        except discord.Forbidden:
+            print(f"Missing permissions to create or move user in {guild.name}")
+        except discord.HTTPException as e:
+            print(f"HTTP Error creating temp VC for {member.display_name}: {e}")
+        except Exception as e:
+            print(f"Unexpected error creating temp VC: {e}")
+
+    # -------------------------
+    # Cleanup empty VC - FIXED VERSION
+    # -------------------------
+    async def _cleanup_empty_vc(self, channel: discord.VoiceChannel):
+        """Clean up empty temporary voice channels based on DB entry (works even if renamed)."""
+        channel_id = channel.id
+        
+        try:
+            # Wait before checking to handle quick reconnects
+            await asyncio.sleep(3)
+            
+            # Refresh channel object
+            channel = self.bot.get_channel(channel_id)
+            if not channel:
+                # Channel already deleted, clean up DB and tasks
+                async with aiosqlite.connect(DB_PATH) as db:
+                    await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (channel_id,))
+                    await db.commit()
                 self.cleanup_tasks.pop(channel_id, None)
                 return
 
-            # If channel has members, give a second chance
-            if channel.members:
-                # re-check after short delay to handle transient moves
-                await asyncio.sleep(3)
-                channel = self.bot.get_channel(channel_id)
-                if channel and channel.members:
-                    # still occupied — cancel cleanup
-                    self.cleanup_tasks.pop(channel_id, None)
-                    return
+            # Double-check if this is still a tracked temp VC
+            async with aiosqlite.connect(DB_PATH) as db:
+                async with db.execute(
+                    "SELECT userID FROM voiceChannel WHERE voiceID = ?", 
+                    (channel_id,)
+                ) as cursor:
+                    row = await cursor.fetchone()
 
-            # Attempt delete
+            if not row:
+                # Not a tracked temp VC anymore
+                self.cleanup_tasks.pop(channel_id, None)
+                return
+
+            # If channel has members, cancel cleanup
+            if channel.members:
+                self.cleanup_tasks.pop(channel_id, None)
+                return
+
+            # Channel is empty and tracked - delete it
             try:
                 await channel.delete(reason="Temp VC empty → auto-deleted")
             except discord.NotFound:
-                # already deleted, ok
+                # Channel already deleted elsewhere
                 pass
-            except discord.Forbidden:
-                # missing permission to delete — log and keep DB entry so manual cleanup can occur
-                print(f"[TempVoice] Missing permission to delete channel {channel_id}")
-                self.cleanup_tasks.pop(channel_id, None)
-                return
             except discord.HTTPException as e:
-                # deletion failed for some transient reason; log and keep DB entry
-                print(f"[TempVoice] Failed to delete channel {channel_id}: {e}")
-                self.cleanup_tasks.pop(channel_id, None)
+                print(f"Failed to delete channel {channel_id}: {e}")
+                # Keep the task for retry later?
                 return
 
-            # Remove from DB after deletion
+            # Remove from DB after successful deletion
             try:
                 async with aiosqlite.connect(DB_PATH) as db:
                     await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (channel_id,))
                     await db.commit()
             except Exception as e:
-                print(f"[TempVoice] DB cleanup error for {channel_id}: {e}")
+                print(f"[TempVoice] DB cleanup error: {e}")
 
-            # clean entry
+            # Clean up task entry
             self.cleanup_tasks.pop(channel_id, None)
 
         except asyncio.CancelledError:
-            # task cancelled because maybe a user rejoined — just exit quietly
+            # Task cancelled because user rejoined - exit quietly
             return
         except Exception as e:
-            print(f"[TempVoice] Cleanup error for {channel_id}: {e}")
+            print(f"Cleanup error for channel {channel_id}: {e}")
+            # Ensure task entry is cleaned up even on error
             try:
                 self.cleanup_tasks.pop(channel_id, None)
             except Exception:
