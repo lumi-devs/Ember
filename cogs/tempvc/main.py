@@ -281,6 +281,30 @@ class TempVoice(commands.Cog):
     # -------------------------
     # Cleanup empty VC - FIXED VERSION
     # -------------------------
+
+    async def _cleanup_ghost_entries(self, guild):
+        """Remove database entries for channels that no longer exist"""
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                # Get all voice channel entries from DB
+                async with db.execute("SELECT voiceID FROM voiceChannel") as cursor:
+                    channels = await cursor.fetchall()
+                
+                deleted_count = 0
+                for (voice_id,) in channels:
+                    # Check if channel still exists in Discord
+                    if not guild.get_channel(voice_id):
+                        await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (voice_id,))
+                        deleted_count += 1
+                        print(f"[TempVoice] Removed ghost entry for deleted channel {voice_id}")
+                
+                if deleted_count > 0:
+                    await db.commit()
+                    print(f"[TempVoice] Cleaned up {deleted_count} ghost entries")
+                    
+        except Exception as e:
+            print(f"[TempVoice] Ghost entry cleanup error: {e}")
+
     async def _cleanup_empty_vc(self, channel: discord.VoiceChannel):
         """Clean up empty temporary voice channels based on DB entry (works even if renamed)."""
         channel_id = channel.id
@@ -292,13 +316,15 @@ class TempVoice(commands.Cog):
             # Refresh channel object
             channel = self.bot.get_channel(channel_id)
             if not channel:
-                # Channel already deleted, clean up DB and tasks
+                # Channel doesn't exist - remove ghost entry from DB
                 async with aiosqlite.connect(DB_PATH) as db:
                     await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (channel_id,))
                     await db.commit()
                 self.cleanup_tasks.pop(channel_id, None)
+                print(f"[TempVoice] Removed ghost entry for non-existent channel {channel_id}")
                 return
 
+            # Rest of the existing cleanup logic remains the same...
             # Double-check if this is still a tracked temp VC
             async with aiosqlite.connect(DB_PATH) as db:
                 async with db.execute(
@@ -321,8 +347,11 @@ class TempVoice(commands.Cog):
             try:
                 await channel.delete(reason="Temp VC empty → auto-deleted")
             except discord.NotFound:
-                # Channel already deleted elsewhere
-                pass
+                # Channel already deleted elsewhere - remove ghost entry
+                async with aiosqlite.connect(DB_PATH) as db:
+                    await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (channel_id,))
+                    await db.commit()
+                print(f"[TempVoice] Removed ghost entry for already deleted channel {channel_id}")
             except discord.HTTPException as e:
                 print(f"Failed to delete channel {channel_id}: {e}")
                 # Keep the task for retry later?
@@ -349,7 +378,6 @@ class TempVoice(commands.Cog):
                 self.cleanup_tasks.pop(channel_id, None)
             except Exception:
                 pass
-
     # -------------------------
     # Legacy vc group (optional)
     # -------------------------
