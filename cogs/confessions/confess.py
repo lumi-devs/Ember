@@ -4,22 +4,26 @@ from discord.ext import commands
 from datetime import datetime
 import asyncio
 import aiosqlite
-import re
 
 from cogs.confessions.helpers import DB_PATH, extract_url, init_db, process_media
 from cogs.confessions.reply import ReplyModal
 
-# Channels
+# ==============================
+# CONFIGURATION
+# ==============================
 CONFESSION_CHANNEL_ID = 1399658407178272798
 REPORT_CHANNEL_ID = 1393171149038293023
 LOG_CHANNEL_ID = 1424792373837172899
 MEDIA_CHANNEL_ID = 1424139009931743382
 ALLOWED_ROLE_IDS = [
     1393171037562077196, 1393171036635402354, 1393171035695612055,
-    1393171034701561908, 1393171033774624848, 1393171032726306966
+    1393171034701561908, 1393171033774624848, 1393171032726306966, 1420878388297465866
 ]
 
 
+# ==============================
+# CONFESSION MODAL
+# ==============================
 class ConfessionModal(ui.Modal, title="Submit a Confession"):
     title_input = ui.TextInput(label="Title", max_length=100, required=False)
     description_input = ui.TextInput(label="Description", style=discord.TextStyle.paragraph, max_length=1000)
@@ -41,7 +45,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             if await cursor.fetchone():
                 return await interaction.response.send_message("❌ You are banned.", ephemeral=True)
 
-        # Insert confession
+        # Insert confession entry
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute(
                 "INSERT INTO confessions (user_id, title, description) VALUES (?, ?, ?)",
@@ -50,7 +54,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             await db.commit()
             confession_id = cursor.lastrowid
 
-        # Create initial embed
+        # Initial embed
         embed = discord.Embed(
             title=f"💌 {self.title_input.value or f'#{confession_id}'}",
             description=self.description_input.value,
@@ -59,7 +63,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
         )
         embed.set_footer(text=f"Confession #{confession_id}")
 
-        # Send the initial message
+        # Send message
         msg = await channel.send(embed=embed)
 
         # Save message_id
@@ -68,11 +72,12 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             await db.commit()
 
         await interaction.response.send_message(
-            "✅ Confession submitted! You have **30 seconds** to reply with an image URL or attachment. Type `skip` to continue without media.",
+            "✅ Confession submitted! You have **30 seconds** to reply with an image URL or attachment. "
+            "Send `skip` to continue without media.",
             ephemeral=True
         )
 
-        # Allow user message for media
+        # Wait for optional media
         def check(m):
             return m.author.id == user.id and m.channel.id == interaction.channel.id
 
@@ -97,9 +102,19 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
         except asyncio.TimeoutError:
             pass
 
-        # Finalize the confession
+        # Attach persistent view
         final_view = ConfessionView(self.bot, confession_id, msg.id)
-        await msg.edit(embed=embed, view=final_view)
+        try:
+            await msg.edit(embed=embed, view=final_view)
+        except discord.NotFound:
+            # message somehow deleted, resend it
+            msg = await channel.send(embed=embed, view=final_view)
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute("UPDATE confessions SET message_id=? WHERE id=?", (msg.id, confession_id))
+                await db.commit()
+        except Exception as e:
+            if log_channel:
+                await log_channel.send(f"⚠️ Failed to attach buttons to confession #{confession_id}: {e}")
 
         # Log confession
         if log_channel:
@@ -115,7 +130,9 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             await log_channel.send(embed=log_embed)
 
 
-# In your main confessions.py file, update the reply method:
+# ==============================
+# CONFESSION VIEW (Buttons)
+# ==============================
 class ConfessionView(ui.View):
     def __init__(self, bot, confession_id, message_id=None):
         super().__init__(timeout=None)
@@ -123,21 +140,19 @@ class ConfessionView(ui.View):
         self.confession_id = confession_id
         self.message_id = message_id
 
-    @ui.button(label="Reply", style=discord.ButtonStyle.primary, custom_id="confession_reply")
+    @ui.button(label="Reply", style=discord.ButtonStyle.primary, custom_id="confession_reply", row=0, persistent=True)
     async def reply(self, interaction: discord.Interaction, button: ui.Button):
         async with aiosqlite.connect(DB_PATH) as db:
-            # Get both message_id AND user_id (author_id)
             cursor = await db.execute("SELECT message_id, user_id FROM confessions WHERE id=?", (self.confession_id,))
             row = await cursor.fetchone()
             if not row:
                 return await interaction.response.send_message("❌ Confession not found.", ephemeral=True)
             message_id, author_id = row
 
-        # Pass the author_id to the modal
         modal = ReplyModal(self.bot, self.confession_id, message_id, author_id)
         await interaction.response.send_modal(modal)
 
-    @ui.button(label="Report", style=discord.ButtonStyle.danger, custom_id="confession_report")
+    @ui.button(label="Report", style=discord.ButtonStyle.danger, custom_id="confession_report", row=0, persistent=True)
     async def report(self, interaction: discord.Interaction, button: ui.Button):
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute(
@@ -149,7 +164,6 @@ class ConfessionView(ui.View):
 
             author_id, title, description, image_url = confession
 
-            # Insert report
             await db.execute(
                 "INSERT INTO reports (target_type, target_id, reporter_id) VALUES (?, ?, ?)",
                 ("confession", self.confession_id, interaction.user.id)
@@ -170,7 +184,6 @@ class ConfessionView(ui.View):
         embed.add_field(name="Banned?", value="Yes" if banned else "No", inline=False)
         embed.add_field(name="Title", value=title or "No title", inline=False)
         embed.add_field(name="Content", value=description or "No content", inline=False)
-
         if image_url:
             embed.set_image(url=image_url)
 
@@ -181,6 +194,9 @@ class ConfessionView(ui.View):
         await interaction.response.send_message("✅ Report submitted.", ephemeral=True)
 
 
+# ==============================
+# MAIN COG
+# ==============================
 class Confessions(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -188,17 +204,17 @@ class Confessions(commands.Cog):
         self.bot.loop.create_task(self.load_views())
 
     async def load_views(self):
+        """Reload all persistent confession views on startup"""
         await self.bot.wait_until_ready()
-        await asyncio.sleep(2)
         async with aiosqlite.connect(DB_PATH) as db:
-            cursor = await db.execute("SELECT id, message_id FROM confessions")
-            rows = await cursor.fetchall()
-            for row in rows:
-                confession_id, message_id = row
-                self.bot.add_view(ConfessionView(self.bot, confession_id, message_id))
+            async with db.execute("SELECT id, message_id FROM confessions WHERE message_id IS NOT NULL") as cursor:
+                async for confession_id, message_id in cursor:
+                    self.bot.add_view(ConfessionView(self.bot, confession_id, message_id))
+        print("[Confessions] ✅ All persistent views reloaded successfully.")
 
     @app_commands.command(name="confess", description="Submit an anonymous confession")
     async def confess_command(self, interaction: discord.Interaction):
+        # Check for ban
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute("SELECT 1 FROM confessban WHERE user_id=?", (interaction.user.id,))
             if await cursor.fetchone():
@@ -206,14 +222,16 @@ class Confessions(commands.Cog):
                     "❌ You are banned from making confessions.", ephemeral=True
                 )
 
+        # Check correct channel
         if interaction.channel.id != CONFESSION_CHANNEL_ID:
             return await interaction.response.send_message(
                 f"❌ Please use this command in <#{CONFESSION_CHANNEL_ID}>.", ephemeral=True
             )
 
+        # Check allowed roles
         if not any(role.id in ALLOWED_ROLE_IDS for role in interaction.user.roles):
             return await interaction.response.send_message(
-                "❌ You do not have at least LVL 5 required to make confessions", ephemeral=True
+                "❌ You do not have at least LVL 5 required to make confessions.", ephemeral=True
             )
 
         modal = ConfessionModal(self.bot)

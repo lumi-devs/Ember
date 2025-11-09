@@ -10,9 +10,9 @@ from typing import Dict
 DB_PATH = "data/shame.db"
 
 # ----- HARD-CODED SETTINGS (replace with your IDs) -----
-SHAME_CHANNEL_ID = 123456789012345678  # channel where embed posts go
-SHAMER_ROLE_ID = 234567890123456789    # role to assign to top 5
-IGNORED_ROLE_IDS = [111111111111111111, 222222222222222222]  # roles to ignore (staff etc)
+SHAME_CHANNEL_ID = 1437084755291279371  # channel where embed posts go
+SHAMER_ROLE_ID = 1437078973220917455    # role to assign to top 5
+IGNORED_ROLE_IDS = [1393170995157798983, 1406324000736542911]  # roles to ignore (staff etc)
 # -------------------------------------------------------
 
 DECAY_RATE = 0.02              # 2% decay every DECAY_INTERVAL_MIN minutes
