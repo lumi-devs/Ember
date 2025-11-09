@@ -63,19 +63,31 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
         """Finalize reply after waiting for possible media."""
         channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
 
+        # Check if the replier is the confession owner
+        is_owner_reply = self.user_id == self.confession_author_id
+
+        # Pick color based on ownership
+        color = discord.Color.gold() if is_owner_reply else discord.Color.green()
+
+        # Build embed
         embed = discord.Embed(
             title=f"↩️ Reply to Confession #{self.confession_id}",
             description=self.reply_input.value,
-            color=discord.Color.green(),
+            color=color,
             timestamp=datetime.utcnow()
         )
+
         if image_url:
             embed.set_image(url=image_url)
 
+        # Add footer if owner replied
+        if is_owner_reply:
+            embed.set_footer(text="👑 Confession Owner Reply")
+
         try:
-            # Get confession message using the correct message ID
+            # Fetch original confession message
             confession_msg = await channel.fetch_message(self.confession_message_id)
-            
+
             # Get or create thread
             thread = confession_msg.thread
             if not thread:
@@ -84,16 +96,16 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                     auto_archive_duration=60
                 )
 
-            # Send reply to thread
+            # Send the reply embed to the thread
             await thread.send(embed=embed)
 
-            # Log reply to log channel
+            # --- LOGGING ---
             log_channel = self.bot.get_channel(LOG_CHANNEL_ID)
             if log_channel:
                 log_embed = discord.Embed(
                     title=f"Reply to Confession #{self.confession_id}",
                     description=self.reply_input.value,
-                    color=discord.Color.green(),
+                    color=color,
                     timestamp=datetime.utcnow()
                 )
                 user = await self.bot.fetch_user(self.user_id)
@@ -101,27 +113,31 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                 log_embed.add_field(name="Confession Author", value=f"<@{self.confession_author_id}> ({self.confession_author_id})", inline=False)
                 if image_url:
                     log_embed.set_image(url=image_url)
+                if is_owner_reply:
+                    log_embed.set_footer(text="👑 Confession Owner Reply")
                 await log_channel.send(embed=log_embed)
 
-            # Notify confession author using the stored author ID
-            try:
-                confession_author = await self.bot.fetch_user(self.confession_author_id)
-                notify_embed = discord.Embed(
-                    title=f"💌 New Reply to Your Confession #{self.confession_id}",
-                    description=f"Someone replied: \"{self.reply_input.value[:100]}{'...' if len(self.reply_input.value) > 100 else ''}\"",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.utcnow()
-                )
-                notify_embed.add_field(
-                    name="View Thread",
-                    value=f"[Click here to view the conversation]({confession_msg.jump_url})",
-                    inline=False
-                )
-                await confession_author.send(embed=notify_embed)
-            except discord.Forbidden:
-                pass  # DMs off
-            except Exception as e:
-                print(f"Error notifying confession author: {e}")
+            # --- NOTIFY CONFESSION AUTHOR ---
+            # Skip if the author is replying to their own confession
+            if not is_owner_reply:
+                try:
+                    confession_author = await self.bot.fetch_user(self.confession_author_id)
+                    notify_embed = discord.Embed(
+                        title=f"💌 New Reply to Your Confession #{self.confession_id}",
+                        description=f"Someone replied: \"{self.reply_input.value[:100]}{'...' if len(self.reply_input.value) > 100 else ''}\"",
+                        color=discord.Color.blue(),
+                        timestamp=datetime.utcnow()
+                    )
+                    notify_embed.add_field(
+                        name="View Thread",
+                        value=f"[Click here to view the conversation]({confession_msg.jump_url})",
+                        inline=False
+                    )
+                    await confession_author.send(embed=notify_embed)
+                except discord.Forbidden:
+                    pass  # DMs off
+                except Exception as e:
+                    print(f"Error notifying confession author: {e}")
 
         except Exception as e:
             print(f"Error finalizing reply: {e}")
