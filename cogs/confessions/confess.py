@@ -140,7 +140,7 @@ class ConfessionView(ui.View):
         self.confession_id = confession_id
         self.message_id = message_id
 
-    @ui.button(label="Reply", style=discord.ButtonStyle.primary, custom_id="confession_reply", row=0, time)
+    @ui.button(label="Reply", style=discord.ButtonStyle.primary, custom_id="confession_reply", row=0)
     async def reply(self, interaction: discord.Interaction, button: ui.Button):
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute("SELECT message_id, user_id FROM confessions WHERE id=?", (self.confession_id,))
