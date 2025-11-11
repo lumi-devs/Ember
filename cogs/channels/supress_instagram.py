@@ -44,7 +44,7 @@ class NoInstaEmbed(commands.Cog):
             # Protect: ensure bot has Manage Messages permission in that channel
             try:
                 # suppress_embeds is a coroutine on Message
-                await message.suppress_embeds(suppress=True)
+                await message.edit(suppress=True)
             except discord.Forbidden:
                 # bot lacks permission
                 # optionally log or notify admins — we silently return
