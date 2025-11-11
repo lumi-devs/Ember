@@ -84,6 +84,31 @@ class TempVoice(commands.Cog):
             print(f"[TempVoice] Error loading existing VCs: {e}")
 
     # -------------------------
+    # Ghost Entry Cleanup
+    # -------------------------
+    async def _cleanup_ghost_entries(self, guild):
+        """Remove database entries for channels that no longer exist"""
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                async with db.execute("SELECT voiceID FROM voiceChannel") as cursor:
+                    channels = await cursor.fetchall()
+                
+                deleted_count = 0
+                for (voice_id,) in channels:
+                    # Check if channel still exists in Discord
+                    if not guild.get_channel(voice_id):
+                        await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (voice_id,))
+                        deleted_count += 1
+                        print(f"[TempVoice] Removed ghost entry for deleted channel {voice_id}")
+                
+                if deleted_count > 0:
+                    await db.commit()
+                    print(f"[TempVoice] Cleaned up {deleted_count} ghost entries")
+                    
+        except Exception as e:
+            print(f"[TempVoice] Ghost entry cleanup error: {e}")
+
+    # -------------------------
     # Control panel sender
     # -------------------------
     async def _send_control_panel(self, channel, owner_id):
@@ -223,6 +248,10 @@ class TempVoice(commands.Cog):
             except Exception:
                 pass
             return False
+
+        # ✅ GHOST CLEANUP: Clean ghost entries BEFORE creating new VC
+        print(f"[TempVoice] Running ghost cleanup before creating new VC...")
+        await self._cleanup_ghost_entries(member.guild)
 
         # Create the VC
         try:
@@ -451,6 +480,28 @@ class TempVoice(commands.Cog):
     # -------------------------
     # Commands
     # -------------------------
+    @commands.command()
+    @commands.has_permissions(manage_channels=True)
+    async def queue_status(self, ctx):
+        """Check the current VC creation queue status"""
+        embed = discord.Embed(title="🎯 VC Creation Queue Status", color=discord.Color.blue())
+        
+        if not self.creation_queues:
+            embed.description = "No active queues"
+        else:
+            for queue_id, queue in self.creation_queues.items():
+                channel = ctx.guild.get_channel(queue_id)
+                channel_name = channel.name if channel else f"Unknown ({queue_id})"
+                queue_size = len(queue)
+                worker_running = queue_id in self.queue_workers
+                
+                embed.add_field(
+                    name=f"#{channel_name}",
+                    value=f"Pending: {queue_size}\nWorker: {'✅' if worker_running else '❌'}",
+                    inline=True
+                )
+        
+        await ctx.send(embed=embed)
 
     @commands.command(nick='vcdebug')
     @commands.has_permissions(manage_channels=True)
@@ -485,6 +536,34 @@ class TempVoice(commands.Cog):
         )
         
         await ctx.send(embed=embed)
+
+    @commands.command()
+    @commands.has_permissions(manage_channels=True)
+    async def cleanup_vcs(self, ctx):
+        """Manually clean up empty tracked VCs and ghost entries"""
+        # Clean ghost entries first
+        await self._cleanup_ghost_entries(ctx.guild)
+        
+        # Then clean empty VCs
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT voiceID FROM voiceChannel") as cursor:
+                tracked_channels = await cursor.fetchall()
+        
+        deleted_count = 0
+        for (voice_id,) in tracked_channels:
+            channel = ctx.guild.get_channel(voice_id)
+            if channel and isinstance(channel, discord.VoiceChannel):
+                if not channel.members:
+                    try:
+                        await channel.delete(reason="Manual cleanup")
+                        async with aiosqlite.connect(DB_PATH) as db:
+                            await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (voice_id,))
+                            await db.commit()
+                        deleted_count += 1
+                    except Exception as e:
+                        print(f"[TempVoice] Manual cleanup error: {e}")
+        
+        await ctx.send(f"✅ Manual cleanup completed! Deleted {deleted_count} empty VCs")
 
     # -------------------------
     # Legacy vc group
