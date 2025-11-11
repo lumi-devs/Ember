@@ -370,7 +370,7 @@ class TempVoice(commands.Cog):
             vc_name = f"{base_name}{vc_number}"
 
             # Calculate correct position - right after the join channel
-            position = join_channel.position + 1
+            position = join_channel.position
             
             # If there are existing temp channels, find the highest position among them
             if temp_channels:
