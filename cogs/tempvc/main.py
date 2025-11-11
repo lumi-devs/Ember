@@ -175,6 +175,17 @@ class TempVoice(commands.Cog):
     # -------------------------
     # Queue Management System
     # -------------------------
+
+
+    async def _ensure_guild_initialized(self, guild_id):
+        """Ensure all guild-specific structures are initialized"""
+        if guild_id not in self.creation_locks:
+            self.creation_locks[guild_id] = asyncio.Lock()
+        if guild_id not in self.cleanup_locks:
+            self.cleanup_locks[guild_id] = asyncio.Lock()
+        if guild_id not in self.pending_cleanups:
+            self.pending_cleanups[guild_id] = set()
+
     async def _add_to_queue(self, member, join_channel):
         """Add a creation request to the queue and start worker if needed"""
         queue_id = join_channel.id
@@ -214,7 +225,8 @@ class TempVoice(commands.Cog):
                 async with self.queue_locks[queue_id]:
                     if not self.creation_queues[queue_id]:
                         # No more requests, stop worker
-                        del self.queue_workers[queue_id]
+                        if queue_id in self.queue_workers:
+                            del self.queue_workers[queue_id]
                         break
                     
                     request = self.creation_queues[queue_id].popleft()
@@ -222,6 +234,13 @@ class TempVoice(commands.Cog):
                 # Process the request
                 member = request['member']
                 join_channel = request['join_channel']
+                
+                # FIX: Check if member and guild still exist
+                if not member or member.guild is None:
+                    print(f"[TempVoice] ❌ Member {member} no longer in guild")
+                    request['success'] = False
+                    request['event'].set()
+                    continue
                 
                 # Check if member is still in the join channel
                 if not member.voice or member.voice.channel.id != queue_id:
@@ -239,8 +258,9 @@ class TempVoice(commands.Cog):
                 await asyncio.sleep(0.5)
                 
             except Exception as e:
-                print(f"[TempVoice] ❌ Queue worker error for {queue_id}: {repr(e)}")
-                print(f"[TempVoice] Full error details: {e}")
+                print(f"[TempVoice] ❌ Queue worker error for {queue_id}: {type(e).__name__}: {str(e)}")
+                import traceback
+                print(f"[TempVoice] Traceback: {traceback.format_exc()}")
                 # Mark failed request as done to prevent hanging
                 if 'request' in locals():
                     request['success'] = False
@@ -269,8 +289,17 @@ class TempVoice(commands.Cog):
                 pass
             return False
 
+        # FIX: Ensure guild locks exist
+        guild_id = member.guild.id
+        if guild_id not in self.creation_locks:
+            self.creation_locks[guild_id] = asyncio.Lock()
+        if guild_id not in self.cleanup_locks:
+            self.cleanup_locks[guild_id] = asyncio.Lock()
+        if guild_id not in self.pending_cleanups:
+            self.pending_cleanups[guild_id] = set()
+
         # Use guild lock to prevent race conditions between creation and cleanup
-        async with self.creation_locks[member.guild.id]:
+        async with self.creation_locks[guild_id]:
             # Clean ghost entries before creating new VC
             print(f"[TempVoice] 🧹 Running ghost cleanup for {member.guild.name}")
             await self._cleanup_ghost_entries(member.guild)
@@ -300,6 +329,10 @@ class TempVoice(commands.Cog):
     async def on_voice_state_update(self, member, before, after):
         """Handle voice state updates with queue system"""
         
+        # FIX: Ensure member is still in a guild
+        if member.guild is None:
+            return
+        
         # CREATE TEMP VC: when user joins a generator channel
         if after and after.channel and after.channel.id in JOIN_CHANNELS:
             # Add to queue instead of immediate creation
@@ -315,14 +348,17 @@ class TempVoice(commands.Cog):
             
             if left_channel:
                 # Check if this is a tracked temp VC
-                async with aiosqlite.connect(DB_PATH) as db:
-                    async with db.execute("SELECT 1 FROM voiceChannel WHERE voiceID = ?", (before.channel.id,)) as cursor:
-                        is_tracked = await cursor.fetchone()
-                
-                if is_tracked:
-                    print(f"[TempVoice] Scheduling cleanup for {before.channel.name} ({before.channel.id})")
-                    # Schedule cleanup with improved task management
-                    await self._schedule_cleanup(before.channel)
+                try:
+                    async with aiosqlite.connect(DB_PATH) as db:
+                        async with db.execute("SELECT 1 FROM voiceChannel WHERE voiceID = ?", (before.channel.id,)) as cursor:
+                            is_tracked = await cursor.fetchone()
+                    
+                    if is_tracked:
+                        print(f"[TempVoice] Scheduling cleanup for {before.channel.name} ({before.channel.id})")
+                        # Schedule cleanup with improved task management
+                        await self._schedule_cleanup(before.channel)
+                except Exception as e:
+                    print(f"[TempVoice] Error checking if channel is tracked: {e}")
 
     async def _schedule_cleanup(self, channel):
         """Schedule cleanup for a channel with proper task management"""
