@@ -342,7 +342,7 @@ class TempVoice(commands.Cog):
     # Updated VC Creation with Better Sequencing
     # -------------------------
     async def _create_temp_vc(self, member: discord.Member, join_channel: discord.VoiceChannel):
-        """Create temporary VC with proper queue-based sequencing"""
+        """Create temporary VC at correct position immediately"""
         try:
             guild = member.guild
             category = join_channel.category
@@ -351,13 +351,16 @@ class TempVoice(commands.Cog):
             # Get all voice channels in category
             all_voice_channels = list(category.voice_channels)
 
-            # Find used numbers for this base name
+            # Find used numbers and calculate correct position
             used_numbers = []
+            temp_channels = []
+            
             for ch in all_voice_channels:
                 if ch.name.startswith(base_name):
                     suffix = ch.name[len(base_name):].strip().split(" ")[0]
                     if suffix.isdigit():
                         used_numbers.append(int(suffix))
+                        temp_channels.append(ch)
 
             # Find smallest available number
             vc_number = 1
@@ -366,10 +369,19 @@ class TempVoice(commands.Cog):
 
             vc_name = f"{base_name}{vc_number}"
 
-            # Create the VC
+            # Calculate correct position - right after the join channel
+            position = join_channel.position + 1
+            
+            # If there are existing temp channels, find the highest position among them
+            if temp_channels:
+                highest_temp_position = max(ch.position for ch in temp_channels)
+                position = highest_temp_position + 1
+
+            # Create the VC at the correct position from the start
             vc = await category.create_voice_channel(
                 vc_name,
                 user_limit=user_limit or None,
+                position=position,  # THIS IS THE KEY CHANGE - set position during creation
                 reason=f"Temp VC created by {member.display_name}"
             )
 
@@ -400,53 +412,11 @@ class TempVoice(commands.Cog):
             # Send control panel
             await self._send_control_panel(vc, member.id)
 
-            # Reorganize channels (non-blocking)
-            asyncio.create_task(self._reorganize_channels(category, join_channel, base_name))
-
             return True
 
         except Exception as e:
             print(f"[TempVoice] VC creation error: {e}")
             return False
-
-    async def _reorganize_channels(self, category, join_channel, base_name):
-        """Reorganize channels after creation (non-blocking)"""
-        try:
-            await asyncio.sleep(1)  # Small delay to ensure all creations are settled
-            
-            all_voice_channels = list(category.voice_channels)
-            related_channels = [c for c in all_voice_channels if c.name.startswith(base_name)]
-            
-            # Sort numerically
-            def _suffix_key(c):
-                rest = c.name[len(base_name):].strip().split(' ')[0]
-                return int(rest) if rest.isdigit() else 9999
-            
-            related_channels.sort(key=_suffix_key)
-            
-            # Reposition
-            base_pos = join_channel.position
-            edits = []
-            idx = 0
-            
-            for ch in related_channels:
-                if ch.id == join_channel.id:
-                    continue
-                desired_pos = base_pos + idx + 1
-                idx += 1
-                if ch.position != desired_pos:
-                    edits.append((ch, desired_pos))
-            
-            # Apply edits with small delays between API calls
-            for ch, pos in edits:
-                try:
-                    await ch.edit(position=pos)
-                    await asyncio.sleep(0.2)  # Rate limiting
-                except Exception:
-                    pass
-                    
-        except Exception as e:
-            print(f"[TempVoice] Reorganization error: {e}")
 
     # -------------------------
     # Cleanup empty VC - IMPROVED VERSION
