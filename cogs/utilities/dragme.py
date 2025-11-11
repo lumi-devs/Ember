@@ -199,7 +199,7 @@ async def setup(bot: commands.Bot):
                     )
                     await self.msg.edit(embed=embed, view=None)
 
-            @discord.ui.button(style=discord.ButtonStyle.green, label="✅ Accept", emoji="✅")
+            @discord.ui.button(style=discord.ButtonStyle.green, label="✅ Accept")
             async def accept_button(
                 self, interaction: discord.Interaction, button: discord.ui.Button
             ):
@@ -239,7 +239,7 @@ async def setup(bot: commands.Bot):
                         discord.Color.red()
                     )
 
-            @discord.ui.button(style=discord.ButtonStyle.red, label="❌ Decline", emoji="❌")
+            @discord.ui.button(style=discord.ButtonStyle.red, label="❌ Decline")
             async def decline_button(
                 self, interaction: discord.Interaction, button: discord.ui.Button
             ):
