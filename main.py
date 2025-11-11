@@ -11,7 +11,7 @@ from discord.ext import commands
 
 # ------------------ MULTIPROCESSING SETUP ------------------
 # Use all available CPU cores
-CPU_CORES = max(1, multiprocessing.cpu_count() - 1)  # Leave 1 core free for system
+CPU_CORES = max(1, multiprocessing.cpu_count())  # Leave 1 core free for system
 print(f"🚀 Using {CPU_CORES} CPU cores for optimal performance")
 
 # Configure asyncio for better performance
