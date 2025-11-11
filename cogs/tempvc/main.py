@@ -14,15 +14,11 @@ class TempVoice(commands.Cog):
         self.bot = bot
         self.creation_cooldowns = {}
         self.cleanup_tasks = {}
-        self.control_panels = {}
         
-        # NEW: Proper queue system per generator channel
+        # Queue system per generator channel
         self.creation_queues = {}  # join_channel.id -> deque()
         self.queue_locks = {}      # join_channel.id -> asyncio.Lock()
         self.queue_workers = {}    # join_channel.id -> asyncio.Task()
-        
-        # NEW: Track ongoing creations to prevent duplicates
-        self.ongoing_creations = set()
 
     # -------------------------
     # Database initialization
@@ -49,24 +45,43 @@ class TempVoice(commands.Cog):
     async def cog_load(self):
         """Async cog loader that prepares DB and any startup state."""
         await self._init_db()
-        # Start background cleanup task
-        self.bot.loop.create_task(self._periodic_ghost_cleanup())
+        # Load existing tracked VCs first
+        await self._load_existing_tracked_vcs()
 
     # -------------------------
-    # Periodic ghost cleanup
+    # Startup VC Loading
     # -------------------------
-    async def _periodic_ghost_cleanup(self):
-        """Background task to clean up ghost entries periodically"""
-        await self.bot.wait_until_ready()
-        while not self.bot.is_closed():
-            try:
-                for guild in self.bot.guilds:
-                    await self._cleanup_ghost_entries(guild)
-                # Run every 30 minutes
-                await asyncio.sleep(1800)
-            except Exception as e:
-                print(f"[TempVoice] Periodic cleanup error: {e}")
-                await asyncio.sleep(300)  # Wait 5 minutes on error
+    async def _load_existing_tracked_vcs(self):
+        """Load all existing tracked VCs into memory on startup"""
+        try:
+            print("[TempVoice] Loading existing tracked VCs from database...")
+            
+            for guild in self.bot.guilds:
+                async with aiosqlite.connect(DB_PATH) as db:
+                    async with db.execute("SELECT voiceID FROM voiceChannel") as cursor:
+                        tracked_channels = await cursor.fetchall()
+                
+                loaded_count = 0
+                for (voice_id,) in tracked_channels:
+                    channel = guild.get_channel(voice_id)
+                    if channel and isinstance(channel, discord.VoiceChannel):
+                        # Check if channel is empty and schedule cleanup if needed
+                        if not channel.members:
+                            print(f"[TempVoice] Found empty tracked VC on startup: {channel.name}")
+                            await self._schedule_cleanup(channel)
+                        loaded_count += 1
+                    else:
+                        # Channel doesn't exist - remove ghost entry
+                        async with aiosqlite.connect(DB_PATH) as db:
+                            await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (voice_id,))
+                            await db.commit()
+                        print(f"[TempVoice] Removed ghost entry on startup: {voice_id}")
+                
+                if loaded_count > 0:
+                    print(f"[TempVoice] Loaded {loaded_count} tracked VCs for guild {guild.name}")
+                    
+        except Exception as e:
+            print(f"[TempVoice] Error loading existing VCs: {e}")
 
     # -------------------------
     # Control panel sender
@@ -116,77 +131,6 @@ class TempVoice(commands.Cog):
             if cooldown_remaining > 0:
                 return cooldown_remaining
         return 0
-
-    # -------------------------
-    # Ghost entry cleanup
-    # -------------------------
-    async def _cleanup_ghost_entries(self, guild):
-        """Remove database entries for channels that no longer exist"""
-        try:
-            async with aiosqlite.connect(DB_PATH) as db:
-                # Get all voice channel entries from DB
-                async with db.execute("SELECT voiceID FROM voiceChannel") as cursor:
-                    channels = await cursor.fetchall()
-                
-                deleted_count = 0
-                for (voice_id,) in channels:
-                    # Check if channel still exists in Discord
-                    if not guild.get_channel(voice_id):
-                        await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (voice_id,))
-                        deleted_count += 1
-                        print(f"[TempVoice] Removed ghost entry for deleted channel {voice_id}")
-                
-                if deleted_count > 0:
-                    await db.commit()
-                    print(f"[TempVoice] Cleaned up {deleted_count} ghost entries")
-                    
-        except Exception as e:
-            print(f"[TempVoice] Ghost entry cleanup error: {e}")
-
-    # -------------------------
-    # Check and cleanup empty tracked VCs
-    # -------------------------
-    async def _cleanup_all_empty_tracked_vcs(self, guild):
-        """Check all tracked VCs and delete empty ones"""
-        try:
-            async with aiosqlite.connect(DB_PATH) as db:
-                # Get all tracked voice channels
-                async with db.execute("SELECT voiceID FROM voiceChannel") as cursor:
-                    tracked_channels = await cursor.fetchall()
-            
-            deleted_count = 0
-            for (voice_id,) in tracked_channels:
-                channel = guild.get_channel(voice_id)
-                if channel and isinstance(channel, discord.VoiceChannel):
-                    # Check if channel is empty
-                    if not channel.members:
-                        try:
-                            await channel.delete(reason="Auto-cleanup: empty tracked VC")
-                            # Remove from DB
-                            async with aiosqlite.connect(DB_PATH) as db:
-                                await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (voice_id,))
-                                await db.commit()
-                            deleted_count += 1
-                            print(f"[TempVoice] Auto-deleted empty tracked VC: {channel.name}")
-                        except discord.NotFound:
-                            # Channel already deleted - remove ghost entry
-                            async with aiosqlite.connect(DB_PATH) as db:
-                                await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (voice_id,))
-                                await db.commit()
-                        except Exception as e:
-                            print(f"[TempVoice] Failed to delete empty VC {channel.name}: {e}")
-                elif not channel:
-                    # Channel doesn't exist - remove ghost entry
-                    async with aiosqlite.connect(DB_PATH) as db:
-                        await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (voice_id,))
-                        await db.commit()
-                    print(f"[TempVoice] Removed ghost entry for non-existent channel {voice_id}")
-            
-            if deleted_count > 0:
-                print(f"[TempVoice] Auto-cleanup completed: deleted {deleted_count} empty VCs")
-                
-        except Exception as e:
-            print(f"[TempVoice] Auto-cleanup error: {e}")
 
     # -------------------------
     # Queue Management System
@@ -280,9 +224,6 @@ class TempVoice(commands.Cog):
                 pass
             return False
 
-        # Run cleanup before creation
-        await self._cleanup_all_empty_tracked_vcs(member.guild)
-
         # Create the VC
         try:
             await self._create_temp_vc(member, join_channel)
@@ -293,7 +234,7 @@ class TempVoice(commands.Cog):
             return False
 
     # -------------------------
-    # Updated Voice State Handler with Queue
+    # Voice State Handler
     # -------------------------
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
@@ -305,17 +246,23 @@ class TempVoice(commands.Cog):
             asyncio.create_task(self._add_to_queue(member, after.channel))
 
         # DELETE EMPTY TEMP VC: schedule cleanup when member leaves
-        if before and before.channel and (not after or not after.channel or before.channel.id != (after.channel.id if after and after.channel else None)):
-            # Check if this is a tracked temp VC
-            async with aiosqlite.connect(DB_PATH) as db:
-                async with db.execute("SELECT 1 FROM voiceChannel WHERE voiceID = ?", (before.channel.id,)) as cursor:
-                    is_tracked = await cursor.fetchone()
+        if before and before.channel:
+            # Check if user actually left a channel (not just moved between channels)
+            left_channel = (
+                before.channel and 
+                (not after.channel or before.channel.id != after.channel.id)
+            )
             
-            if not is_tracked:
-                return
-            
-            # Schedule cleanup with improved task management
-            await self._schedule_cleanup(before.channel)
+            if left_channel:
+                # Check if this is a tracked temp VC
+                async with aiosqlite.connect(DB_PATH) as db:
+                    async with db.execute("SELECT 1 FROM voiceChannel WHERE voiceID = ?", (before.channel.id,)) as cursor:
+                        is_tracked = await cursor.fetchone()
+                
+                if is_tracked:
+                    print(f"[TempVoice] Scheduling cleanup for {before.channel.name} ({before.channel.id})")
+                    # Schedule cleanup with improved task management
+                    await self._schedule_cleanup(before.channel)
 
     async def _schedule_cleanup(self, channel):
         """Schedule cleanup for a channel with proper task management"""
@@ -339,7 +286,7 @@ class TempVoice(commands.Cog):
         task.add_done_callback(cleanup_task_entry)
 
     # -------------------------
-    # Updated VC Creation with Better Sequencing
+    # VC Creation
     # -------------------------
     async def _create_temp_vc(self, member: discord.Member, join_channel: discord.VoiceChannel):
         """Create temporary VC at correct position immediately"""
@@ -381,7 +328,7 @@ class TempVoice(commands.Cog):
             vc = await category.create_voice_channel(
                 vc_name,
                 user_limit=user_limit or None,
-                position=position,  # THIS IS THE KEY CHANGE - set position during creation
+                position=position,
                 reason=f"Temp VC created by {member.display_name}"
             )
 
@@ -419,15 +366,17 @@ class TempVoice(commands.Cog):
             return False
 
     # -------------------------
-    # Cleanup empty VC - IMPROVED VERSION
+    # Cleanup empty VC
     # -------------------------
     async def _cleanup_empty_vc(self, channel: discord.VoiceChannel):
         """Clean up empty temporary voice channels with improved reliability."""
         channel_id = channel.id
         
         try:
+            print(f"[TempVoice] Cleanup task started for channel {channel_id}")
+            
             # Wait before checking to handle quick reconnects
-            await asyncio.sleep(3)
+            await asyncio.sleep(5)
             
             # Double-check if this is still a tracked temp VC using FRESH DB query
             async with aiosqlite.connect(DB_PATH) as db:
@@ -438,15 +387,21 @@ class TempVoice(commands.Cog):
                     row = await cursor.fetchone()
 
             if not row:
-                # Not a tracked temp VC anymore
+                print(f"[TempVoice] Channel {channel_id} not tracked anymore, skipping cleanup")
                 self.cleanup_tasks.pop(channel_id, None)
                 return
 
             # Get FRESH channel object from guild
-            guild = channel.guild
+            guild = self.bot.get_guild(channel.guild.id)
+            if not guild:
+                print(f"[TempVoice] Guild not found for channel {channel_id}")
+                self.cleanup_tasks.pop(channel_id, None)
+                return
+                
             fresh_channel = guild.get_channel(channel_id)
             
             if not fresh_channel:
+                print(f"[TempVoice] Channel {channel_id} no longer exists, removing from DB")
                 # Channel doesn't exist - remove from DB
                 async with aiosqlite.connect(DB_PATH) as db:
                     await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (channel_id,))
@@ -456,10 +411,12 @@ class TempVoice(commands.Cog):
 
             # If channel has members, cancel cleanup
             if fresh_channel.members:
+                print(f"[TempVoice] Channel {fresh_channel.name} has {len(fresh_channel.members)} members, skipping cleanup")
                 self.cleanup_tasks.pop(channel_id, None)
                 return
 
             # Channel is empty and tracked - delete it
+            print(f"[TempVoice] Deleting empty VC: {fresh_channel.name} ({channel_id})")
             try:
                 await fresh_channel.delete(reason="Temp VC empty → auto-deleted")
                 print(f"[TempVoice] Successfully deleted empty VC: {fresh_channel.name} ({channel_id})")
@@ -470,6 +427,7 @@ class TempVoice(commands.Cog):
                     await db.commit()
                     
             except discord.NotFound:
+                print(f"[TempVoice] Channel {channel_id} already deleted")
                 # Channel already deleted - remove ghost entry
                 async with aiosqlite.connect(DB_PATH) as db:
                     await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (channel_id,))
@@ -481,51 +439,55 @@ class TempVoice(commands.Cog):
 
         except asyncio.CancelledError:
             # Task cancelled because user rejoined
+            print(f"[TempVoice] Cleanup task cancelled for channel {channel_id}")
             return
         except Exception as e:
             print(f"[TempVoice] Cleanup error for channel {channel_id}: {e}")
         finally:
             # Always clean up task entry
             self.cleanup_tasks.pop(channel_id, None)
+            print(f"[TempVoice] Cleanup task completed for channel {channel_id}")
 
     # -------------------------
-    # Queue Status Command
+    # Commands
     # -------------------------
-    @commands.command()
+
+    @commands.command(nick='vcdebug')
     @commands.has_permissions(manage_channels=True)
-    async def queue_status(self, ctx):
-        """Check the current VC creation queue status"""
-        embed = discord.Embed(title="🎯 VC Creation Queue Status", color=discord.Color.blue())
+    async def vcdebug(self, ctx):
+        """Debug current VC status"""
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT voiceID, userID FROM voiceChannel") as cursor:
+                tracked_channels = await cursor.fetchall()
         
-        if not self.creation_queues:
-            embed.description = "No active queues"
-        else:
-            for queue_id, queue in self.creation_queues.items():
-                channel = ctx.guild.get_channel(queue_id)
-                channel_name = channel.name if channel else f"Unknown ({queue_id})"
-                queue_size = len(queue)
-                worker_running = queue_id in self.queue_workers
-                
-                embed.add_field(
-                    name=f"#{channel_name}",
-                    value=f"Pending: {queue_size}\nWorker: {'✅' if worker_running else '❌'}",
-                    inline=True
-                )
+        embed = discord.Embed(title="🔧 VC Debug Info", color=discord.Color.orange())
+        
+        active_vcs = []
+        for voice_id, user_id in tracked_channels:
+            channel = ctx.guild.get_channel(voice_id)
+            if channel:
+                member_count = len(channel.members)
+                status = "🟢 ACTIVE" if member_count > 0 else "🔴 EMPTY"
+                active_vcs.append(f"{status} `{channel.name}` - Members: {member_count}")
+            else:
+                active_vcs.append(f"👻 GHOST {voice_id}")
+        
+        embed.add_field(
+            name="Tracked VCs",
+            value="\n".join(active_vcs) if active_vcs else "None",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Pending Cleanups",
+            value=f"{len(self.cleanup_tasks)} tasks",
+            inline=False
+        )
         
         await ctx.send(embed=embed)
 
     # -------------------------
-    # Manual cleanup command
-    # -------------------------
-    @commands.command()
-    @commands.has_permissions(manage_channels=True)
-    async def cleanup_vcs(self, ctx):
-        """Manually clean up empty tracked VCs and ghost entries"""
-        await self._cleanup_all_empty_tracked_vcs(ctx.guild)
-        await ctx.send("✅ Cleanup completed!")
-
-    # -------------------------
-    # Legacy vc group (optional)
+    # Legacy vc group
     # -------------------------
     @commands.group(aliases=['voice', 'tempvc'], hidden=True)
     async def vc(self, ctx):
