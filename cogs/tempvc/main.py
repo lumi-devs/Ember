@@ -53,6 +53,142 @@ class TempVoice(commands.Cog):
         self.bot.loop.create_task(self._periodic_ghost_cleanup())
 
     # -------------------------
+    # Periodic ghost cleanup
+    # -------------------------
+    async def _periodic_ghost_cleanup(self):
+        """Background task to clean up ghost entries periodically"""
+        await self.bot.wait_until_ready()
+        while not self.bot.is_closed():
+            try:
+                for guild in self.bot.guilds:
+                    await self._cleanup_ghost_entries(guild)
+                # Run every 30 minutes
+                await asyncio.sleep(1800)
+            except Exception as e:
+                print(f"[TempVoice] Periodic cleanup error: {e}")
+                await asyncio.sleep(300)  # Wait 5 minutes on error
+
+    # -------------------------
+    # Control panel sender
+    # -------------------------
+    async def _send_control_panel(self, channel, owner_id):
+        """Send interactive control panel to the voice channel"""
+        view = BasicControlsView(self, channel.id, owner_id)
+        embed = discord.Embed(
+            title="🎯 Voice Channel Controls",
+            description=(
+                "**Use the buttons below to manage your voice channel:**\n\n"
+                "**🔒 Access Controls:**\n"
+                "• Lock/Unlock - Control who can join\n"
+                "• Hide/Unhide - Control visibility\n"
+                "**👥 Member Management:**\n"
+                "• Trust users - Allow specific users to join\n"
+                "• Ban users - Block specific users\n"
+                "• Kick users - Remove from VC\n\n"
+                "**🔄 Advanced:**\n"
+                "• Reset - Reset all settings\n"
+                "• Transfer - Give ownership to someone else"
+            ),
+            color=discord.Color.orange()
+        )
+        embed.set_footer(text="Only the VC owner can use these controls")
+        
+        try:
+            await channel.send(embed=embed, view=view)
+        except Exception as e:
+            print(f"Failed to send control panel: {e}")
+
+    # -------------------------
+    # Cooldown helper
+    # -------------------------
+    def _check_cooldown(self, user_id):
+        """Check if user is on cooldown, return remaining seconds or 0 if ready"""
+        current_time = time.time()
+        # keep only cooldowns within the last 300 seconds
+        self.creation_cooldowns = {
+            uid: ts for uid, ts in self.creation_cooldowns.items() 
+            if current_time - ts < 300
+        }
+        
+        if user_id in self.creation_cooldowns:
+            last_creation = self.creation_cooldowns[user_id]
+            cooldown_remaining = 15 - (current_time - last_creation)
+            if cooldown_remaining > 0:
+                return cooldown_remaining
+        return 0
+
+    # -------------------------
+    # Ghost entry cleanup
+    # -------------------------
+    async def _cleanup_ghost_entries(self, guild):
+        """Remove database entries for channels that no longer exist"""
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                # Get all voice channel entries from DB
+                async with db.execute("SELECT voiceID FROM voiceChannel") as cursor:
+                    channels = await cursor.fetchall()
+                
+                deleted_count = 0
+                for (voice_id,) in channels:
+                    # Check if channel still exists in Discord
+                    if not guild.get_channel(voice_id):
+                        await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (voice_id,))
+                        deleted_count += 1
+                        print(f"[TempVoice] Removed ghost entry for deleted channel {voice_id}")
+                
+                if deleted_count > 0:
+                    await db.commit()
+                    print(f"[TempVoice] Cleaned up {deleted_count} ghost entries")
+                    
+        except Exception as e:
+            print(f"[TempVoice] Ghost entry cleanup error: {e}")
+
+    # -------------------------
+    # Check and cleanup empty tracked VCs
+    # -------------------------
+    async def _cleanup_all_empty_tracked_vcs(self, guild):
+        """Check all tracked VCs and delete empty ones"""
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                # Get all tracked voice channels
+                async with db.execute("SELECT voiceID FROM voiceChannel") as cursor:
+                    tracked_channels = await cursor.fetchall()
+            
+            deleted_count = 0
+            for (voice_id,) in tracked_channels:
+                channel = guild.get_channel(voice_id)
+                if channel and isinstance(channel, discord.VoiceChannel):
+                    # Check if channel is empty
+                    if not channel.members:
+                        try:
+                            await channel.delete(reason="Auto-cleanup: empty tracked VC")
+                            # Remove from DB
+                            async with aiosqlite.connect(DB_PATH) as db:
+                                await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (voice_id,))
+                                await db.commit()
+                            deleted_count += 1
+                            print(f"[TempVoice] Auto-deleted empty tracked VC: {channel.name}")
+                        except discord.NotFound:
+                            # Channel already deleted - remove ghost entry
+                            async with aiosqlite.connect(DB_PATH) as db:
+                                await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (voice_id,))
+                                await db.commit()
+                        except Exception as e:
+                            print(f"[TempVoice] Failed to delete empty VC {channel.name}: {e}")
+                elif not channel:
+                    # Channel doesn't exist - remove ghost entry
+                    async with aiosqlite.connect(DB_PATH) as db:
+                        await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (voice_id,))
+                        await db.commit()
+                    print(f"[TempVoice] Removed ghost entry for non-existent channel {voice_id}")
+            
+            if deleted_count > 0:
+                print(f"[TempVoice] Auto-cleanup completed: deleted {deleted_count} empty VCs")
+                
+        except Exception as e:
+            print(f"[TempVoice] Auto-cleanup error: {e}")
+
+    # -------------------------
     # Queue Management System
     # -------------------------
     async def _add_to_queue(self, member, join_channel):
@@ -313,49 +449,8 @@ class TempVoice(commands.Cog):
             print(f"[TempVoice] Reorganization error: {e}")
 
     # -------------------------
-    # Queue Status Command
+    # Cleanup empty VC - IMPROVED VERSION
     # -------------------------
-    @commands.command()
-    @commands.has_permissions(manage_channels=True)
-    async def queue_status(self, ctx):
-        """Check the current VC creation queue status"""
-        embed = discord.Embed(title="🎯 VC Creation Queue Status", color=discord.Color.blue())
-        
-        if not self.creation_queues:
-            embed.description = "No active queues"
-        else:
-            for queue_id, queue in self.creation_queues.items():
-                channel = ctx.guild.get_channel(queue_id)
-                channel_name = channel.name if channel else f"Unknown ({queue_id})"
-                queue_size = len(queue)
-                worker_running = queue_id in self.queue_workers
-                
-                embed.add_field(
-                    name=f"#{channel_name}",
-                    value=f"Pending: {queue_size}\nWorker: {'✅' if worker_running else '❌'}",
-                    inline=True
-                )
-        
-        await ctx.send(embed=embed)
-
-    # -------------------------
-    # Existing methods (keep them as is)
-    # -------------------------
-    def _check_cooldown(self, user_id):
-        """Check if user is on cooldown, return remaining seconds or 0 if ready"""
-        current_time = time.time()
-        self.creation_cooldowns = {
-            uid: ts for uid, ts in self.creation_cooldowns.items() 
-            if current_time - ts < 300
-        }
-        
-        if user_id in self.creation_cooldowns:
-            last_creation = self.creation_cooldowns[user_id]
-            cooldown_remaining = 15 - (current_time - last_creation)
-            if cooldown_remaining > 0:
-                return cooldown_remaining
-        return 0
-
     async def _cleanup_empty_vc(self, channel: discord.VoiceChannel):
         """Clean up empty temporary voice channels with improved reliability."""
         channel_id = channel.id
@@ -422,6 +517,79 @@ class TempVoice(commands.Cog):
         finally:
             # Always clean up task entry
             self.cleanup_tasks.pop(channel_id, None)
+
+    # -------------------------
+    # Queue Status Command
+    # -------------------------
+    @commands.command()
+    @commands.has_permissions(manage_channels=True)
+    async def queue_status(self, ctx):
+        """Check the current VC creation queue status"""
+        embed = discord.Embed(title="🎯 VC Creation Queue Status", color=discord.Color.blue())
+        
+        if not self.creation_queues:
+            embed.description = "No active queues"
+        else:
+            for queue_id, queue in self.creation_queues.items():
+                channel = ctx.guild.get_channel(queue_id)
+                channel_name = channel.name if channel else f"Unknown ({queue_id})"
+                queue_size = len(queue)
+                worker_running = queue_id in self.queue_workers
+                
+                embed.add_field(
+                    name=f"#{channel_name}",
+                    value=f"Pending: {queue_size}\nWorker: {'✅' if worker_running else '❌'}",
+                    inline=True
+                )
+        
+        await ctx.send(embed=embed)
+
+    # -------------------------
+    # Manual cleanup command
+    # -------------------------
+    @commands.command()
+    @commands.has_permissions(manage_channels=True)
+    async def cleanup_vcs(self, ctx):
+        """Manually clean up empty tracked VCs and ghost entries"""
+        await self._cleanup_all_empty_tracked_vcs(ctx.guild)
+        await ctx.send("✅ Cleanup completed!")
+
+    # -------------------------
+    # Legacy vc group (optional)
+    # -------------------------
+    @commands.group(aliases=['voice', 'tempvc'], hidden=True)
+    async def vc(self, ctx):
+        """Temporary Voice Channel Management (Legacy)"""
+        if ctx.invoked_subcommand is None:
+            embed = discord.Embed(
+                title="🎯 Voice Channel Controls Updated!",
+                description=(
+                    "We've upgraded to interactive buttons! 🎉\n\n"
+                    "When you create a temporary voice channel, "
+                    "you'll now get a control panel with buttons and dropdowns "
+                    "for easy management.\n\n"
+                    "**No more typing commands!** ✨"
+                ),
+                color=discord.Color.blue()
+            )
+            await ctx.send(embed=embed)
+
+    # -------------------------
+    # Cog unload
+    # -------------------------
+    def cog_unload(self):
+        # cancel pending cleanup tasks
+        for t in list(self.cleanup_tasks.values()):
+            try:
+                t.cancel()
+            except Exception:
+                pass
+        # cancel queue workers
+        for t in list(self.queue_workers.values()):
+            try:
+                t.cancel()
+            except Exception:
+                pass
 
 async def setup(bot):
     cog = TempVoice(bot)
