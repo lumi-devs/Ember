@@ -162,12 +162,9 @@ async def setup(bot: commands.Bot):
         # Create embed for better visual
         embed = discord.Embed(
             title="🎯 VC Join Request",
-            description=f"{requester.mention} wants to join your VC — **{target_channel.name}**",
+            description=f"{requester.mention} wants to join your VC:- **{target_channel.name}**",
             color=discord.Color.orange()
         )
-        embed.add_field(name="From VC", value=requester.voice.channel.name, inline=True)
-        embed.add_field(name="To VC", value=target_channel.name, inline=True)
-        embed.add_field(name="Current Members", value=f"{current_users}/{limit if limit > 0 else '∞'}", inline=True)
         embed.set_footer(text=f"Request expires in {TIMEOUT_DURATION} seconds")
 
         class DragmeView(discord.ui.View):
@@ -253,7 +250,7 @@ async def setup(bot: commands.Bot):
         view = DragmeView()
         dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
         if dragme_channel:
-            view.msg = await dragme_channel.send(embed=embed, view=view)
+            view.msg = await dragme_channel.send(f"{target.mention}", embed=embed, view=view)
 
     # Add command to view active requests
     @bot.tree.command(
