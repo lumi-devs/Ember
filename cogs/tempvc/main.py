@@ -225,6 +225,7 @@ class TempVoice(commands.Cog):
                 
                 # Check if member is still in the join channel
                 if not member.voice or member.voice.channel.id != queue_id:
+                    print(f"[TempVoice] ❌ Member {member} left join channel before processing")
                     request['success'] = False
                     request['event'].set()
                     continue
@@ -238,7 +239,8 @@ class TempVoice(commands.Cog):
                 await asyncio.sleep(0.5)
                 
             except Exception as e:
-                print(f"[TempVoice] Queue worker error for {queue_id}: {e}")
+                print(f"[TempVoice] ❌ Queue worker error for {queue_id}: {repr(e)}")
+                print(f"[TempVoice] Full error details: {e}")
                 # Mark failed request as done to prevent hanging
                 if 'request' in locals():
                     request['success'] = False
@@ -247,9 +249,12 @@ class TempVoice(commands.Cog):
 
     async def _execute_creation(self, member, join_channel):
         """Execute the actual VC creation with all safety checks"""
+        print(f"[TempVoice] 🔧 Executing creation for {member} in {join_channel.name}")
+        
         # Check cooldown
         cooldown_remaining = self._check_cooldown(member.id)
         if cooldown_remaining > 0:
+            print(f"[TempVoice] ⏳ Cooldown active for {member}: {cooldown_remaining}s")
             embed = discord.Embed(
                 description=f"⏳ You're creating channels too quickly! Please wait {cooldown_remaining:.1f} seconds.",
                 color=discord.Color.orange()
@@ -267,18 +272,25 @@ class TempVoice(commands.Cog):
         # Use guild lock to prevent race conditions between creation and cleanup
         async with self.creation_locks[member.guild.id]:
             # Clean ghost entries before creating new VC
+            print(f"[TempVoice] 🧹 Running ghost cleanup for {member.guild.name}")
             await self._cleanup_ghost_entries(member.guild)
             
             # Clean any pending empty VCs before creating new ones
+            print(f"[TempVoice] 🧹 Running empty VC cleanup for {member.guild.name}")
             await self._cleanup_all_empty_vcs(member.guild)
 
             # Create the VC
             try:
-                await self._create_temp_vc(member, join_channel)
-                self.creation_cooldowns[member.id] = time.time()
-                return True
+                print(f"[TempVoice] 🚀 Creating VC for {member}...")
+                success = await self._create_temp_vc(member, join_channel)
+                if success:
+                    self.creation_cooldowns[member.id] = time.time()
+                    print(f"[TempVoice] ✅ VC creation successful for {member}")
+                else:
+                    print(f"[TempVoice] ❌ VC creation failed for {member}")
+                return success
             except Exception as e:
-                print(f"[TempVoice] Creation error for {member.display_name}: {e}")
+                print(f"[TempVoice] 💥 Creation error for {member.display_name}: {repr(e)}")
                 return False
 
     # -------------------------
