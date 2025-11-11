@@ -40,23 +40,31 @@ requests_lock = asyncio.Lock()  # prevent race conditions
 
 
 async def setup(bot: commands.Bot):
-    # Add cleanup task for orphaned requests
+    # Add cleanup task for orphaned requests - FIXED VERSION
     async def cleanup_orphaned_requests():
-        await bot.wait_until_ready()
+        """Fixed: Wait for bot to be ready and use proper guild access."""
+        await bot.wait_until_ready()  # CRITICAL: Wait for bot to be ready
+        
         while not bot.is_closed():
             try:
+                # Use the first available guild instead of hardcoded ID
+                guild = None
+                for g in bot.guilds:
+                    guild = g
+                    break
+                
+                if not guild:
+                    await asyncio.sleep(60)
+                    continue
+                
                 async with requests_lock:
-                    current_guild = bot.get_guild(1418501302626816010)  # Your server ID
-                    if not current_guild:
-                        continue
-                    
                     updated_requests = []
                     for request in active_requests[:]:
                         requester_id = request["requester"]
                         target_id = request["target"]
                         
-                        requester = current_guild.get_member(requester_id)
-                        target = current_guild.get_member(target_id)
+                        requester = guild.get_member(requester_id)
+                        target = guild.get_member(target_id)
                         
                         # Remove request if either user left the server or is not in VC anymore
                         if (not requester or not target or 
@@ -73,10 +81,12 @@ async def setup(bot: commands.Bot):
                         print(f"[DragMe] Cleaned up {len(active_requests) - len(updated_requests)} orphaned requests")
                 
                 await asyncio.sleep(300)  # Check every 5 minutes
+                
             except Exception as e:
                 print(f"[DragMe] Cleanup error: {e}")
                 await asyncio.sleep(60)
 
+    # Start the cleanup task properly
     bot.loop.create_task(cleanup_orphaned_requests())
 
     @bot.tree.command(
