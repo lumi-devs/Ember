@@ -168,7 +168,7 @@ class TempVoice(commands.Cog):
                 # Find the previous channel (e.g., Duo 1 before creating Duo 2)
                 prev_vc = channel_map.get(num - 1)
                 if prev_vc:
-                    position = prev_vc.position + 1
+                    position = prev_vc.position
                 else:
                     # fallback — if previous VC somehow missing
                     position = join_channel.position + num
