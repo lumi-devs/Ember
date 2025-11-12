@@ -140,24 +140,50 @@ class TempVoice(commands.Cog):
         base_name, limit = JOIN_CHANNELS.get(join_channel.id, ("VC ", 0))
 
         used_nums = []
+        channel_map = {}
+
+        # Scan all existing VCs with same base name
         for vc in category.voice_channels:
             if vc.name.startswith(base_name):
                 try:
                     n = int(vc.name[len(base_name):].split()[0])
                     used_nums.append(n)
+                    channel_map[n] = vc
                 except Exception:
                     pass
+
+        # Find the lowest unused number
         num = 1
         while num in used_nums:
             num += 1
 
         name = f"{base_name}{num}"
+
+        # Determine position
+        try:
+            if num == 1:
+                # Place directly below generator
+                position = join_channel.position
+            else:
+                # Find the previous channel (e.g., Duo 1 before creating Duo 2)
+                prev_vc = channel_map.get(num - 1)
+                if prev_vc:
+                    position = prev_vc.position + 1
+                else:
+                    # fallback — if previous VC somehow missing
+                    position = join_channel.position + num
+        except Exception:
+            position = None
+
+        # Create VC at correct spot
         vc = await guild.create_voice_channel(
             name=name,
             category=category,
             user_limit=limit or None,
+            position=position,
             reason=f"Temp VC created by {member}"
         )
+
         await vc.set_permissions(member, manage_channels=True, connect=True, speak=True)
         try:
             await member.move_to(vc)
