@@ -23,6 +23,7 @@ class TempVoice(commands.Cog):
         self.creation_queues = {}  # join_channel.id -> deque()
         self.queue_locks = {}      # join_channel.id -> asyncio.Lock()
         self.queue_workers = {}    # join_channel.id -> asyncio.Task()
+        self.worker_stop_flags = {} # join_channel.id -> bool flag to stop worker
         
         # Cleanup system - single task per guild instead of per channel
         self.cleanup_tasks = {}  # guild.id -> asyncio.Task()
@@ -56,6 +57,16 @@ class TempVoice(commands.Cog):
         await self._init_db()
         # Load existing tracked VCs first
         await self._load_existing_tracked_vcs()
+        # Start persistent queue workers for all join channels
+        await self._start_persistent_workers()
+
+    async def _start_persistent_workers(self):
+        """Start persistent workers for all known join channels"""
+        for guild in self.bot.guilds:
+            for join_channel_id in JOIN_CHANNELS:
+                channel = guild.get_channel(join_channel_id)
+                if channel:
+                    await self._ensure_queue_worker_running(join_channel_id)
 
     # -------------------------
     # Startup VC Loading
@@ -173,18 +184,19 @@ class TempVoice(commands.Cog):
         return 0
 
     # -------------------------
-    # Queue Management System
+    # Queue Management System - FIXED
     # -------------------------
 
-
-    async def _ensure_guild_initialized(self, guild_id):
-        """Ensure all guild-specific structures are initialized"""
-        if guild_id not in self.creation_locks:
-            self.creation_locks[guild_id] = asyncio.Lock()
-        if guild_id not in self.cleanup_locks:
-            self.cleanup_locks[guild_id] = asyncio.Lock()
-        if guild_id not in self.pending_cleanups:
-            self.pending_cleanups[guild_id] = set()
+    async def _ensure_queue_worker_running(self, queue_id):
+        """Ensure a queue worker is always running for a join channel"""
+        if queue_id not in self.queue_workers or self.queue_workers[queue_id].done():
+            # Clear stop flag if it exists
+            self.worker_stop_flags[queue_id] = False
+            # Start new worker
+            self.queue_workers[queue_id] = asyncio.create_task(
+                self._persistent_queue_worker(queue_id)
+            )
+            print(f"[TempVoice] 🔄 Started persistent worker for queue {queue_id}")
 
     async def _add_to_queue(self, member, join_channel):
         """Add a creation request to the queue and start worker if needed"""
@@ -194,6 +206,9 @@ class TempVoice(commands.Cog):
         if queue_id not in self.creation_queues:
             self.creation_queues[queue_id] = deque()
             self.queue_locks[queue_id] = asyncio.Lock()
+        
+        # Ensure worker is running
+        await self._ensure_queue_worker_running(queue_id)
         
         # Create request object
         request = {
@@ -207,29 +222,35 @@ class TempVoice(commands.Cog):
         async with self.queue_locks[queue_id]:
             self.creation_queues[queue_id].append(request)
         
-        # Start worker if not running
-        if queue_id not in self.queue_workers or self.queue_workers[queue_id].done():
-            self.queue_workers[queue_id] = asyncio.create_task(
-                self._queue_worker(queue_id)
-            )
+        print(f"[TempVoice] 📥 Added to queue {queue_id}: {member.display_name} (Queue size: {len(self.creation_queues[queue_id])})")
         
         # Wait for this request to be processed
         await request['event'].wait()
         return request.get('success', False)
 
-    async def _queue_worker(self, queue_id):
-        """Worker that processes creation requests one by one"""
-        while True:
+    async def _persistent_queue_worker(self, queue_id):
+        """Persistent worker that never stops and processes creation requests"""
+        print(f"[TempVoice] 🔄 Starting persistent queue worker for {queue_id}")
+        
+        while not self.worker_stop_flags.get(queue_id, False):
             try:
-                # Get next request from queue
-                async with self.queue_locks[queue_id]:
-                    if not self.creation_queues[queue_id]:
-                        # No more requests, stop worker
-                        if queue_id in self.queue_workers:
-                            del self.queue_workers[queue_id]
-                        break
+                # Get next request from queue with timeout
+                try:
+                    async with self.queue_locks[queue_id]:
+                        if self.creation_queues[queue_id]:
+                            request = self.creation_queues[queue_id].popleft()
+                        else:
+                            request = None
                     
-                    request = self.creation_queues[queue_id].popleft()
+                    if request is None:
+                        # No requests, wait a bit and check again
+                        await asyncio.sleep(1)
+                        continue
+                
+                except KeyError:
+                    # Queue was deleted, wait and continue
+                    await asyncio.sleep(1)
+                    continue
                 
                 # Process the request
                 member = request['member']
@@ -257,6 +278,9 @@ class TempVoice(commands.Cog):
                 # Small delay between creations to ensure proper sequencing
                 await asyncio.sleep(0.5)
                 
+            except asyncio.CancelledError:
+                print(f"[TempVoice] 🔄 Queue worker {queue_id} was cancelled")
+                break
             except Exception as e:
                 print(f"[TempVoice] ❌ Queue worker error for {queue_id}: {type(e).__name__}: {str(e)}")
                 import traceback
@@ -266,6 +290,8 @@ class TempVoice(commands.Cog):
                     request['success'] = False
                     request['event'].set()
                 await asyncio.sleep(1)
+        
+        print(f"[TempVoice] 🔄 Queue worker {queue_id} stopped")
 
     async def _execute_creation(self, member, join_channel):
         """Execute the actual VC creation with all safety checks"""
@@ -573,11 +599,11 @@ class TempVoice(commands.Cog):
                 channel = ctx.guild.get_channel(queue_id)
                 channel_name = channel.name if channel else f"Unknown ({queue_id})"
                 queue_size = len(queue)
-                worker_running = queue_id in self.queue_workers
+                worker_running = queue_id in self.queue_workers and not self.queue_workers[queue_id].done()
                 
                 embed.add_field(
                     name=f"#{channel_name}",
-                    value=f"Pending: {queue_size}\nWorker: {'✅' if worker_running else '❌'}",
+                    value=f"Pending: {queue_size}\nWorker: {'✅ Running' if worker_running else '❌ Stopped'}",
                     inline=True
                 )
         
@@ -627,6 +653,25 @@ class TempVoice(commands.Cog):
             inline=False
         )
         
+        # Show queue worker status
+        worker_status = []
+        for queue_id in JOIN_CHANNELS:
+            channel = ctx.guild.get_channel(queue_id)
+            if channel:
+                worker_alive = (
+                    queue_id in self.queue_workers and 
+                    not self.queue_workers[queue_id].done()
+                )
+                status = "✅" if worker_alive else "❌"
+                worker_status.append(f"{status} #{channel.name}")
+        
+        if worker_status:
+            embed.add_field(
+                name="Queue Workers",
+                value="\n".join(worker_status),
+                inline=False
+            )
+        
         await ctx.send(embed=embed)
 
     @commands.command()
@@ -665,6 +710,26 @@ class TempVoice(commands.Cog):
         else:
             await ctx.send(f"❌ Failed to clean {channel.name}")
 
+    @commands.command()
+    @commands.has_permissions(manage_channels=True)
+    async def restart_workers(self, ctx):
+        """Restart all queue workers"""
+        # Stop all workers
+        for queue_id in list(self.queue_workers.keys()):
+            self.worker_stop_flags[queue_id] = True
+            if queue_id in self.queue_workers:
+                self.queue_workers[queue_id].cancel()
+        
+        # Clear queues
+        self.creation_queues.clear()
+        self.queue_workers.clear()
+        self.worker_stop_flags.clear()
+        
+        # Restart workers
+        await self._start_persistent_workers()
+        
+        await ctx.send("✅ Restarted all queue workers!")
+
     # -------------------------
     # Legacy vc group
     # -------------------------
@@ -689,6 +754,10 @@ class TempVoice(commands.Cog):
     # Cog unload
     # -------------------------
     def cog_unload(self):
+        # Set stop flags for all workers
+        for queue_id in list(self.worker_stop_flags.keys()):
+            self.worker_stop_flags[queue_id] = True
+        
         # cancel pending cleanup tasks
         for t in list(self.cleanup_tasks.values()):
             try:
