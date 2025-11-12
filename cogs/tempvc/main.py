@@ -217,12 +217,12 @@ class TempVoice(commands.Cog):
                 pass
             return False
 
-        # Ensure guild structures exist
+        # Ensure guild structures exist - FIXED: use member.guild instead of guild
         guild_id = member.guild.id
         if guild_id not in self.cleanup_locks:
             self.cleanup_locks[guild_id] = asyncio.Lock()
         if guild_id not in self.pending_cleanups:
-            self.pending_cleanups[guild.id] = set()
+            self.pending_cleanups[guild_id] = set()  # FIXED: use guild_id instead of guild.id
 
         # Clean ghost entries before creating new VC
         print(f"[TempVoice] 🧹 Running ghost cleanup for {member.guild.name}")
@@ -245,7 +245,6 @@ class TempVoice(commands.Cog):
         except Exception as e:
             print(f"[TempVoice] 💥 Creation error for {member.display_name}: {repr(e)}")
             return False
-
     # -------------------------
     # Voice State Handler
     # -------------------------
@@ -463,7 +462,7 @@ class TempVoice(commands.Cog):
     # -------------------------
     # Commands
     # -------------------------
-    @commands.command()
+    @commands.command(nick='vcdebug')
     @commands.has_permissions(manage_channels=True)
     async def vcdebug(self, ctx):
         """Debug current VC status"""
