@@ -8,7 +8,7 @@ class MentionTracker(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         # Hardcode your role IDs here
-        self.tracked_role_ids = [123456789, 987654321, 112233445]  # Replace with your role IDs
+        self.tracked_role_ids = [1393171029639168021, 1393171026690707557, 1393171028351385651]  # Replace with your role IDs
     
     @app_commands.command(name="mentions_today", description="Check how many times roles were mentioned today across the server")
     async def mentions_today(self, interaction: discord.Interaction):
