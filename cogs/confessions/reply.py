@@ -2,13 +2,18 @@
 import discord
 from discord import ui
 import asyncio
-from datetime import datetime, timezone
 from cogs.confessions.helpers import process_media
 
 CONFESSION_CHANNEL_ID = 1399658407178272798
 LOG_CHANNEL_ID = 1424792373837172899
 MEDIA_CHANNEL_ID = 1424139009931743382
 
+from datetime import datetime
+import zoneinfo
+
+IST = zoneinfo.ZoneInfo("Asia/Kolkata")
+
+timestamp=datetime.now(IST)
 
 class ReplyModal(ui.Modal, title="Anonymous Reply"):
     reply_input = ui.TextInput(label="Reply", style=discord.TextStyle.paragraph, max_length=500)
@@ -72,7 +77,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             title=f"↩️ Reply to Confession #{self.confession_id}",
             description=self.reply_input.value,
             color=color,
-            timestamp=timezone.utc  # ← fixed timestamp
+            timestamp=timestamp  # ← fixed timestamp
         )
 
         if image_url:
