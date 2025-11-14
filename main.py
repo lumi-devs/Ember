@@ -24,6 +24,7 @@ logger = logging.getLogger("BotLogger")
 
 # ------------------ DISCORD BOT ------------------
 intents = discord.Intents.all()
+intents.members = True 
 bot = commands.Bot(command_prefix=".", intents=intents)
 
 GUILD_ID = int(os.environ.get("GUILD_ID"))

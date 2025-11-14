@@ -2,9 +2,8 @@
 import discord
 from discord import ui
 import asyncio
-from datetime import datetime
-from cogs.confessions.helpers import process_media
 from datetime import datetime, timezone
+from cogs.confessions.helpers import process_media
 
 CONFESSION_CHANNEL_ID = 1399658407178272798
 LOG_CHANNEL_ID = 1424792373837172899
@@ -19,19 +18,21 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
         self.bot = bot
         self.confession_id = confession_id
         self.confession_message_id = confession_message_id
-        self.confession_author_id = confession_author_id  # Store the author ID
+        self.confession_author_id = confession_author_id
         self.user_id = None
 
     async def on_submit(self, interaction: discord.Interaction):
         self.user_id = interaction.user.id
 
-        # ✅ Send simple ephemeral message (no buttons)
-        await interaction.response.send_message(
-            "✅ Reply submitted! You have **30 seconds** to send an image/URL in chat or type `skip` to continue without media.",
+        # 👑 THE FIX → always defer first!!
+        await interaction.response.defer(ephemeral=True, thinking=False)
+
+        # Inform user (using follow-up)
+        await interaction.followup.send(
+            "✅ Reply submitted! You have **30 seconds** to send an image/URL here or type `skip`.",
             ephemeral=True
         )
 
-        # Allow user to send media via message
         cleaner_cog = self.bot.get_cog("ConfessionCleaner")
         if cleaner_cog:
             await cleaner_cog.allow_user_once(self.user_id)
@@ -40,56 +41,49 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             return m.author.id == self.user_id and m.channel.id == interaction.channel.id
 
         image_url = None
+
         try:
             msg_received = await self.bot.wait_for("message", timeout=30.0, check=check)
 
-            # Process media if user didn't type skip
-            if msg_received.content.lower() != 'skip':
+            if msg_received.content.lower() != "skip":
                 image_url = await process_media(
                     self.bot, msg_received.content, msg_received.attachments, MEDIA_CHANNEL_ID
                 )
 
+            # delete user's message silently
             try:
                 await msg_received.delete()
             except:
                 pass
 
         except asyncio.TimeoutError:
-            pass  # No response
+            pass
 
-        # Finalize reply
         await self.finalize_reply_directly(image_url)
 
     async def finalize_reply_directly(self, image_url):
         """Finalize reply after waiting for possible media."""
         channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
 
-        # Check if the replier is the confession owner
         is_owner_reply = self.user_id == self.confession_author_id
-
-        # Pick color based on ownership
         color = discord.Color.gold() if is_owner_reply else discord.Color.green()
 
-        # Build embed
         embed = discord.Embed(
             title=f"↩️ Reply to Confession #{self.confession_id}",
             description=self.reply_input.value,
             color=color,
-            timestamp=datetime.timezone.utc
+            timestamp=timezone.utc  # ← fixed timestamp
         )
 
         if image_url:
             embed.set_image(url=image_url)
 
-        # Add footer if owner replied
         if is_owner_reply:
             embed.set_footer(text="👑 OP")
 
         try:
-            # Fetch original confession message
             confession_msg = await channel.fetch_message(self.confession_message_id)
 
-            # Get or create thread
             thread = confession_msg.thread
             if not thread:
                 thread = await confession_msg.create_thread(
@@ -97,10 +91,9 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                     auto_archive_duration=60
                 )
 
-            # Send the reply embed to the thread
             await thread.send(embed=embed)
 
-            # --- LOGGING ---
+            # LOGGING
             log_channel = self.bot.get_channel(LOG_CHANNEL_ID)
             if log_channel:
                 log_embed = discord.Embed(
@@ -116,8 +109,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                     log_embed.set_image(url=image_url)
                 await log_channel.send(embed=log_embed)
 
-            # --- NOTIFY CONFESSION AUTHOR ---
-            # Skip if the author is replying to their own confession
+            # Notify OP
             if not is_owner_reply:
                 try:
                     confession_author = await self.bot.fetch_user(self.confession_author_id)
@@ -134,7 +126,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                     )
                     await confession_author.send(embed=notify_embed)
                 except discord.Forbidden:
-                    pass  # DMs off
+                    pass
                 except Exception as e:
                     print(f"Error notifying confession author: {e}")
 
