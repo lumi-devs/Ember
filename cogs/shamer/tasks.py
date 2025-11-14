@@ -62,9 +62,9 @@ class ShameTasks:
             role_embed = discord.Embed(
                 title="🎉 New Shame Role Holders!",
                 description=f"Congratulations to {', '.join(winners_mentions)} for earning the shame role!",
-                color=discord.Color.blue()
+                color=discord.Color.orange()
             )
-            await channel.send(embed=role_embed)
+            await channel.send(f"<@&{ShameConfig.SHAME_ROLE_ID}>", embed=role_embed)
         
         # Assign roles
         for guild in self.bot.guilds:

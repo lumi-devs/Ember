@@ -61,7 +61,7 @@ class ShameCommands(commands.Cog):
             await interaction.response.send_message("No one has any points yet!", ephemeral=True)
             return
         
-        # Calculate tim                 e until next reroll
+        # Calculate time until next reroll
         from datetime import datetime, timedelta
         now = datetime.now()
         next_reroll = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=4)
