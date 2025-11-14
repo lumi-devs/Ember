@@ -1,7 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from typing import Optional
+from typing import Optional, Union
 from .database import ShameDatabase
 from .utils import ShameUtils
 from .config import ShameConfig
@@ -75,7 +75,7 @@ class ShameCommands(commands.Cog):
     
     @blacklist_group.command(name="add", description="Add a user or role to blacklist")
     @app_commands.describe(target="User or role to blacklist")
-    async def blacklist_add(self, interaction: discord.Interaction, target: discord.Union[discord.Member, discord.Role]):
+    async def blacklist_add(self, interaction: discord.Interaction, target: Union[discord.Member, discord.Role]):
         # Check admin permissions
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("You need administrator permissions to use this command!", ephemeral=True)
@@ -88,7 +88,7 @@ class ShameCommands(commands.Cog):
     
     @blacklist_group.command(name="remove", description="Remove a user or role from blacklist")
     @app_commands.describe(target="User or role to remove from blacklist")
-    async def blacklist_remove(self, interaction: discord.Interaction, target: discord.Union[discord.Member, discord.Role]):
+    async def blacklist_remove(self, interaction: discord.Interaction, target: Union[discord.Member, discord.Role]):
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("You need administrator permissions to use this command!", ephemeral=True)
             return
