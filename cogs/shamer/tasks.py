@@ -25,12 +25,19 @@ class ShameTasks:
                     decay_amount = await self.utils.calculate_decay(points)
                     new_points = max(0, points - decay_amount)
                     
-                    await self.db.update_user(
-                        user_id, 
-                        points=new_points,
-                        hourly_points=0  # Reset hourly counter
-                    )
-                    print(f"[Shamer] Decayed {decay_amount} points from user {user_id}")
+                    if new_points == 0:
+                        # Remove user from database when they hit 0 points
+                        await db.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
+                        print(f"[Shamer] Removed user {user_id} (reached 0 points)")
+                    else:
+                        await self.db.update_user(
+                            user_id, 
+                            points=new_points,
+                            hourly_points=0
+                        )
+                        print(f"[Shamer] Decayed {decay_amount} points from user {user_id}")
+            
+            await db.commit()
     
     @tasks.loop(hours=24)
     async def daily_leaderboard_check(self):
@@ -83,12 +90,12 @@ class ShameTasks:
         
         for i, user_data in enumerate(leaderboard):
             user = self.bot.get_user(user_data['user_id'])
-            username = user.mention if user else f"Unknown User ({user_data['user_id']})"
+            username = user.mention if user else f"<@{user_data['user_id']}>"
             
             symbol = symbols[i] if i < len(symbols) else "•"
             
             embed.add_field(
-                name=f"{symbol} {user.mention}",
+                name=f"{symbol} {username}",
                 value=f"**{user_data['points']}** points • {user_data['total_messages']} messages",
                 inline=False
             )
