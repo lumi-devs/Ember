@@ -49,7 +49,3 @@ class ShameSystem(commands.Cog):
             total_messages=(user_data['total_messages'] + 1) if user_data else 1,
             last_message_time=message.created_at.timestamp()
         )
-
-async def setup(bot):
-    await bot.add_cog(ShameSystem(bot))
-    await bot.add_cog(ShameCommands(bot))
