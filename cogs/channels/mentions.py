@@ -8,11 +8,11 @@ class MentionTracker(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         # Hardcode your role IDs here
-        self.tracked_role_ids = [1393171026690707557, 1393171029639168021, 1393171028351385651]  # Replace with your role IDs
+        self.tracked_role_ids = [123456789, 987654321, 112233445]  # Replace with your role IDs
     
-    @app_commands.command(name="mentions", description="Check how many times roles were mentioned today")
+    @app_commands.command(name="mentions_today", description="Check how many times roles were mentioned today across the server")
     async def mentions_today(self, interaction: discord.Interaction):
-        """Check how many times hardcoded roles were mentioned today"""
+        """Check how many times hardcoded roles were mentioned today across ALL channels"""
         await interaction.response.defer(ephemeral=True)
         
         try:
@@ -31,81 +31,88 @@ class MentionTracker(commands.Cog):
                 await interaction.followup.send("❌ No valid roles found from hardcoded IDs.", ephemeral=True)
                 return
             
-            # Check mentions for each role
+            # Check mentions for each role using Discord search
             results = []
             total_mentions = 0
             
+            embed = discord.Embed(
+                title="🔍 Scanning Role Mentions...",
+                description=f"Searching all channels for today's mentions...\nThis may take a while for large servers.",
+                color=discord.Color.blue()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            
             for role in target_roles:
-                mention_count = await self.count_role_mentions_today(interaction.channel, role, start_of_day)
+                mention_count = await self.search_role_mentions_today(interaction.guild, role, start_of_day)
                 results.append((role, mention_count))
                 total_mentions += mention_count
             
-            # Create embed with results
-            embed = discord.Embed(
+            # Create results embed
+            results_embed = discord.Embed(
                 title="📊 Role Mentions Today",
-                description=f"Mention counts for {today.strftime('%B %d, %Y')}",
-                color=discord.Color.blue(),
+                description=f"Mention counts for {today.strftime('%B %d, %Y')} across all channels",
+                color=discord.Color.green(),
                 timestamp=datetime.now()
             )
             
             for role, count in results:
-                embed.add_field(
+                results_embed.add_field(
                     name=f"{role.name}",
                     value=f"**{count}** mentions",
                     inline=True
                 )
             
-            embed.add_field(
+            results_embed.add_field(
                 name="📈 Total",
                 value=f"**{total_mentions}** mentions today",
                 inline=False
             )
             
-            embed.set_footer(text=f"Channel: #{interaction.channel.name}")
+            results_embed.set_footer(text=f"Scanned all channels • {len(target_roles)} roles tracked")
             
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.edit_original_response(embed=results_embed)
             
         except Exception as e:
             await interaction.followup.send(f"❌ Error checking mentions: {str(e)}", ephemeral=True)
     
-    async def count_role_mentions_today(self, channel, role: discord.Role, start_of_day: datetime) -> int:
-        """Count how many times a role was mentioned in a channel today"""
+    async def search_role_mentions_today(self, guild: discord.Guild, role: discord.Role, start_of_day: datetime) -> int:
+        """Search ALL channels for role mentions today using Discord's search"""
         mention_count = 0
         role_mention = f"<@&{role.id}>"
         
+        print(f"[MentionTracker] Searching for mentions of {role.name}...")
+        
         try:
-            # Since server gets 20k+ messages, we need to be efficient
-            # Check messages in batches from today onwards
-            last_message = None
-            batch_count = 0
-            
-            while True:
-                # Get messages in batches of 100
-                messages = []
-                async for message in channel.history(limit=100, before=last_message, after=start_of_day):
-                    messages.append(message)
+            # Search across all text channels
+            for channel in guild.text_channels:
+                if not channel.permissions_for(guild.me).read_messages:
+                    continue
                 
-                if not messages:
-                    break
-                
-                # Count mentions in this batch
-                for message in messages:
-                    if role_mention in message.content:
-                        mention_count += 1
-                
-                batch_count += len(messages)
-                print(f"[MentionTracker] Processed {batch_count} messages for role {role.name}")
-                
-                # Stop if we've processed a lot of messages or reached start of day
-                if len(messages) < 100 or batch_count > 5000:  # Safety limit
-                    break
-                
-                last_message = messages[-1]
+                try:
+                    # Use Discord's search feature with date filter
+                    # Note: Discord search doesn't have precise date filtering, so we'll search and filter manually
+                    messages = []
+                    async for message in channel.history(limit=500, after=start_of_day):
+                        messages.append(message)
                     
-        except discord.Forbidden:
-            print(f"[MentionTracker] No permission to read history in #{channel.name}")
+                    # Count mentions in this channel
+                    channel_mentions = 0
+                    for message in messages:
+                        if role_mention in message.content:
+                            channel_mentions += 1
+                    
+                    if channel_mentions > 0:
+                        print(f"[MentionTracker] Found {channel_mentions} mentions in #{channel.name}")
+                        mention_count += channel_mentions
+                        
+                except discord.Forbidden:
+                    continue
+                except Exception as e:
+                    print(f"[MentionTracker] Error searching #{channel.name}: {e}")
+                    continue
+                    
         except Exception as e:
-            print(f"[MentionTracker] Error reading channel history: {e}")
+            print(f"[MentionTracker] Search error for {role.name}: {e}")
         
         return mention_count
 

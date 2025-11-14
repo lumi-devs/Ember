@@ -130,6 +130,32 @@ async def setup(bot: commands.Bot):
                 f"⚠️ You're already in {target.mention}'s VC.", ephemeral=True
             )
 
+        # --- Check if requester already has pending requests ---
+        async with requests_lock:
+            # Check if requester has any pending requests (as requester OR target)
+            user_pending_requests = [
+                r for r in active_requests 
+                if r["requester"] == requester.id or r["target"] == requester.id
+            ]
+            
+            if user_pending_requests:
+                return await interaction.followup.send(
+                    "❌ You already have a pending request! Please wait for it to complete.",
+                    ephemeral=True
+                )
+            
+            # Check if target already has pending requests (as requester OR target)
+            target_pending_requests = [
+                r for r in active_requests 
+                if r["requester"] == target.id or r["target"] == target.id
+            ]
+            
+            if target_pending_requests:
+                return await interaction.followup.send(
+                    f"❌ {target.mention} already has a pending request! Please wait for it to complete.",
+                    ephemeral=True
+                )
+
         # --- VC limit check (allow up to limit × 2) ---
         target_channel = target.voice.channel
         limit = target_channel.user_limit
@@ -143,7 +169,7 @@ async def setup(bot: commands.Bot):
         request_key = {"requester": requester.id, "target": target.id}
 
         async with requests_lock:
-            # Check for existing requests in both directions
+            # Check for existing requests in both directions (redundant but safe)
             existing_request = next((r for r in active_requests 
                                    if (r["requester"] == requester.id and r["target"] == target.id) or
                                       (r["requester"] == target.id and r["target"] == requester.id)), None)
