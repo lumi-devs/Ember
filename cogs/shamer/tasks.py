@@ -83,21 +83,21 @@ class ShameTasks:
         message_sent = False
         role_message_sent = False
         
-        # Build leaderboard description with mentions
+        # Build leaderboard description with string concatenation
         symbols = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
-        description_lines = []
+        description = ""
         
         for i, user_data in enumerate(leaderboard):
             user_id = user_data['user_id']
             symbol = symbols[i] if i < len(symbols) else "•"
             
-            line = f"{symbol} <@{user_id}>\n**{user_data['points']}** points • {user_data['total_messages']} messages"
-            description_lines.append(line)
+            line = f"{symbol} <@{user_id}>\n**{user_data['points']}** points • {user_data['total_messages']} messages\n\n"
+            description += line
         
         # Create single embed with all mentions in description
         embed = discord.Embed(
             title="🏆 Hall of Shame - Leaderboard Update",
-            description="\n\n".join(description_lines),
+            description=description,
             color=discord.Color.gold(),
             timestamp=discord.utils.utcnow()
         )
