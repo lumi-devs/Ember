@@ -4,8 +4,9 @@ from .database import ShameDatabase
 from .config import ShameConfig
 
 class ShameUtils:
-    def __init__(self, database: ShameDatabase):
+    def __init__(self, database: ShameDatabase, bot):
         self.db = database
+        self.bot = bot  # Add bot instance
     
     async def can_earn_points(self, user: discord.Member) -> bool:
         """Check if user can earn points (not blacklisted)"""
@@ -25,7 +26,7 @@ class ShameUtils:
         )
         
         for i, user_data in enumerate(leaderboard_data, 1):
-            user = self.bot.get_user(user_data['user_id'])
+            user = self.bot.get_user(user_data['user_id'])  # Now this works!
             username = user.mention if user else f"Unknown User ({user_data['user_id']})"
             
             embed.add_field(

@@ -10,7 +10,7 @@ class ShameTasks:
     def __init__(self, bot, database: ShameDatabase):
         self.bot = bot
         self.db = database
-        self.utils = ShameUtils(database)
+        self.utils = ShameUtils(self.db, self.bot)
     
     @tasks.loop(hours=1)
     async def hourly_decay(self):

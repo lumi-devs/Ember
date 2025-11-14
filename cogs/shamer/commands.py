@@ -6,14 +6,17 @@ from .database import ShameDatabase
 from .utils import ShameUtils
 from .config import ShameConfig
 import aiosqlite
+
 class ShameCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.db = ShameDatabase(ShameConfig.DB_PATH)
-        self.utils = ShameUtils(self.db)
+        self.utils = ShameUtils(self.db, self.bot)
     
-    # User commands
-    @app_commands.command(name="shame_rank", description="Check your rank in the shame leaderboard")
+    # Main shame command group
+    shame = app_commands.Group(name="shame", description="Hall of Shame leaderboard commands")
+    
+    @shame.command(name="rank", description="Check your rank in the shame leaderboard")
     async def shame_rank(self, interaction: discord.Interaction):
         user_data = await self.db.get_user(interaction.user.id)
         
@@ -23,17 +26,34 @@ class ShameCommands(commands.Cog):
         
         rank = await self.db.get_user_rank(interaction.user.id)
         
+        # Calculate time until next reroll (4 days from now)
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        next_reroll = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=4)
+        time_until_reroll = next_reroll - now
+        
+        days = time_until_reroll.days
+        hours = time_until_reroll.seconds // 3600
+        
         embed = discord.Embed(
             title="Your Shame Rank",
-            color=discord.Color.blue()
+            color=discord.Color.orange(),
+            timestamp=discord.utils.utcnow()
         )
         embed.add_field(name="Rank", value=f"#{rank}", inline=True)
         embed.add_field(name="Points", value=user_data['points'], inline=True)
         embed.add_field(name="Total Messages", value=user_data['total_messages'], inline=True)
         
+        # Set user avatar as embed thumbnail
+        embed.set_thumbnail(url=interaction.user.display_avatar.url)
+        
+        # Set custom footer
+        embed.set_footer(text=f"You can do better gng, rerolling in {days}d {hours}h")
+        
         await interaction.response.send_message(embed=embed)
-    
-    @app_commands.command(name="shame_top", description="Show top 10 in shame leaderboard")
+        await interaction.response.send_message(embed=embed)
+        
+    @shame.command(name="top", description="Show top 10 in shame leaderboard")
     async def shame_top(self, interaction: discord.Interaction):
         leaderboard = await self.db.get_leaderboard(10)
         
@@ -41,10 +61,41 @@ class ShameCommands(commands.Cog):
             await interaction.response.send_message("No one has any points yet!", ephemeral=True)
             return
         
-        embed = await self.utils.format_leaderboard_embed(leaderboard, "🏆 Top 10 - Hall of Shame")
+        # Calculate tim                 e until next reroll
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        next_reroll = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=4)
+        time_until_reroll = next_reroll - now
+        
+        days = time_until_reroll.days
+        hours = time_until_reroll.seconds // 3600
+        
+        embed = discord.Embed(
+            title="🏆 Hall of Shame - Top 10",
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        # Define symbols for each position
+        symbols = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+        
+        for i, user_data in enumerate(leaderboard):
+            user = self.bot.get_user(user_data['user_id'])
+            username = user.mention if user else f"Unknown User ({user_data['user_id']})"
+            
+            symbol = symbols[i] if i < len(symbols) else "•"
+            
+            embed.add_field(
+                name=f"{symbol} {username}",
+                value=f"**{user_data['points']}** points • {user_data['total_messages']} messages",
+                inline=False
+            )
+        
+        embed.set_footer(text=f"You can do better gng, rerolling in {days}d {hours}h")
+        
         await interaction.response.send_message(embed=embed)
-    
-    @app_commands.command(name="shame_stats", description="Check your detailed shame statistics")
+        
+    @shame.command(name="stats", description="Check your detailed shame statistics")
     async def shame_stats(self, interaction: discord.Interaction):
         user_data = await self.db.get_user(interaction.user.id)
         
@@ -69,11 +120,13 @@ class ShameCommands(commands.Cog):
         embed.add_field(name="Status", value="Blacklisted ❌" if is_blacklisted else "Active ✅", inline=True)
         
         await interaction.response.send_message(embed=embed)
+
+    # Blacklist commands as a subgroup under shame
+    @shame.group(name="blacklist", description="Manage blacklist for shame system")
+    async def shame_blacklist(self, interaction: discord.Interaction):
+        pass  # This is the parent group command
     
-    # Blacklist commands group
-    blacklist_group = app_commands.Group(name="shame_blacklist", description="Manage blacklist for shame system")
-    
-    @blacklist_group.command(name="add", description="Add a user or role to blacklist")
+    @shame_blacklist.command(name="add", description="Add a user or role to blacklist")
     @app_commands.describe(target="User or role to blacklist")
     async def blacklist_add(self, interaction: discord.Interaction, target: Union[discord.Member, discord.Role]):
         # Check admin permissions
@@ -86,7 +139,7 @@ class ShameCommands(commands.Cog):
         await self.db.add_to_blacklist(target.id, entity_type)
         await interaction.response.send_message(f"✅ {entity_type.capitalize()} {target.mention} has been added to blacklist!")
     
-    @blacklist_group.command(name="remove", description="Remove a user or role from blacklist")
+    @shame_blacklist.command(name="remove", description="Remove a user or role from blacklist")
     @app_commands.describe(target="User or role to remove from blacklist")
     async def blacklist_remove(self, interaction: discord.Interaction, target: Union[discord.Member, discord.Role]):
         if not interaction.user.guild_permissions.administrator:
@@ -96,7 +149,7 @@ class ShameCommands(commands.Cog):
         await self.db.remove_from_blacklist(target.id)
         await interaction.response.send_message(f"✅ {target.mention} has been removed from blacklist!")
     
-    @blacklist_group.command(name="list", description="Show all blacklisted users and roles")
+    @shame_blacklist.command(name="list", description="Show all blacklisted users and roles")
     async def blacklist_list(self, interaction: discord.Interaction):
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("You need administrator permissions to use this command!", ephemeral=True)
@@ -128,7 +181,7 @@ class ShameCommands(commands.Cog):
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    @blacklist_group.command(name="clear", description="Clear all blacklisted items")
+    @shame_blacklist.command(name="clear", description="Clear all blacklisted items")
     async def blacklist_clear(self, interaction: discord.Interaction):
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("You need administrator permissions to use this command!", ephemeral=True)
