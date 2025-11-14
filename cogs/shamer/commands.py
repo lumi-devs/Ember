@@ -6,6 +6,8 @@ from .database import ShameDatabase
 from .utils import ShameUtils
 from .config import ShameConfig
 import aiosqlite
+from datetime import datetime, timedelta
+
 
 class ShameCommands(commands.Cog):
     def __init__(self, bot):
@@ -16,6 +18,176 @@ class ShameCommands(commands.Cog):
     # Main shame command group
     shame = app_commands.Group(name="shame", description="Hall of Shame leaderboard commands")
     
+
+    @shame.command(name="send", description="Force send the leaderboard immediately (Admin only)")
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="Full Rotation (Leaderboard + Roles)", value="full"),
+        app_commands.Choice(name="Leaderboard Only", value="leaderboard"),
+        app_commands.Choice(name="Roles Only", value="roles")
+    ])
+    async def shame_send(self, interaction: discord.Interaction, mode: app_commands.Choice[str] = None):
+        """Force send the leaderboard immediately with optional modes"""
+        # Check admin permissions
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("You need administrator permissions to use this command!", ephemeral=True)
+            return
+        
+        # Default to full rotation
+        selected_mode = mode.value if mode else "full"
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            # Get top 5 for leaderboard
+            leaderboard = await self.db.get_leaderboard(5)
+            
+            if not leaderboard:
+                await interaction.followup.send("❌ No users have points yet!", ephemeral=True)
+                return
+            
+            channel = self.bot.get_channel(ShameConfig.LEADERBOARD_CHANNEL_ID)
+            if not channel:
+                await interaction.followup.send("❌ Leaderboard channel not found!", ephemeral=True)
+                return
+            
+            messages_sent = []
+            roles_assigned = False
+            
+            # Send leaderboard if requested
+            if selected_mode in ["full", "leaderboard"]:
+                # Create leaderboard embed
+                embed = discord.Embed(
+                    title="🏆 Hall of Shame - Leaderboard Update",
+                    color=discord.Color.gold(),
+                    timestamp=discord.utils.utcnow()
+                )
+                
+                symbols = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+                
+                for i, user_data in enumerate(leaderboard):
+                    user = self.bot.get_user(user_data['user_id'])
+                    username = user.mention if user else f"Unknown User ({user_data['user_id']})"
+                    
+                    symbol = symbols[i] if i < len(symbols) else "•"
+                    
+                    embed.add_field(
+                        name=f"{symbol} {username}",
+                        value=f"**{user_data['points']}** points • {user_data['total_messages']} messages",
+                        inline=False
+                    )
+                
+                # Calculate next rotation time
+                next_reroll = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=4)
+                time_until_reroll = next_reroll - datetime.now()
+                days = time_until_reroll.days
+                hours = time_until_reroll.seconds // 3600
+                
+                embed.set_footer(text=f"You can do better gng, rerolling in {days}d {hours}h")
+                
+                # Send leaderboard
+                leaderboard_msg = await channel.send(embed=embed)
+                messages_sent.append(f"Leaderboard: [Message {leaderboard_msg.id}]({leaderboard_msg.jump_url})")
+                
+                # Send role announcement if full mode
+                if selected_mode == "full":
+                    top_5_ids = [user['user_id'] for user in leaderboard[:5]]
+                    winners_mentions = [f"<@{user_id}>" for user_id in top_5_ids]
+                    
+                    role_embed = discord.Embed(
+                        title="🎉 New Shamers!",
+                        description=f"Congratulations to {', '.join(winners_mentions)} for earning the shame role!",
+                        color=discord.Color.orange()
+                    )
+                    
+                    role_msg = await channel.send(f"<@&{ShameConfig.SHAME_ROLE_ID}>", embed=role_embed)
+                    messages_sent.append(f"Role Announcement: [Message {role_msg.id}]({role_msg.jump_url})")
+            
+            # Assign roles if requested
+            if selected_mode in ["full", "roles"]:
+                role_assignment_success = True
+                for guild in self.bot.guilds:
+                    top_5_ids = [user['user_id'] for user in leaderboard[:5]]
+                    try:
+                        await self.utils.assign_shame_role(guild, top_5_ids)
+                        roles_assigned = True
+                    except Exception as e:
+                        role_assignment_success = False
+                        print(f"[Shamer] Error assigning roles: {e}")
+            
+            # Update database
+            await self.db.set_system_state('last_leaderboard', datetime.now().isoformat())
+            await self.db.set_system_state('last_leaderboard_sent', datetime.now().isoformat())
+            
+            # Build success message
+            result_message = "✅ **Force Send Complete!**\n"
+            
+            if messages_sent:
+                result_message += f"**Messages Sent:**\n" + "\n".join(messages_sent) + "\n\n"
+            
+            if selected_mode in ["full", "roles"]:
+                if roles_assigned:
+                    result_message += "**Roles:** ✅ Successfully assigned to top 5 users\n"
+                else:
+                    result_message += "**Roles:** ⚠️ Some role assignments may have failed\n"
+            
+            result_message += f"\n**Mode:** {selected_mode.upper()}\n"
+            result_message += f"**Time:** <t:{int(datetime.now().timestamp())}:F>"
+            
+            await interaction.followup.send(result_message, ephemeral=True)
+            
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error force sending leaderboard: {str(e)}", ephemeral=True)
+
+    @shame.command(name="status", description="Check when last leaderboard was sent")
+    async def shame_status(self, interaction: discord.Interaction):
+        """Check if and when the last leaderboard was sent"""
+        last_sent = await self.db.get_system_state('last_leaderboard_sent')
+        last_rotation = await self.db.get_system_state('last_leaderboard')
+        
+        embed = discord.Embed(
+            title="🔄 Shame System Status",
+            color=discord.Color.blue(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        if last_sent:
+            last_sent_dt = datetime.fromisoformat(last_sent)
+            embed.add_field(
+                name="📅 Last Message Sent",
+                value=f"<t:{int(last_sent_dt.timestamp())}:F>\n(<t:{int(last_sent_dt.timestamp())}:R>)",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="📅 Last Message Sent",
+                value="Never",
+                inline=False
+            )
+        
+        if last_rotation:
+            last_rotation_dt = datetime.fromisoformat(last_rotation)
+            embed.add_field(
+                name="🔄 Last Rotation",
+                value=f"<t:{int(last_rotation_dt.timestamp())}:F>\n(<t:{int(last_rotation_dt.timestamp())}:R>)",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="🔄 Last Rotation",
+                value="Never",
+                inline=False
+            )
+        
+        # Calculate next rotation
+        next_reroll = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=4)
+        embed.add_field(
+            name="⏰ Next Rotation",
+            value=f"<t:{int(next_reroll.timestamp())}:F>\n(<t:{int(next_reroll.timestamp())}:R>)",
+            inline=False
+        )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @shame.command(name="rank", description="Check your rank in the shame leaderboard")
     async def shame_rank(self, interaction: discord.Interaction):
         user_data = await self.db.get_user(interaction.user.id)
@@ -48,7 +220,7 @@ class ShameCommands(commands.Cog):
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
         
         # Set custom footer
-        embed.set_footer(text=f"You can do better gng, rerolling in {days}d {hours}h")
+        embed.set_footer(text=f"Top 5 become the next SHAMERS!!, rerolling in {days}d {hours}h")
         
         await interaction.response.send_message(embed=embed)
     
@@ -125,8 +297,7 @@ class ShameCommands(commands.Cog):
         embed.add_field(name="Rank", value=f"#{rank if rank > 0 else 'N/A'}", inline=True)
         embed.add_field(name="Total Points", value=user_data['points'], inline=True)
         embed.add_field(name="Total Messages", value=user_data['total_messages'], inline=True)
-        embed.add_field(name="Hourly Points", value=f"{user_data['hourly_points']}/{ShameConfig.MAX_POINTS_PER_HOUR}", inline=True)
-        embed.add_field(name="Status", value="Blacklisted ❌" if is_blacklisted else "Active ✅", inline=True)
+        embed.add_field(name="Status", value="Blacklisted ❌" if is_blacklisted else "Slayyin! ✅", inline=True)
         
         # Set user avatar as embed thumbnail
         embed.set_thumbnail(url=interaction.user.display_avatar.url)

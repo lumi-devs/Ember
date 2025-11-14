@@ -52,62 +52,99 @@ class ShameTasks:
         """Post leaderboard and assign shame role to top 5"""
         print("[Shamer] Posting leaderboard and assigning roles...")
         
-        # Get top 10 for leaderboard
-        leaderboard = await self.db.get_leaderboard(10)
+        # Check if we already sent a message today
+        last_sent = await self.db.get_system_state('last_leaderboard_sent')
+        if last_sent:
+            last_sent_date = datetime.fromisoformat(last_sent).date()
+            if last_sent_date == datetime.now().date():
+                print("[Shamer] Already sent leaderboard today, skipping...")
+                return
+        
+        # Get top 5 for leaderboard
+        leaderboard = await self.db.get_leaderboard(5)
         
         # Post in leaderboard channel
         channel = self.bot.get_channel(ShameConfig.LEADERBOARD_CHANNEL_ID)
-        if channel:
-            # Create leaderboard embed
-            embed = discord.Embed(
-                title="🏆 Hall of Shame - Leaderboard Update",
-                color=discord.Color.gold(),
-                timestamp=discord.utils.utcnow()
+        if not channel:
+            print("[Shamer] ERROR: Channel not found")
+            return
+        
+        message_sent = False
+        role_message_sent = False
+        
+        # Create leaderboard embed
+        embed = discord.Embed(
+            title="🏆 Hall of Shame - Leaderboard Update",
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow()
+        )
+        
+        symbols = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+        
+        for i, user_data in enumerate(leaderboard):
+            user = self.bot.get_user(user_data['user_id'])
+            username = user.mention if user else f"Unknown User ({user_data['user_id']})"
+            
+            symbol = symbols[i] if i < len(symbols) else "•"
+            
+            embed.add_field(
+                name=f"{symbol} {username}",
+                value=f"**{user_data['points']}** points • {user_data['total_messages']} messages",
+                inline=False
             )
-            
-            symbols = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
-            
-            for i, user_data in enumerate(leaderboard):
-                user = self.bot.get_user(user_data['user_id'])
-                username = user.mention if user else f"Unknown User ({user_data['user_id']})"
-                
-                symbol = symbols[i] if i < len(symbols) else "•"
-                
-                embed.add_field(
-                    name=f"{symbol} {username}",
-                    value=f"**{user_data['points']}** points • {user_data['total_messages']} messages",
-                    inline=False
-                )
-            
-            # Calculate next rotation time
-            next_reroll = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=4)
-            time_until_reroll = next_reroll - datetime.now()
-            days = time_until_reroll.days
-            hours = time_until_reroll.seconds // 3600
-            
-            embed.set_footer(text=f"You can do better gng, rerolling in {days}d {hours}h")
-            
-            await channel.send(embed=embed)
-            
-            # Announce role winners
-            top_5_ids = [user['user_id'] for user in leaderboard[:5]]
-            winners_mentions = [f"<@{user_id}>" for user_id in top_5_ids]
-            
-            role_embed = discord.Embed(
-                title="🎉 New Shame Role Holders!",
-                description=f"Congratulations to {', '.join(winners_mentions)} for earning the shame role!",
-                color=discord.Color.blue()
-            )
-            await channel.send(embed=role_embed)
+        
+        # Calculate next rotation time
+        next_reroll = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=4)
+        time_until_reroll = next_reroll - datetime.now()
+        days = time_until_reroll.days
+        hours = time_until_reroll.seconds // 3600
+        
+        embed.set_footer(text=f"You can do better gng, rerolling in {days}d {hours}h")
+        
+        # Send leaderboard embed
+        try:
+            leaderboard_message = await channel.send(embed=embed)
+            message_sent = True
+            print(f"[Shamer] ✅ Leaderboard sent at {datetime.now()} | Message ID: {leaderboard_message.id}")
+        except Exception as e:
+            print(f"[Shamer] ❌ Failed to send leaderboard: {e}")
+        
+        # Announce role winners
+        top_5_ids = [user['user_id'] for user in leaderboard[:5]]
+        winners_mentions = [f"<@{user_id}>" for user_id in top_5_ids]
+        
+        role_embed = discord.Embed(
+            title="🎉 New Shamers!",
+            description=f"Congratulations to {', '.join(winners_mentions)} for earning the shame role!",
+            color=discord.Color.orange()
+        )
+        
+        # Send role announcement
+        try:
+            role_message = await channel.send(f"<@&{ShameConfig.SHAME_ROLE_ID}>", embed=role_embed)
+            role_message_sent = True
+            print(f"[Shamer] ✅ Role announcement sent at {datetime.now()} | Message ID: {role_message.id}")
+        except Exception as e:
+            print(f"[Shamer] ❌ Failed to send role announcement: {e}")
         
         # Assign roles to top 5
+        role_assignment_success = True
         for guild in self.bot.guilds:
             top_5_ids = [user['user_id'] for user in leaderboard[:5]]
-            await self.utils.assign_shame_role(guild, top_5_ids)
+            try:
+                await self.utils.assign_shame_role(guild, top_5_ids)
+                print(f"[Shamer] ✅ Roles assigned successfully in guild: {guild.name}")
+            except Exception as e:
+                print(f"[Shamer] ❌ Failed to assign roles in guild {guild.name}: {e}")
+                role_assignment_success = False
         
-        # Update last leaderboard time
-        await self.db.set_system_state('last_leaderboard', datetime.now().isoformat())
-        print("[Shamer] Leaderboard rotation completed!")
+        # Update last leaderboard time only if messages were sent
+        if message_sent or role_message_sent:
+            await self.db.set_system_state('last_leaderboard', datetime.now().isoformat())
+            await self.db.set_system_state('last_leaderboard_sent', datetime.now().isoformat())
+            print("[Shamer] ✅ Leaderboard rotation completed successfully!")
+        else:
+            print("[Shamer] ❌ Leaderboard rotation failed - no messages sent!")
     
     def start_tasks(self):
         """Start all background tasks"""
