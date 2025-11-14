@@ -1,17 +1,24 @@
-# Database
-DB_PATH = "data/shame.db"
+import discord
+from typing import Dict, Any
 
-# Points system
-MAX_HOURLY_GAIN = 300  # Max points per hour
-HOURLY_DECAY_PERCENT = 0.10  # 10% decay
-HOURLY_DECAY_MIN = 10  # Minimum 10 points decay
-
-# Rotation settings
-ROTATION_INTERVAL_DAYS = 4  # Rotate every 4 days
-
-# Display settings
-TOP_N_DISPLAY = 10  # Show top 10 in leaderboard
-TOP_N_ROLE = 1437078973220917455  # Role ID for top 5 users
-
-# Channel ID for announcements
-SHAME_CHANNEL_ID = 1437084755291279371
+class ShameConfig:
+    # System Configuration
+    DB_PATH = "data/shame.db"
+    MAX_POINTS_PER_HOUR = 300
+    MAX_DECAY_PER_HOUR = 10
+    DECAY_PERCENTAGE = 0.10
+    
+    # Timing Configuration
+    LEADERBOARD_INTERVAL_DAYS = 4
+    ROLE_ROLL_INTERVAL_DAYS = 4
+    
+    # Channel and Role IDs (Set these in your server)
+    LEADERBOARD_CHANNEL_ID = None  # Set your channel ID
+    SHAME_ROLE_ID = None  # Single role ID for top 5 users
+    
+    # Rotation settings (for compatibility with your rotation code)
+    ROTATION_INTERVAL_DAYS = 4
+    TOP_N_ROLE = None  # This should be the same as SHAME_ROLE_ID
+    SHAME_CHANNEL_ID = None  # This should be the same as LEADERBOARD_CHANNEL_ID
+    
+    # No need for admin roles list - using administrator permission check

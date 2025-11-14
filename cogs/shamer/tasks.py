@@ -1,57 +1,80 @@
-import asyncio
+import discord
 from discord.ext import tasks
 from datetime import datetime, timedelta
+from .database import ShameDatabase
+from .commands import ShameUtils
+from .config import ShameConfig
 import aiosqlite
-from .events import *
 
-class ShamerTasks:
-    def __init__(self, cog):
-        self.cog = cog
-
-    @tasks.loop(minutes=60)
+class ShameTasks:
+    def __init__(self, bot, database: ShameDatabase):
+        self.bot = bot
+        self.db = database
+        self.utils = ShameUtils(database)
+    
+    @tasks.loop(hours=1)
     async def hourly_decay(self):
-        """Apply hourly decay to all scores"""
-        print(f"[Shamer] Applying hourly decay at {datetime.now()}")
+        """Apply hourly point decay to all users"""
+        async with aiosqlite.connect(self.db.db_path) as db:
+            cursor = await db.execute('SELECT user_id, points FROM users')
+            users = await cursor.fetchall()
+            
+            for user_id, points in users:
+                decay_amount = await self.utils.calculate_decay(points)
+                new_points = max(0, points - decay_amount)
+                
+                await self.db.update_user(
+                    user_id, 
+                    points=new_points,
+                    hourly_points=0  # Reset hourly counter
+                )
+    
+    @tasks.loop(hours=24)
+    async def daily_leaderboard_check(self):
+        """Check if it's time to post leaderboard and assign roles"""
+        last_leaderboard = await self.db.get_system_state('last_leaderboard')
         
-        async with self.cog.db_lock:
-            updates = []
-            for user_id, score in list(self.cog.scores.items()):
-                if score == 0:
-                    continue
-                    
-                # Calculate decay (10% or 10 points, whichever is lower)
-                decay_amount = min(abs(score) * HOURLY_DECAY_PERCENT, HOURLY_DECAY_MIN)
-                
-                # Apply decay (push toward zero)
-                if score > 0:
-                    new_score = max(0, score - decay_amount)
-                else:
-                    new_score = min(0, score + decay_amount)
-                
-                if new_score != score:
-                    self.cog.scores[user_id] = round(new_score, 2)
-                    updates.append((new_score, user_id))
+        if last_leaderboard:
+            last_date = datetime.fromisoformat(last_leaderboard)
+            next_leaderboard = last_date + timedelta(days=ShameConfig.LEADERBOARD_INTERVAL_DAYS)
             
-            # Reset hourly gains
-            self.cog.hourly_gain.clear()
+            if datetime.now() >= next_leaderboard:
+                await self.post_leaderboard_and_assign_roles()
+    
+    async def post_leaderboard_and_assign_roles(self):
+        """Post leaderboard and assign shame role to top 5"""
+        # Get top 10 for leaderboard
+        leaderboard = await self.db.get_leaderboard(10)
+        
+        # Post in leaderboard channel
+        channel = self.bot.get_channel(ShameConfig.LEADERBOARD_CHANNEL_ID)
+        if channel:
+            embed = await self.utils.format_leaderboard_embed(
+                leaderboard, 
+                "🏆 Hall of Shame - Top 10"
+            )
+            await channel.send(embed=embed)
             
-            # Save to database
-            if updates:
-                async with aiosqlite.connect(DB_PATH) as db:
-                    await db.executemany(
-                        "UPDATE shame_scores SET score = ?, hourly_gain = 0 WHERE user_id = ?",
-                        updates
-                    )
-                    await db.commit()
+            # Announce role winners
+            top_5_ids = [user['user_id'] for user in leaderboard[:5]]
+            winners_mentions = [f"<@{user_id}>" for user_id in top_5_ids]
             
-            print(f"[Shamer] Decay applied to {len(updates)} users")
-
-    @tasks.loop(minutes=5)
-    async def rotation_check(self):
-        """Check if it's time for rotation"""
-        if not self.cog.next_rotation:
-            return
-            
-        now = datetime.now().astimezone()
-        if now >= self.cog.next_rotation:
-            await self.cog.do_rotation()
+            role_embed = discord.Embed(
+                title="🎉 New Shame Role Holders!",
+                description=f"Congratulations to {', '.join(winners_mentions)} for earning the shame role!",
+                color=discord.Color.blue()
+            )
+            await channel.send(embed=role_embed)
+        
+        # Assign roles
+        for guild in self.bot.guilds:
+            top_5_ids = [user['user_id'] for user in leaderboard[:5]]
+            await self.utils.assign_shame_role(guild, top_5_ids)
+        
+        # Update last leaderboard time
+        await self.db.set_system_state('last_leaderboard', datetime.now().isoformat())
+    
+    def start_tasks(self):
+        """Start all background tasks"""
+        self.hourly_decay.start()
+        self.daily_leaderboard_check.start()
