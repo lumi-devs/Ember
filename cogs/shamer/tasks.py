@@ -83,25 +83,24 @@ class ShameTasks:
         message_sent = False
         role_message_sent = False
         
-        # Create leaderboard embed
-        embed = discord.Embed(
-            title="🏆 Hall of Shame - Leaderboard Update",
-            color=discord.Color.gold(),
-            timestamp=discord.utils.utcnow()
-        )
-        
+        # Build leaderboard description with mentions
         symbols = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+        description_lines = []
         
         for i, user_data in enumerate(leaderboard):
             user_id = user_data['user_id']
-            
             symbol = symbols[i] if i < len(symbols) else "•"
             
-            embed.add_field(
-                name=f"{symbol} <@{user_id}>",
-                value=f"**{user_data['points']}** points • {user_data['total_messages']} messages",
-                inline=False
-            )
+            line = f"{symbol} <@{user_id}>\n**{user_data['points']}** points • {user_data['total_messages']} messages"
+            description_lines.append(line)
+        
+        # Create single embed with all mentions in description
+        embed = discord.Embed(
+            title="🏆 Hall of Shame - Leaderboard Update",
+            description="\n\n".join(description_lines),
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow()
+        )
         
         # Calculate next rotation time
         next_reroll = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=4)
@@ -119,7 +118,7 @@ class ShameTasks:
         except Exception as e:
             print(f"[Shamer] ❌ Failed to send leaderboard: {e}")
         
-        # Announce role winners - FIXED: Use direct mention syntax
+        # Announce role winners
         top_5_ids = [user['user_id'] for user in leaderboard[:5]]
         winners_mentions = [f"<@{user_id}>" for user_id in top_5_ids]
         
@@ -155,7 +154,8 @@ class ShameTasks:
             print("[Shamer] ✅ Leaderboard rotation completed successfully!")
         else:
             print("[Shamer] ❌ Leaderboard rotation failed - no messages sent!")
-    
+
+
     def start_tasks(self):
         """Start all background tasks"""
         self.hourly_decay.start()
