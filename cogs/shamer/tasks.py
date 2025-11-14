@@ -33,7 +33,7 @@ class ShameTasks:
                         await self.db.update_user(
                             user_id, 
                             points=new_points,
-                            hourly_points=0
+                            hourly_points=0  # Reset hourly counter
                         )
                         print(f"[Shamer] Decayed {decay_amount} points from user {user_id}")
             
@@ -67,8 +67,12 @@ class ShameTasks:
                 print("[Shamer] Already sent leaderboard today, skipping...")
                 return
         
-        # Get top 5 for leaderboard
+        # Get top 5 for leaderboard (only users with points > 0)
         leaderboard = await self.db.get_leaderboard(5)
+        
+        if not leaderboard:
+            print("[Shamer] No users with points found for leaderboard")
+            return
         
         # Post in leaderboard channel
         channel = self.bot.get_channel(ShameConfig.LEADERBOARD_CHANNEL_ID)
@@ -116,7 +120,7 @@ class ShameTasks:
         except Exception as e:
             print(f"[Shamer] ❌ Failed to send leaderboard: {e}")
         
-        # Announce role winners
+        # Announce role winners - FIXED: Use direct mention syntax
         top_5_ids = [user['user_id'] for user in leaderboard[:5]]
         winners_mentions = [f"<@{user_id}>" for user_id in top_5_ids]
         

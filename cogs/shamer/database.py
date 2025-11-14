@@ -87,7 +87,7 @@ class ShameDatabase:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
-                'SELECT * FROM users ORDER BY points DESC LIMIT ?',
+                'SELECT * FROM users WHERE points > 0 ORDER BY points DESC LIMIT ?',
                 (limit,)
             )
             rows = await cursor.fetchall()
