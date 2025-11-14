@@ -88,7 +88,7 @@ class ShameTasks:
             symbol = symbols[i] if i < len(symbols) else "•"
             
             embed.add_field(
-                name=f"{symbol} {username}",
+                name=f"{symbol} {user.mention}",
                 value=f"**{user_data['points']}** points • {user_data['total_messages']} messages",
                 inline=False
             )
