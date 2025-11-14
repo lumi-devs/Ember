@@ -6,6 +6,7 @@ from discord.ext import commands, tasks
 from discord import app_commands, Embed, Color
 from datetime import datetime, timedelta
 from typing import Dict, Set
+from .tasks import *
 
 class Shamer(commands.Cog):
     """Hall of Shame system with points, decay, and role rotations"""
