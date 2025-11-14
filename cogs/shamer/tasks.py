@@ -93,13 +93,12 @@ class ShameTasks:
         symbols = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
         
         for i, user_data in enumerate(leaderboard):
-            user = self.bot.get_user(user_data['user_id'])
-            username = user.mention if user else f"<@{user_data['user_id']}>"
+            user_id = user_data['user_id']
             
             symbol = symbols[i] if i < len(symbols) else "•"
             
             embed.add_field(
-                name=f"{symbol} {username}",
+                name=f"{symbol} <@{user_id}>",
                 value=f"**{user_data['points']}** points • {user_data['total_messages']} messages",
                 inline=False
             )
