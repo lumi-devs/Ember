@@ -13,7 +13,7 @@ class ShameSystem(commands.Cog):
         self.db = ShameDatabase(ShameConfig.DB_PATH)
         self.tasks = ShameTasks(bot, self.db)
         self.utils = self.tasks.utils  # Access utils from tasks
-        self.message_cooldown = CooldownMapping.from_cooldown(1, 2, BucketType.user)
+        self.message_cooldown = CooldownMapping.from_cooldown(1, 1, BucketType.user)
         self._blacklist_cache = {}
         self._cache_timeout = 300
     
