@@ -286,7 +286,7 @@ class ShameCommands(commands.Cog):
                 
                 for i, user_data in enumerate(leaderboard):
                     user = self.bot.get_user(user_data['user_id'])
-                    username = user.mention if user else f"Unknown User ({user_data['user_id']})"
+                    username = user.display_name if user else f"Unknown User ({user_data['user_id']})"
                     
                     symbol = symbols[i] if i < len(symbols) else "•"
                     
