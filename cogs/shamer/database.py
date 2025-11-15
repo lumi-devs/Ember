@@ -213,6 +213,27 @@ class ShameDatabase:
                 await db.commit()
         except Exception as e:
             print(f"[ShameDatabase] Error in set_system_state: {e}")
+
+    async def hard_reset(self, reset_type: str):
+        """Perform hard reset operations"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                if reset_type == "full":
+                    await db.execute('DELETE FROM users')
+                    await db.execute('DELETE FROM blacklist')
+                    await db.execute('DELETE FROM system_state')
+                    await db.execute('DELETE FROM leaderboard_history')
+                elif reset_type == "points":
+                    await db.execute('UPDATE users SET points = 0, hourly_points = 0')
+                    await db.execute('DELETE FROM system_state WHERE key IN ("last_leaderboard", "last_leaderboard_sent")')
+                else:  # leaderboard
+                    await db.execute('DELETE FROM system_state WHERE key IN ("last_leaderboard", "last_leaderboard_sent")')
+                
+                await db.commit()
+                return True
+        except Exception as e:
+            print(f"[ShameDatabase] Error in hard_reset: {e}")
+            return False
     
     async def get_system_state(self, key: str) -> Optional[str]:
         try:

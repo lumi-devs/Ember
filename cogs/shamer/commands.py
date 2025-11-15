@@ -9,6 +9,100 @@ import aiosqlite
 from datetime import datetime, timedelta
 
 
+
+class ConfirmResetView(discord.ui.View):
+    def __init__(self, db, reset_type, requester):
+        super().__init__(timeout=60)
+        self.db = db
+        self.reset_type = reset_type
+        self.requester = requester
+
+    @discord.ui.button(label="🚨 CONFIRM RESET", style=discord.ButtonStyle.danger)
+    async def confirm_reset(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Double check it's the same user who initiated
+        if interaction.user.id != self.requester.id:
+            await interaction.response.send_message("❌ Only the user who started the reset can confirm it!", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            async with aiosqlite.connect(self.db.db_path) as db:
+                if self.reset_type == "full":
+                    # FULL RESET - Delete everything
+                    await db.execute('DELETE FROM users')
+                    await db.execute('DELETE FROM blacklist')
+                    await db.execute('DELETE FROM system_state')
+                    await db.execute('DELETE FROM leaderboard_history')
+                    
+                    result_message = "✅ **FULL RESET COMPLETE**\n• All user data deleted\n• Blacklist cleared\n• System state reset\n• Fresh start!"
+
+                elif self.reset_type == "points":
+                    # POINTS RESET - Keep users, zero points
+                    await db.execute('UPDATE users SET points = 0, hourly_points = 0')
+                    await db.execute('DELETE FROM system_state WHERE key IN ("last_leaderboard", "last_leaderboard_sent")')
+                    
+                    # Get affected user count
+                    cursor = await db.execute('SELECT COUNT(*) FROM users')
+                    user_count = (await cursor.fetchone())[0]
+                    
+                    result_message = f"✅ **POINTS RESET COMPLETE**\n• Zeroed points for {user_count} users\n• Preserved message counts\n• Ready for new season!"
+
+                else:  # leaderboard reset
+                    # LEADERBOARD RESET - Just reset timers
+                    await db.execute('DELETE FROM system_state WHERE key IN ("last_leaderboard", "last_leaderboard_sent")')
+                    
+                    result_message = "✅ **LEADERBOARD RESET COMPLETE**\n• Rotation timers reset\n• Next message will trigger new leaderboard\n• User data preserved!"
+
+                await db.commit()
+
+            # Create success embed
+            success_embed = discord.Embed(
+                title="✅ Reset Successful",
+                description=result_message,
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            
+            success_embed.add_field(
+                name="👤 Requested By",
+                value=self.requester.mention,
+                inline=True
+            )
+            
+            success_embed.add_field(
+                name="🕒 Reset Time", 
+                value=f"<t:{int(discord.utils.utcnow().timestamp())}:F>",
+                inline=True
+            )
+
+            # Remove the buttons after confirmation
+            await interaction.edit_original_response(embed=success_embed, view=None)
+
+            print(f"[ShameSystem] 🚨 HARD RESET performed by {self.requester} - Type: {self.reset_type}")
+
+        except Exception as e:
+            error_embed = discord.Embed(
+                title="❌ Reset Failed",
+                description=f"An error occurred during the reset:\n```{str(e)}```",
+                color=discord.Color.red()
+            )
+            await interaction.edit_original_response(embed=error_embed, view=None)
+
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_reset(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.requester.id:
+            await interaction.response.send_message("❌ Only the user who started the reset can cancel it!", ephemeral=True)
+            return
+
+        cancel_embed = discord.Embed(
+            title="✅ Reset Cancelled",
+            description="The hard reset operation has been cancelled.",
+            color=discord.Color.orange()
+        )
+        
+        await interaction.response.edit_message(embed=cancel_embed, view=None)
+
 class ShameCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -399,6 +493,94 @@ class ShameCommands(commands.Cog):
         except Exception as e:
             await interaction.response.send_message(f"❌ Error showing leaderboard: {str(e)}", ephemeral=True)
     
+
+    @shame.command(name="hard_reset", description="🚨 COMPLETELY reset leaderboard and all user data (Admin only)")
+    @app_commands.choices(reset_type=[
+        app_commands.Choice(name="Full Reset - All user data + blacklist", value="full"),
+        app_commands.Choice(name="Points Only - Keep users, reset points", value="points"),
+        app_commands.Choice(name="Leaderboard Only - Reset rotation timers", value="leaderboard"),
+    ])
+    async def shame_hard_reset(self, interaction: discord.Interaction, reset_type: app_commands.Choice[str]):
+        """🚨 COMPLETELY reset the leaderboard system"""
+        try:
+            # Check admin permissions
+            if not interaction.user.guild_permissions.administrator:
+                await interaction.response.send_message(
+                    "❌ You need administrator permissions to use this command!", 
+                    ephemeral=True
+                )
+                return
+
+            # Send confirmation modal/button for dangerous operation
+            embed = discord.Embed(
+                title="🚨 HARD RESET CONFIRMATION",
+                description=(
+                    f"**You are about to perform a {reset_type.name.upper()} RESET**\n\n"
+                    f"⚠️ **THIS ACTION IS IRREVERSIBLE!** ⚠️\n\n"
+                ),
+                color=discord.Color.red()
+            )
+
+            # Add consequences based on reset type
+            if reset_type.value == "full":
+                embed.add_field(
+                    name="🗑️ What will be deleted:",
+                    value=(
+                        "• All user points and statistics\n"
+                        "• All user message counts\n" 
+                        "• Entire blacklist\n"
+                        "• All system timestamps\n"
+                        "• EVERYTHING - Fresh start"
+                    ),
+                    inline=False
+                )
+            elif reset_type.value == "points":
+                embed.add_field(
+                    name="🔄 What will be reset:",
+                    value=(
+                        "• All user points set to 0\n"
+                        "• Hourly points reset to 0\n"
+                        "• Message counts preserved\n"
+                        "• Blacklist preserved\n"
+                        "• Users remain in database"
+                    ),
+                    inline=False
+                )
+            else:  # leaderboard
+                embed.add_field(
+                    name="⏰ What will be reset:",
+                    value=(
+                        "• Leaderboard rotation timers\n"
+                        "• Last sent timestamps\n"
+                        "• User data preserved\n"
+                        "• Blacklist preserved\n"
+                        "• Forces immediate new rotation"
+                    ),
+                    inline=False
+                )
+
+            embed.add_field(
+                name="🔐 Confirmation Required:",
+                value=f"Click **CONFIRM RESET** below to proceed.\nThis action will affect **{len(await self.db.get_leaderboard(10000))}** users.",
+                inline=False
+            )
+
+            embed.set_footer(text="This cannot be undone!")
+
+            # Create confirmation view
+            view = ConfirmResetView(self.db, reset_type.value, interaction.user)
+
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+        except Exception as e:
+            await interaction.response.send_message(
+                f"❌ Error preparing reset: {str(e)}", 
+                ephemeral=True
+            )
+
+    # Confirmation view for the reset
+
+
     @shame.command(name="stats", description="Check your detailed shame statistics")
     async def shame_stats(self, interaction: discord.Interaction):
         try:
