@@ -253,11 +253,11 @@ class TempVoice(commands.Cog):
     async def _send_panel(self, channel, owner_id):
         try:
             embed = discord.Embed(
-                title="🎯 Voice Channel Controls", description=( "**Use the buttons below to manage your voice channel:**\n\n" "**🔒 Access Controls:**\n" "• Lock/Unlock - Control who can join\n" "• Hide/Unhide - Control visibility\n" "**👥 Member Management:**\n" "• Trust users - Allow specific users to join\n" "• Ban users - Block specific users\n" "• Kick users - Remove from VC\n\n" "**🔄 Advanced:**\n" "• Reset - Reset all settings\n" "• Transfer - Give ownership to someone else" ),
+                title="🎯 Voice Channel Controls", description=( "**Use the buttons below to manage your voice channel:**\n" "**Use `/panel` to access these controls anytime**\n\n" "**🔒 Access Controls:**\n" "• Lock/Unlock - Control who can join\n" "• Hide/Unhide - Control visibility\n" "**👥 Member Management:**\n" "• Trust users - Allow specific users to join\n" "• Ban users - Block specific users\n" "• Kick users - Remove from VC\n\n" "**🔄 Advanced:**\n" "• Reset - Reset all settings\n" "• Transfer - Give ownership to someone else" ),
             
                 color=discord.Color.orange()
             )
-            embed.set_footer(text="Use `/panel` to access these controls anytime")
+            embed.set_footer(text="Only the VC owner can use these controls")
             await channel.send(embed=embed, view=BasicControlsView(self, channel.id, owner_id))
         except Exception:
             pass

@@ -383,7 +383,7 @@ class ShameCommands(commands.Cog):
             
             for i, user_data in enumerate(leaderboard):
                 user = self.bot.get_user(user_data['user_id'])
-                username = user.mention if user else f"Unknown User ({user_data['user_id']})"
+                username = user.display_name if user else f"Unknown User ({user_data['user_id']})"
                 
                 symbol = symbols[i] if i < len(symbols) else "•"
                 
@@ -430,7 +430,6 @@ class ShameCommands(commands.Cog):
             embed.add_field(name="Rank", value=f"#{rank if rank > 0 else 'N/A'}", inline=True)
             embed.add_field(name="Total Points", value=user_data['points'], inline=True)
             embed.add_field(name="Total Messages", value=user_data['total_messages'], inline=True)
-            embed.add_field(name="Hourly Points", value=f"{user_data['hourly_points']}/{ShameConfig.MAX_POINTS_PER_HOUR}", inline=True)
             embed.add_field(name="Status", value="Blacklisted ❌" if is_blacklisted else "Slayyin! ✅", inline=True)
             
             # Set user avatar as embed thumbnail

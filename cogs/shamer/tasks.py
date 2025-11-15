@@ -111,9 +111,11 @@ class ShameTasks:
             
             for i, user_data in enumerate(leaderboard):
                 user_id = user_data['user_id']
+                user=self.bot.get_user(user_id)
+                username = user.display_name if user else f"Unknown User ({user_id})"
                 symbol = symbols[i] if i < len(symbols) else "•"
                 
-                line = f"{symbol} <@{user_id}>\n**{user_data['points']}** points • {user_data['total_messages']} messages\n\n"
+                line = f"{symbol} {username}\n**{user_data['points']}** points • {user_data['total_messages']} messages\n\n"
                 description += line
             
             # Create single embed with all mentions in description
