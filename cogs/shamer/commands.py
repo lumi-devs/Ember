@@ -48,6 +48,27 @@ class ConfirmResetView(discord.ui.View):
                     
                     result_message = f"✅ **POINTS RESET COMPLETE**\n• Zeroed points for {user_count} users\n• Preserved message counts\n• Ready for new season!"
 
+                elif self.reset_type == "messages":
+                    # MESSAGES RESET - Keep users, zero message counts
+                    await db.execute('UPDATE users SET total_messages = 0')
+                    
+                    # Get affected user count
+                    cursor = await db.execute('SELECT COUNT(*) FROM users WHERE total_messages > 0')
+                    user_count = (await cursor.fetchone())[0]
+                    
+                    result_message = f"✅ **MESSAGES RESET COMPLETE**\n• Zeroed message counts for {user_count} users\n• Points preserved\n• Message tracking restarted!"
+
+                elif self.reset_type == "points_messages":
+                    # POINTS & MESSAGES RESET - Keep users, zero both
+                    await db.execute('UPDATE users SET points = 0, hourly_points = 0, total_messages = 0')
+                    await db.execute('DELETE FROM system_state WHERE key IN ("last_leaderboard", "last_leaderboard_sent")')
+                    
+                    # Get affected user count
+                    cursor = await db.execute('SELECT COUNT(*) FROM users')
+                    user_count = (await cursor.fetchone())[0]
+                    
+                    result_message = f"✅ **POINTS & MESSAGES RESET COMPLETE**\n• Zeroed points & messages for {user_count} users\n• Complete fresh start!\n• Ready for new season!"
+
                 else:  # leaderboard reset
                     # LEADERBOARD RESET - Just reset timers
                     await db.execute('DELETE FROM system_state WHERE key IN ("last_leaderboard", "last_leaderboard_sent")')
@@ -102,7 +123,6 @@ class ConfirmResetView(discord.ui.View):
         )
         
         await interaction.response.edit_message(embed=cancel_embed, view=None)
-
 class ShameCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -498,6 +518,8 @@ class ShameCommands(commands.Cog):
     @app_commands.choices(reset_type=[
         app_commands.Choice(name="Full Reset - All user data + blacklist", value="full"),
         app_commands.Choice(name="Points Only - Keep users, reset points", value="points"),
+        app_commands.Choice(name="Messages Only - Reset message counts", value="messages"),
+        app_commands.Choice(name="Points & Messages - Reset both", value="points_messages"),
         app_commands.Choice(name="Leaderboard Only - Reset rotation timers", value="leaderboard"),
     ])
     async def shame_hard_reset(self, interaction: discord.Interaction, reset_type: app_commands.Choice[str]):
@@ -546,6 +568,30 @@ class ShameCommands(commands.Cog):
                     ),
                     inline=False
                 )
+            elif reset_type.value == "messages":
+                embed.add_field(
+                    name="📊 What will be reset:",
+                    value=(
+                        "• All user message counts set to 0\n"
+                        "• Points preserved\n"
+                        "• Hourly points preserved\n"
+                        "• Blacklist preserved\n"
+                        "• Users remain in database"
+                    ),
+                    inline=False
+                )
+            elif reset_type.value == "points_messages":
+                embed.add_field(
+                    name="🔄📊 What will be reset:",
+                    value=(
+                        "• All user points set to 0\n"
+                        "• All user message counts set to 0\n"
+                        "• Hourly points reset to 0\n"
+                        "• Blacklist preserved\n"
+                        "• Users remain in database"
+                    ),
+                    inline=False
+                )
             else:  # leaderboard
                 embed.add_field(
                     name="⏰ What will be reset:",
@@ -577,8 +623,6 @@ class ShameCommands(commands.Cog):
                 f"❌ Error preparing reset: {str(e)}", 
                 ephemeral=True
             )
-
-    # Confirmation view for the reset
 
 
     @shame.command(name="stats", description="Check your detailed shame statistics")

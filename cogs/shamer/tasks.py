@@ -56,10 +56,10 @@ class ShameTasks:
     
     @tasks.loop(hours=24)
     async def daily_leaderboard_check(self):
-        """Check if it's time to post leaderboard and assign roles"""
+        """Check if it's time to post leaderboard, assign roles, and reset points"""
         try:
             await self.bot.wait_until_ready()
-            print("[Shamer] Checking for leaderboard rotation...")
+            print("[Shamer] Checking for leaderboard rotation and point reset...")
             
             last_leaderboard = await self.db.get_system_state('last_leaderboard')
             
@@ -69,12 +69,53 @@ class ShameTasks:
                 
                 if datetime.now() >= next_leaderboard:
                     await self.post_leaderboard_and_assign_roles()
+                    await self.hard_reset_all_stats()  # ADDED: Reset points AND message counts
             else:
                 # First time running, set initial state
                 await self.db.set_system_state('last_leaderboard', datetime.now().isoformat())
                 
         except Exception as e:
             print(f"[Shamer] Critical error in daily_leaderboard_check: {e}")
+    
+    async def hard_reset_all_stats(self):
+        """Reset all user points AND message counts to 0 (keeps users in database)"""
+        try:
+            print("[Shamer] 🚨 Performing 4-day hard reset of ALL stats...")
+            
+            # Get user count before reset for logging
+            users_before = await self.db.get_leaderboard(10000)
+            user_count = len(users_before)
+            
+            if user_count == 0:
+                print("[Shamer] No users to reset")
+                return
+            
+            # Reset ALL stats to 0 but keep users in database
+            async with aiosqlite.connect(self.db.db_path) as db:
+                await db.execute('UPDATE users SET points = 0, hourly_points = 0, total_messages = 0')
+                await db.commit()
+            
+            print(f"[Shamer] ✅ Hard reset completed: {user_count} users reset to 0 points & 0 messages")
+            
+            # Log the reset in leaderboard channel
+            channel = self.bot.get_channel(ShameConfig.LEADERBOARD_CHANNEL_ID)
+            if channel:
+                reset_embed = discord.Embed(
+                    title="🔄 Statistics Reset",
+                    description=f"All user points and message counts have been reset to zero!\n**{user_count}** users affected.",
+                    color=discord.Color.orange(),
+                    timestamp=discord.utils.utcnow()
+                )
+                reset_embed.set_footer(text="Fresh start for the new rotation!")
+                
+                try:
+                    await channel.send(embed=reset_embed)
+                    print("[Shamer] ✅ Reset announcement sent")
+                except Exception as e:
+                    print(f"[Shamer] ❌ Failed to send reset announcement: {e}")
+                    
+        except Exception as e:
+            print(f"[Shamer] ❌ Error in hard_reset_all_stats: {e}")
     
     async def post_leaderboard_and_assign_roles(self):
         """Post leaderboard and assign shame role to top 5"""
