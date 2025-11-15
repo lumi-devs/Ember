@@ -115,7 +115,7 @@ class ShameTasks:
                 username = user.display_name if user else f"Unknown User ({user_id})"
                 symbol = symbols[i] if i < len(symbols) else "•"
                 
-                line = f"{symbol} {username}\n**{user_data['points']}** points • {user_data['total_messages']} messages\n\n"
+                line = f"{symbol} {username} **{user_data['points']}** points\n\n"
                 description += line
             
             # Create single embed with all mentions in description
