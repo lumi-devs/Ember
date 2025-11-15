@@ -1,5 +1,5 @@
 import discord
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 class ShameConfig:
     # System Configuration
@@ -13,12 +13,23 @@ class ShameConfig:
     ROLE_ROLL_INTERVAL_DAYS = 4
     
     # Channel and Role IDs (Set these in your server)
-    LEADERBOARD_CHANNEL_ID = 1437084755291279371  # Set your channel ID
-    SHAME_ROLE_ID = 1437078973220917455  # Single role ID for top 5 users
+    LEADERBOARD_CHANNEL_ID = 1437084755291279371
+    SHAME_ROLE_ID = 1437078973220917455
     
-    # Rotation settings (for compatibility with your rotation code)
+    # Hardcoded Blacklists - ADD THESE
+    BLACKLISTED_CATEGORY_IDS = [
+        1393171103966560307,  # Replace with your category IDs
+        1400567851664015491,
+        1393171104750764104
+    ]
+    
+    BLACKLISTED_CHANNEL_IDS = [
+    ]
+    
+    # Optional: Whitelist mode (if you want to only track specific channels)
+    # WHITELISTED_CHANNEL_IDS = []  # Empty = track all non-blacklisted
+    
+    # Rotation settings
     ROTATION_INTERVAL_DAYS = 4
-    TOP_N_ROLE = 1437084755291279371  # This should be the same as SHAME_ROLE_ID
-    SHAME_CHANNEL_ID = 1437084755291279371  # This should be the same as LEADERBOARD_CHANNEL_ID
-    
-    # No need for admin roles list - using administrator permission check
+    TOP_N_ROLE = 1437084755291279371
+    SHAME_CHANNEL_ID = 1437084755291279371

@@ -3,6 +3,7 @@ from discord.ext import commands, tasks
 import asyncio
 import aiosqlite
 import time
+from discord import app_commands
 import traceback
 from collections import deque
 from .config import JOIN_CHANNELS, DB_PATH
@@ -253,12 +254,77 @@ class TempVoice(commands.Cog):
         try:
             embed = discord.Embed(
                 title="🎯 Voice Channel Controls", description=( "**Use the buttons below to manage your voice channel:**\n\n" "**🔒 Access Controls:**\n" "• Lock/Unlock - Control who can join\n" "• Hide/Unhide - Control visibility\n" "**👥 Member Management:**\n" "• Trust users - Allow specific users to join\n" "• Ban users - Block specific users\n" "• Kick users - Remove from VC\n\n" "**🔄 Advanced:**\n" "• Reset - Reset all settings\n" "• Transfer - Give ownership to someone else" ),
+            
                 color=discord.Color.orange()
             )
-            embed.set_footer(text="Only the VC owner can use these controls")
+            embed.set_footer(text="Use `/panel` to access these controls anytime")
             await channel.send(embed=embed, view=BasicControlsView(self, channel.id, owner_id))
         except Exception:
             pass
+
+
+    @app_commands.command(name="panel", description="Open your voice channel control panel")
+    @app_commands.guild_only()
+    async def panel(self, interaction: discord.Interaction):
+        """Send the control panel interface to the user"""
+        
+        # Check if user is in a voice channel
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            await interaction.response.send_message(
+                "❌ You must be in a voice channel to use this command!", 
+                ephemeral=True
+            )
+            return
+        
+        voice_channel = interaction.user.voice.channel
+        
+        # Check if user is the owner of this voice channel
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT userID FROM voiceChannel WHERE voiceID = ?", 
+                (voice_channel.id,)
+            ) as cursor:
+                data = await cursor.fetchone()
+        
+        if not data:
+            await interaction.response.send_message(
+                "❌ This voice channel is not managed by the bot or doesn't exist in our database!", 
+                ephemeral=True
+            )
+            return
+        
+        owner_id = data[0]
+        
+        if interaction.user.id != owner_id:
+            await interaction.response.send_message(
+                "❌ You are not the owner of this voice channel!", 
+                ephemeral=True
+            )
+            return
+        
+        # All conditions met - send the exact same interface as _send_panel
+        embed = discord.Embed(
+            title="🎯 Voice Channel Controls", 
+            description=(
+                "**Use the buttons below to manage your voice channel:**\n\n"
+                "**🔒 Access Controls:**\n"
+                "• Lock/Unlock - Control who can join\n"
+                "• Hide/Unhide - Control visibility\n"
+                "**👥 Member Management:**\n"
+                "• Trust users - Allow specific users to join\n"
+                "• Ban users - Block specific users\n"
+                "• Kick users - Remove from VC\n\n"
+                "**🔄 Advanced:**\n"
+                "• Reset - Reset all settings\n"
+                "• Transfer - Give ownership to someone else"
+            ),
+            color=discord.Color.orange()
+        )
+        embed.set_footer(text="Only the VC owner can use these controls")
+        
+        view = BasicControlsView(self, voice_channel.id, owner_id)
+        
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 async def setup(bot):
