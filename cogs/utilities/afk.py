@@ -82,15 +82,25 @@ class AFK(commands.Cog):
         """Initialize database and start worker queues."""
         self.db = await aiosqlite.connect(self.db_path)
         
-        # Create optimized table with indexes
-        await self.db.execute("""
-            CREATE TABLE IF NOT EXISTS afk (
-                user_id TEXT PRIMARY KEY,
-                reason TEXT,
-                since TEXT,
-                guild_id TEXT
-            )
-        """)
+        # First, check if the table exists and has the guild_id column
+        table_info = await self.db.execute("PRAGMA table_info(afk)")
+        columns = await table_info.fetchall()
+        column_names = [col[1] for col in columns] if columns else []
+        
+        # Create table if it doesn't exist or alter if guild_id is missing
+        if not columns:
+            # Table doesn't exist, create with full schema
+            await self.db.execute("""
+                CREATE TABLE afk (
+                    user_id TEXT PRIMARY KEY,
+                    reason TEXT,
+                    since TEXT,
+                    guild_id TEXT
+                )
+            """)
+        elif 'guild_id' not in column_names:
+            # Table exists but missing guild_id column, alter it
+            await self.db.execute("ALTER TABLE afk ADD COLUMN guild_id TEXT")
         
         # Create indexes for faster queries
         await self.db.execute("CREATE INDEX IF NOT EXISTS idx_afk_user_id ON afk(user_id)")
@@ -107,6 +117,7 @@ class AFK(commands.Cog):
         
         self.ready_event.set()
         print("[AFK] System initialized with worker queues and indexes.")
+
 
     async def start_workers(self):
         """Start worker pools for different queue types."""
