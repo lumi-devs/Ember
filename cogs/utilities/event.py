@@ -8,7 +8,7 @@ class SubmitCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.data_file = "submissions.json"
-        self.submission_channel_id = 1439696653878820864
+        self.submission_channel_id = 1439696653878820864  # Set this to your secret channel ID
         self.load_data()
     
     def load_data(self):
@@ -87,7 +87,8 @@ class SubmitCog(commands.Cog):
                     "Q1": self.answer1.value,
                     "Q2": self.answer2.value,
                     "Q3": self.answer3.value,
-                    "Q4": self.answer4.value
+                    "Q4": self.answer4.value,
+                    "Q5": self.answer5.value
                 }
             }
             
@@ -130,18 +131,37 @@ class SubmitCog(commands.Cog):
                 
                 await channel.send(embed=embed)
     
-    @app_commands.command(name="submit_entry", description="Submit your event entry")
-    async def submit_entry(self, interaction: discord.Interaction):
-        """Submit command that opens a modal for event submission"""
+    class SubmissionView(discord.ui.View):
+        def __init__(self, cog):
+            super().__init__(timeout=None)  # Persistent view
+            self.cog = cog
         
-        # Check if user has already submitted
-        if str(interaction.user.id) in self.submissions["user_ids"]:
-            await interaction.response.send_message("You have already submitted an entry!", ephemeral=True)
-            return
+        @discord.ui.button(label="Submit Entry", style=discord.ButtonStyle.primary, emoji="📝", custom_id="submit_entry_button")
+        async def submit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            # Check if user has already submitted
+            if str(interaction.user.id) in self.cog.submissions["user_ids"]:
+                await interaction.response.send_message("You have already submitted an entry!", ephemeral=True)
+                return
+            
+            # Open the modal
+            modal = self.cog.SubmissionModal(self.cog)
+            await interaction.response.send_modal(modal)
+    
+    @commands.command(name="send")
+    @commands.has_permissions(administrator=True)
+    async def send_submission_message(self, ctx):
+        """Admin command to send the submission message with button"""
+        embed = discord.Embed(
+            title="Event Submissions",
+            description="Click the button below to submit your anonymous entry for the event!",
+            color=0xFFA500  # Orange color
+        )
         
-        # Open the modal
-        modal = self.SubmissionModal(self)
-        await interaction.response.send_modal(modal)
+        view = self.SubmissionView(self)
+        await ctx.send(embed=embed, view=view)
+        
+        # Confirm to admin
+        await ctx.send("✅ Submission message sent successfully!", delete_after=5)
 
 async def setup(bot):
     await bot.add_cog(SubmitCog(bot))
