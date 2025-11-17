@@ -1,10 +1,9 @@
 import discord
 from discord.ext import commands
 import aiosqlite
-import asyncio
 from datetime import datetime, timezone
-from collections import deque
 import os
+import asyncio
 
 AFK_SET_COLOR = discord.Color.orange()
 AFK_REMOVED_COLOR = discord.Color.gold()
@@ -35,26 +34,14 @@ class AFK(commands.Cog):
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self.db = None
         
-        # Simple DB queue for writes only (reads are immediate)
-        self.db_queue = deque()
-        self.db_worker_task = None
-        self.db_lock = asyncio.Lock()
-        
-        # Cache for frequent reads
-        self.afk_cache = {}  # user_id -> (reason, since)
+        # Simple in-memory cache for reads
+        self.afk_cache = {}
         self.cache_lock = asyncio.Lock()
         
-        # Rate limiting
-        self.last_operations = {}
-        self.operation_cooldown = 0.1  # 100ms between operations
-        
-        self.bot.loop.create_task(self.init_system())
+        self.bot.loop.create_task(self.init_db())
 
-    async def init_system(self):
-        """Initialize database and start worker."""
+    async def init_db(self):
         self.db = await aiosqlite.connect(self.db_path)
-        
-        # Create table
         await self.db.execute("""
             CREATE TABLE IF NOT EXISTS afk (
                 user_id TEXT PRIMARY KEY,
@@ -64,99 +51,61 @@ class AFK(commands.Cog):
         """)
         await self.db.commit()
         
-        # Load cache
+        # Load cache on startup
         await self.load_cache()
-        
-        # Start DB worker
-        self.db_worker_task = asyncio.create_task(self.db_worker())
-        
-        print("[AFK] System initialized with cache and DB worker")
+        print("[AFK] Database ready with cache")
 
     async def load_cache(self):
-        """Load all AFK data into cache."""
+        """Load all AFK data into memory."""
         async with self.db.execute("SELECT user_id, reason, since FROM afk") as cursor:
             rows = await cursor.fetchall()
             async with self.cache_lock:
                 self.afk_cache = {int(user_id): (reason, since) for user_id, reason, since in rows}
-        print(f"[AFK] Loaded {len(self.afk_cache)} AFK entries into cache")
 
-    async def db_worker(self):
-        """Single worker to process DB write operations."""
-        while not self.bot.is_closed():
-            try:
-                if self.db_queue:
-                    async with self.db_lock:
-                        operation, args = self.db_queue.popleft()
-                    
-                    if operation == 'set_afk':
-                        user_id, reason = args
-                        since = datetime.now(timezone.utc).isoformat()
-                        
-                        await self.db.execute(
-                            "REPLACE INTO afk (user_id, reason, since) VALUES (?, ?, ?)",
-                            (str(user_id), reason, since)
-                        )
-                        await self.db.commit()
-                        
-                        # Update cache
-                        async with self.cache_lock:
-                            self.afk_cache[user_id] = (reason, since)
-                            
-                    elif operation == 'remove_afk':
-                        user_id = args[0]
-                        
-                        await self.db.execute("DELETE FROM afk WHERE user_id = ?", (str(user_id),))
-                        await self.db.commit()
-                        
-                        # Update cache
-                        async with self.cache_lock:
-                            self.afk_cache.pop(user_id, None)
-                
-                await asyncio.sleep(0.01)  # Small delay to prevent CPU spinning
-                
-            except Exception as e:
-                print(f"[AFK] DB worker error: {e}")
-                await asyncio.sleep(1)
-
-    # ─── Database Operations ────────────────────────────
     async def set_afk(self, user_id: int, reason: str):
-        """Queue AFK set operation."""
-        async with self.db_lock:
-            self.db_queue.append(('set_afk', (user_id, reason)))
+        since = datetime.now(timezone.utc).isoformat()
+        
+        # Update cache first (fast)
+        async with self.cache_lock:
+            self.afk_cache[user_id] = (reason, since)
+        
+        # Then update database (async)
+        asyncio.create_task(self._db_set_afk(user_id, reason, since))
+
+    async def _db_set_afk(self, user_id: int, reason: str, since: str):
+        """Background database update."""
+        await self.db.execute(
+            "REPLACE INTO afk (user_id, reason, since) VALUES (?, ?, ?)",
+            (str(user_id), reason, since)
+        )
+        await self.db.commit()
 
     async def remove_afk(self, user_id: int):
-        """Queue AFK removal operation."""
-        async with self.db_lock:
-            self.db_queue.append(('remove_afk', (user_id,)))
+        # Update cache first (fast)
+        async with self.cache_lock:
+            self.afk_cache.pop(user_id, None)
+        
+        # Then update database (async)
+        asyncio.create_task(self._db_remove_afk(user_id))
+
+    async def _db_remove_afk(self, user_id: int):
+        """Background database update."""
+        await self.db.execute("DELETE FROM afk WHERE user_id = ?", (str(user_id),))
+        await self.db.commit()
 
     async def get_afk(self, user_id: int):
-        """Get AFK status from cache (immediate)."""
+        """Get from cache (instant)."""
         async with self.cache_lock:
             return self.afk_cache.get(user_id)
 
     async def get_all_afk(self):
-        """Get all AFK users from cache (immediate)."""
+        """Get all from cache (instant)."""
         async with self.cache_lock:
             return [(user_id, reason, since) for user_id, (reason, since) in self.afk_cache.items()]
 
-    async def rate_limit(self, user_id: int):
-        """Simple rate limiting."""
-        current_time = asyncio.get_event_loop().time()
-        last_op = self.last_operations.get(user_id, 0)
-        
-        if current_time - last_op < self.operation_cooldown:
-            await asyncio.sleep(self.operation_cooldown)
-        
-        self.last_operations[user_id] = asyncio.get_event_loop().time()
-
-    # ─── Commands ──────────────────────────────────────
     @commands.command(name="afk")
     async def afk(self, ctx: commands.Context, *, reason: str = "AFK"):
-        """Set yourself as AFK."""
         user = ctx.author
-        
-        # Rate limit
-        await self.rate_limit(user.id)
         
         # Delete command message
         try:
@@ -181,19 +130,11 @@ class AFK(commands.Cog):
             description=f"{user.mention}, you are now AFK: **{reason}**",
             color=AFK_SET_COLOR
         )
-        msg = await ctx.send(embed=embed)
-        
-        # Auto-delete after 20 seconds
-        await asyncio.sleep(20)
-        try:
-            await msg.delete()
-        except:
-            pass
+        await ctx.send(embed=embed, delete_after=20)
 
     @commands.command(name="afklist")
     @commands.is_owner()
     async def afk_list(self, ctx: commands.Context):
-        """Show all users currently AFK."""
         afk_users = await self.get_all_afk()
         if not afk_users:
             return await ctx.reply("No users are currently AFK.", mention_author=False)
@@ -217,28 +158,19 @@ class AFK(commands.Cog):
     @commands.command(name="afkstats")
     @commands.is_owner()
     async def afk_stats(self, ctx: commands.Context):
-        """Show AFK system stats."""
         afk_count = len(await self.get_all_afk())
-        queue_size = len(self.db_queue)
         
         embed = discord.Embed(
-            title="📊 AFK System Stats",
+            title="📊 AFK Stats",
+            description=f"**Current AFK Users:** {afk_count}",
             color=discord.Color.blue()
         )
-        embed.add_field(name="Current AFK Users", value=afk_count, inline=True)
-        embed.add_field(name="DB Queue Size", value=queue_size, inline=True)
-        embed.add_field(name="Cache Size", value=len(self.afk_cache), inline=True)
-        
         await ctx.reply(embed=embed, mention_author=False)
 
-    # ─── Listeners ─────────────────────────────────────
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.content:
             return
-
-        # Rate limit
-        await self.rate_limit(message.author.id)
 
         # Check if message author is AFK and remove AFK
         afk_entry = await self.get_afk(message.author.id)
@@ -261,10 +193,7 @@ class AFK(commands.Cog):
                 description=f"{message.author.mention}, AFK removed.\nYou had been AFK for **{duration}**.",
                 color=AFK_REMOVED_COLOR
             )
-            msg = await message.channel.send(embed=embed)
-            
-            # Auto-delete after 20 seconds
-            asyncio.create_task(self.auto_delete_message(msg, 20))
+            await message.channel.send(embed=embed, delete_after=20)
 
         # Check mentions for AFK users
         if message.mentions:
@@ -282,26 +211,11 @@ class AFK(commands.Cog):
                         description=f"**Reason:** {reason}\n**Since:** {duration} ago",
                         color=AFK_MENTION_COLOR
                     )
-                    msg = await message.channel.send(embed=embed)
-                    
-                    # Auto-delete after 10 minutes
-                    asyncio.create_task(self.auto_delete_message(msg, 600))
-
-    async def auto_delete_message(self, message: discord.Message, delay: int):
-        """Auto-delete a message after delay."""
-        await asyncio.sleep(delay)
-        try:
-            await message.delete()
-        except:
-            pass
+                    await message.channel.send(embed=embed, delete_after=600)
 
     async def cog_unload(self):
-        """Clean shutdown."""
-        if self.db_worker_task:
-            self.db_worker_task.cancel()
         if self.db:
             await self.db.close()
-        print("[AFK] System shut down cleanly.")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AFK(bot))
