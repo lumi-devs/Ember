@@ -82,29 +82,17 @@ class AFK(commands.Cog):
         """Initialize database and start worker queues."""
         self.db = await aiosqlite.connect(self.db_path)
         
-        # First, check if the table exists and has the guild_id column
-        table_info = await self.db.execute("PRAGMA table_info(afk)")
-        columns = await table_info.fetchall()
-        column_names = [col[1] for col in columns] if columns else []
-        
-        # Create table if it doesn't exist or alter if guild_id is missing
-        if not columns:
-            # Table doesn't exist, create with full schema
-            await self.db.execute("""
-                CREATE TABLE afk (
-                    user_id TEXT PRIMARY KEY,
-                    reason TEXT,
-                    since TEXT,
-                    guild_id TEXT
-                )
-            """)
-        elif 'guild_id' not in column_names:
-            # Table exists but missing guild_id column, alter it
-            await self.db.execute("ALTER TABLE afk ADD COLUMN guild_id TEXT")
+        # Create optimized table without guild_id
+        await self.db.execute("""
+            CREATE TABLE IF NOT EXISTS afk (
+                user_id TEXT PRIMARY KEY,
+                reason TEXT,
+                since TEXT
+            )
+        """)
         
         # Create indexes for faster queries
         await self.db.execute("CREATE INDEX IF NOT EXISTS idx_afk_user_id ON afk(user_id)")
-        await self.db.execute("CREATE INDEX IF NOT EXISTS idx_afk_guild_id ON afk(guild_id)")
         await self.db.execute("CREATE INDEX IF NOT EXISTS idx_afk_since ON afk(since)")
         
         await self.db.commit()
@@ -117,7 +105,6 @@ class AFK(commands.Cog):
         
         self.ready_event.set()
         print("[AFK] System initialized with worker queues and indexes.")
-
 
     async def start_workers(self):
         """Start worker pools for different queue types."""
@@ -226,20 +213,20 @@ class AFK(commands.Cog):
 
             users_to_remove = []
             
-            for user_id, reason, since, guild_id in afk_users:
+            for user_id, reason, since in afk_users:
                 user_id_int = int(user_id)
-                guild_id_int = int(guild_id) if guild_id else None
                 
-                # Check if user is still in the guild
-                if guild_id_int:
-                    guild = self.bot.get_guild(guild_id_int)
-                    if guild:
-                        member = guild.get_member(user_id_int)
-                        if member:
-                            continue  # User is still in guild, keep AFK
+                # Check if user is still in any guild the bot can see
+                user_found = False
+                for guild in self.bot.guilds:
+                    member = guild.get_member(user_id_int)
+                    if member:
+                        user_found = True
+                        break
                 
-                # User left the guild or guild not found
-                users_to_remove.append(user_id)
+                # User not found in any guild, remove AFK data
+                if not user_found:
+                    users_to_remove.append(user_id)
             
             # Remove AFK data for users who left
             if users_to_remove:
@@ -251,10 +238,10 @@ class AFK(commands.Cog):
             print(f"[AFK] Member cleanup error: {e}")
 
     # ─── Queue-based DB Operations ─────────────────────
-    async def set_afk(self, user_id: int, reason: str, guild_id: int = None):
+    async def set_afk(self, user_id: int, reason: str):
         """Queue AFK set operation."""
         async with self.queue_locks['db']:
-            self.db_queue.append(('set_afk', (user_id, reason, guild_id)))
+            self.db_queue.append(('set_afk', (user_id, reason)))
 
     async def remove_afk(self, user_id: int):
         """Queue AFK removal operation."""
@@ -265,7 +252,7 @@ class AFK(commands.Cog):
         """Get AFK status (immediate, not queued)."""
         await self.ensure_db()
         async with self.db.execute(
-            "SELECT reason, since, guild_id FROM afk WHERE user_id = ?", (str(user_id),)
+            "SELECT reason, since FROM afk WHERE user_id = ?", (str(user_id),)
         ) as cursor:
             return await cursor.fetchone()
 
@@ -273,19 +260,18 @@ class AFK(commands.Cog):
         """Get all AFK users (immediate, not queued)."""
         await self.ensure_db()
         async with self.db.execute(
-            "SELECT user_id, reason, since, guild_id FROM afk"
+            "SELECT user_id, reason, since FROM afk"
         ) as cursor:
             return await cursor.fetchall()
 
     # ─── Direct DB Operations (for workers) ────────────
-    async def _db_set_afk(self, user_id: int, reason: str, guild_id: int = None):
+    async def _db_set_afk(self, user_id: int, reason: str):
         """Worker: Set AFK in database."""
         since = datetime.now(timezone.utc).isoformat()
-        guild_id_str = str(guild_id) if guild_id else None
         
         await self.db.execute(
-            "REPLACE INTO afk (user_id, reason, since, guild_id) VALUES (?, ?, ?, ?)",
-            (str(user_id), reason, since, guild_id_str)
+            "REPLACE INTO afk (user_id, reason, since) VALUES (?, ?, ?)",
+            (str(user_id), reason, since)
         )
         await self.db.commit()
 
@@ -309,7 +295,7 @@ class AFK(commands.Cog):
     async def _db_get_afk(self, user_id: int):
         """Worker: Get AFK from database."""
         async with self.db.execute(
-            "SELECT reason, since, guild_id FROM afk WHERE user_id = ?", (str(user_id),)
+            "SELECT reason, since FROM afk WHERE user_id = ?", (str(user_id),)
         ) as cursor:
             return await cursor.fetchone()
 
@@ -347,9 +333,8 @@ class AFK(commands.Cog):
         except:
             pass
 
-        # Store guild_id for cleanup purposes
-        guild_id = ctx.guild.id if ctx.guild else None
-        await self.set_afk(user.id, reason, guild_id)
+        # Set AFK without guild_id
+        await self.set_afk(user.id, reason)
 
         # Update nickname if in guild
         if ctx.guild and not user.display_name.startswith("[AFK]"):
@@ -398,7 +383,7 @@ class AFK(commands.Cog):
         for user in message.mentions:
             entry = await self.get_afk(user.id)
             if entry:
-                reason, since, guild_id = entry
+                reason, since = entry
                 since_dt = datetime.fromisoformat(since)
                 duration = human_timedelta(since_dt)
                 embed = discord.Embed(
@@ -435,13 +420,13 @@ class AFK(commands.Cog):
             return await ctx.reply("No users are currently AFK.", mention_author=False)
 
         lines = []
-        for user_id, reason, since, guild_id in afk_users:
+        for user_id, reason, since in afk_users:
             user = self.bot.get_user(int(user_id))
             name = user.name if user else f"Unknown ({user_id})"
             since_dt = datetime.fromisoformat(since)
             duration = human_timedelta(since_dt)
             
-            # Check if user is still in their guild
+            # Check if user is still in any guild
             status = "✅ In server" if user else "❌ Left server"
             lines.append(f"**{name}** — {reason} *(for {duration})* — {status}")
 
