@@ -67,8 +67,13 @@ class AFK(commands.Cog):
         self.stats = {
             'messages_processed': 0,
             'commands_processed': 0,
-            'db_operations': 0
+            'db_operations': 0,
+            'members_cleaned': 0
         }
+        
+        # Member cleanup tracking
+        self.last_member_cleanup = 0
+        self.member_cleanup_interval = 3600  # 1 hour
         
         self.ready_event = asyncio.Event()
         self.bot.loop.create_task(self.init_system())
@@ -76,19 +81,32 @@ class AFK(commands.Cog):
     async def init_system(self):
         """Initialize database and start worker queues."""
         self.db = await aiosqlite.connect(self.db_path)
+        
+        # Create optimized table with indexes
         await self.db.execute("""
             CREATE TABLE IF NOT EXISTS afk (
                 user_id TEXT PRIMARY KEY,
                 reason TEXT,
-                since TEXT
+                since TEXT,
+                guild_id TEXT
             )
         """)
+        
+        # Create indexes for faster queries
+        await self.db.execute("CREATE INDEX IF NOT EXISTS idx_afk_user_id ON afk(user_id)")
+        await self.db.execute("CREATE INDEX IF NOT EXISTS idx_afk_guild_id ON afk(guild_id)")
+        await self.db.execute("CREATE INDEX IF NOT EXISTS idx_afk_since ON afk(since)")
+        
         await self.db.commit()
         
         # Start worker pools
         await self.start_workers()
+        
+        # Initial cleanup of members who left
+        await self.cleanup_left_members()
+        
         self.ready_event.set()
-        print("[AFK] System initialized with worker queues.")
+        print("[AFK] System initialized with worker queues and indexes.")
 
     async def start_workers(self):
         """Start worker pools for different queue types."""
@@ -104,22 +122,12 @@ class AFK(commands.Cog):
 
     async def worker_loop(self, queue_type: str, worker_id: int):
         """Worker that processes items from its assigned queue."""
-        print(f"[AFK] Started {queue_type} worker {worker_id}")
-        
         while not self.bot.is_closed():
             try:
                 # Get item from queue
                 async with self.queue_locks[queue_type]:
-                    if not getattr(self, f'{queue_type}_queue'):
-                        await asyncio.sleep(0.1)
-                        continue
-                    
-                    if queue_type == 'message':
-                        item = self.message_queue.popleft() if self.message_queue else None
-                    elif queue_type == 'command':
-                        item = self.command_queue.popleft() if self.command_queue else None
-                    elif queue_type == 'db':
-                        item = self.db_queue.popleft() if self.db_queue else None
+                    queue = getattr(self, f'{queue_type}_queue')
+                    item = queue.popleft() if queue else None
                 
                 if not item:
                     await asyncio.sleep(0.1)
@@ -136,6 +144,8 @@ class AFK(commands.Cog):
                 # Small delay to prevent CPU spinning
                 await asyncio.sleep(0.01)
                 
+            except IndexError:
+                await asyncio.sleep(0.1)
             except Exception as e:
                 print(f"[AFK] Worker {queue_type}-{worker_id} error: {e}")
                 await asyncio.sleep(1)
@@ -145,6 +155,9 @@ class AFK(commands.Cog):
         message, task_type = item
         
         try:
+            # Periodic member cleanup check
+            await self.maybe_cleanup_members()
+            
             if task_type == 'check_afk_removal':
                 await self._check_afk_removal(message)
             elif task_type == 'check_mentions':
@@ -175,16 +188,62 @@ class AFK(commands.Cog):
                 await self._db_remove_afk(*args)
             elif operation == 'get_afk':
                 return await self._db_get_afk(*args)
+            elif operation == 'cleanup_members':
+                await self._db_cleanup_members(*args)
             
             self.stats['db_operations'] += 1
         except Exception as e:
             print(f"[AFK] DB operation error: {e}")
 
+    # ─── Member Cleanup System ────────────────────────
+    async def maybe_cleanup_members(self):
+        """Periodically clean up AFK data for members who left."""
+        current_time = time.time()
+        if current_time - self.last_member_cleanup < self.member_cleanup_interval:
+            return
+        
+        await self.cleanup_left_members()
+        self.last_member_cleanup = current_time
+
+    async def cleanup_left_members(self):
+        """Remove AFK data for members who left the server."""
+        try:
+            # Get all AFK users from database
+            afk_users = await self.get_all_afk()
+            if not afk_users:
+                return
+
+            users_to_remove = []
+            
+            for user_id, reason, since, guild_id in afk_users:
+                user_id_int = int(user_id)
+                guild_id_int = int(guild_id) if guild_id else None
+                
+                # Check if user is still in the guild
+                if guild_id_int:
+                    guild = self.bot.get_guild(guild_id_int)
+                    if guild:
+                        member = guild.get_member(user_id_int)
+                        if member:
+                            continue  # User is still in guild, keep AFK
+                
+                # User left the guild or guild not found
+                users_to_remove.append(user_id)
+            
+            # Remove AFK data for users who left
+            if users_to_remove:
+                await self._db_bulk_remove_afk(users_to_remove)
+                self.stats['members_cleaned'] += len(users_to_remove)
+                print(f"[AFK] Cleaned up {len(users_to_remove)} members who left")
+                
+        except Exception as e:
+            print(f"[AFK] Member cleanup error: {e}")
+
     # ─── Queue-based DB Operations ─────────────────────
-    async def set_afk(self, user_id: int, reason: str):
+    async def set_afk(self, user_id: int, reason: str, guild_id: int = None):
         """Queue AFK set operation."""
         async with self.queue_locks['db']:
-            self.db_queue.append(('set_afk', (user_id, reason)))
+            self.db_queue.append(('set_afk', (user_id, reason, guild_id)))
 
     async def remove_afk(self, user_id: int):
         """Queue AFK removal operation."""
@@ -194,26 +253,28 @@ class AFK(commands.Cog):
     async def get_afk(self, user_id: int):
         """Get AFK status (immediate, not queued)."""
         await self.ensure_db()
-        async with self.queue_locks['db']:
-            async with self.db.execute(
-                "SELECT reason, since FROM afk WHERE user_id = ?", (str(user_id),)
-            ) as cursor:
-                return await cursor.fetchone()
+        async with self.db.execute(
+            "SELECT reason, since, guild_id FROM afk WHERE user_id = ?", (str(user_id),)
+        ) as cursor:
+            return await cursor.fetchone()
 
     async def get_all_afk(self):
         """Get all AFK users (immediate, not queued)."""
         await self.ensure_db()
-        async with self.queue_locks['db']:
-            async with self.db.execute("SELECT user_id, reason, since FROM afk") as cursor:
-                return await cursor.fetchall()
+        async with self.db.execute(
+            "SELECT user_id, reason, since, guild_id FROM afk"
+        ) as cursor:
+            return await cursor.fetchall()
 
     # ─── Direct DB Operations (for workers) ────────────
-    async def _db_set_afk(self, user_id: int, reason: str):
+    async def _db_set_afk(self, user_id: int, reason: str, guild_id: int = None):
         """Worker: Set AFK in database."""
         since = datetime.now(timezone.utc).isoformat()
+        guild_id_str = str(guild_id) if guild_id else None
+        
         await self.db.execute(
-            "REPLACE INTO afk (user_id, reason, since) VALUES (?, ?, ?)",
-            (str(user_id), reason, since)
+            "REPLACE INTO afk (user_id, reason, since, guild_id) VALUES (?, ?, ?, ?)",
+            (str(user_id), reason, since, guild_id_str)
         )
         await self.db.commit()
 
@@ -222,12 +283,28 @@ class AFK(commands.Cog):
         await self.db.execute("DELETE FROM afk WHERE user_id = ?", (str(user_id),))
         await self.db.commit()
 
+    async def _db_bulk_remove_afk(self, user_ids: list):
+        """Worker: Bulk remove AFK entries."""
+        if not user_ids:
+            return
+            
+        placeholders = ','.join('?' * len(user_ids))
+        await self.db.execute(
+            f"DELETE FROM afk WHERE user_id IN ({placeholders})",
+            user_ids
+        )
+        await self.db.commit()
+
     async def _db_get_afk(self, user_id: int):
         """Worker: Get AFK from database."""
         async with self.db.execute(
-            "SELECT reason, since FROM afk WHERE user_id = ?", (str(user_id),)
+            "SELECT reason, since, guild_id FROM afk WHERE user_id = ?", (str(user_id),)
         ) as cursor:
             return await cursor.fetchone()
+
+    async def _db_cleanup_members(self, user_ids: list):
+        """Worker: Clean up multiple members."""
+        await self._db_bulk_remove_afk(user_ids)
 
     async def ensure_db(self):
         """Wait until DB connection is ready."""
@@ -259,7 +336,9 @@ class AFK(commands.Cog):
         except:
             pass
 
-        await self.set_afk(user.id, reason)
+        # Store guild_id for cleanup purposes
+        guild_id = ctx.guild.id if ctx.guild else None
+        await self.set_afk(user.id, reason, guild_id)
 
         # Update nickname if in guild
         if ctx.guild and not user.display_name.startswith("[AFK]"):
@@ -308,7 +387,7 @@ class AFK(commands.Cog):
         for user in message.mentions:
             entry = await self.get_afk(user.id)
             if entry:
-                reason, since = entry
+                reason, since, guild_id = entry
                 since_dt = datetime.fromisoformat(since)
                 duration = human_timedelta(since_dt)
                 embed = discord.Embed(
@@ -345,12 +424,15 @@ class AFK(commands.Cog):
             return await ctx.reply("No users are currently AFK.", mention_author=False)
 
         lines = []
-        for user_id, reason, since in afk_users:
+        for user_id, reason, since, guild_id in afk_users:
             user = self.bot.get_user(int(user_id))
             name = user.name if user else f"Unknown ({user_id})"
             since_dt = datetime.fromisoformat(since)
             duration = human_timedelta(since_dt)
-            lines.append(f"**{name}** — {reason} *(for {duration})*")
+            
+            # Check if user is still in their guild
+            status = "✅ In server" if user else "❌ Left server"
+            lines.append(f"**{name}** — {reason} *(for {duration})* — {status}")
 
         embed = discord.Embed(
             title="📜 AFK List",
@@ -359,17 +441,37 @@ class AFK(commands.Cog):
         )
         await ctx.reply(embed=embed, mention_author=False)
 
+    @commands.command(name="afkcleanup")
+    @commands.is_owner()
+    async def afk_cleanup(self, ctx: commands.Context):
+        """Manually clean up AFK data for members who left."""
+        before_count = len(await self.get_all_afk())
+        await self.cleanup_left_members()
+        after_count = len(await self.get_all_afk())
+        
+        cleaned = before_count - after_count
+        embed = discord.Embed(
+            title="🧹 AFK Cleanup Complete",
+            description=f"Removed {cleaned} AFK entries for members who left the server.",
+            color=discord.Color.green()
+        )
+        await ctx.reply(embed=embed, mention_author=False)
+
     @commands.command(name="afkstats")
     @commands.is_owner()
     async def afk_stats(self, ctx: commands.Context):
         """Show AFK system performance stats."""
+        afk_count = len(await self.get_all_afk())
+        
         embed = discord.Embed(
             title="📊 AFK System Stats",
             color=discord.Color.blue()
         )
+        embed.add_field(name="Current AFK Users", value=afk_count, inline=True)
         embed.add_field(name="Messages Processed", value=self.stats['messages_processed'], inline=True)
         embed.add_field(name="Commands Processed", value=self.stats['commands_processed'], inline=True)
         embed.add_field(name="DB Operations", value=self.stats['db_operations'], inline=True)
+        embed.add_field(name="Members Cleaned", value=self.stats['members_cleaned'], inline=True)
         
         queue_sizes = {
             'Message Queue': len(self.message_queue),
