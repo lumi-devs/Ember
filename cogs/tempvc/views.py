@@ -274,6 +274,49 @@ class RevokeAccessButton(Button):
             await interaction.followup.send("❌ No users have special access permissions!", ephemeral=True)
 
 
+class KickButton(Button):
+    def __init__(self):
+        super().__init__(label="👢 Kick", style=discord.ButtonStyle.secondary, custom_id="kick", row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: MembersMainView = self.view
+        await interaction.response.defer(ephemeral=True)
+        
+        # Only get users currently in the voice channel (excluding owner)
+        vc_users = [m for m in view.channel.members if m.id != view.owner_id]
+        
+        if vc_users:
+            await interaction.followup.send(
+                view=UserSelectActionView(
+                    view.cog, view.channel_id, view.owner_id, view.channel, 
+                    vc_users, "kick", "Select users to kick from VC..."
+                ), 
+                ephemeral=True
+            )
+        else:
+            await interaction.followup.send("❌ No users in VC to kick!", ephemeral=True)
+
+
+class BlockButton(Button):
+    def __init__(self):
+        super().__init__(label="🚫 Block", style=discord.ButtonStyle.secondary, custom_id="block", row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: MembersMainView = self.view
+        await interaction.response.defer(ephemeral=True)
+        users_to_block = []
+        for member in view.channel.guild.members:
+            if member.id == view.owner_id or member.bot:
+                continue
+            overwrite = view.channel.overwrites_for(member)
+            if not view._has_deny(overwrite):
+                users_to_block.append(member)
+        if users_to_block:
+            await interaction.followup.send(view=UserSelectActionView(view.cog, view.channel_id, view.owner_id, view.channel, users_to_block, "block", "Select users to block..."), ephemeral=True)
+        else:
+            await interaction.followup.send("✅ All non-owner users are already blocked!", ephemeral=True)
+
+
 class UnblockButton(Button):
     def __init__(self):
         super().__init__(label="✅ Unblock", style=discord.ButtonStyle.secondary, custom_id="unblock", row=1)
@@ -294,6 +337,61 @@ class UnblockButton(Button):
             await interaction.followup.send("✅ No users are currently blocked!", ephemeral=True)
 
 
+class ViewAccessListButton(Button):
+    def __init__(self):
+        super().__init__(label="📋 Access List", style=discord.ButtonStyle.secondary, custom_id="view_access", row=2)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: MembersMainView = self.view
+        await interaction.response.defer(ephemeral=True)
+        users_with_access = []
+        users_with_deny = []
+        for member in view.channel.guild.members:
+            if member.id == view.owner_id or member.bot:
+                continue
+            overwrite = view.channel.overwrites_for(member)
+            if view._has_allow(overwrite):
+                perms = []
+                if overwrite.connect is True: perms.append("Join")
+                if overwrite.view_channel is True: perms.append("View")
+                if overwrite.speak is True: perms.append("Speak")
+                if overwrite.stream is True: perms.append("Stream")
+                users_with_access.append(f"✅ {member.display_name} - {', '.join(perms)}")
+            elif view._has_deny(overwrite):
+                deny_perms = []
+                if overwrite.connect is False: deny_perms.append("Join")
+                if overwrite.view_channel is False: deny_perms.append("View")
+                if overwrite.speak is False: deny_perms.append("Speak")
+                if overwrite.stream is False: deny_perms.append("Stream")
+                users_with_deny.append(f"❌ {member.display_name} - {', '.join(deny_perms)}")
+        embed = discord.Embed(title="📋 Channel Permissions", color=discord.Color.blue())
+        if users_with_access:
+            embed.add_field(name="✅ Users with Explicit Access", value="\n".join(users_with_access[:25]), inline=False)
+        if users_with_deny:
+            embed.add_field(name="❌ Users with Explicit Deny", value="\n".join(users_with_deny[:25]), inline=False)
+        if not users_with_access and not users_with_deny:
+            embed.description = "No users have explicit permissions"
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+class ViewBlockedButton(Button):
+    def __init__(self):
+        super().__init__(label="🚫 Blocked Users", style=discord.ButtonStyle.secondary, custom_id="view_blocked", row=2)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: MembersMainView = self.view
+        await interaction.response.defer(ephemeral=True)
+        blocked_users = []
+        for member in view.channel.guild.members:
+            if member.id == view.owner_id or member.bot:
+                continue
+            overwrite = view.channel.overwrites_for(member)
+            if view._has_deny(overwrite):
+                blocked_users.append(member.display_name)
+        embed = discord.Embed(title="🚫 Blocked Users", description=("\n".join(blocked_users[:25]) if blocked_users else "No users are blocked"), color=discord.Color.red())
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
 # Custom dropdown used for revoke/unblock (shows descriptions of perms)
 class CustomUserDropdownView(ControlPanel):
     def __init__(self, cog, channel_id: int, owner_id: int, channel: discord.abc.GuildChannel, users: List[discord.Member], action_type: str, placeholder: str):
@@ -304,12 +402,20 @@ class CustomUserDropdownView(ControlPanel):
         for member in users:
             overwrite = channel.overwrites_for(member)
             if action_type == "revoke":
-                perms = [p for p in ("Join", "View", "Speak", "Stream") if getattr(overwrite, p.lower() if p != "Join" else "connect") is True]
+                perms = []
+                if overwrite.connect is True: perms.append("Join")
+                if overwrite.view_channel is True: perms.append("View")
+                if overwrite.speak is True: perms.append("Speak")
+                if overwrite.stream is True: perms.append("Stream")
                 desc = f"({', '.join(perms)})" if perms else "(No specific perms)"
             else:  # unblock
-                deny_perms = [p for p in ("Join", "View", "Speak", "Stream") if getattr(overwrite, p.lower() if p != "Join" else "connect") is False]
+                deny_perms = []
+                if overwrite.connect is False: deny_perms.append("Join")
+                if overwrite.view_channel is False: deny_perms.append("View")
+                if overwrite.speak is False: deny_perms.append("Speak")
+                if overwrite.stream is False: deny_perms.append("Stream")
                 desc = f"(Blocked: {', '.join(deny_perms)})" if deny_perms else "(Blocked)"
-            options.append(discord.SelectOption(label=member.display_name, value=str(member.id), description=desc))
+            options.append(discord.SelectOption(label=member.display_name, value=str(member.id), description=desc[:100]))  # Limit description length
         if options:
             self.add_item(CustomUserDropdown(options, action_type, placeholder))
         else:
@@ -398,97 +504,6 @@ class UserSelectAction(UserSelect):
             await interaction.followup.send("❌ Failed to perform action!", ephemeral=True)
 
 
-class KickButton(Button):
-    def __init__(self):
-        super().__init__(label="👢 Kick", style=discord.ButtonStyle.secondary, custom_id="kick", row=1)
-
-    async def callback(self, interaction: discord.Interaction):
-        view: MembersMainView = self.view
-        await interaction.response.defer(ephemeral=True)
-        
-        # Only get users currently in the voice channel (excluding owner)
-        vc_users = [m for m in view.channel.members if m.id != view.owner_id]
-        
-        if vc_users:
-            # Use the custom dropdown instead of UserSelect for kick
-            await interaction.followup.send(
-                view=CustomUserDropdownView(
-                    view.cog, view.channel_id, view.owner_id, view.channel, 
-                    vc_users, "kick", "Select users to kick from VC..."
-                ), 
-                ephemeral=True
-            )
-        else:
-            await interaction.followup.send("❌ No users in VC to kick!", ephemeral=True)
-
-
-class BlockButton(Button):
-    def __init__(self):
-        super().__init__(label="🚫 Block", style=discord.ButtonStyle.secondary, custom_id="block", row=1)
-
-    async def callback(self, interaction: discord.Interaction):
-        view: MembersMainView = self.view
-        await interaction.response.defer(ephemeral=True)
-        users_to_block = []
-        for member in view.channel.guild.members:
-            if member.id == view.owner_id or member.bot:
-                continue
-            overwrite = view.channel.overwrites_for(member)
-            if overwrite.connect is not False:
-                users_to_block.append(member)
-        if users_to_block:
-            await interaction.followup.send(view=UserSelectActionView(view.cog, view.channel_id, view.owner_id, view.channel, users_to_block, "block", "Select users to block..."), ephemeral=True)
-        else:
-            await interaction.followup.send("✅ All non-owner users are already blocked!", ephemeral=True)
-
-
-class ViewAccessListButton(Button):
-    def __init__(self):
-        super().__init__(label="📋 Access List", style=discord.ButtonStyle.secondary, custom_id="view_access", row=2)
-
-    async def callback(self, interaction: discord.Interaction):
-        view: MembersMainView = self.view
-        await interaction.response.defer(ephemeral=True)
-        users_with_access = []
-        users_with_deny = []
-        for member in view.channel.guild.members:
-            if member.id == view.owner_id or member.bot:
-                continue
-            overwrite = view.channel.overwrites_for(member)
-            if view._has_allow(overwrite):
-                perms = [p for p in ("Join", "View", "Speak", "Stream") if getattr(overwrite, p.lower() if p != "Join" else "connect") is True]
-                users_with_access.append(f"✅ {member.display_name} - {', '.join(perms)}")
-            elif view._has_deny(overwrite):
-                deny_perms = [p for p in ("Join", "View") if getattr(overwrite, p.lower() if p != "Join" else "connect") is False]
-                users_with_deny.append(f"❌ {member.display_name} - {', '.join(deny_perms)}")
-        embed = discord.Embed(title="📋 Channel Permissions", color=discord.Color.blue())
-        if users_with_access:
-            embed.add_field(name="✅ Users with Explicit Access", value="\n".join(users_with_access), inline=False)
-        if users_with_deny:
-            embed.add_field(name="❌ Users with Explicit Deny", value="\n".join(users_with_deny), inline=False)
-        if not users_with_access and not users_with_deny:
-            embed.description = "No users have explicit permissions"
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-
-class ViewBlockedButton(Button):
-    def __init__(self):
-        super().__init__(label="🚫 Blocked Users", style=discord.ButtonStyle.secondary, custom_id="view_blocked", row=2)
-
-    async def callback(self, interaction: discord.Interaction):
-        view: MembersMainView = self.view
-        await interaction.response.defer(ephemeral=True)
-        blocked_users = []
-        for member in view.channel.guild.members:
-            if member.id == view.owner_id or member.bot:
-                continue
-            overwrite = view.channel.overwrites_for(member)
-            if overwrite.connect is False:
-                blocked_users.append(member.display_name)
-        embed = discord.Embed(title="🚫 Blocked Users", description=("\n".join(blocked_users) if blocked_users else "No users are blocked"), color=discord.Color.red())
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-
 # --------------------- Region / Transfer / Claim / Delete ---------------------
 class RegionButton(Button):
     def __init__(self):
@@ -509,11 +524,19 @@ class RegionView(ControlPanel):
         super().__init__(cog, channel_id, owner_id)
         self.channel = channel
         regions = [
-            ("🇺🇸 US West", "us-west"), ("🇺🇸 US East", "us-east"), ("🇺🇸 US Central", "us-central"),
-            ("🇸🇬 Singapore", "singapore"), ("🇮🇳 India", "india"), ("🇧🇷 Brazil", "brazil"),
-            ("🇦🇺 Australia", "australia"), ("🇪🇺 Europe", "europe"), ("🇬🇧 London", "london"),
-            ("🇩🇪 Germany", "germany"), ("🇯🇵 Japan", "japan"), ("🇷🇺 Russia", "russia"),
-            ("🇿🇦 South Africa", "southafrica"), ("🇰🇷 South Korea", "south-korea"), ("🇭🇰 Hong Kong", "hongkong"),
+        ("🇺🇸 US West", "us-west"), 
+        ("🇺🇸 US East", "us-east"), 
+        ("🇺🇸 US Central", "us-central"),
+        ("🇺🇸 US South", "us-south"),
+        ("🇸🇬 Singapore", "singapore"), 
+        ("🇮🇳 India", "india"), 
+        ("🇧🇷 Brazil", "brazil"),
+        ("🇦🇺 Sydney", "sydney"), 
+        ("🇪🇺 Rotterdam", "rotterdam"),
+        ("🇯🇵 Japan", "japan"), 
+        ("🇰🇷 South Korea", "south-korea"), 
+        ("🇿🇦 South Africa", "southafrica"),
+        ("🇭🇰 Hong Kong", "hongkong"),
         ]
         for i, (label, region) in enumerate(regions):
             self.add_item(RegionSelectButton(label, region, i // 3))
