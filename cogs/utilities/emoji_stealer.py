@@ -24,9 +24,9 @@ class StealEmoji(commands.Cog):
             return False
         return True
     
-    def is_emoji_stealable(self, emoji: discord.Emoji) -> bool:
+    def is_emoji_stealable(self, emoji: discord.Emoji, current_guild_id: int) -> bool:
         """Check if emoji can be stolen (not from current guild)."""
-        return emoji.guild_id != self.bot.user.id
+        return emoji.guild_id != current_guild_id
     
     def get_emoji_url(self, emoji: discord.Emoji) -> str:
         """Get the URL for an emoji."""
@@ -58,6 +58,18 @@ class StealEmoji(commands.Cog):
         self.recent_steals[user_id].append(now)
         return True
     
+    async def fetch_emoji_from_guilds(self, emoji_id: int) -> Optional[discord.Emoji]:
+        """Try to fetch an emoji by searching through all guilds the bot is in."""
+        for guild in self.bot.guilds:
+            try:
+                emoji = await guild.fetch_emoji(emoji_id)
+                return emoji
+            except discord.NotFound:
+                continue
+            except discord.HTTPException:
+                continue
+        return None
+    
     async def steal_single_emoji(self, ctx, emoji_input: str) -> bool:
         """Steal a single emoji from input."""
         try:
@@ -75,28 +87,20 @@ class StealEmoji(commands.Cog):
             emoji_name = match.group(1)
             emoji_id = int(match.group(2))
             
-            # Try to get the emoji
-            try:
-                emoji = await self.bot.fetch_emoji(emoji_id)
-            except discord.NotFound:
+            # Try to get the emoji by searching through all guilds
+            emoji = await self.fetch_emoji_from_guilds(emoji_id)
+            
+            if not emoji:
                 embed = discord.Embed(
                     title="❌ Emoji Not Found",
-                    description=f"Emoji with ID `{emoji_id}` was not found.",
-                    color=discord.Color.red()
-                )
-                await ctx.send(embed=embed, delete_after=10)
-                return False
-            except discord.HTTPException as e:
-                embed = discord.Embed(
-                    title="❌ Fetch Error",
-                    description=f"Error fetching emoji: {e}",
+                    description=f"Emoji with ID `{emoji_id}` was not found in any server I have access to.",
                     color=discord.Color.red()
                 )
                 await ctx.send(embed=embed, delete_after=10)
                 return False
             
             # Check if emoji is from current guild
-            if not self.is_emoji_stealable(emoji):
+            if not self.is_emoji_stealable(emoji, ctx.guild.id):
                 embed = discord.Embed(
                     title="❌ Already in Server",
                     description="This emoji is already from this server!",
