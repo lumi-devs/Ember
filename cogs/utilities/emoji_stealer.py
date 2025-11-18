@@ -2,14 +2,14 @@ import discord
 from discord.ext import commands
 import asyncio
 import re
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 class StealEmoji(commands.Cog):
     """Steal emojis from other servers with proper permissions and limits."""
     
     def __init__(self, bot):
         self.bot = bot
-        self.emoji_regex = re.compile(r'<a?:\w+:(\d+)>')
+        self.emoji_regex = re.compile(r'<a?:(\w+):(\d+)>')
         self.recent_steals = {}  # user_id: [timestamps] for rate limiting
     
     async def cog_check(self, ctx):
@@ -72,7 +72,8 @@ class StealEmoji(commands.Cog):
                 await ctx.send(embed=embed, delete_after=10)
                 return False
             
-            emoji_id = int(match.group(1))
+            emoji_name = match.group(1)
+            emoji_id = int(match.group(2))
             
             # Try to get the emoji
             try:
@@ -199,9 +200,10 @@ class StealEmoji(commands.Cog):
             await ctx.send(embed=embed, delete_after=10)
             return False
     
-    async def extract_emojis_from_message(self, message: discord.Message) -> List[str]:
-        """Extract all custom emojis from a message."""
-        return self.emoji_regex.findall(message.content)
+    def extract_emojis_from_message(self, message: discord.Message) -> List[Tuple[str, str]]:
+        """Extract all custom emojis from a message with their names and IDs."""
+        matches = self.emoji_regex.findall(message.content)
+        return [(name, emoji_id) for name, emoji_id in matches]
     
     @commands.command(name='steal', aliases=['stealemoji', 'addemoji'])
     async def steal_emoji(self, ctx, *, emoji_input: Optional[str] = None):
@@ -231,9 +233,9 @@ class StealEmoji(commands.Cog):
         if ctx.message.reference and ctx.message.reference.message_id:
             try:
                 replied_message = await ctx.channel.fetch_message(ctx.message.reference.message_id)
-                emoji_ids = await self.extract_emojis_from_message(replied_message)
+                emojis = self.extract_emojis_from_message(replied_message)
                 
-                if not emoji_ids:
+                if not emojis:
                     embed = discord.Embed(
                         title="❌ No Emojis Found",
                         description="The replied message doesn't contain any custom emojis.",
@@ -243,7 +245,7 @@ class StealEmoji(commands.Cog):
                     return
                 
                 # Steal multiple emojis
-                await self.steal_multiple_emojis(ctx, emoji_ids, replied_message)
+                await self.steal_multiple_emojis(ctx, emojis, replied_message)
                 return
                 
             except discord.NotFound:
@@ -288,33 +290,35 @@ class StealEmoji(commands.Cog):
         
         await ctx.send(embed=embed)
     
-    async def steal_multiple_emojis(self, ctx, emoji_ids: List[str], source_message: discord.Message):
+    async def steal_multiple_emojis(self, ctx, emojis: List[Tuple[str, str]], source_message: discord.Message):
         """Steal multiple emojis from a list."""
-        if not emoji_ids:
+        if not emojis:
             return
         
         # Remove duplicates while preserving order
-        unique_emoji_ids = []
-        for emoji_id in emoji_ids:
-            if emoji_id not in unique_emoji_ids:
-                unique_emoji_ids.append(emoji_id)
+        unique_emojis = []
+        seen_ids = set()
+        for name, emoji_id in emojis:
+            if emoji_id not in seen_ids:
+                unique_emojis.append((name, emoji_id))
+                seen_ids.add(emoji_id)
         
         # Limit to 5 emojis per command
-        if len(unique_emoji_ids) > 5:
+        if len(unique_emojis) > 5:
             embed = discord.Embed(
                 title="⚠️ Too Many Emojis",
-                description=f"Found {len(unique_emoji_ids)} emojis. Only stealing the first 5.",
+                description=f"Found {len(unique_emojis)} emojis. Only stealing the first 5.",
                 color=discord.Color.orange()
             )
             await ctx.send(embed=embed, delete_after=10)
-            unique_emoji_ids = unique_emoji_ids[:5]
+            unique_emojis = unique_emojis[:5]
         
         # Check if we have enough slots
         available_slots = ctx.guild.emoji_limit - len(ctx.guild.emojis)
-        if available_slots < len(unique_emoji_ids):
+        if available_slots < len(unique_emojis):
             embed = discord.Embed(
                 title="❌ Not Enough Slots",
-                description=f"Only {available_slots} emoji slots available, but {len(unique_emoji_ids)} emojis requested.",
+                description=f"Only {available_slots} emoji slots available, but {len(unique_emojis)} emojis requested.",
                 color=discord.Color.red()
             )
             await ctx.send(embed=embed, delete_after=10)
@@ -323,7 +327,7 @@ class StealEmoji(commands.Cog):
         # Start stealing process
         progress_embed = discord.Embed(
             title="🔄 Stealing Emojis...",
-            description=f"Processing {len(unique_emoji_ids)} emoji(s)...",
+            description=f"Processing {len(unique_emojis)} emoji(s)...",
             color=discord.Color.blue()
         )
         progress_embed.add_field(name="Progress", value="Starting...", inline=True)
@@ -335,28 +339,28 @@ class StealEmoji(commands.Cog):
         successful = []
         failed = []
         
-        for i, emoji_id in enumerate(unique_emoji_ids):
+        for i, (emoji_name, emoji_id) in enumerate(unique_emojis):
             try:
                 # Update progress
-                progress_embed.set_field_at(0, name="Progress", value=f"{i+1}/{len(unique_emoji_ids)}", inline=True)
+                progress_embed.set_field_at(0, name="Progress", value=f"{i+1}/{len(unique_emojis)}", inline=True)
                 await progress_msg.edit(embed=progress_embed)
                 
-                # Try to steal the emoji
-                emoji_input = f"<:{emoji_id}>"  # Format as emoji string
+                # Try to steal the emoji - use proper format with name and ID
+                emoji_input = f"<:{emoji_name}:{emoji_id}>"
                 success = await self.steal_single_emoji(ctx, emoji_input)
                 
                 if success:
-                    successful.append(emoji_id)
+                    successful.append(emoji_name)
                     progress_embed.set_field_at(1, name="Successful", value=str(len(successful)), inline=True)
                 else:
-                    failed.append(emoji_id)
+                    failed.append(emoji_name)
                     progress_embed.set_field_at(2, name="Failed", value=str(len(failed)), inline=True)
                 
                 await progress_msg.edit(embed=progress_embed)
                 await asyncio.sleep(0.5)  # Small delay between steals
                 
             except Exception as e:
-                failed.append(emoji_id)
+                failed.append(emoji_name)
                 progress_embed.set_field_at(2, name="Failed", value=str(len(failed)), inline=True)
                 await progress_msg.edit(embed=progress_embed)
         
@@ -370,7 +374,7 @@ class StealEmoji(commands.Cog):
         result_embed.add_field(name="📝 Source", value=f"[Jump to Message]({source_message.jump_url})", inline=True)
         
         if successful:
-            result_embed.description = f"Successfully stole {len(successful)} emoji(s)"
+            result_embed.description = f"Successfully stole {len(successful)} emoji(s): {', '.join(successful)}"
         if failed:
             result_embed.description = f"Completed with {len(failed)} failure(s)"
         

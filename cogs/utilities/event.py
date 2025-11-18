@@ -141,7 +141,11 @@ class SubmitCog(commands.Cog):
             
             modal = self.cog.SubmissionModal(self.cog)
             await interaction.response.send_modal(modal)
-    
+
+    async def setup_hook(self):
+        """This is called when the cog is loaded to add the persistent view"""
+        self.bot.add_view(self.SubmissionView(self))
+
     @commands.command(name="send")
     @commands.has_permissions(administrator=True)
     async def send_submission_message(self, ctx):
@@ -157,4 +161,7 @@ class SubmitCog(commands.Cog):
         await ctx.send("✅ Submission message sent successfully!", delete_after=5)
 
 async def setup(bot):
-    await bot.add_cog(SubmitCog(bot))
+    cog = SubmitCog(bot)
+    await bot.add_cog(cog)
+    # Register the persistent view when the cog is loaded
+    bot.add_view(cog.SubmissionView(cog))
