@@ -3,6 +3,7 @@ from discord.ext import commands
 import asyncio
 import re
 from typing import List, Optional, Tuple
+import aiohttp
 
 class StealEmoji(commands.Cog):
     """Steal emojis from other servers with proper permissions and limits."""
@@ -24,22 +25,46 @@ class StealEmoji(commands.Cog):
             return False
         return True
     
-    def get_emoji_url(self, emoji_name: str, emoji_id: str, animated: bool) -> str:
-        """Get the CDN URL for an emoji."""
+    def get_emoji_urls(self, emoji_id: str, animated: bool) -> List[str]:
+        """Get multiple possible CDN URLs for an emoji."""
+        base_urls = []
         extension = "gif" if animated else "png"
-        return f"https://cdn.discordapp.com/emojis/{emoji_id}.{extension}?quality=lossless"
+        
+        # Try different CDN URL formats
+        base_urls.append(f"https://cdn.discordapp.com/emojis/{emoji_id}.{extension}")
+        base_urls.append(f"https://cdn.discordapp.com/emojis/{emoji_id}.{extension}?quality=lossless")
+        base_urls.append(f"https://cdn.discordapp.com/emojis/{emoji_id}.{extension}?v=1")
+        
+        # Also try the other extension in case detection is wrong
+        alt_extension = "png" if animated else "gif"
+        base_urls.append(f"https://cdn.discordapp.com/emojis/{emoji_id}.{alt_extension}")
+        
+        return base_urls
     
-    async def download_emoji(self, emoji_name: str, emoji_id: str, animated: bool) -> Optional[bytes]:
-        """Download emoji image data directly from CDN."""
-        try:
-            url = self.get_emoji_url(emoji_name, emoji_id, animated)
-            async with self.bot.session.get(url) as resp:
-                if resp.status == 200:
-                    return await resp.read()
-                else:
-                    print(f"Failed to download emoji: HTTP {resp.status}")
-        except Exception as e:
-            print(f"Error downloading emoji: {e}")
+    async def download_emoji(self, emoji_id: str, animated: bool) -> Optional[bytes]:
+        """Download emoji image data directly from CDN with multiple fallback URLs."""
+        urls = self.get_emoji_urls(emoji_id, animated)
+        
+        for url in urls:
+            try:
+                print(f"Trying to download emoji from: {url}")
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as resp:
+                        if resp.status == 200:
+                            data = await resp.read()
+                            # Basic validation - ensure we got actual image data
+                            if len(data) > 100:  # Minimum reasonable file size
+                                print(f"Successfully downloaded emoji {emoji_id} from {url}")
+                                return data
+                            else:
+                                print(f"Downloaded data too small: {len(data)} bytes")
+                        else:
+                            print(f"HTTP {resp.status} for URL: {url}")
+            except Exception as e:
+                print(f"Error downloading from {url}: {e}")
+                continue
+        
+        print(f"Failed to download emoji {emoji_id} from all URLs")
         return None
     
     def check_rate_limit(self, user_id: int) -> bool:
@@ -78,6 +103,8 @@ class StealEmoji(commands.Cog):
             # Check if it's animated
             is_animated = emoji_input.startswith('<a:')
             
+            print(f"Attempting to steal emoji: {emoji_name} (ID: {emoji_id}, Animated: {is_animated})")
+            
             # Check guild emoji limits
             if len(ctx.guild.emojis) >= ctx.guild.emoji_limit:
                 embed = discord.Embed(
@@ -100,11 +127,16 @@ class StealEmoji(commands.Cog):
                 return False
             
             # Download emoji data directly from CDN
-            emoji_data = await self.download_emoji(emoji_name, emoji_id, is_animated)
+            emoji_data = await self.download_emoji(emoji_id, is_animated)
+            if not emoji_data:
+                # Try the opposite animation type as fallback
+                print(f"Trying opposite animation type for emoji {emoji_id}")
+                emoji_data = await self.download_emoji(emoji_id, not is_animated)
+                
             if not emoji_data:
                 embed = discord.Embed(
                     title="❌ Download Failed",
-                    description="Failed to download emoji image. The emoji may not exist or may be from a server I can't access.",
+                    description=f"Failed to download emoji `:{emoji_name}:`. The emoji may have been deleted or is from a private server.",
                     color=discord.Color.red()
                 )
                 await ctx.send(embed=embed, delete_after=10)
@@ -142,6 +174,7 @@ class StealEmoji(commands.Cog):
                 embed.set_footer(text=f"Stolen by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
                 
                 await ctx.send(embed=embed)
+                print(f"Successfully created emoji: {new_emoji.name} (ID: {new_emoji.id})")
                 return True
                 
             except discord.HTTPException as e:
@@ -177,6 +210,7 @@ class StealEmoji(commands.Cog):
                 return False
                 
         except Exception as e:
+            print(f"Unexpected error in steal_single_emoji: {e}")
             embed = discord.Embed(
                 title="❌ Unexpected Error",
                 description=f"An unexpected error occurred: {e}",
@@ -187,13 +221,11 @@ class StealEmoji(commands.Cog):
     
     def extract_emojis_from_message(self, message: discord.Message) -> List[Tuple[str, str, bool]]:
         """Extract all custom emojis from a message with their names, IDs, and animation status."""
-        matches = self.emoji_regex.findall(message.content)
+        # Find all emoji matches in the message
+        matches = re.findall(r'<(a?):(\w+):(\d+)>', message.content)
         emojis = []
-        for name, emoji_id in matches:
-            # Check if the emoji in the original message was animated
-            emoji_text = message.content
-            emoji_match = re.search(f'<a?:{name}:{emoji_id}>', emoji_text)
-            is_animated = emoji_match.group(0).startswith('<a:') if emoji_match else False
+        for animation_flag, name, emoji_id in matches:
+            is_animated = bool(animation_flag)  # "a" for animated, empty for static
             emojis.append((name, emoji_id, is_animated))
         return emojis
     
@@ -218,6 +250,17 @@ class StealEmoji(commands.Cog):
         
         # Case 1: User provided emoji input
         if emoji_input:
+            # Check if it's a raw emoji ID (just numbers)
+            if emoji_input.isdigit() and len(emoji_input) >= 17:
+                # User provided just an emoji ID, try both animated and static
+                embed = discord.Embed(
+                    title="❌ Need Full Emoji Format",
+                    description="Please provide the full emoji format like `<:name:123456789>` or just use the emoji directly.",
+                    color=discord.Color.orange()
+                )
+                await ctx.send(embed=embed, delete_after=10)
+                return
+            
             success = await self.steal_single_emoji(ctx, emoji_input)
             return
         
@@ -265,7 +308,7 @@ class StealEmoji(commands.Cog):
         )
         embed.add_field(
             name="Single Emoji",
-            value="`.steal <emoji>`\nSteal a specific emoji",
+            value="`.steal <:emoji_name:123456789>`\nOr just use the emoji directly",
             inline=False
         )
         embed.add_field(
@@ -358,6 +401,7 @@ class StealEmoji(commands.Cog):
                 await asyncio.sleep(0.5)  # Small delay between steals
                 
             except Exception as e:
+                print(f"Error stealing emoji {emoji_name}: {e}")
                 failed.append(emoji_name)
                 progress_embed.set_field_at(2, name="Failed", value=str(len(failed)), inline=True)
                 await progress_msg.edit(embed=progress_embed)
