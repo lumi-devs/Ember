@@ -24,20 +24,20 @@ class StealEmoji(commands.Cog):
             return False
         return True
     
-    def is_emoji_stealable(self, emoji: discord.Emoji, current_guild_id: int) -> bool:
-        """Check if emoji can be stolen (not from current guild)."""
-        return emoji.guild_id != current_guild_id
+    def get_emoji_url(self, emoji_name: str, emoji_id: str, animated: bool) -> str:
+        """Get the CDN URL for an emoji."""
+        extension = "gif" if animated else "png"
+        return f"https://cdn.discordapp.com/emojis/{emoji_id}.{extension}?quality=lossless"
     
-    def get_emoji_url(self, emoji: discord.Emoji) -> str:
-        """Get the URL for an emoji."""
-        return str(emoji.url)
-    
-    async def download_emoji(self, emoji: discord.Emoji) -> Optional[bytes]:
-        """Download emoji image data."""
+    async def download_emoji(self, emoji_name: str, emoji_id: str, animated: bool) -> Optional[bytes]:
+        """Download emoji image data directly from CDN."""
         try:
-            async with self.bot.session.get(self.get_emoji_url(emoji)) as resp:
+            url = self.get_emoji_url(emoji_name, emoji_id, animated)
+            async with self.bot.session.get(url) as resp:
                 if resp.status == 200:
                     return await resp.read()
+                else:
+                    print(f"Failed to download emoji: HTTP {resp.status}")
         except Exception as e:
             print(f"Error downloading emoji: {e}")
         return None
@@ -58,18 +58,6 @@ class StealEmoji(commands.Cog):
         self.recent_steals[user_id].append(now)
         return True
     
-    async def fetch_emoji_from_guilds(self, emoji_id: int) -> Optional[discord.Emoji]:
-        """Try to fetch an emoji by searching through all guilds the bot is in."""
-        for guild in self.bot.guilds:
-            try:
-                emoji = await guild.fetch_emoji(emoji_id)
-                return emoji
-            except discord.NotFound:
-                continue
-            except discord.HTTPException:
-                continue
-        return None
-    
     async def steal_single_emoji(self, ctx, emoji_input: str) -> bool:
         """Steal a single emoji from input."""
         try:
@@ -85,29 +73,10 @@ class StealEmoji(commands.Cog):
                 return False
             
             emoji_name = match.group(1)
-            emoji_id = int(match.group(2))
+            emoji_id = match.group(2)
             
-            # Try to get the emoji by searching through all guilds
-            emoji = await self.fetch_emoji_from_guilds(emoji_id)
-            
-            if not emoji:
-                embed = discord.Embed(
-                    title="❌ Emoji Not Found",
-                    description=f"Emoji with ID `{emoji_id}` was not found in any server I have access to.",
-                    color=discord.Color.red()
-                )
-                await ctx.send(embed=embed, delete_after=10)
-                return False
-            
-            # Check if emoji is from current guild
-            if not self.is_emoji_stealable(emoji, ctx.guild.id):
-                embed = discord.Embed(
-                    title="❌ Already in Server",
-                    description="This emoji is already from this server!",
-                    color=discord.Color.orange()
-                )
-                await ctx.send(embed=embed, delete_after=10)
-                return False
+            # Check if it's animated
+            is_animated = emoji_input.startswith('<a:')
             
             # Check guild emoji limits
             if len(ctx.guild.emojis) >= ctx.guild.emoji_limit:
@@ -119,19 +88,30 @@ class StealEmoji(commands.Cog):
                 await ctx.send(embed=embed, delete_after=10)
                 return False
             
-            # Download emoji data
-            emoji_data = await self.download_emoji(emoji)
+            # Check if emoji name already exists in this server
+            existing_emoji = discord.utils.get(ctx.guild.emojis, name=emoji_name)
+            if existing_emoji:
+                embed = discord.Embed(
+                    title="❌ Name Already Exists",
+                    description=f"An emoji named `:{emoji_name}:` already exists in this server.",
+                    color=discord.Color.orange()
+                )
+                await ctx.send(embed=embed, delete_after=10)
+                return False
+            
+            # Download emoji data directly from CDN
+            emoji_data = await self.download_emoji(emoji_name, emoji_id, is_animated)
             if not emoji_data:
                 embed = discord.Embed(
                     title="❌ Download Failed",
-                    description="Failed to download emoji image.",
+                    description="Failed to download emoji image. The emoji may not exist or may be from a server I can't access.",
                     color=discord.Color.red()
                 )
                 await ctx.send(embed=embed, delete_after=10)
                 return False
             
             # Check file size limit (256KB for static, 1MB for animated)
-            max_size = 1024 * 1024 if emoji.animated else 256 * 1024
+            max_size = 1024 * 1024 if is_animated else 256 * 1024
             if len(emoji_data) > max_size:
                 embed = discord.Embed(
                     title="❌ File Too Large",
@@ -144,20 +124,21 @@ class StealEmoji(commands.Cog):
             # Create the emoji
             try:
                 new_emoji = await ctx.guild.create_custom_emoji(
-                    name=emoji.name,
+                    name=emoji_name,
                     image=emoji_data,
                     reason=f"Stolen by {ctx.author} ({ctx.author.id})"
                 )
                 
                 # Send success message
-                emoji_type = "animated" if emoji.animated else "static"
+                emoji_type = "animated" if is_animated else "static"
                 embed = discord.Embed(
                     title="✅ Emoji Stolen!",
                     description=f"Successfully added {new_emoji} as `:{new_emoji.name}:`",
                     color=discord.Color.green()
                 )
                 embed.add_field(name="Type", value=emoji_type, inline=True)
-                embed.add_field(name="Original Server", value=emoji.guild.name if emoji.guild else "Unknown", inline=True)
+                embed.add_field(name="Name", value=new_emoji.name, inline=True)
+                embed.add_field(name="ID", value=new_emoji.id, inline=True)
                 embed.set_footer(text=f"Stolen by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
                 
                 await ctx.send(embed=embed)
@@ -175,7 +156,7 @@ class StealEmoji(commands.Cog):
                 elif "invalid image" in error_msg:
                     embed = discord.Embed(
                         title="❌ Invalid Image",
-                        description="Invalid emoji image format.",
+                        description="Invalid emoji image format. This might be an unsupported emoji type.",
                         color=discord.Color.red()
                     )
                     await ctx.send(embed=embed, delete_after=10)
@@ -204,10 +185,17 @@ class StealEmoji(commands.Cog):
             await ctx.send(embed=embed, delete_after=10)
             return False
     
-    def extract_emojis_from_message(self, message: discord.Message) -> List[Tuple[str, str]]:
-        """Extract all custom emojis from a message with their names and IDs."""
+    def extract_emojis_from_message(self, message: discord.Message) -> List[Tuple[str, str, bool]]:
+        """Extract all custom emojis from a message with their names, IDs, and animation status."""
         matches = self.emoji_regex.findall(message.content)
-        return [(name, emoji_id) for name, emoji_id in matches]
+        emojis = []
+        for name, emoji_id in matches:
+            # Check if the emoji in the original message was animated
+            emoji_text = message.content
+            emoji_match = re.search(f'<a?:{name}:{emoji_id}>', emoji_text)
+            is_animated = emoji_match.group(0).startswith('<a:') if emoji_match else False
+            emojis.append((name, emoji_id, is_animated))
+        return emojis
     
     @commands.command(name='steal', aliases=['stealemoji', 'addemoji'])
     async def steal_emoji(self, ctx, *, emoji_input: Optional[str] = None):
@@ -272,7 +260,7 @@ class StealEmoji(commands.Cog):
         # Case 3: No input and no reply - show help
         embed = discord.Embed(
             title="🔄 Steal Emoji Help",
-            description="Steal emojis from other servers with proper permissions.",
+            description="Steal emojis from other servers by downloading them directly from Discord's CDN.",
             color=discord.Color.blue()
         )
         embed.add_field(
@@ -286,6 +274,11 @@ class StealEmoji(commands.Cog):
             inline=False
         )
         embed.add_field(
+            name="Features",
+            value="• Works with any emoji (no server access needed)\n• Handles animated emojis\n• Automatic duplicate prevention",
+            inline=False
+        )
+        embed.add_field(
             name="Limits",
             value=f"• 5 steals per minute\n• Server limit: {ctx.guild.emoji_limit} emojis\n• File size limits apply",
             inline=False
@@ -294,7 +287,7 @@ class StealEmoji(commands.Cog):
         
         await ctx.send(embed=embed)
     
-    async def steal_multiple_emojis(self, ctx, emojis: List[Tuple[str, str]], source_message: discord.Message):
+    async def steal_multiple_emojis(self, ctx, emojis: List[Tuple[str, str, bool]], source_message: discord.Message):
         """Steal multiple emojis from a list."""
         if not emojis:
             return
@@ -302,9 +295,9 @@ class StealEmoji(commands.Cog):
         # Remove duplicates while preserving order
         unique_emojis = []
         seen_ids = set()
-        for name, emoji_id in emojis:
+        for name, emoji_id, animated in emojis:
             if emoji_id not in seen_ids:
-                unique_emojis.append((name, emoji_id))
+                unique_emojis.append((name, emoji_id, animated))
                 seen_ids.add(emoji_id)
         
         # Limit to 5 emojis per command
@@ -343,14 +336,15 @@ class StealEmoji(commands.Cog):
         successful = []
         failed = []
         
-        for i, (emoji_name, emoji_id) in enumerate(unique_emojis):
+        for i, (emoji_name, emoji_id, animated) in enumerate(unique_emojis):
             try:
                 # Update progress
                 progress_embed.set_field_at(0, name="Progress", value=f"{i+1}/{len(unique_emojis)}", inline=True)
                 await progress_msg.edit(embed=progress_embed)
                 
                 # Try to steal the emoji - use proper format with name and ID
-                emoji_input = f"<:{emoji_name}:{emoji_id}>"
+                emoji_prefix = "a" if animated else ""
+                emoji_input = f"<{emoji_prefix}:{emoji_name}:{emoji_id}>"
                 success = await self.steal_single_emoji(ctx, emoji_input)
                 
                 if success:
