@@ -136,16 +136,14 @@ class SubmitCog(commands.Cog):
         
         @discord.ui.button(label="Submit Entry", style=discord.ButtonStyle.primary, emoji="📝", custom_id="submit_entry_button")
         async def submit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-            # Defer the response immediately to avoid interaction timeout
-            await interaction.response.defer(ephemeral=True)
-            
+            # Check if user already submitted
             if str(interaction.user.id) in self.cog.submissions["user_ids"]:
-                await interaction.followup.send("You have already submitted an entry!", ephemeral=True)
+                await interaction.response.send_message("You have already submitted an entry!", ephemeral=True)
                 return
             
+            # Send modal as immediate response (don't defer)
             modal = self.cog.SubmissionModal(self.cog)
-            # Send modal as followup since we already deferred
-            await interaction.followup.send_modal(modal)
+            await interaction.response.send_modal(modal)
 
     async def setup_hook(self):
         """This is called when the cog is loaded to add the persistent view"""
