@@ -36,7 +36,7 @@ class SubmitCog(commands.Cog):
         )
         
         answer2 = discord.ui.TextInput(
-            label='💘 The One You’d Date',
+            label='💘 The One You\'d Date',
             placeholder='Enter your answer here',
             style=discord.TextStyle.paragraph,
             required=True,
@@ -68,6 +68,7 @@ class SubmitCog(commands.Cog):
         )
         
         async def on_submit(self, interaction: discord.Interaction):
+            # Defer the response immediately
             await interaction.response.defer(thinking=True, ephemeral=True)
             
             if str(interaction.user.id) in self.cog.submissions["user_ids"]:
@@ -135,12 +136,16 @@ class SubmitCog(commands.Cog):
         
         @discord.ui.button(label="Submit Entry", style=discord.ButtonStyle.primary, emoji="📝", custom_id="submit_entry_button")
         async def submit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            # Defer the response immediately to avoid interaction timeout
+            await interaction.response.defer(ephemeral=True)
+            
             if str(interaction.user.id) in self.cog.submissions["user_ids"]:
-                await interaction.response.send_message("You have already submitted an entry!", ephemeral=True)
+                await interaction.followup.send("You have already submitted an entry!", ephemeral=True)
                 return
             
             modal = self.cog.SubmissionModal(self.cog)
-            await interaction.response.send_modal(modal)
+            # Send modal as followup since we already deferred
+            await interaction.followup.send_modal(modal)
 
     async def setup_hook(self):
         """This is called when the cog is loaded to add the persistent view"""
