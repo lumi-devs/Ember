@@ -350,5 +350,5 @@ class PromoterRole(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ Error fetching stats: {e}")
 
-def setup(bot):
-    bot.add_cog(PromoterRole(bot))
+async def setup(bot):
+    await bot.add_cog(PromoterRole(bot))
