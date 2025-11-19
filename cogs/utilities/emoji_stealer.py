@@ -33,7 +33,9 @@ class StealEmoji(commands.Cog):
                 description="A temporary system error occurred. Please try again in a moment.",
                 color=discord.Color.red()
             )
-            await ctx.send(embed=embed, delete_after=15)
+            message = await ctx.send(embed=embed)
+            await asyncio.sleep(5)
+            await message.delete()
             return
         
         # Let other errors be handled by the local error handler
@@ -48,12 +50,35 @@ class StealEmoji(commands.Cog):
                     description="You need the **Manage Emojis** permission to use this command.",
                     color=discord.Color.red()
                 )
-                await ctx.send(embed=embed, delete_after=10)
+                message = await ctx.send(embed=embed)
+                await asyncio.sleep(5)
+                await message.delete()
                 return False
             return True
         except Exception as e:
             print(f"Error in cog_check: {e}")
             return False
+    
+    async def send_temp_message(self, ctx, embed: discord.Embed, delete_after: int = 5):
+        """Send a message and automatically delete it after specified seconds."""
+        try:
+            message = await ctx.send(embed=embed)
+            await asyncio.sleep(delete_after)
+            await message.delete()
+            return message
+        except Exception as e:
+            print(f"Error in send_temp_message: {e}")
+            return None
+    
+    async def delete_command_message(self, ctx):
+        """Delete the command message after a short delay."""
+        try:
+            await asyncio.sleep(2)  # Wait 2 seconds before deleting command
+            await ctx.message.delete()
+        except discord.NotFound:
+            pass  # Message already deleted
+        except Exception as e:
+            print(f"Error deleting command message: {e}")
     
     def get_emoji_urls(self, emoji_id: str, animated: bool) -> List[str]:
         """Get multiple possible CDN URLs for an emoji."""
@@ -133,7 +158,7 @@ class StealEmoji(commands.Cog):
                     description="Please provide a valid custom emoji in format `<:name:123456789>` or use the emoji directly.",
                     color=discord.Color.red()
                 )
-                await ctx.send(embed=embed, delete_after=10)
+                await self.send_temp_message(ctx, embed, 10)
                 return False
             
             emoji_name = match.group(1)
@@ -150,7 +175,7 @@ class StealEmoji(commands.Cog):
                     description=f"This server has reached the emoji limit ({ctx.guild.emoji_limit}).",
                     color=discord.Color.red()
                 )
-                await ctx.send(embed=embed, delete_after=10)
+                await self.send_temp_message(ctx, embed, 10)
                 return False
             
             # Check if emoji name already exists in this server
@@ -161,7 +186,7 @@ class StealEmoji(commands.Cog):
                     description=f"An emoji named `:{emoji_name}:` already exists in this server.",
                     color=discord.Color.orange()
                 )
-                await ctx.send(embed=embed, delete_after=10)
+                await self.send_temp_message(ctx, embed, 10)
                 return False
             
             # Download emoji data directly from CDN
@@ -177,7 +202,7 @@ class StealEmoji(commands.Cog):
                     description=f"Failed to download emoji `:{emoji_name}:`. The emoji may have been deleted or is from a private server.",
                     color=discord.Color.red()
                 )
-                await ctx.send(embed=embed, delete_after=10)
+                await self.send_temp_message(ctx, embed, 10)
                 return False
             
             # Check file size limits
@@ -188,7 +213,7 @@ class StealEmoji(commands.Cog):
                     description=f"Emoji file is too large ({len(emoji_data)//1024}KB).\nMax: {max_size//1024}KB for {'animated' if is_animated else 'static'} emojis.",
                     color=discord.Color.red()
                 )
-                await ctx.send(embed=embed, delete_after=10)
+                await self.send_temp_message(ctx, embed, 10)
                 return False
             
             # Create the emoji using BytesIO to avoid file operations
@@ -202,7 +227,7 @@ class StealEmoji(commands.Cog):
                     reason=f"Stolen by {ctx.author} ({ctx.author.id})"
                 )
                 
-                # Send success message
+                # Send success message (this one stays permanent)
                 emoji_type = "animated" if is_animated else "static"
                 embed = discord.Embed(
                     title="✅ Emoji Stolen!",
@@ -215,8 +240,12 @@ class StealEmoji(commands.Cog):
                 embed.add_field(name="Size", value=f"{len(emoji_data)//1024}KB", inline=True)
                 embed.set_footer(text=f"Stolen by {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
                 
-                await ctx.send(embed=embed)
+                success_message = await ctx.send(embed=embed)
                 print(f"🎉 Successfully created emoji: {new_emoji.name} (ID: {new_emoji.id})")
+                
+                # Delete command message after success
+                await self.delete_command_message(ctx)
+                
                 return True
                 
             except discord.HTTPException as e:
@@ -227,28 +256,28 @@ class StealEmoji(commands.Cog):
                         description=f"This server has reached the emoji limit ({ctx.guild.emoji_limit}).",
                         color=discord.Color.red()
                     )
-                    await ctx.send(embed=embed, delete_after=10)
+                    await self.send_temp_message(ctx, embed, 10)
                 elif "invalid image" in error_msg or "image" in error_msg:
                     embed = discord.Embed(
                         title="❌ Invalid Image Format",
                         description="The emoji image format is invalid or unsupported.",
                         color=discord.Color.red()
                     )
-                    await ctx.send(embed=embed, delete_after=10)
+                    await self.send_temp_message(ctx, embed, 10)
                 elif "name" in error_msg and "already" in error_msg:
                     embed = discord.Embed(
                         title="❌ Name Already Exists",
                         description="An emoji with that name already exists in this server.",
                         color=discord.Color.red()
                     )
-                    await ctx.send(embed=embed, delete_after=10)
+                    await self.send_temp_message(ctx, embed, 10)
                 else:
                     embed = discord.Embed(
                         title="❌ Creation Failed",
                         description=f"Failed to create emoji: {e}",
                         color=discord.Color.red()
                     )
-                    await ctx.send(embed=embed, delete_after=10)
+                    await self.send_temp_message(ctx, embed, 10)
                 return False
                 
         except Exception as e:
@@ -258,7 +287,7 @@ class StealEmoji(commands.Cog):
                 description="An unexpected error occurred while processing the emoji.",
                 color=discord.Color.red()
             )
-            await ctx.send(embed=embed, delete_after=10)
+            await self.send_temp_message(ctx, embed, 10)
             return False
     
     def extract_emojis_from_message(self, message: discord.Message) -> List[Tuple[str, str, bool]]:
@@ -282,7 +311,7 @@ class StealEmoji(commands.Cog):
                     description=f"You can only steal 5 emojis per minute. Please wait {wait_time}.",
                     color=discord.Color.orange()
                 )
-                await ctx.send(embed=embed, delete_after=10)
+                await self.send_temp_message(ctx, embed, 10)
                 return
             
             # Case 1: User provided emoji input
@@ -302,7 +331,7 @@ class StealEmoji(commands.Cog):
                             description="The replied message doesn't contain any custom emojis.",
                             color=discord.Color.orange()
                         )
-                        await ctx.send(embed=embed, delete_after=10)
+                        await self.send_temp_message(ctx, embed, 10)
                         return
                     
                     await self.steal_multiple_emojis(ctx, emojis, replied_message)
@@ -314,7 +343,7 @@ class StealEmoji(commands.Cog):
                         description="The replied message was not found.",
                         color=discord.Color.red()
                     )
-                    await ctx.send(embed=embed, delete_after=10)
+                    await self.send_temp_message(ctx, embed, 10)
                     return
                 except discord.HTTPException as e:
                     embed = discord.Embed(
@@ -322,10 +351,10 @@ class StealEmoji(commands.Cog):
                         description=f"Could not fetch the replied message: {e}",
                         color=discord.Color.red()
                     )
-                    await ctx.send(embed=embed, delete_after=10)
+                    await self.send_temp_message(ctx, embed, 10)
                     return
             
-            # Case 3: No input and no reply - show help
+            # Case 3: No input and no reply - show help (this stays permanent)
             await self.show_help(ctx)
             
         except Exception as e:
@@ -335,10 +364,10 @@ class StealEmoji(commands.Cog):
                 description="An error occurred while processing the command.",
                 color=discord.Color.red()
             )
-            await ctx.send(embed=embed, delete_after=10)
+            await self.send_temp_message(ctx, embed, 10)
     
     async def show_help(self, ctx):
-        """Show help for the steal command."""
+        """Show help for the steal command (permanent message)."""
         embed = discord.Embed(
             title="🔄 Steal Emoji Help",
             description="Steal emojis from other servers by downloading them directly from Discord's CDN.",
@@ -388,7 +417,7 @@ class StealEmoji(commands.Cog):
                 description=f"Found {len(unique_emojis)} emojis. Only stealing the first 5.",
                 color=discord.Color.orange()
             )
-            await ctx.send(embed=embed, delete_after=10)
+            await self.send_temp_message(ctx, embed, 10)
             unique_emojis = unique_emojis[:5]
         
         # Check if we have enough slots
@@ -399,7 +428,7 @@ class StealEmoji(commands.Cog):
                 description=f"Only {available_slots} emoji slot(s) available, but {len(unique_emojis)} emoji(s) requested.",
                 color=discord.Color.red()
             )
-            await ctx.send(embed=embed, delete_after=10)
+            await self.send_temp_message(ctx, embed, 10)
             return
         
         # Start stealing process
@@ -444,7 +473,7 @@ class StealEmoji(commands.Cog):
                 progress_embed.set_field_at(2, name="Failed", value=str(len(failed)), inline=True)
                 await progress_msg.edit(embed=progress_embed)
         
-        # Final result
+        # Final result - delete after 5 seconds
         result_embed = discord.Embed(
             title="📊 Stealing Complete",
             color=discord.Color.green() if successful else discord.Color.red()
@@ -461,6 +490,13 @@ class StealEmoji(commands.Cog):
             result_embed.add_field(name="Failed Emojis", value=", ".join(failed), inline=False)
         
         await progress_msg.edit(embed=result_embed)
+        
+        # Delete the progress message after 5 seconds
+        await asyncio.sleep(5)
+        await progress_msg.delete()
+        
+        # Delete command message
+        await self.delete_command_message(ctx)
     
     @steal_emoji.error
     async def steal_emoji_error(self, ctx, error):
@@ -471,7 +507,7 @@ class StealEmoji(commands.Cog):
                 description="I need the **Manage Emojis** permission to steal emojis.",
                 color=discord.Color.red()
             )
-            await ctx.send(embed=embed, delete_after=10)
+            await self.send_temp_message(ctx, embed, 10)
         elif not isinstance(error, commands.MissingPermissions):
             # Only handle non-permission errors here
             embed = discord.Embed(
@@ -479,7 +515,7 @@ class StealEmoji(commands.Cog):
                 description="An unexpected error occurred with the steal command.",
                 color=discord.Color.red()
             )
-            await ctx.send(embed=embed, delete_after=10)
+            await self.send_temp_message(ctx, embed, 10)
 
 async def setup(bot):
     try:

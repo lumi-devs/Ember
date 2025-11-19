@@ -382,28 +382,14 @@ class ShameCommands(commands.Cog):
     async def shame_status(self, interaction: discord.Interaction):
         """Check if and when the last leaderboard was sent"""
         try:
+            last_rotation = await self.db.get_system_state('last_rotation_time')
             last_sent = await self.db.get_system_state('last_leaderboard_sent')
-            last_rotation = await self.db.get_system_state('last_leaderboard')
             
             embed = discord.Embed(
                 title="🔄 Shame System Status",
                 color=discord.Color.blue(),
                 timestamp=discord.utils.utcnow()
             )
-            
-            if last_sent:
-                last_sent_dt = datetime.fromisoformat(last_sent)
-                embed.add_field(
-                    name="📅 Last Message Sent",
-                    value=f"<t:{int(last_sent_dt.timestamp())}:F>\n(<t:{int(last_sent_dt.timestamp())}:R>)",
-                    inline=False
-                )
-            else:
-                embed.add_field(
-                    name="📅 Last Message Sent",
-                    value="Never",
-                    inline=False
-                )
             
             if last_rotation:
                 last_rotation_dt = datetime.fromisoformat(last_rotation)
@@ -412,6 +398,14 @@ class ShameCommands(commands.Cog):
                     value=f"<t:{int(last_rotation_dt.timestamp())}:F>\n(<t:{int(last_rotation_dt.timestamp())}:R>)",
                     inline=False
                 )
+                
+                # Calculate next rotation
+                next_rotation = last_rotation_dt + timedelta(days=ShameConfig.LEADERBOARD_INTERVAL_DAYS)
+                embed.add_field(
+                    name="⏰ Next Rotation",
+                    value=f"<t:{int(next_rotation.timestamp())}:F>\n(<t:{int(next_rotation.timestamp())}:R>)",
+                    inline=False
+                )
             else:
                 embed.add_field(
                     name="🔄 Last Rotation",
@@ -419,18 +413,26 @@ class ShameCommands(commands.Cog):
                     inline=False
                 )
             
-            # Calculate next rotation
-            next_reroll = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=4)
-            embed.add_field(
-                name="⏰ Next Rotation",
-                value=f"<t:{int(next_reroll.timestamp())}:F>\n(<t:{int(next_reroll.timestamp())}:R>)",
-                inline=False
-            )
+            if last_sent:
+                last_sent_dt = datetime.fromisoformat(last_sent)
+                embed.add_field(
+                    name="📅 Last Leaderboard Sent",
+                    value=f"<t:{int(last_sent_dt.timestamp())}:F>\n(<t:{int(last_sent_dt.timestamp())}:R>)",
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name="📅 Last Leaderboard Sent", 
+                    value="Never",
+                    inline=False
+                )
             
             await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"❌ Error checking status: {str(e)}", ephemeral=True)
 
+
+            
     @shame.command(name="rank", description="Check your rank in the shame leaderboard")
     async def shame_rank(self, interaction: discord.Interaction):
         try:

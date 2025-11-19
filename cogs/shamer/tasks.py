@@ -12,6 +12,7 @@ class ShameTasks:
         self.bot = bot
         self.db = database
         self.utils = ShameUtils(database, self.bot)
+        self.last_rotation_check = None
     
     @tasks.loop(hours=1)
     async def hourly_decay(self):
@@ -21,7 +22,7 @@ class ShameTasks:
             print("[Shamer] Applying hourly decay...")
             
             # Get all users with points > 0
-            users = await self.db.get_leaderboard(10000)  # Large limit to get all
+            users = await self.db.get_leaderboard(10000)
             if not users:
                 print("[Shamer] No users to decay")
                 return
@@ -40,10 +41,9 @@ class ShameTasks:
                     deletions.append(user_id)
                     print(f"[Shamer] Removing user {user_id} (reached 0 points)")
                 else:
-                    updates.append((new_points, 0, user_id))  # points, hourly_points, user_id
+                    updates.append((new_points, 0, user_id))
                     print(f"[Shamer] Decayed {decay_amount} points from user {user_id}")
             
-            # Batch operations
             if updates:
                 await self.db.batch_update_users(updates)
             if deletions:
@@ -53,92 +53,75 @@ class ShameTasks:
             
         except Exception as e:
             print(f"[Shamer] Critical error in hourly_decay: {e}")
-    
-    @tasks.loop(minutes=15)  # Check more frequently to catch missed dates
-    async def leaderboard_scheduler(self):
-        """Check if it's time to post leaderboard based on fixed schedule"""
+
+    @tasks.loop(minutes=5)  # More frequent but lightweight checks
+    async def rotation_checker(self):
+        """Simplified rotation checker - single source of truth"""
         try:
             await self.bot.wait_until_ready()
             
-            # Get the next scheduled leaderboard date from database
-            next_leaderboard_str = await self.db.get_system_state('next_leaderboard_date')
-            
-            if not next_leaderboard_str:
-                # First time running - calculate next leaderboard date
-                await self.initialize_leaderboard_schedule()
-                return
-            
-            next_leaderboard = datetime.fromisoformat(next_leaderboard_str)
+            # Get last rotation time
+            last_rotation_str = await self.db.get_system_state('last_rotation_time')
             now = datetime.now()
             
-            # If current time is past the scheduled date, trigger leaderboard
-            if now >= next_leaderboard:
-                print(f"[Shamer] 🚨 Leaderboard scheduled date reached: {next_leaderboard}")
+            if not last_rotation_str:
+                # First time - set initial rotation time to now
+                await self.db.set_system_state('last_rotation_time', now.isoformat())
+                print("[Shamer] Initialized rotation timer")
+                return
+            
+            last_rotation = datetime.fromisoformat(last_rotation_str)
+            time_since_rotation = now - last_rotation
+            
+            # Check if 4 days have passed
+            if time_since_rotation >= timedelta(days=ShameConfig.LEADERBOARD_INTERVAL_DAYS):
+                print(f"[Shamer] 🚨 Rotation time reached! Last rotation: {last_rotation}")
                 await self.execute_leaderboard_rotation()
                 
         except Exception as e:
-            print(f"[Shamer] Critical error in leaderboard_scheduler: {e}")
-    
-    async def initialize_leaderboard_schedule(self):
-        """Initialize the leaderboard schedule based on fixed intervals"""
-        try:
-            # Calculate next leaderboard date (every 4 days at midnight)
-            now = datetime.now()
-            
-            # Find the next 4-day interval starting from a known date
-            # You can set a fixed start date or use the current date
-            start_date = datetime(2024, 1, 1)  # Example fixed start date
-            days_since_start = (now - start_date).days
-            intervals_passed = days_since_start // ShameConfig.LEADERBOARD_INTERVAL_DAYS
-            next_interval = intervals_passed + 1
-            
-            next_leaderboard = start_date + timedelta(days=next_interval * ShameConfig.LEADERBOARD_INTERVAL_DAYS)
-            
-            # Set to midnight
-            next_leaderboard = next_leaderboard.replace(hour=0, minute=0, second=0, microsecond=0)
-            
-            await self.db.set_system_state('next_leaderboard_date', next_leaderboard.isoformat())
-            print(f"[Shamer] Initialized leaderboard schedule. Next leaderboard: {next_leaderboard}")
-            
-        except Exception as e:
-            print(f"[Shamer] Error initializing leaderboard schedule: {e}")
-    
+            print(f"[Shamer] Error in rotation_checker: {e}")
+
     async def execute_leaderboard_rotation(self):
         """Execute the full leaderboard rotation process"""
         try:
-            print("[Shamer] 🎯 Executing scheduled leaderboard rotation...")
+            print("[Shamer] 🎯 Starting leaderboard rotation...")
             
             # Step 1: Post leaderboard and assign roles
-            await self.post_leaderboard_and_assign_roles()
+            success = await self.post_leaderboard_and_assign_roles()
             
-            # Step 2: Reset all stats
-            await self.hard_reset_all_stats()
-            
-            # Step 3: Schedule next leaderboard
-            await self.schedule_next_leaderboard()
-            
-            print("[Shamer] ✅ Leaderboard rotation completed successfully!")
+            if success:
+                # Step 2: Reset all stats
+                await self.hard_reset_all_stats()
+                
+                # Step 3: Update rotation time
+                await self.db.set_system_state('last_rotation_time', datetime.now().isoformat())
+                
+                # Step 4: Clear old system states to avoid conflicts
+                await self.cleanup_old_states()
+                
+                print("[Shamer] ✅ Leaderboard rotation completed successfully!")
+            else:
+                print("[Shamer] ❌ Leaderboard rotation failed - will retry next check")
             
         except Exception as e:
             print(f"[Shamer] ❌ Error in leaderboard rotation: {e}")
-    
-    async def schedule_next_leaderboard(self):
-        """Schedule the next leaderboard date"""
+
+    async def cleanup_old_states(self):
+        """Clean up old system state keys to prevent conflicts"""
         try:
-            now = datetime.now()
-            next_leaderboard = now + timedelta(days=ShameConfig.LEADERBOARD_INTERVAL_DAYS)
-            
-            # Set to midnight
-            next_leaderboard = next_leaderboard.replace(hour=0, minute=0, second=0, microsecond=0)
-            
-            await self.db.set_system_state('next_leaderboard_date', next_leaderboard.isoformat())
-            print(f"[Shamer] 📅 Next leaderboard scheduled for: {next_leaderboard}")
-            
+            async with aiosqlite.connect(self.db.db_path) as db:
+                # Keep only essential state keys
+                await db.execute('''
+                    DELETE FROM system_state 
+                    WHERE key NOT IN ('last_rotation_time', 'next_leaderboard_date')
+                ''')
+                await db.commit()
+            print("[Shamer] Cleaned up old system states")
         except Exception as e:
-            print(f"[Shamer] Error scheduling next leaderboard: {e}")
-    
+            print(f"[Shamer] Error cleaning up states: {e}")
+
     async def hard_reset_all_stats(self):
-        """Reset all user points AND message counts to 0 (keeps users in database)"""
+        """Reset all user points AND message counts to 0"""
         try:
             print("[Shamer] 🚨 Performing 4-day hard reset of ALL stats...")
             
@@ -176,9 +159,9 @@ class ShameTasks:
                     
         except Exception as e:
             print(f"[Shamer] ❌ Error in hard_reset_all_stats: {e}")
-    
+
     async def post_leaderboard_and_assign_roles(self):
-        """Post leaderboard and assign shame role to top 5"""
+        """Post leaderboard and assign shame role to top 5 - returns success status"""
         try:
             print("[Shamer] Posting leaderboard and assigning roles...")
             
@@ -187,18 +170,18 @@ class ShameTasks:
             
             if not leaderboard:
                 print("[Shamer] No users with points found for leaderboard")
-                return
+                return False
             
             # Post in leaderboard channel
             channel = self.bot.get_channel(ShameConfig.LEADERBOARD_CHANNEL_ID)
             if not channel:
                 print("[Shamer] ERROR: Channel not found")
-                return
+                return False
             
             message_sent = False
             role_message_sent = False
             
-            # Build leaderboard description with string concatenation
+            # Build leaderboard description
             symbols = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
             description = ""
             
@@ -208,10 +191,10 @@ class ShameTasks:
                 username = user.display_name if user else f"Unknown User ({user_id})"
                 symbol = symbols[i] if i < len(symbols) else "•"
                 
-                line = f"{symbol} {username} **{user_data['points']}** points\n\n"
+                line = f"{symbol} {username} **{user_data['points']}** points • {user_data['total_messages']} messages\n\n"
                 description += line
             
-            # Create single embed with all mentions in description
+            # Create embed
             embed = discord.Embed(
                 title="🏆 Hall of Shame - Leaderboard Update",
                 description=description,
@@ -221,7 +204,6 @@ class ShameTasks:
             
             # Calculate next rotation time
             next_reroll = datetime.now() + timedelta(days=ShameConfig.LEADERBOARD_INTERVAL_DAYS)
-            next_reroll = next_reroll.replace(hour=0, minute=0, second=0, microsecond=0)
             time_until_reroll = next_reroll - datetime.now()
             days = time_until_reroll.days
             hours = time_until_reroll.seconds // 3600
@@ -232,9 +214,10 @@ class ShameTasks:
             try:
                 leaderboard_message = await channel.send(embed=embed)
                 message_sent = True
-                print(f"[Shamer] ✅ Leaderboard sent at {datetime.now()} | Message ID: {leaderboard_message.id}")
+                print(f"[Shamer] ✅ Leaderboard sent | Message ID: {leaderboard_message.id}")
             except Exception as e:
                 print(f"[Shamer] ❌ Failed to send leaderboard: {e}")
+                return False
             
             # Announce role winners
             top_5_ids = [user['user_id'] for user in leaderboard[:5]]
@@ -250,7 +233,7 @@ class ShameTasks:
             try:
                 role_message = await channel.send(f"<@&{ShameConfig.SHAME_ROLE_ID}>", embed=role_embed)
                 role_message_sent = True
-                print(f"[Shamer] ✅ Role announcement sent at {datetime.now()} | Message ID: {role_message.id}")
+                print(f"[Shamer] ✅ Role announcement sent | Message ID: {role_message.id}")
             except Exception as e:
                 print(f"[Shamer] ❌ Failed to send role announcement: {e}")
             
@@ -265,51 +248,56 @@ class ShameTasks:
                     role_assignment_success = False
             
             # Log successful execution
-            if message_sent or role_message_sent:
-                await self.db.set_system_state('last_leaderboard_executed', datetime.now().isoformat())
+            if message_sent:
+                await self.db.set_system_state('last_leaderboard_sent', datetime.now().isoformat())
                 print("[Shamer] ✅ Leaderboard posted successfully!")
+                return True
             else:
                 print("[Shamer] ❌ Leaderboard posting failed - no messages sent!")
+                return False
                 
         except Exception as e:
             print(f"[Shamer] Critical error in post_leaderboard_and_assign_roles: {e}")
+            return False
 
     @tasks.loop(hours=24)
-    async def maintenance_check(self):
-        """Daily maintenance to ensure schedule integrity"""
+    async def system_integrity_check(self):
+        """Daily system integrity check"""
         try:
             await self.bot.wait_until_ready()
             
-            # Verify next leaderboard date exists
-            next_leaderboard_str = await self.db.get_system_state('next_leaderboard_date')
-            if not next_leaderboard_str:
-                print("[Shamer] Maintenance: No leaderboard schedule found, initializing...")
-                await self.initialize_leaderboard_schedule()
+            # Ensure rotation time exists
+            last_rotation_str = await self.db.get_system_state('last_rotation_time')
+            if not last_rotation_str:
+                print("[Shamer] Integrity: No rotation time found, initializing...")
+                await self.db.set_system_state('last_rotation_time', datetime.now().isoformat())
                 return
             
-            # Verify the date is in the future
-            next_leaderboard = datetime.fromisoformat(next_leaderboard_str)
-            now = datetime.now()
+            # Check if rotation is overdue (more than 5 days)
+            last_rotation = datetime.fromisoformat(last_rotation_str)
+            time_since_rotation = datetime.now() - last_rotation
             
-            if next_leaderboard <= now:
-                print("[Shamer] Maintenance: Found overdue leaderboard, executing now...")
+            if time_since_rotation > timedelta(days=ShameConfig.LEADERBOARD_INTERVAL_DAYS + 1):
+                print("[Shamer] Integrity: Rotation overdue, forcing execution...")
                 await self.execute_leaderboard_rotation()
                 
+            print("[Shamer] ✅ System integrity check completed")
+                
         except Exception as e:
-            print(f"[Shamer] Error in maintenance check: {e}")
+            print(f"[Shamer] Error in system integrity check: {e}")
 
     def start_tasks(self):
-        """Start all background tasks"""
+        """Start all background tasks - simplified"""
         try:
             self.hourly_decay.start()
-            self.leaderboard_scheduler.start()  # More frequent checking
-            self.maintenance_check.start()  # Daily integrity check
+            self.rotation_checker.start()  # Main rotation checker
+            self.system_integrity_check.start()  # Daily backup check
             print("[Shamer] Background tasks started!")
         except Exception as e:
             print(f"[Shamer] Error starting tasks: {e}")
 
     async def manually_trigger_leaderboard(self):
-        """Manually trigger leaderboard rotation (for testing or recovery)"""
+        """Manually trigger leaderboard rotation"""
         try:
             print("[Shamer] 🚨 Manual leaderboard trigger requested...")
             await self.execute_leaderboard_rotation()
