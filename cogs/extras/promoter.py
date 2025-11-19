@@ -1,7 +1,7 @@
 import discord
 from discord.ext import tasks, commands
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
 
 class PromoterRole(commands.Cog):
@@ -36,21 +36,11 @@ class PromoterRole(commands.Cog):
             ''')
             
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS promoter_stats (
-                    guild_id INTEGER PRIMARY KEY,
-                    total_promotions INTEGER DEFAULT 0,
-                    active_promoters INTEGER DEFAULT 0,
-                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS member_cache (
-                    member_id INTEGER PRIMARY KEY,
+                CREATE TABLE IF NOT EXISTS weekly_stats (
+                    week_start DATE,
                     guild_id INTEGER,
-                    last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    has_promotion BOOLEAN DEFAULT FALSE,
-                    promotion_content TEXT
+                    promoters_count INTEGER DEFAULT 0,
+                    PRIMARY KEY (week_start, guild_id)
                 )
             ''')
             
@@ -62,6 +52,7 @@ class PromoterRole(commands.Cog):
         print(f"📊 Monitoring: Status & Global Name for {self.your_server_invites}")
         self.quick_check.start()
         self.detailed_check.start()
+        self.weekly_cleanup.start()
     
     @commands.Cog.listener()
     async def on_presence_update(self, before, after):
@@ -138,13 +129,6 @@ class PromoterRole(commands.Cog):
                 INSERT INTO promoter_logs (guild_id, member_id, member_name, action, reason, content)
                 VALUES (?, ?, ?, ?, ?, ?)
             ''', (guild_id, member_id, member_name, action, reason, content))
-            
-            if action == 'ROLE_ASSIGNED':
-                cursor.execute('''
-                    INSERT OR REPLACE INTO promoter_stats (guild_id, total_promotions, last_updated)
-                    VALUES (?, COALESCE((SELECT total_promotions FROM promoter_stats WHERE guild_id = ?), 0) + 1, CURRENT_TIMESTAMP)
-                ''', (guild_id, guild_id))
-            
             conn.commit()
 
     async def get_log_channel(self, guild):
@@ -206,7 +190,7 @@ class PromoterRole(commands.Cog):
         try:
             current_has_promotion = await self.has_promotion_content(member)
             currently_has_role = role in member.roles
-            
+
             if current_has_promotion and not currently_has_role:
                 # Give promoter role
                 promotion_content = await self.get_promotion_content(member)
@@ -274,6 +258,30 @@ class PromoterRole(commands.Cog):
         
         print(f"✅ Full scan complete: {total_checked} total members")
 
+    @tasks.loop(hours=24)
+    async def weekly_cleanup(self):
+        """Update weekly stats"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # Get current promoters count
+            for guild in self.bot.guilds:
+                role = guild.get_role(self.promoter_role_id)
+                if role:
+                    promoters_count = len([m for m in guild.members if role in m.roles and not m.bot])
+                    
+                    # Get current week start (Monday)
+                    today = datetime.now().date()
+                    week_start = today - timedelta(days=today.weekday())
+                    
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO weekly_stats (week_start, guild_id, promoters_count)
+                        VALUES (?, ?, ?)
+                    ''', (week_start, guild.id, promoters_count))
+            
+            conn.commit()
+        print("📈 Weekly stats updated")
+
     # COMMANDS
     @commands.command(name='set_log_channel')
     @commands.has_permissions(administrator=True)
@@ -288,6 +296,7 @@ class PromoterRole(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name='promo_check')
+    @commands.has_permissions(manage_roles=True)
     async def manual_promo_check(self, ctx, member: discord.Member = None):
         """Manually check a member's promotion status"""
         target = member or ctx.author
@@ -316,23 +325,49 @@ class PromoterRole(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name='promo_stats')
+    @commands.has_permissions(manage_roles=True)
     async def promo_stats(self, ctx):
-        """Show promotion statistics"""
+        """Show current promotion statistics"""
         try:
+            role = ctx.guild.get_role(self.promoter_role_id)
+            if not role:
+                await ctx.send("❌ Promoter role not found!")
+                return
+            
+            # Current promoters
+            current_promoters = len([m for m in ctx.guild.members if role in m.roles and not m.bot])
+            
+            # This week's stats
+            week_start = datetime.now().date() - timedelta(days=datetime.now().weekday())
+            
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
-                # Total promotions
-                cursor.execute('SELECT COUNT(*) FROM promoter_logs WHERE action = "ROLE_ASSIGNED"')
-                total_promotions = cursor.fetchone()[0]
+                # Get this week's data
+                cursor.execute('''
+                    SELECT promoters_count FROM weekly_stats 
+                    WHERE week_start = ? AND guild_id = ?
+                ''', (week_start, ctx.guild.id))
                 
-                # Current promoters
-                cursor.execute('SELECT COUNT(*) FROM member_cache WHERE has_promotion = 1')
-                current_promoters = cursor.fetchone()[0]
+                week_data = cursor.fetchone()
+                weekly_high = week_data[0] if week_data else 0
                 
-                # Today's promotions
-                cursor.execute('SELECT COUNT(*) FROM promoter_logs WHERE action = "ROLE_ASSIGNED" AND date(created_at) = date("now")')
-                today_promotions = cursor.fetchone()[0]
+                # Get last week's data for comparison
+                last_week_start = week_start - timedelta(days=7)
+                cursor.execute('''
+                    SELECT promoters_count FROM weekly_stats 
+                    WHERE week_start = ? AND guild_id = ?
+                ''', (last_week_start, ctx.guild.id))
+                
+                last_week_data = cursor.fetchone()
+                last_week_high = last_week_data[0] if last_week_data else 0
+            
+            # Calculate trend
+            if last_week_high > 0:
+                trend = ((weekly_high - last_week_high) / last_week_high) * 100
+                trend_text = f"{trend:+.1f}% from last week"
+            else:
+                trend_text = "N/A (no previous data)"
             
             embed = discord.Embed(
                 title="📊 Promotion Statistics",
@@ -341,14 +376,64 @@ class PromoterRole(commands.Cog):
             )
             
             embed.add_field(name="Current Promoters", value=current_promoters, inline=True)
-            embed.add_field(name="Today's Promotions", value=today_promotions, inline=True)
-            embed.add_field(name="Total Promotions", value=total_promotions, inline=True)
+            embed.add_field(name="This Week High", value=weekly_high, inline=True)
+            embed.add_field(name="Trend", value=trend_text, inline=True)
+            
+            # Top promoters this week (from logs)
+            cursor.execute('''
+                SELECT member_name, COUNT(*) as promo_count 
+                FROM promoter_logs 
+                WHERE guild_id = ? AND action = 'ROLE_ASSIGNED' 
+                AND created_at >= datetime('now', '-7 days')
+                GROUP BY member_id 
+                ORDER BY promo_count DESC 
+                LIMIT 5
+            ''', (ctx.guild.id,))
+            
+            top_promoters = cursor.fetchall()
+            if top_promoters:
+                promoters_text = "\n".join([f"• {name}: {count} times" for name, count in top_promoters])
+                embed.add_field(name="🏆 Top Promoters (7 days)", value=promoters_text, inline=False)
             
             embed.set_footer(text="Monitoring Status & Global Name")
             await ctx.send(embed=embed)
             
         except Exception as e:
             await ctx.send(f"❌ Error fetching stats: {e}")
+
+    @commands.command(name='promo_help')
+    async def promo_help(self, ctx):
+        """Show help for promotion commands"""
+        embed = discord.Embed(
+            title="🤖 Promotion System Help",
+            description="Automatically detects when members promote the server in their status/global name",
+            color=0x7289da
+        )
+        
+        commands_list = [
+            ("`!promo_check [member]`", "Check a member's promotion status (Manage Roles required)"),
+            ("`!promo_stats`", "View promotion statistics (Manage Roles required)"),
+            ("`!set_log_channel`", "Set current channel as log channel (Admin only)"),
+            ("`!promo_help`", "Show this help message")
+        ]
+        
+        for cmd, desc in commands_list:
+            embed.add_field(name=cmd, value=desc, inline=False)
+        
+        embed.add_field(
+            name="🔍 Monitoring", 
+            value="• Custom Status Activity\n• Global Name\n• Updates every 3-15 minutes", 
+            inline=False
+        )
+        
+        embed.add_field(
+            name="⚙️ Requirements", 
+            value="Make sure the bot has:\n• Manage Roles permission\n• Appropriate role hierarchy", 
+            inline=False
+        )
+        
+        embed.set_footer(text=f"Monitoring: {', '.join(self.your_server_invites)}")
+        await ctx.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(PromoterRole(bot))
