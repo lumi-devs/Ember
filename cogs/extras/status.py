@@ -8,7 +8,7 @@ class CustomStatusRotator(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.statuses = [
-            "Morax x PunPun when?",
+            "Living the femboy life",
             "Rebiz is a femboy",
             "Chilling at The Aakhri Station",
             "Watching cat videos",
@@ -18,7 +18,8 @@ class CustomStatusRotator(commands.Cog):
             "Hannan the fiddler",
             "LEMME CATCH THE CATS!!",
             "Mother HONEY??",
-            "Watching Morax's Feet Pics",
+            "Gaming with Daemon didi!",
+            "Kims IS A 13YO!"
             
         ]
         self.status_cycle = itertools.cycle(self.statuses)
