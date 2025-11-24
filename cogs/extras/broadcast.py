@@ -358,4 +358,3 @@ class BroadcastCog(commands.Cog):
 async def setup(bot):
     cog = BroadcastCog(bot)
     await bot.add_cog(cog)
-    bot.tree.add_command(cog.broadcast_group)

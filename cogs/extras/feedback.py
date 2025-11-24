@@ -428,5 +428,3 @@ async def setup(bot):
     cog = TwoWayMessaging(bot)
     await bot.add_cog(cog)
     
-    # Add the single feedback group to the bot
-    bot.tree.add_command(cog.feedback_group)
