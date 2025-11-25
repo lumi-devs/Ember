@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands, tasks
 import random
 
-DURATION = 120
+DURATION = 10
 
 class CustomStatusRotator(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -10,7 +10,7 @@ class CustomStatusRotator(commands.Cog):
         self.statuses = [
             "Living the femboy life",
             "Rebiz is a femboy",
-            "Garamchai: 99% 1% hooman",
+            "Garamchai: 99% chai 1% hooman",
             "Muse: Playing roblox like its doomsday.",
             "Aster makes everyday feel like a festival",
             "Dabi is suffering from main character syndrome",
@@ -25,8 +25,11 @@ class CustomStatusRotator(commands.Cog):
             "Hannan the fiddler",
             "LEMME CATCH THE CATS!!",
             "Mother HONEY??",
-            "Gaming with Daemon didi!",
-            "Kims IS A 13YO!"
+            "avi yappity yappity yap yap"
+            "Gaming with Daemon!",
+            "Kims IS A 13YO!",
+            "Aster and chai in gulugulu mood 24/7",
+            "aagmeinghee swaha!"
         ]
         self.queue = []          # Random order list
         self.last_status = None  # To avoid accidental repeat
