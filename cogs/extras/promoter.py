@@ -12,7 +12,7 @@ class PromoterRole(commands.Cog):
         # HARDCODED SETTINGS
         self.promoter_role_id = 1440636027923333182
         self.your_server_invites = [".gg/aakhristation", "discord.gg/aakhristation", "aakhristation"]
-        self.log_channel_id = 1424139009931743382 
+        self.log_channel_id = 1443119503285293098 
         
         self.init_db()
         self.active_check = False
@@ -176,7 +176,6 @@ class PromoterRole(commands.Cog):
                     embed.add_field(name="Previous Promotion", value=f"```{content}```", inline=False)
             
             embed.set_thumbnail(url=member.display_avatar.url)
-            embed.set_footer(text="Auto Promotion Logger")
             
             await channel.send(embed=embed)
             
