@@ -61,14 +61,14 @@ class PromoterRole(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         print(f"🚀 ULTRA-FAST PromoterRole cog loaded!")
-        print(f"📊 QUICK checking: Status & Primary Guild Tag '{self.server_tag}'")
+        print(f"📊 IMMEDIATE checking: Status & Primary Guild Tag '{self.server_tag}'")
         self.fallback_check.start()
         self.weekly_cleanup.start()
         self.cleanup_old_stats.start()
     
     @commands.Cog.listener()
     async def on_presence_update(self, before, after):
-        """Status change detection"""
+        """INSTANT status change detection"""
         if after.bot:
             return
             
@@ -77,11 +77,11 @@ class PromoterRole(commands.Cog):
         after_status = self.get_status_content(after)
         
         if before_status != after_status:
-            await self.instant_member_check(after, f"Status changed")
+            await self.instant_member_check(after, f"Status changed: {after_status}")
 
     @commands.Cog.listener()
     async def on_member_update(self, before, after):
-        """Member update detection"""
+        """INSTANT member update detection"""
         if after.bot:
             return
             
@@ -104,21 +104,22 @@ class PromoterRole(commands.Cog):
         return None
 
     def has_primary_guild_tag(self, member):
-        """Check if member has the specific primary guild tag using primary_guild.tag"""
+        """Check if member has the specific primary guild tag"""
         try:
-            # Direct access to primary_guild.tag as per documentation
-            if member.primary_guild is None:
+            primary_guild = member.primary_guild
+            if primary_guild is None:
                 return False
             
-            if member.primary_guild.tag is None:
+            tag = primary_guild.tag
+            if tag is None:
                 return False
             
-            return member.primary_guild.tag == self.server_tag
+            return tag == self.server_tag
         except Exception:
             return False
 
     async def has_promotion_content(self, member):
-        """QUICK: Check status and primary guild tag ONLY"""
+        """ULTRA-FAST: Check status and primary guild tag ONLY"""
         
         # 1. Check Primary Guild Tag (INSTANT)
         if self.has_primary_guild_tag(member):
@@ -166,7 +167,7 @@ class PromoterRole(commands.Cog):
             conn.commit()
 
     async def instant_member_check(self, member, reason):
-        """QUICK instant check - called immediately on changes"""
+        """ULTRA-FAST instant check - called immediately on changes"""
         role = member.guild.get_role(self.promoter_role_id)
         if not role:
             return
@@ -183,27 +184,26 @@ class PromoterRole(commands.Cog):
                     member.guild.id, member.id, str(member),
                     'ROLE_ASSIGNED', f'Instant: {reason}', promotion_content
                 )
-                print(f"⚡ INSTANT ✅ {member.display_name} - Promoter role assigned")
+                print(f"⚡ INSTANT ✅ {member.display_name} - Promoter role assigned - {promotion_content}")
                 await self.send_promotion_log(member, "assigned", promotion_content)
                 
             elif not current_has_promotion and currently_has_role:
-                # Remove promoter role INSTANTLY - KEEP THIS LOGGING
+                # Remove promoter role INSTANTLY
                 promotion_content = await self.get_promotion_content(member)
                 await member.remove_roles(role, reason=f"Instant removal: {reason}")
                 self.log_promotion_action(
                     member.guild.id, member.id, str(member),
                     'ROLE_REMOVED', f'Instant: {reason}', promotion_content
                 )
-                print(f"⚡ INSTANT 🚫 {member.display_name} - Promoter role removed")
+                print(f"⚡ INSTANT 🔄 {member.display_name} - Promoter role removed - {promotion_content}")
                 await self.send_promotion_log(member, "removed", promotion_content)
                 
         except Exception as e:
-            # Silent error handling
-            pass
+            print(f"❌ Instant check error with {member.display_name}: {e}")
 
-    @tasks.loop(seconds=30)
+    @tasks.loop(minutes=3)
     async def fallback_check(self):
-        """QUICK FALLBACK: Check for missed updates"""
+        """FALLBACK ONLY: Check for missed updates or static primary tags"""
         for guild in self.bot.guilds:
             role = guild.get_role(self.promoter_role_id)
             if not role:
@@ -212,18 +212,23 @@ class PromoterRole(commands.Cog):
             checked = 0
             corrections = 0
             
+            # Only check members who might have static primary tags
             for member in guild.members:
                 if not member.bot:
+                    # Quick check without heavy processing
                     has_tag = self.has_primary_guild_tag(member)
                     has_role = role in member.roles
                     
-                    # If mismatch between promotion status and role
+                    # If they have tag but no role, or vice versa
                     if has_tag != has_role:
-                        await self.instant_member_check(member, "Quick check mismatch")
+                        await self.instant_member_check(member, "Fallback check mismatch")
                         corrections += 1
                     
                     checked += 1
                     self.total_checks += 1
+            
+            if corrections > 0:
+                print(f"🔄 Fallback: {guild.name} - {checked} checked, {corrections} corrected")
 
     @tasks.loop(hours=24)
     async def weekly_cleanup(self):
@@ -255,7 +260,7 @@ class PromoterRole(commands.Cog):
             conn.commit()
 
     async def send_promotion_log(self, member, action_type, content=""):
-        """Send log to designated channel - KEEP REMOVAL LOGGING"""
+        """Send log to designated channel"""
         try:
             channel = member.guild.get_channel(self.log_channel_id)
             if not channel:
@@ -263,17 +268,16 @@ class PromoterRole(commands.Cog):
             
             if action_type == "assigned":
                 embed = discord.Embed(
-                    title="⚡ New Promoter!",
+                    title="⚡New Promoter!",
                     description=f"**{member.mention}** is promoting our server!",
                     color=0x00ff00,
                     timestamp=datetime.now()
                 )
             else:
-                # KEEP THE PROMOTER REMOVED EMBED
                 embed = discord.Embed(
                     title="⚡ Promoter Removed", 
-                    description=f"**{member.mention}** stopped promoting our server",
-                    color=0xff0000,
+                    description=f"**{member.mention}** stopped promoting",
+                    color=0xff9900,
                     timestamp=datetime.now()
                 )
             
@@ -281,6 +285,7 @@ class PromoterRole(commands.Cog):
                 embed.add_field(name="Promotion Source", value=f"```{content}```", inline=False)
             
             embed.add_field(name="Role Action", value=f"<@&{self.promoter_role_id}>", inline=True)
+            embed.add_field(name="Detection", value="⚡ INSTANT", inline=True)
             embed.set_thumbnail(url=member.display_avatar.url)
             
             await channel.send(embed=embed)
@@ -295,11 +300,11 @@ class PromoterRole(commands.Cog):
         member = member or ctx.author
 
         try:
-            # Direct access to primary_guild.tag
-            if member.primary_guild is None:
+            primary_guild = member.primary_guild
+            if primary_guild is None:
                 return await ctx.reply("❌ This user has no primary guild set.")
 
-            tag = member.primary_guild.tag
+            tag = primary_guild.tag
             if tag is None:
                 return await ctx.reply("⚠️ This user has a primary guild but no tag set.")
 
@@ -333,12 +338,13 @@ class PromoterRole(commands.Cog):
                 if not member.bot and self.has_primary_guild_tag(member):
                     members_with_tag += 1
             
-            embed = discord.Embed(title="🤖 QUICK Promoter System", color=0x7289da)
+            embed = discord.Embed(title="🤖 ULTRA-FAST Promoter System", color=0x7289da)
             embed.add_field(name="💾 Memory", value=f"{memory_usage:.1f} MB", inline=True)
             embed.add_field(name="⚡ CPU", value=f"{cpu_usage:.1f}%", inline=True)
             embed.add_field(name="📊 Total Checks", value=f"{self.total_checks:,}", inline=True)
             embed.add_field(name="👥 Promoters", value=total_promoters, inline=True)
-            embed.add_field(name="🏷️ Server Tags", value=members_with_tag, inline=True)
+            embed.add_field(name="🏷️ Raही Tags", value=members_with_tag, inline=True)
+            embed.add_field(name="🎯 Detection", value="⚡ INSTANT", inline=True)
             
             await ctx.send(embed=embed)
             
@@ -374,9 +380,10 @@ class PromoterRole(commands.Cog):
         embed.add_field(name="🌐 Status", value=str(target.status).title(), inline=True)
         
         has_primary_tag = self.has_primary_guild_tag(target)
-        tag_value = target.primary_guild.tag if target.primary_guild and target.primary_guild.tag else "None"
+        primary_guild = target.primary_guild
+        tag_value = primary_guild.tag if primary_guild and primary_guild.tag else "None"
         
-        embed.add_field(name="🎯 Server Tag", value="✅ Yes" if has_primary_tag else "❌ No", inline=True)
+        embed.add_field(name="🎯 Raही Tag", value="✅ Yes" if has_primary_tag else "❌ No", inline=True)
         embed.add_field(name="🏷️ Tag Value", value=tag_value, inline=True)
         
         has_promotion = await self.has_promotion_content(target)
@@ -393,7 +400,7 @@ class PromoterRole(commands.Cog):
     async def set_log_channel(self, ctx):
         """Set log channel"""
         self.log_channel_id = ctx.channel.id
-        await ctx.send("✅ Log channel set - Quick detection active!")
+        await ctx.send("✅ Log channel set - Instant detection active!")
 
     @commands.command(name='promo_check')
     @commands.has_permissions(manage_roles=True)
@@ -413,15 +420,15 @@ class PromoterRole(commands.Cog):
         embed.add_field(name="Promotion", value="✅ Yes" if has_promotion else "❌ No", inline=True)
         embed.add_field(name="Has Role", value="✅ Yes" if has_role else "❌ No", inline=True)
         embed.add_field(name="Match", value="✅ Yes" if has_promotion == has_role else "❌ No", inline=True)
-        embed.add_field(name="Server Tag", value="✅ Yes" if self.has_primary_guild_tag(target) else "❌ No", inline=True)
+        embed.add_field(name="Raही Tag", value="✅ Yes" if self.has_primary_guild_tag(target) else "❌ No", inline=True)
         
         await ctx.send(embed=embed)
 
     @commands.command(name='promo_help')
     async def promo_help(self, ctx):
         """Help"""
-        embed = discord.Embed(title="🤖 QUICK Promotion System", color=0x7289da)
-        embed.add_field(name="⚡ Features", value="• Instant status detection\n• Instant primary tag detection\n• Quick fallback every 30 seconds", inline=False)
+        embed = discord.Embed(title="🤖 ULTRA-FAST Promotion System", color=0x7289da)
+        embed.add_field(name="⚡ Features", value="• **INSTANT** status detection\n• **INSTANT** primary tag detection\n• Fallback every 3 minutes", inline=False)
         embed.add_field(name="🎯 Monitoring", value=f"• Status with invites\n• Primary Guild Tag: `{self.server_tag}`", inline=False)
         embed.add_field(name="📝 Commands", value="`!pgtag` `!promoter_stats` `!force_check` `!debug_promoter` `!promo_check` `!set_log_channel`", inline=False)
         await ctx.send(embed=embed)
