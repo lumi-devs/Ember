@@ -68,7 +68,7 @@ class PromoterRole(commands.Cog):
     
     @commands.Cog.listener()
     async def on_presence_update(self, before, after):
-        """INSTANT status change detection"""
+        """ status change detection"""
         if after.bot:
             return
             
@@ -81,7 +81,7 @@ class PromoterRole(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_update(self, before, after):
-        """INSTANT member update detection"""
+        """ member update detection"""
         if after.bot:
             return
             
@@ -285,7 +285,6 @@ class PromoterRole(commands.Cog):
                 embed.add_field(name="Promotion Source", value=f"```{content}```", inline=False)
             
             embed.add_field(name="Role Action", value=f"<@&{self.promoter_role_id}>", inline=True)
-            embed.add_field(name="Detection", value="⚡ INSTANT", inline=True)
             embed.set_thumbnail(url=member.display_avatar.url)
             
             await channel.send(embed=embed)
@@ -343,8 +342,7 @@ class PromoterRole(commands.Cog):
             embed.add_field(name="⚡ CPU", value=f"{cpu_usage:.1f}%", inline=True)
             embed.add_field(name="📊 Total Checks", value=f"{self.total_checks:,}", inline=True)
             embed.add_field(name="👥 Promoters", value=total_promoters, inline=True)
-            embed.add_field(name="🏷️ Raही Tags", value=members_with_tag, inline=True)
-            embed.add_field(name="🎯 Detection", value="⚡ INSTANT", inline=True)
+            embed.add_field(name="🏷️ Server Tags", value=members_with_tag, inline=True)
             
             await ctx.send(embed=embed)
             
@@ -383,7 +381,7 @@ class PromoterRole(commands.Cog):
         primary_guild = target.primary_guild
         tag_value = primary_guild.tag if primary_guild and primary_guild.tag else "None"
         
-        embed.add_field(name="🎯 Raही Tag", value="✅ Yes" if has_primary_tag else "❌ No", inline=True)
+        embed.add_field(name="🎯 Server Tag", value="✅ Yes" if has_primary_tag else "❌ No", inline=True)
         embed.add_field(name="🏷️ Tag Value", value=tag_value, inline=True)
         
         has_promotion = await self.has_promotion_content(target)
@@ -420,7 +418,7 @@ class PromoterRole(commands.Cog):
         embed.add_field(name="Promotion", value="✅ Yes" if has_promotion else "❌ No", inline=True)
         embed.add_field(name="Has Role", value="✅ Yes" if has_role else "❌ No", inline=True)
         embed.add_field(name="Match", value="✅ Yes" if has_promotion == has_role else "❌ No", inline=True)
-        embed.add_field(name="Raही Tag", value="✅ Yes" if self.has_primary_guild_tag(target) else "❌ No", inline=True)
+        embed.add_field(name="Server Tag", value="✅ Yes" if self.has_primary_guild_tag(target) else "❌ No", inline=True)
         
         await ctx.send(embed=embed)
 
@@ -428,7 +426,7 @@ class PromoterRole(commands.Cog):
     async def promo_help(self, ctx):
         """Help"""
         embed = discord.Embed(title="🤖 ULTRA-FAST Promotion System", color=0x7289da)
-        embed.add_field(name="⚡ Features", value="• **INSTANT** status detection\n• **INSTANT** primary tag detection\n• Fallback every 3 minutes", inline=False)
+        embed.add_field(name="⚡ Features", value="• **** status detection\n• **** primary tag detection\n• Fallback every 3 minutes", inline=False)
         embed.add_field(name="🎯 Monitoring", value=f"• Status with invites\n• Primary Guild Tag: `{self.server_tag}`", inline=False)
         embed.add_field(name="📝 Commands", value="`!pgtag` `!promoter_stats` `!force_check` `!debug_promoter` `!promo_check` `!set_log_channel`", inline=False)
         await ctx.send(embed=embed)
