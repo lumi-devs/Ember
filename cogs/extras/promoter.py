@@ -51,12 +51,14 @@ class PromoterRole(commands.Cog):
         print(f"🚀 Optimized PromoterRole cog loaded!")
         print(f"📊 Monitoring: Status & Global Name for {self.your_server_invites}")
         self.quick_check.start()
-        self.detailed_check.start()
         self.weekly_cleanup.start()
     
     @commands.Cog.listener()
     async def on_presence_update(self, before, after):
-        """Check status changes"""
+        """Check status changes - ONLY ONLINE MEMBERS"""
+        if after.status == discord.Status.offline:
+            return
+            
         if self.active_check:
             return
             
@@ -68,7 +70,10 @@ class PromoterRole(commands.Cog):
     
     @commands.Cog.listener()
     async def on_member_update(self, before, after):
-        """Check global name changes"""
+        """Check global name changes - ONLY ONLINE MEMBERS"""
+        if after.status == discord.Status.offline:
+            return
+            
         if self.active_check:
             return
             
@@ -179,8 +184,8 @@ class PromoterRole(commands.Cog):
             print(f"⚠️ Could not send log: {e}")
 
     async def fast_member_check(self, member):
-        """ULTRA-FAST member check"""
-        if member.bot:
+        """ULTRA-FAST member check - ONLY ONLINE MEMBERS"""
+        if member.bot or member.status == discord.Status.offline:
             return
             
         role = member.guild.get_role(self.promoter_role_id)
@@ -218,57 +223,35 @@ class PromoterRole(commands.Cog):
 
     @tasks.loop(minutes=3)
     async def quick_check(self):
-        """Fast check every 3 minutes"""
+        """Fast check every 3 minutes - ONLY ONLINE MEMBERS"""
         for guild in self.bot.guilds:
             role = guild.get_role(self.promoter_role_id)
             if not role:
                 continue
                 
             checked = 0
-            # Check only online members (reduces API calls)
+            # Check only online members (reduces API calls significantly)
             for member in guild.members:
                 if not member.bot and member.status != discord.Status.offline:
                     await self.fast_member_check(member)
                     checked += 1
-                    await asyncio.sleep(0.05)  # Rate limit protection
+                    await asyncio.sleep(0.03)  # Reduced rate limit
             
             if checked > 0:
                 print(f"🔍 Quick: {guild.name} - {checked} online members")
 
-    @tasks.loop(minutes=15)
-    async def detailed_check(self):
-        """Full check every 15 minutes"""
-        print("🔍 Running full promoter scan...")
-        
-        total_checked = 0
-        for guild in self.bot.guilds:
-            role = guild.get_role(self.promoter_role_id)
-            if not role:
-                continue
-                
-            checked = 0
-            for member in guild.members:
-                if not member.bot:
-                    await self.fast_member_check(member)
-                    checked += 1
-                    total_checked += 1
-            
-            if checked > 0:
-                print(f"📊 {guild.name}: {checked} members scanned")
-        
-        print(f"✅ Full scan complete: {total_checked} total members")
-
     @tasks.loop(hours=24)
     async def weekly_cleanup(self):
-        """Update weekly stats"""
+        """Update weekly stats - ONLY ONLINE PROMOTERS"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
-            # Get current promoters count
+            # Get current promoters count (only online)
             for guild in self.bot.guilds:
                 role = guild.get_role(self.promoter_role_id)
                 if role:
-                    promoters_count = len([m for m in guild.members if role in m.roles and not m.bot])
+                    # Count only online promoters
+                    promoters_count = len([m for m in guild.members if role in m.roles and not m.bot and m.status != discord.Status.offline])
                     
                     # Get current week start (Monday)
                     today = datetime.now().date()
@@ -280,7 +263,7 @@ class PromoterRole(commands.Cog):
                     ''', (week_start, guild.id, promoters_count))
             
             conn.commit()
-        print("📈 Weekly stats updated")
+        print("📈 Weekly stats updated (online promoters only)")
 
     # COMMANDS
     @commands.command(name='set_log_channel')
@@ -318,6 +301,7 @@ class PromoterRole(commands.Cog):
         embed.add_field(name="Has Promotion", value="✅ Yes" if has_promotion else "❌ No", inline=True)
         embed.add_field(name="Has Role", value="✅ Yes" if has_role else "❌ No", inline=True)
         embed.add_field(name="Status Match", value="✅ Yes" if has_promotion == has_role else "❌ No", inline=True)
+        embed.add_field(name="Member Status", value=str(target.status).title(), inline=True)
         
         if promotion_content != "Unknown":
             embed.add_field(name="Detected In", value=f"```{promotion_content}```", inline=False)
@@ -334,8 +318,9 @@ class PromoterRole(commands.Cog):
                 await ctx.send("❌ Promoter role not found!")
                 return
             
-            # Current promoters
-            current_promoters = len([m for m in ctx.guild.members if role in m.roles and not m.bot])
+            # Current online promoters only
+            current_promoters = len([m for m in ctx.guild.members if role in m.roles and not m.bot and m.status != discord.Status.offline])
+            total_with_role = len([m for m in ctx.guild.members if role in m.roles and not m.bot])
             
             # This week's stats
             week_start = datetime.now().date() - timedelta(days=datetime.now().weekday())
@@ -371,31 +356,17 @@ class PromoterRole(commands.Cog):
             
             embed = discord.Embed(
                 title="📊 Promotion Statistics",
+                description="*Tracking online promoters only*",
                 color=0x7289da,
                 timestamp=datetime.now()
             )
             
-            embed.add_field(name="Current Promoters", value=current_promoters, inline=True)
-            embed.add_field(name="This Week High", value=weekly_high, inline=True)
-            embed.add_field(name="Trend", value=trend_text, inline=True)
+            embed.add_field(name="🟢 Online Promoters", value=current_promoters, inline=True)
+            embed.add_field(name="📊 Total With Role", value=total_with_role, inline=True)
+            embed.add_field(name="📈 This Week High", value=weekly_high, inline=True)
+            embed.add_field(name="📉 Trend", value=trend_text, inline=True)
             
-            # Top promoters this week (from logs)
-            cursor.execute('''
-                SELECT member_name, COUNT(*) as promo_count 
-                FROM promoter_logs 
-                WHERE guild_id = ? AND action = 'ROLE_ASSIGNED' 
-                AND created_at >= datetime('now', '-7 days')
-                GROUP BY member_id 
-                ORDER BY promo_count DESC 
-                LIMIT 5
-            ''', (ctx.guild.id,))
-            
-            top_promoters = cursor.fetchall()
-            if top_promoters:
-                promoters_text = "\n".join([f"• {name}: {count} times" for name, count in top_promoters])
-                embed.add_field(name="🏆 Top Promoters (7 days)", value=promoters_text, inline=False)
-            
-            embed.set_footer(text="Monitoring Status & Global Name")
+            embed.set_footer(text="Monitoring Online Members Only • Status & Global Name")
             await ctx.send(embed=embed)
             
         except Exception as e:
@@ -406,7 +377,7 @@ class PromoterRole(commands.Cog):
         """Show help for promotion commands"""
         embed = discord.Embed(
             title="🤖 Promotion System Help",
-            description="Automatically detects when members promote the server in their status/global name",
+            description="Automatically detects when **ONLINE** members promote the server in their status/global name",
             color=0x7289da
         )
         
@@ -422,13 +393,13 @@ class PromoterRole(commands.Cog):
         
         embed.add_field(
             name="🔍 Monitoring", 
-            value="• Custom Status Activity\n• Global Name\n• Updates every 3-15 minutes", 
+            value="• **ONLINE MEMBERS ONLY**\n• Custom Status Activity\n• Global Name\n• Updates every 3 minutes", 
             inline=False
         )
         
         embed.add_field(
-            name="⚙️ Requirements", 
-            value="Make sure the bot has:\n• Manage Roles permission\n• Appropriate role hierarchy", 
+            name="⚡ Optimized", 
+            value="• Only checks online members\n• Faster response times\n• Reduced API calls", 
             inline=False
         )
         

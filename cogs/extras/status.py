@@ -25,7 +25,7 @@ class CustomStatusRotator(commands.Cog):
             "Hannan the fiddler",
             "LEMME CATCH THE CATS!!",
             "Mother HONEY??",
-            "avi yappity yappity yap yap"
+            "avi yappity yappity yap yap",
             "Gaming with Daemon!",
             "Kims IS A 13YO!",
             "Aster and chai in gulugulu mood 24/7",
