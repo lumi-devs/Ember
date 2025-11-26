@@ -12,6 +12,7 @@ class PromoterRole(commands.Cog):
         # HARDCODED SETTINGS
         self.promoter_role_id = 1440636027923333182
         self.your_server_invites = [".gg/aakhristation", "discord.gg/aakhristation", "aakhristation"]
+        self.server_tag = "Raही"  # Specific server tag to monitor
         self.log_channel_id = 1443119503285293098 
         
         self.init_db()
@@ -49,7 +50,7 @@ class PromoterRole(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         print(f"🚀 Optimized PromoterRole cog loaded!")
-        print(f"📊 Monitoring: Status & Global Name for {self.your_server_invites}")
+        print(f"📊 Monitoring: Status, Global Name & Server Tag '{self.server_tag}' for {self.your_server_invites}")
         self.quick_check.start()
         self.weekly_cleanup.start()
     
@@ -70,32 +71,42 @@ class PromoterRole(commands.Cog):
     
     @commands.Cog.listener()
     async def on_member_update(self, before, after):
-        """Check global name changes - ONLY ONLINE MEMBERS"""
-        if after.status == discord.Status.offline:
-            return
-            
+        """Check global name and server tag changes - ALL MEMBERS (including offline)"""
         if self.active_check:
             return
             
         self.active_check = True
         try:
-            if before.global_name != after.global_name:
+            # Check for global name changes OR server tag changes
+            if (before.global_name != after.global_name or 
+                self.has_server_tag(before) != self.has_server_tag(after)):
                 await self.fast_member_check(after)
         finally:
             self.active_check = False
 
+    def has_server_tag(self, member):
+        """Check if member has the specific server tag in their display name"""
+        if not member.display_name:
+            return False
+        return self.server_tag in member.display_name
+
     async def has_promotion_content(self, member):
-        """ULTRA-FAST: Check only status and global name"""
+        """ULTRA-FAST: Check status, global name, and server tag"""
         
-        # 1. Check Custom Status (FASTEST)
-        for activity in member.activities:
-            if isinstance(activity, discord.CustomActivity) and activity.name:
-                status_text = activity.name.lower()
-                for invite in self.your_server_invites:
-                    if invite.lower() in status_text:
-                        return True
+        # 1. Check Server Tag (works for ALL members - online/offline)
+        if self.has_server_tag(member):
+            return True
         
-        # 2. Check Global Name (FAST)
+        # 2. Check Custom Status (ONLY for online members)
+        if member.status != discord.Status.offline:
+            for activity in member.activities:
+                if isinstance(activity, discord.CustomActivity) and activity.name:
+                    status_text = activity.name.lower()
+                    for invite in self.your_server_invites:
+                        if invite.lower() in status_text:
+                            return True
+        
+        # 3. Check Global Name (works for ALL members)
         if member.global_name:
             global_name_lower = member.global_name.lower()
             for invite in self.your_server_invites:
@@ -108,14 +119,19 @@ class PromoterRole(commands.Cog):
         """Get promotion source for logging"""
         sources = []
         
-        # Check status
-        for activity in member.activities:
-            if isinstance(activity, discord.CustomActivity) and activity.name:
-                status_text = activity.name
-                for invite in self.your_server_invites:
-                    if invite.lower() in status_text.lower():
-                        sources.append(f"Status: {status_text}")
-                        break
+        # Check server tag
+        if self.has_server_tag(member):
+            sources.append(f"Server Tag: {member.display_name}")
+        
+        # Check status (only for online members)
+        if member.status != discord.Status.offline:
+            for activity in member.activities:
+                if isinstance(activity, discord.CustomActivity) and activity.name:
+                    status_text = activity.name
+                    for invite in self.your_server_invites:
+                        if invite.lower() in status_text.lower():
+                            sources.append(f"Status: {status_text}")
+                            break
         
         # Check global name
         if member.global_name:
@@ -163,7 +179,7 @@ class PromoterRole(commands.Cog):
                 if content and content != "Unknown":
                     embed.add_field(name="Promotion Source", value=f"```{content}```", inline=False)
                 embed.add_field(name="Role Given", value=f"<@&{self.promoter_role_id}>", inline=True)
-                embed.add_field(name="Detected In", value="Status/Global Name", inline=True)
+                embed.add_field(name="Member Status", value=str(member.status).title(), inline=True)
                 
             else:  # removed
                 embed = discord.Embed(
@@ -174,6 +190,7 @@ class PromoterRole(commands.Cog):
                 )
                 if content and content != "Unknown":
                     embed.add_field(name="Previous Promotion", value=f"```{content}```", inline=False)
+                embed.add_field(name="Member Status", value=str(member.status).title(), inline=True)
             
             embed.set_thumbnail(url=member.display_avatar.url)
             
@@ -183,8 +200,8 @@ class PromoterRole(commands.Cog):
             print(f"⚠️ Could not send log: {e}")
 
     async def fast_member_check(self, member):
-        """ULTRA-FAST member check - ONLY ONLINE MEMBERS"""
-        if member.bot or member.status == discord.Status.offline:
+        """ULTRA-FAST member check - ALL MEMBERS (server tag works for offline too)"""
+        if member.bot:
             return
             
         role = member.guild.get_role(self.promoter_role_id)
@@ -201,7 +218,7 @@ class PromoterRole(commands.Cog):
                 await member.add_roles(role, reason="Auto-promotion detected")
                 self.log_promotion_action(
                     member.guild.id, member.id, str(member),
-                    'ROLE_ASSIGNED', 'Status/Name promotion', promotion_content
+                    'ROLE_ASSIGNED', 'Status/Name/Tag promotion', promotion_content
                 )
                 print(f"✅ {member.display_name} - Promoter role assigned")
                 await self.send_promotion_log(member, "assigned", promotion_content)
@@ -222,35 +239,35 @@ class PromoterRole(commands.Cog):
 
     @tasks.loop(minutes=3)
     async def quick_check(self):
-        """Fast check every 3 minutes - ONLY ONLINE MEMBERS"""
+        """Fast check every 3 minutes - ALL MEMBERS (for server tag)"""
         for guild in self.bot.guilds:
             role = guild.get_role(self.promoter_role_id)
             if not role:
                 continue
                 
             checked = 0
-            # Check only online members (reduces API calls significantly)
+            # Check ALL members (including offline) for server tag
             for member in guild.members:
-                if not member.bot and member.status != discord.Status.offline:
+                if not member.bot:
                     await self.fast_member_check(member)
                     checked += 1
                     await asyncio.sleep(0.03)  # Reduced rate limit
             
             if checked > 0:
-                print(f"🔍 Quick: {guild.name} - {checked} online members")
+                print(f"🔍 Quick: {guild.name} - {checked} total members")
 
     @tasks.loop(hours=24)
     async def weekly_cleanup(self):
-        """Update weekly stats - ONLY ONLINE PROMOTERS"""
+        """Update weekly stats - ALL PROMOTERS (including offline with server tag)"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
-            # Get current promoters count (only online)
+            # Get current promoters count (ALL members - including offline with server tag)
             for guild in self.bot.guilds:
                 role = guild.get_role(self.promoter_role_id)
                 if role:
-                    # Count only online promoters
-                    promoters_count = len([m for m in guild.members if role in m.roles and not m.bot and m.status != discord.Status.offline])
+                    # Count ALL promoters (including offline with server tag)
+                    promoters_count = len([m for m in guild.members if role in m.roles and not m.bot])
                     
                     # Get current week start (Monday)
                     today = datetime.now().date()
@@ -262,7 +279,7 @@ class PromoterRole(commands.Cog):
                     ''', (week_start, guild.id, promoters_count))
             
             conn.commit()
-        print("📈 Weekly stats updated (online promoters only)")
+        print("📈 Weekly stats updated (all promoters including offline)")
 
     # COMMANDS
     @commands.command(name='set_log_channel')
@@ -301,6 +318,7 @@ class PromoterRole(commands.Cog):
         embed.add_field(name="Has Role", value="✅ Yes" if has_role else "❌ No", inline=True)
         embed.add_field(name="Status Match", value="✅ Yes" if has_promotion == has_role else "❌ No", inline=True)
         embed.add_field(name="Member Status", value=str(target.status).title(), inline=True)
+        embed.add_field(name="Has Server Tag", value="✅ Yes" if self.has_server_tag(target) else "❌ No", inline=True)
         
         if promotion_content != "Unknown":
             embed.add_field(name="Detected In", value=f"```{promotion_content}```", inline=False)
@@ -317,9 +335,9 @@ class PromoterRole(commands.Cog):
                 await ctx.send("❌ Promoter role not found!")
                 return
             
-            # Current online promoters only
-            current_promoters = len([m for m in ctx.guild.members if role in m.roles and not m.bot and m.status != discord.Status.offline])
-            total_with_role = len([m for m in ctx.guild.members if role in m.roles and not m.bot])
+            # Current promoters (ALL - including offline)
+            total_promoters = len([m for m in ctx.guild.members if role in m.roles and not m.bot])
+            online_promoters = len([m for m in ctx.guild.members if role in m.roles and not m.bot and m.status != discord.Status.offline])
             
             # This week's stats
             week_start = datetime.now().date() - timedelta(days=datetime.now().weekday())
@@ -355,17 +373,17 @@ class PromoterRole(commands.Cog):
             
             embed = discord.Embed(
                 title="📊 Promotion Statistics",
-                description="*Tracking online promoters only*",
+                description="*Tracking ALL promoters (including offline with server tag)*",
                 color=0x7289da,
                 timestamp=datetime.now()
             )
             
-            embed.add_field(name="🟢 Online Promoters", value=current_promoters, inline=True)
-            embed.add_field(name="📊 Total With Role", value=total_with_role, inline=True)
+            embed.add_field(name="👥 Total Promoters", value=total_promoters, inline=True)
+            embed.add_field(name="🟢 Online Promoters", value=online_promoters, inline=True)
             embed.add_field(name="📈 This Week High", value=weekly_high, inline=True)
             embed.add_field(name="📉 Trend", value=trend_text, inline=True)
             
-            embed.set_footer(text="Monitoring Online Members Only • Status & Global Name")
+            embed.set_footer(text="Monitoring: Status (Online) • Global Name • Server Tag (All)")
             await ctx.send(embed=embed)
             
         except Exception as e:
@@ -376,7 +394,7 @@ class PromoterRole(commands.Cog):
         """Show help for promotion commands"""
         embed = discord.Embed(
             title="🤖 Promotion System Help",
-            description="Automatically detects when **ONLINE** members promote the server in their status/global name",
+            description="Automatically detects when members promote the server in their status/global name/server tag",
             color=0x7289da
         )
         
@@ -392,17 +410,17 @@ class PromoterRole(commands.Cog):
         
         embed.add_field(
             name="🔍 Monitoring", 
-            value="• **ONLINE MEMBERS ONLY**\n• Custom Status Activity\n• Global Name\n• Updates every 3 minutes", 
+            value=f"• **Status** (online members only)\n• **Global Name** (all members)\n• **Server Tag** `{self.server_tag}` (all members)\n• Updates every 3 minutes", 
             inline=False
         )
         
         embed.add_field(
             name="⚡ Optimized", 
-            value="• Only checks online members\n• Faster response times\n• Reduced API calls", 
+            value="• Server tag works for offline members\n• Faster response times\n• Reduced API calls", 
             inline=False
         )
         
-        embed.set_footer(text=f"Monitoring: {', '.join(self.your_server_invites)}")
+        embed.set_footer(text=f"Monitoring: {', '.join(self.your_server_invites)} + '{self.server_tag}' tag")
         await ctx.send(embed=embed)
 
 async def setup(bot):
