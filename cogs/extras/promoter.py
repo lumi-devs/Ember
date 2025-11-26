@@ -44,7 +44,7 @@ class PromoterRole(commands.Cog):
                     week_start DATE,
                     guild_id INTEGER,
                     promoters_count INTEGER DEFAULT 0,
-                    PRIMARY KEY (week_start, guild_id)
+                    PRIMARY KEY (week_start, guild_isd)
                 )
             ''')
             
@@ -333,9 +333,9 @@ class PromoterRole(commands.Cog):
             conn.commit()
 
     # NEW COMMANDS
-    @commands.command(name='bot_stats')
+    @commands.command(name='stats')
     @commands.has_permissions(manage_roles=True)
-    async def bot_stats(self, ctx):
+    async def stats(self, ctx):
         """Check bot performance and system health"""
         try:
             # Get system info
