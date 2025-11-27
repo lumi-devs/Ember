@@ -2,23 +2,16 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import aiosqlite
-import os
-import json
 from datetime import datetime
 from cogs.confessions.helpers import DB_PATH
-
-# Fixed MOD_ROLE_IDS parsing
-MOD_ROLE_IDS_STR = os.environ.get("MOD_IDS", "[]")
-try:
-    MOD_ROLE_IDS = json.loads(MOD_ROLE_IDS_STR)
-except json.JSONDecodeError:
-    # Fallback if JSON parsing fails
-    MOD_ROLE_IDS = []
-    print(f"⚠️ Failed to parse MOD_IDS, using empty list. Value was: {MOD_ROLE_IDS_STR}")
 
 class ConfessBan(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+
+    def has_permission(self, interaction: discord.Interaction):
+        """Check if user has administrator permissions"""
+        return interaction.user.guild_permissions.administrator
 
     @app_commands.command(name="confessban", description="Ban or unban a user from submitting confessions")
     @app_commands.describe(
@@ -30,9 +23,9 @@ class ConfessBan(commands.Cog):
         app_commands.Choice(name="Unban", value="unban")
     ])
     async def confessban(self, interaction: discord.Interaction, user: discord.User, action: app_commands.Choice[str], reason: str = None):
-        # Only mods
-        if not any(role.id in MOD_ROLE_IDS for role in interaction.user.roles):
-            return await interaction.response.send_message("❌ You do not have permission.", ephemeral=True)
+        # Only administrators
+        if not self.has_permission(interaction):
+            return await interaction.response.send_message("❌ You need administrator permissions to use this command.", ephemeral=True)
 
         try:
             async with aiosqlite.connect(DB_PATH) as db:
@@ -75,8 +68,9 @@ class ConfessBan(commands.Cog):
     @app_commands.command(name="confessban_list", description="List all banned users")
     async def confessban_list(self, interaction: discord.Interaction):
         """List all banned users"""
-        if not any(role.id in MOD_ROLE_IDS for role in interaction.user.roles):
-            return await interaction.response.send_message("❌ You do not have permission.", ephemeral=True)
+        # Only administrators
+        if not self.has_permission(interaction):
+            return await interaction.response.send_message("❌ You need administrator permissions to use this command.", ephemeral=True)
 
         try:
             async with aiosqlite.connect(DB_PATH) as db:
