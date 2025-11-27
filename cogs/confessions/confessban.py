@@ -7,7 +7,14 @@ import json
 from datetime import datetime
 from cogs.confessions.helpers import DB_PATH
 
-MOD_ROLE_IDS = json.loads(os.environ.get("MOD_IDS", "[]"))
+# Fixed MOD_ROLE_IDS parsing
+MOD_ROLE_IDS_STR = os.environ.get("MOD_IDS", "[]")
+try:
+    MOD_ROLE_IDS = json.loads(MOD_ROLE_IDS_STR)
+except json.JSONDecodeError:
+    # Fallback if JSON parsing fails
+    MOD_ROLE_IDS = []
+    print(f"⚠️ Failed to parse MOD_IDS, using empty list. Value was: {MOD_ROLE_IDS_STR}")
 
 class ConfessBan(commands.Cog):
     def __init__(self, bot):
