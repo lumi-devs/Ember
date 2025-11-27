@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 from cogs.confessions.helpers import DB_PATH
 
-MOD_ROLE_IDS = json.loads(os.environ.get("MOD_ROLE_IDS", "[]"))
+MOD_ROLE_IDS = json.loads(os.environ.get("MOD_IDS", "[]"))
 
 class ConfessBan(commands.Cog):
     def __init__(self, bot):
