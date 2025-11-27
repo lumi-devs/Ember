@@ -9,9 +9,27 @@ class ConfessBan(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    async def init_db(self):
+        """Initialize the database table with correct schema"""
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS confessban (
+                    user_id INTEGER PRIMARY KEY,
+                    reason TEXT,
+                    banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            await db.commit()
+
     def has_permission(self, interaction: discord.Interaction):
         """Check if user has administrator permissions"""
         return interaction.user.guild_permissions.administrator
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Initialize database when cog is loaded"""
+        await self.init_db()
+        print("ConfessBan cog loaded and database initialized")
 
     @app_commands.command(name="confessban", description="Ban or unban a user from submitting confessions")
     @app_commands.describe(
