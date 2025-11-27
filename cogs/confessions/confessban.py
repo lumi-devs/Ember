@@ -12,6 +12,7 @@ class ConfessBan(commands.Cog):
     async def init_db(self):
         """Initialize the database table with correct schema"""
         async with aiosqlite.connect(DB_PATH) as db:
+            # Create table if it doesn't exist
             await db.execute('''
                 CREATE TABLE IF NOT EXISTS confessban (
                     user_id INTEGER PRIMARY KEY,
@@ -19,6 +20,16 @@ class ConfessBan(commands.Cog):
                     banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            
+            # Check if reason column exists, if not add it
+            cursor = await db.execute("PRAGMA table_info(confessban)")
+            columns = await cursor.fetchall()
+            column_names = [column[1] for column in columns]
+            
+            if 'reason' not in column_names:
+                await db.execute("ALTER TABLE confessban ADD COLUMN reason TEXT")
+                print("✅ Added 'reason' column to confessban table")
+            
             await db.commit()
 
     def has_permission(self, interaction: discord.Interaction):
