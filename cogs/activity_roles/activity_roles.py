@@ -13,7 +13,7 @@ class ActivityRoles(commands.Cog):
             "YouTube": 1418229577679114291,
             "Spotify": 1418229573325426769,
         }
-        INTERVAL_TIME_UPDATE = 10 # seconds
+        self.INTERVAL_TIME_UPDATE = 10 # seconds
         self.processing: Set[int] = set()  # Prevent concurrent processing
         self.rate_limit: Dict[int, float] = {}  # Rate limiting per user
         self._guild_roles_cache: Dict[int, Dict[str, Optional[discord.Role]]] = {}
