@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 import asyncio
-from typing import Set, Dict
+from typing import Set, Dict, List
 
 class ActivityRoles(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -15,8 +15,11 @@ class ActivityRoles(commands.Cog):
         self.rate_limit: Dict[int, float] = {}  # Rate limiting per user
         self.cleanup_done: bool = False
 
-    @commands.Cog.listener()
-    async def on_ready(self):
+    async def cog_load(self):
+        """Called when the cog is loaded - performs initial cleanup"""
+        await self.cleanup_activity_roles()
+
+    async def cleanup_activity_roles(self):
         """Cleanup: remove all activity roles when bot starts."""
         if self.cleanup_done:
             return
@@ -39,26 +42,25 @@ class ActivityRoles(commands.Cog):
                 continue
 
             # Process members in batches to avoid rate limits
-            members_to_process = [member for member in guild.members if any(role in member.roles for role in activity_roles)]
-            
-            for i, member in enumerate(members_to_process):
-                to_remove = [role for role in activity_roles if role in member.roles]
-                if to_remove:
-                    try:
-                        await member.remove_roles(*to_remove, reason="Startup cleanup")
-                        cleanup_count += 1
-                        print(f"🧹 Removed {[r.name for r in to_remove]} from {member}")
-                    except discord.Forbidden:
-                        print(f"❌ Missing permissions to clean roles for {member}")
-                    except discord.HTTPException as e:
-                        print(f"❌ Cleanup failed for {member}: {e}")
+            async for member in guild.fetch_members(limit=None):
+                if any(role in member.roles for role in activity_roles):
+                    to_remove = [role for role in activity_roles if role in member.roles]
+                    if to_remove:
+                        try:
+                            await member.remove_roles(*to_remove, reason="Startup cleanup")
+                            cleanup_count += len(to_remove)
+                            print(f"🧹 Removed {[r.name for r in to_remove]} from {member.display_name}")
+                        except discord.Forbidden:
+                            print(f"❌ Missing permissions to clean roles for {member.display_name}")
+                        except discord.HTTPException as e:
+                            print(f"❌ Cleanup failed for {member.display_name}: {e}")
                 
                 # Small delay every 10 members to avoid rate limits
-                if i % 10 == 0:
+                if cleanup_count % 10 == 0:
                     await asyncio.sleep(0.5)
         
         self.cleanup_done = True
-        print(f"✅ Cleanup complete. Processed {cleanup_count} members.")
+        print(f"✅ Cleanup complete. Processed {cleanup_count} role removals.")
 
     @commands.Cog.listener()
     async def on_presence_update(self, before: discord.Member, after: discord.Member):
@@ -80,6 +82,8 @@ class ActivityRoles(commands.Cog):
 
         try:
             await self._process_activity_roles(before, after)
+        except Exception as e:
+            print(f"❌ Error processing activity roles for {after.display_name}: {e}")
         finally:
             self.processing.discard(after.id)
 
@@ -99,20 +103,27 @@ class ActivityRoles(commands.Cog):
         # Detect current activities
         active_roles = set()
         for activity in after.activities:
+            # Skip custom activities
             if isinstance(activity, discord.CustomActivity):
                 continue
                 
+            # Check for Spotify activity
             if isinstance(activity, discord.Spotify):
                 active_roles.add(spotify_role)
-                print(f"🎵 {after} is listening to Spotify: {activity.title}")
+                print(f"🎵 {after.display_name} is listening to Spotify: {activity.title}")
+                continue
                 
-            elif getattr(activity, "name", None) == "YouTube":
-                active_roles.add(yt_role)
-                print(f"📺 {after} is watching YouTube")
+            # Check for regular activities by name
+            if isinstance(activity, discord.Activity):
+                activity_name_lower = activity.name.lower() if activity.name else ""
                 
-            elif getattr(activity, "name", None) == "Crunchyroll":
-                active_roles.add(crunchy_role)
-                print(f"🍿 {after} is watching Crunchyroll")
+                if "youtube" in activity_name_lower:
+                    active_roles.add(yt_role)
+                    print(f"📺 {after.display_name} is watching YouTube: {activity.name}")
+                    
+                elif "crunchyroll" in activity_name_lower:
+                    active_roles.add(crunchy_role)
+                    print(f"🍿 {after.display_name} is watching Crunchyroll: {activity.name}")
 
         all_activity_roles = {crunchy_role, yt_role, spotify_role}
         current_roles = set(after.roles)
@@ -127,28 +138,29 @@ class ActivityRoles(commands.Cog):
         try:
             if to_add:
                 await after.add_roles(*to_add, reason="Activity detected")
-                print(f"✅ Added {[r.name for r in to_add]} to {after}")
+                print(f"✅ Added {[r.name for r in to_add]} to {after.display_name}")
                 
             if to_remove:
                 await after.remove_roles(*to_remove, reason="Activity ended")
-                print(f"✅ Removed {[r.name for r in to_remove]} from {after}")
+                print(f"✅ Removed {[r.name for r in to_remove]} from {after.display_name}")
                 
         except discord.Forbidden:
-            print(f"❌ Missing permissions to edit roles for {after}")
+            print(f"❌ Missing permissions to edit roles for {after.display_name}")
         except discord.HTTPException as e:
-            print(f"❌ Failed to update roles for {after}: {e}")
+            print(f"❌ Failed to update roles for {after.display_name}: {e}")
 
     # Optional: Manual role management commands
-    @commands.command(name='activityroles')
+    @commands.hybrid_command(name='activityroles', description='Show current activity role configuration')
     @commands.has_permissions(manage_roles=True)
-    async def activity_roles_info(self, ctx):
+    async def activity_roles_info(self, ctx: commands.Context):
         """Show current activity role configuration"""
         embed = discord.Embed(title="🎯 Activity Roles", color=discord.Color.blue())
         
         for platform, role_id in self.roles.items():
             role = ctx.guild.get_role(role_id)
             if role:
-                members_with_role = len(role.members)
+                # Use fetch_members to get accurate count
+                members_with_role = len([m async for m in ctx.guild.fetch_members() if role in m.roles])
                 embed.add_field(
                     name=platform,
                     value=f"{role.mention}\n{members_with_role} members",
@@ -163,12 +175,36 @@ class ActivityRoles(commands.Cog):
         
         await ctx.send(embed=embed)
 
-    @commands.command(name='forcecleanup')
+    @commands.hybrid_command(name='forcecleanup', description='Force cleanup of all activity roles')
     @commands.has_permissions(administrator=True)
-    async def force_cleanup(self, ctx):
+    async def force_cleanup(self, ctx: commands.Context):
         """Force cleanup of all activity roles"""
-        await self.on_ready()
+        await ctx.defer()
+        await self.cleanup_activity_roles()
         await ctx.send("✅ Force cleanup completed!")
+
+    @commands.hybrid_command(name='refreshroles', description='Refresh activity roles for a specific member')
+    @commands.has_permissions(manage_roles=True)
+    async def refresh_roles(self, ctx: commands.Context, member: discord.Member):
+        """Manually refresh activity roles for a member"""
+        await ctx.defer()
+        
+        # Create a mock "before" state with no activities
+        class MockMember:
+            def __init__(self, member):
+                self.activities = []
+                self.roles = member.roles
+                self.guild = member.guild
+                self.id = member.id
+                self.display_name = member.display_name
+        
+        mock_before = MockMember(member)
+        
+        try:
+            await self._process_activity_roles(mock_before, member)
+            await ctx.send(f"✅ Refreshed activity roles for {member.mention}")
+        except Exception as e:
+            await ctx.send(f"❌ Failed to refresh roles: {e}")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ActivityRoles(bot))
