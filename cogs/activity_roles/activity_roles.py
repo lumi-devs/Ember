@@ -1,7 +1,9 @@
 import discord
 from discord.ext import commands
 import asyncio
-from typing import Set, Dict, List
+from typing import Set, Dict, List, Optional
+from collections import defaultdict
+import time
 
 class ActivityRoles(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -11,13 +13,26 @@ class ActivityRoles(commands.Cog):
             "YouTube": 1418229577679114291,
             "Spotify": 1418229573325426769,
         }
+        INTERVAL_TIME_UPDATE = 10 # seconds
         self.processing: Set[int] = set()  # Prevent concurrent processing
         self.rate_limit: Dict[int, float] = {}  # Rate limiting per user
+        self._guild_roles_cache: Dict[int, Dict[str, Optional[discord.Role]]] = {}
         self.cleanup_done: bool = False
 
     async def cog_load(self):
         """Called when the cog is loaded - performs initial cleanup"""
-        await self.cleanup_activity_roles()
+        # Don't block startup with cleanup
+        self.bot.loop.create_task(self.cleanup_activity_roles())
+
+    def get_guild_roles(self, guild: discord.Guild) -> Dict[str, Optional[discord.Role]]:
+        """Cache guild roles to avoid repeated API calls"""
+        if guild.id not in self._guild_roles_cache:
+            self._guild_roles_cache[guild.id] = {
+                "Crunchyroll": guild.get_role(self.roles["Crunchyroll"]),
+                "YouTube": guild.get_role(self.roles["YouTube"]),
+                "Spotify": guild.get_role(self.roles["Spotify"])
+            }
+        return self._guild_roles_cache[guild.id]
 
     async def cleanup_activity_roles(self):
         """Cleanup: remove all activity roles when bot starts."""
@@ -28,49 +43,48 @@ class ActivityRoles(commands.Cog):
         cleanup_count = 0
         
         for guild in self.bot.guilds:
-            # Get roles for this guild
-            activity_roles = []
-            for role_name, role_id in self.roles.items():
-                role = guild.get_role(role_id)
-                if role:
-                    activity_roles.append(role)
-                    print(f"✅ Found {role_name} role in {guild.name}")
-                else:
-                    print(f"❌ {role_name} role not found in {guild.name}")
-
+            guild_roles = self.get_guild_roles(guild)
+            activity_roles = [role for role in guild_roles.values() if role is not None]
+            
             if not activity_roles:
+                print(f"❌ No activity roles found in {guild.name}")
                 continue
 
-            # Process members in batches to avoid rate limits
+            # Process members in chunks for better performance
+            members_processed = 0
             async for member in guild.fetch_members(limit=None):
-                if any(role in member.roles for role in activity_roles):
-                    to_remove = [role for role in activity_roles if role in member.roles]
-                    if to_remove:
-                        try:
-                            await member.remove_roles(*to_remove, reason="Startup cleanup")
-                            cleanup_count += len(to_remove)
-                            print(f"🧹 Removed {[r.name for r in to_remove]} from {member.display_name}")
-                        except discord.Forbidden:
-                            print(f"❌ Missing permissions to clean roles for {member.display_name}")
-                        except discord.HTTPException as e:
-                            print(f"❌ Cleanup failed for {member.display_name}: {e}")
+                members_processed += 1
                 
-                # Small delay every 10 members to avoid rate limits
-                if cleanup_count % 10 == 0:
-                    await asyncio.sleep(0.5)
+                # Check if member has any activity roles
+                roles_to_remove = [role for role in activity_roles if role in member.roles]
+                if not roles_to_remove:
+                    continue
+
+                try:
+                    await member.remove_roles(*roles_to_remove, reason="Startup cleanup")
+                    cleanup_count += len(roles_to_remove)
+                    print(f"🧹 Removed {[r.name for r in roles_to_remove]} from {member.display_name}")
+                except discord.Forbidden:
+                    print(f"❌ Missing permissions to clean roles for {member.display_name}")
+                except discord.HTTPException as e:
+                    print(f"❌ Cleanup failed for {member.display_name}: {e}")
+                
+                # Batch processing delay every 50 members
+                if members_processed % 50 == 0:
+                    await asyncio.sleep(0.1)
         
         self.cleanup_done = True
-        print(f"✅ Cleanup complete. Processed {cleanup_count} role removals.")
+        print(f"✅ Cleanup complete. Processed {cleanup_count} role removals across {len(self.bot.guilds)} guilds.")
 
     @commands.Cog.listener()
     async def on_presence_update(self, before: discord.Member, after: discord.Member):
         """Handle activity-based role assignments with rate limiting."""
-        if after.guild is None:
+        if after.guild is None or after.bot:
             return
 
-        # Rate limiting: 1 update per user every 10 seconds
-        current_time = discord.utils.utcnow().timestamp()
-        if after.id in self.rate_limit and current_time - self.rate_limit[after.id] < 10:
+        # Rate limiting: 1 update per user every INTERVAL_TIME_UPDATE seconds
+        current_time = time.time()
+        if after.id in self.rate_limit and current_time - self.rate_limit[after.id] < self.INTERVAL_TIME_UPDATE:
             return
         
         # Prevent concurrent processing for same user
@@ -90,44 +104,40 @@ class ActivityRoles(commands.Cog):
     async def _process_activity_roles(self, before: discord.Member, after: discord.Member):
         """Process activity role changes for a member."""
         guild = after.guild
+        guild_roles = self.get_guild_roles(guild)
 
-        # Get roles for this guild
-        crunchy_role = guild.get_role(self.roles["Crunchyroll"])
-        yt_role = guild.get_role(self.roles["YouTube"])
-        spotify_role = guild.get_role(self.roles["Spotify"])
-
-        if not all([crunchy_role, yt_role, spotify_role]):
-            print(f"❌ Missing activity roles in {guild.name}")
+        # Check if all roles exist
+        if not all(guild_roles.values()):
+            missing_roles = [name for name, role in guild_roles.items() if role is None]
+            print(f"❌ Missing activity roles in {guild.name}: {missing_roles}")
             return
 
-        # Detect current activities
+        crunchy_role, yt_role, spotify_role = guild_roles.values()
+
+        # Detect current activities more efficiently
         active_roles = set()
+        current_roles = set(after.roles)
+        
         for activity in after.activities:
-            # Skip custom activities
-            if isinstance(activity, discord.CustomActivity):
+            # Skip custom activities early
+            if activity.type == discord.ActivityType.custom:
                 continue
                 
             # Check for Spotify activity
             if isinstance(activity, discord.Spotify):
                 active_roles.add(spotify_role)
-                print(f"🎵 {after.display_name} is listening to Spotify: {activity.title}")
                 continue
                 
             # Check for regular activities by name
-            if isinstance(activity, discord.Activity):
-                activity_name_lower = activity.name.lower() if activity.name else ""
+            if isinstance(activity, discord.Activity) and activity.name:
+                activity_name_lower = activity.name.lower()
                 
                 if "youtube" in activity_name_lower:
                     active_roles.add(yt_role)
-                    print(f"📺 {after.display_name} is watching YouTube: {activity.name}")
-                    
                 elif "crunchyroll" in activity_name_lower:
                     active_roles.add(crunchy_role)
-                    print(f"🍿 {after.display_name} is watching Crunchyroll: {activity.name}")
 
         all_activity_roles = {crunchy_role, yt_role, spotify_role}
-        current_roles = set(after.roles)
-
         to_add = active_roles - current_roles
         to_remove = (all_activity_roles - active_roles) & current_roles
 
@@ -135,6 +145,7 @@ class ActivityRoles(commands.Cog):
         if not to_add and not to_remove:
             return
 
+        # Batch role operations
         try:
             if to_add:
                 await after.add_roles(*to_add, reason="Activity detected")
@@ -149,21 +160,44 @@ class ActivityRoles(commands.Cog):
         except discord.HTTPException as e:
             print(f"❌ Failed to update roles for {after.display_name}: {e}")
 
-    # Optional: Manual role management commands
+    # Cache for role member counts
+    _role_count_cache: Dict[int, Dict[int, int]] = defaultdict(dict)
+    _last_count_update: float = 0
+
+    async def get_role_member_count(self, guild: discord.Guild, role: discord.Role) -> int:
+        """Get member count for a role with caching."""
+        current_time = time.time()
+        
+        # Refresh cache every 5 minutes
+        if (current_time - self._last_count_update > 300 or 
+            guild.id not in self._role_count_cache or 
+            role.id not in self._role_count_cache[guild.id]):
+            
+            # Count members with this role
+            count = 0
+            async for member in guild.fetch_members(limit=None):
+                if role in member.roles:
+                    count += 1
+            
+            self._role_count_cache[guild.id][role.id] = count
+            self._last_count_update = current_time
+        
+        return self._role_count_cache[guild.id][role.id]
+
     @commands.hybrid_command(name='activityroles', description='Show current activity role configuration')
     @commands.has_permissions(manage_roles=True)
     async def activity_roles_info(self, ctx: commands.Context):
         """Show current activity role configuration"""
         embed = discord.Embed(title="🎯 Activity Roles", color=discord.Color.blue())
         
-        for platform, role_id in self.roles.items():
-            role = ctx.guild.get_role(role_id)
+        guild_roles = self.get_guild_roles(ctx.guild)
+        
+        for platform, role in guild_roles.items():
             if role:
-                # Use fetch_members to get accurate count
-                members_with_role = len([m async for m in ctx.guild.fetch_members() if role in m.roles])
+                member_count = await self.get_role_member_count(ctx.guild, role)
                 embed.add_field(
                     name=platform,
-                    value=f"{role.mention}\n{members_with_role} members",
+                    value=f"{role.mention}\n{member_count} members",
                     inline=True
                 )
             else:
@@ -180,6 +214,7 @@ class ActivityRoles(commands.Cog):
     async def force_cleanup(self, ctx: commands.Context):
         """Force cleanup of all activity roles"""
         await ctx.defer()
+        self.cleanup_done = False  # Reset to allow re-run
         await self.cleanup_activity_roles()
         await ctx.send("✅ Force cleanup completed!")
 
@@ -187,24 +222,27 @@ class ActivityRoles(commands.Cog):
     @commands.has_permissions(manage_roles=True)
     async def refresh_roles(self, ctx: commands.Context, member: discord.Member):
         """Manually refresh activity roles for a member"""
+        if member.bot:
+            await ctx.send("❌ Cannot refresh roles for bots.")
+            return
+            
         await ctx.defer()
         
-        # Create a mock "before" state with no activities
-        class MockMember:
-            def __init__(self, member):
-                self.activities = []
-                self.roles = member.roles
-                self.guild = member.guild
-                self.id = member.id
-                self.display_name = member.display_name
-        
-        mock_before = MockMember(member)
+        # Use actual before state if available, otherwise create minimal mock
+        mock_before = discord.Object(id=member.id)
+        mock_before.roles = member.roles
+        mock_before.activities = []
         
         try:
             await self._process_activity_roles(mock_before, member)
             await ctx.send(f"✅ Refreshed activity roles for {member.mention}")
         except Exception as e:
             await ctx.send(f"❌ Failed to refresh roles: {e}")
+
+    def cog_unload(self):
+        """Clean up when cog is unloaded"""
+        self._guild_roles_cache.clear()
+        self._role_count_cache.clear()
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ActivityRoles(bot))
