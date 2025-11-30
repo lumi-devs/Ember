@@ -1,28 +1,29 @@
 import discord
 from discord.ext import commands
 from .database import ShameDatabase
-from .commands import ShameCommands
-from .tasks import ShameTasks
+from .utils import ShameUtils
 from .config import ShameConfig
 import time
-from discord.ext.commands import CooldownMapping, BucketType
 
 class ShameSystem(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.db = ShameDatabase(ShameConfig.DB_PATH)
-        self.tasks = ShameTasks(bot, self.db)
-        self.utils = self.tasks.utils  # Access utils from tasks
-        self.message_cooldown = CooldownMapping.from_cooldown(1, 1, BucketType.user)
+        self.utils = ShameUtils(self.db, self.bot)
         self._blacklist_cache = {}
         self._cache_timeout = 300
+        self.tasks = None  # Will be set after initialization
     
     async def cog_load(self):
         try:
             await self.db.init_db()
-            self.tasks.start_tasks()
             print("[ShameSystem] Cog loaded successfully ✅")
-            print(f"[ShameSystem] Tracking disabled in {len(ShameConfig.BLACKLISTED_CHANNEL_IDS)} channels and {len(ShameConfig.BLACKLISTED_CATEGORY_IDS)} categories")
+            
+            # Import tasks here to avoid circular imports
+            from .tasks import ShameTasks
+            self.tasks = ShameTasks(self.bot, self.db)
+            self.tasks.start_tasks()
+            
         except Exception as e:
             print(f"[ShameSystem] Error loading cog: {e}")
     
@@ -42,14 +43,16 @@ class ShameSystem(commands.Cog):
         if message.author.bot or not message.guild:
             return
         
-        # Rate limiting - 1 message per 2 seconds
-        bucket = self.message_cooldown.get_bucket(message)
-        if bucket and bucket.update_rate_limit():
-            return
+        # More lenient rate limiting - 1 message per 0.5 seconds
+        if hasattr(self, '_last_message_time'):
+            time_since_last = time.time() - self._last_message_time
+            if time_since_last < 0.5:
+                return
+        self._last_message_time = time.time()
         
         # Check if channel/category is blacklisted from tracking
         if not await self.utils.is_channel_tracked(message.channel):
-            return  # Skip points for this message
+            return
         
         # Clean old cache entries periodically
         if len(self._blacklist_cache) > 1000:
@@ -83,6 +86,7 @@ class ShameSystem(commands.Cog):
         user_data = await self.db.get_user(message.author.id)
         current_points = user_data['points'] if user_data else 0
         hourly_points = user_data['hourly_points'] if user_data else 0
+        total_messages = user_data['total_messages'] if user_data else 0
         
         # Check hourly limit
         if hourly_points >= ShameConfig.MAX_POINTS_PER_HOUR:
@@ -91,11 +95,16 @@ class ShameSystem(commands.Cog):
         # Update points
         new_points = current_points + 1
         new_hourly_points = hourly_points + 1
+        new_total_messages = total_messages + 1
         
         await self.db.update_user(
             message.author.id,
             points=new_points,
             hourly_points=new_hourly_points,
-            total_messages=(user_data['total_messages'] + 1) if user_data else 1,
+            total_messages=new_total_messages,
             last_message_time=message.created_at.timestamp()
         )
+        
+        # Debug logging (optional)
+        if new_points % 50 == 0:  # Log every 50 points
+            print(f"[ShameSystem] {message.author.display_name}: {new_points} points, {new_total_messages} messages")   

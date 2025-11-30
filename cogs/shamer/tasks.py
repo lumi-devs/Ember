@@ -11,8 +11,13 @@ class ShameTasks:
     def __init__(self, bot, database: ShameDatabase):
         self.bot = bot
         self.db = database
-        self.utils = ShameUtils(database, self.bot)
+        self.utils = ShameUtils(database, self.bot)  # Initialize utils here
         self.last_rotation_check = None
+    
+    async def initialize_tasks(self):
+        """Initialize tasks after bot is ready"""
+        await self.bot.wait_until_ready()
+        self.start_tasks()
     
     @tasks.loop(hours=1)
     async def hourly_decay(self):
@@ -54,9 +59,9 @@ class ShameTasks:
         except Exception as e:
             print(f"[Shamer] Critical error in hourly_decay: {e}")
 
-    @tasks.loop(minutes=5)  # More frequent but lightweight checks
+    @tasks.loop(minutes=5)
     async def rotation_checker(self):
-        """Simplified rotation checker - single source of truth"""
+        """Check if it's time for leaderboard rotation"""
         try:
             await self.bot.wait_until_ready()
             
@@ -96,29 +101,12 @@ class ShameTasks:
                 # Step 3: Update rotation time
                 await self.db.set_system_state('last_rotation_time', datetime.now().isoformat())
                 
-                # Step 4: Clear old system states to avoid conflicts
-                await self.cleanup_old_states()
-                
                 print("[Shamer] ✅ Leaderboard rotation completed successfully!")
             else:
                 print("[Shamer] ❌ Leaderboard rotation failed - will retry next check")
             
         except Exception as e:
             print(f"[Shamer] ❌ Error in leaderboard rotation: {e}")
-
-    async def cleanup_old_states(self):
-        """Clean up old system state keys to prevent conflicts"""
-        try:
-            async with aiosqlite.connect(self.db.db_path) as db:
-                # Keep only essential state keys
-                await db.execute('''
-                    DELETE FROM system_state 
-                    WHERE key NOT IN ('last_rotation_time', 'next_leaderboard_date')
-                ''')
-                await db.commit()
-            print("[Shamer] Cleaned up old system states")
-        except Exception as e:
-            print(f"[Shamer] Error cleaning up states: {e}")
 
     async def hard_reset_all_stats(self):
         """Reset all user points AND message counts to 0"""
@@ -140,32 +128,15 @@ class ShameTasks:
             
             print(f"[Shamer] ✅ Hard reset completed: {user_count} users reset to 0 points & 0 messages")
             
-            # Log the reset in leaderboard channel
-            channel = self.bot.get_channel(ShameConfig.LEADERBOARD_CHANNEL_ID)
-            if channel:
-                reset_embed = discord.Embed(
-                    title="🔄 Statistics Reset",
-                    description=f"All user points and message counts have been reset to zero!\n**{user_count}** users affected.",
-                    color=discord.Color.orange(),
-                    timestamp=discord.utils.utcnow()
-                )
-                reset_embed.set_footer(text="Fresh start for the new rotation!")
-                
-                try:
-                    await channel.send(embed=reset_embed)
-                    print("[Shamer] ✅ Reset announcement sent")
-                except Exception as e:
-                    print(f"[Shamer] ❌ Failed to send reset announcement: {e}")
-                    
         except Exception as e:
             print(f"[Shamer] ❌ Error in hard_reset_all_stats: {e}")
 
     async def post_leaderboard_and_assign_roles(self):
-        """Post leaderboard and assign shame role to top 5 - returns success status"""
+        """Post leaderboard and assign shame role to top 5"""
         try:
             print("[Shamer] Posting leaderboard and assigning roles...")
             
-            # Get top 5 for leaderboard (only users with points > 0)
+            # Get top 5 for leaderboard
             leaderboard = await self.db.get_leaderboard(5)
             
             if not leaderboard:
@@ -177,9 +148,6 @@ class ShameTasks:
             if not channel:
                 print("[Shamer] ERROR: Channel not found")
                 return False
-            
-            message_sent = False
-            role_message_sent = False
             
             # Build leaderboard description
             symbols = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
@@ -213,32 +181,15 @@ class ShameTasks:
             # Send leaderboard embed
             try:
                 leaderboard_message = await channel.send(embed=embed)
-                message_sent = True
                 print(f"[Shamer] ✅ Leaderboard sent | Message ID: {leaderboard_message.id}")
             except Exception as e:
                 print(f"[Shamer] ❌ Failed to send leaderboard: {e}")
                 return False
             
-            # Announce role winners
-            top_5_ids = [user['user_id'] for user in leaderboard[:5]]
-            winners_mentions = [f"<@{user_id}>" for user_id in top_5_ids]
-            
-            role_embed = discord.Embed(
-                title="🎉 New Shamers!",
-                description=f"Congratulations to {', '.join(winners_mentions)} for earning the shame role!",
-                color=discord.Color.orange()
-            )
-            
-            # Send role announcement
-            try:
-                role_message = await channel.send(f"<@&{ShameConfig.SHAME_ROLE_ID}>", embed=role_embed)
-                role_message_sent = True
-                print(f"[Shamer] ✅ Role announcement sent | Message ID: {role_message.id}")
-            except Exception as e:
-                print(f"[Shamer] ❌ Failed to send role announcement: {e}")
-            
             # Assign roles to top 5
+            top_5_ids = [user['user_id'] for user in leaderboard[:5]]
             role_assignment_success = True
+            
             for guild in self.bot.guilds:
                 try:
                     await self.utils.assign_shame_role(guild, top_5_ids)
@@ -248,50 +199,19 @@ class ShameTasks:
                     role_assignment_success = False
             
             # Log successful execution
-            if message_sent:
-                await self.db.set_system_state('last_leaderboard_sent', datetime.now().isoformat())
-                print("[Shamer] ✅ Leaderboard posted successfully!")
-                return True
-            else:
-                print("[Shamer] ❌ Leaderboard posting failed - no messages sent!")
-                return False
+            await self.db.set_system_state('last_leaderboard_sent', datetime.now().isoformat())
+            print("[Shamer] ✅ Leaderboard rotation completed!")
+            return True
                 
         except Exception as e:
             print(f"[Shamer] Critical error in post_leaderboard_and_assign_roles: {e}")
             return False
 
-    @tasks.loop(hours=24)
-    async def system_integrity_check(self):
-        """Daily system integrity check"""
-        try:
-            await self.bot.wait_until_ready()
-            
-            # Ensure rotation time exists
-            last_rotation_str = await self.db.get_system_state('last_rotation_time')
-            if not last_rotation_str:
-                print("[Shamer] Integrity: No rotation time found, initializing...")
-                await self.db.set_system_state('last_rotation_time', datetime.now().isoformat())
-                return
-            
-            # Check if rotation is overdue (more than 5 days)
-            last_rotation = datetime.fromisoformat(last_rotation_str)
-            time_since_rotation = datetime.now() - last_rotation
-            
-            if time_since_rotation > timedelta(days=ShameConfig.LEADERBOARD_INTERVAL_DAYS + 1):
-                print("[Shamer] Integrity: Rotation overdue, forcing execution...")
-                await self.execute_leaderboard_rotation()
-                
-            print("[Shamer] ✅ System integrity check completed")
-                
-        except Exception as e:
-            print(f"[Shamer] Error in system integrity check: {e}")
-
     def start_tasks(self):
-        """Start all background tasks - simplified"""
+        """Start all background tasks"""
         try:
             self.hourly_decay.start()
-            self.rotation_checker.start()  # Main rotation checker
-            self.system_integrity_check.start()  # Daily backup check
+            self.rotation_checker.start()
             print("[Shamer] Background tasks started!")
         except Exception as e:
             print(f"[Shamer] Error starting tasks: {e}")

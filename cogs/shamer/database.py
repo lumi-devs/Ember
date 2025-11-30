@@ -2,7 +2,6 @@ import aiosqlite
 import json
 from typing import List, Dict, Any, Optional
 import time
-import traceback
 
 class ShameDatabase:
     def __init__(self, db_path: str):
@@ -28,7 +27,7 @@ class ShameDatabase:
                     CREATE TABLE IF NOT EXISTS blacklist (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         entity_id INTEGER NOT NULL,
-                        entity_type TEXT NOT NULL, -- 'user' or 'role'
+                        entity_type TEXT NOT NULL,
                         created_at REAL DEFAULT (julianday('now'))
                     )
                 ''')
@@ -42,17 +41,27 @@ class ShameDatabase:
                     )
                 ''')
                 
-                # Create indexes for performance
+                # Leaderboard history table (ADDED)
+                await db.execute('''
+                    CREATE TABLE IF NOT EXISTS leaderboard_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        rotation_date REAL,
+                        top_users TEXT,
+                        created_at REAL DEFAULT (julianday('now'))
+                    )
+                ''')
+                
+                # Create indexes
                 await db.execute('CREATE INDEX IF NOT EXISTS idx_users_points ON users(points DESC)')
                 await db.execute('CREATE INDEX IF NOT EXISTS idx_blacklist_entity ON blacklist(entity_id, entity_type)')
                 await db.execute('CREATE INDEX IF NOT EXISTS idx_users_updated ON users(updated_at)')
                 
                 await db.commit()
-                print("[ShameDatabase] Database initialized with indexes ✅")
+                print("[ShameDatabase] Database initialized with all tables ✅")
         except Exception as e:
             print(f"[ShameDatabase] Error initializing database: {e}")
             raise
-    
+        
     async def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
         try:
             async with aiosqlite.connect(self.db_path) as db:

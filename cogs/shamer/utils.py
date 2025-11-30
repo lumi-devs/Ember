@@ -11,6 +11,9 @@ class ShameUtils:
     async def can_earn_points(self, user: discord.Member) -> bool:
         """Check if user can earn points (not blacklisted)"""
         try:
+            if user.bot:
+                return False
+                
             user_roles = [role.id for role in user.roles]
             return not await self.db.is_blacklisted(user.id, user_roles)
         except Exception as e:
@@ -28,19 +31,18 @@ class ShameUtils:
             if channel.category and channel.category.id in ShameConfig.BLACKLISTED_CATEGORY_IDS:
                 return False
             
-            # Optional: Whitelist mode (uncomment if you want to use it)
-            # if ShameConfig.WHITELISTED_CHANNEL_IDS:
-            #     return channel.id in ShameConfig.WHITELISTED_CHANNEL_IDS
-            
             return True
             
         except Exception as e:
             print(f"[ShameUtils] Error in is_channel_tracked: {e}")
-            return True  # Default to tracking if there's an error
+            return True
     
     async def calculate_decay(self, current_points: int) -> int:
-        """Calculate decay points (min of 10% or 10 points)"""
+        """Calculate decay points"""
         try:
+            if current_points <= 0:
+                return 0
+                
             decay_by_percentage = int(current_points * ShameConfig.DECAY_PERCENTAGE)
             return min(decay_by_percentage, ShameConfig.MAX_DECAY_PER_HOUR)
         except Exception as e:
@@ -58,16 +60,19 @@ class ShameUtils:
             # Remove role from all current members
             for member in shame_role.members:
                 try:
-                    await member.remove_roles(shame_role)
+                    if member.id not in top_users[:5]:
+                        await member.remove_roles(shame_role)
+                        print(f"[ShameUtils] Removed role from {member.display_name}")
                 except Exception as e:
                     print(f"[ShameUtils] Error removing role from {member}: {e}")
             
             # Add role to top 5 users
             for user_id in top_users[:5]:
                 member = guild.get_member(user_id)
-                if member:
+                if member and shame_role not in member.roles:
                     try:
                         await member.add_roles(shame_role)
+                        print(f"[ShameUtils] Added role to {member.display_name}")
                     except Exception as e:
                         print(f"[ShameUtils] Error adding role to {member}: {e}")
         except Exception as e:
