@@ -3,7 +3,7 @@ from discord.ext import commands
 import aiosqlite
 import asyncio
 from datetime import datetime, timezone
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List, Tuple, Set
 import time
 
 AFK_SET_COLOR = discord.Color.orange()
@@ -51,6 +51,9 @@ class AFK(commands.Cog):
         # Cache for AFK data to reduce DB queries
         self.afk_cache: Dict[int, Tuple[str, str]] = {}
         
+        # User info cache to avoid API calls
+        self.user_info_cache: Dict[int, str] = {}
+        
         # Rate limiting
         self.last_nick_edit: Dict[int, float] = {}
         self.nick_edit_cooldown = 2.0  # Increased for safety
@@ -61,7 +64,8 @@ class AFK(commands.Cog):
             'commands_processed': 0,
             'db_operations': 0,
             'cache_hits': 0,
-            'cache_misses': 0
+            'cache_misses': 0,
+            'user_fetches': 0
         }
         
         self.ready_event = asyncio.Event()
@@ -88,10 +92,13 @@ class AFK(commands.Cog):
             # Load cache from database
             await self.load_cache()
             
+            # Pre-fetch user info for cached AFK users
+            await self.prefetch_user_info()
+            
             # Start worker pools
             await self.start_workers()
             self.ready_event.set()
-            print("[AFK] System initialized with worker queues.")
+            print(f"[AFK] System initialized with {len(self.afk_cache)} AFK users.")
         except Exception as e:
             print(f"[AFK] Initialization error: {e}")
             raise
@@ -105,6 +112,63 @@ class AFK(commands.Cog):
             rows = await cursor.fetchall()
             for row in rows:
                 self.afk_cache[row['user_id']] = (row['reason'], row['since'])
+
+    async def prefetch_user_info(self):
+        """Prefetch user info for all AFK users to avoid API calls later."""
+        user_ids = list(self.afk_cache.keys())
+        if not user_ids:
+            return
+        
+        # Fetch users in batches
+        batch_size = 50
+        for i in range(0, len(user_ids), batch_size):
+            batch = user_ids[i:i + batch_size]
+            tasks = [self.fetch_or_get_user(user_id) for user_id in batch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for user_id, result in zip(batch, results):
+                if isinstance(result, discord.User):
+                    self.user_info_cache[user_id] = result.name
+                elif isinstance(result, Exception):
+                    print(f"[AFK] Failed to fetch user {user_id}: {result}")
+                else:
+                    # User not found, mark as unknown
+                    self.user_info_cache[user_id] = None
+
+    async def fetch_or_get_user(self, user_id: int) -> Optional[discord.User]:
+        """Get user from cache or fetch from API."""
+        # Try to get from bot cache first
+        user = self.bot.get_user(user_id)
+        if user:
+            return user
+        
+        # If not in cache, try to fetch from API
+        try:
+            user = await self.bot.fetch_user(user_id)
+            self.stats['user_fetches'] += 1
+            return user
+        except discord.NotFound:
+            return None
+        except discord.HTTPException as e:
+            print(f"[AFK] HTTP error fetching user {user_id}: {e}")
+            return None
+
+    async def get_user_display_name(self, user_id: int) -> str:
+        """Get user display name with caching."""
+        # Check cache first
+        if user_id in self.user_info_cache:
+            cached_name = self.user_info_cache[user_id]
+            if cached_name:
+                return cached_name
+        
+        # Try to get user
+        user = await self.fetch_or_get_user(user_id)
+        if user:
+            self.user_info_cache[user_id] = user.name
+            return user.name
+        
+        # Fallback
+        return f"Unknown ({user_id})"
 
     async def start_workers(self):
         """Start worker pools for different queue types."""
@@ -229,6 +293,9 @@ class AFK(commands.Cog):
                 for user_id in expired:
                     del self.last_nick_edit[user_id]
                     
+                # Clean old user info cache entries (older than 1 hour)
+                # This cache will be repopulated as needed
+                
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -244,6 +311,15 @@ class AFK(commands.Cog):
         # Update cache
         since = datetime.now(timezone.utc).isoformat()
         self.afk_cache[user_id] = (reason, since)
+        
+        # Prefetch user info
+        asyncio.create_task(self.update_user_cache(user_id))
+
+    async def update_user_cache(self, user_id: int):
+        """Update user info cache."""
+        if user_id not in self.user_info_cache:
+            name = await self.get_user_display_name(user_id)
+            self.user_info_cache[user_id] = name
 
     async def remove_afk(self, user_id: int) -> None:
         """Queue AFK removal operation."""
@@ -253,6 +329,7 @@ class AFK(commands.Cog):
         
         # Update cache
         self.afk_cache.pop(user_id, None)
+        # Keep user info in cache for future reference
 
     async def get_afk(self, user_id: int) -> Optional[Tuple[str, str]]:
         """Get AFK status (cached)."""
@@ -269,6 +346,8 @@ class AFK(commands.Cog):
         
         if result:
             self.afk_cache[user_id] = (result[0], result[1])
+            # Update user cache
+            asyncio.create_task(self.update_user_cache(user_id))
         
         return result
 
@@ -377,7 +456,7 @@ class AFK(commands.Cog):
             description=f"{user.mention}, you are now AFK: **{reason}**",
             color=AFK_SET_COLOR
         )
-        msg = await ctx.send(embed=embed, delete_after=20)
+        await ctx.send(embed=embed, delete_after=20)
 
     # ─── Message Processing ────────────────────────────
     async def _check_afk_removal(self, message: discord.Message):
@@ -413,8 +492,9 @@ class AFK(commands.Cog):
                 reason, since = self.afk_cache[user.id]
                 since_dt = datetime.fromisoformat(since)
                 duration = human_timedelta(since_dt)
+                display_name = await self.get_user_display_name(user.id)
                 embed = discord.Embed(
-                    title=f"{afk_strip(user.display_name)} is AFK 💤",
+                    title=f"{afk_strip(display_name)} is AFK 💤",
                     description=f"**Reason:** {reason}\n**Since:** {duration} ago",
                     color=AFK_MENTION_COLOR
                 )
@@ -449,6 +529,7 @@ class AFK(commands.Cog):
         # Remove from cache
         for user_id in left_user_ids:
             self.afk_cache.pop(user_id, None)
+            self.user_info_cache.pop(user_id, None)
         
         embed = discord.Embed(
             title="🧹 AFK Cleanup Complete",
@@ -473,13 +554,21 @@ class AFK(commands.Cog):
     @commands.is_owner()
     async def afk_list(self, ctx: commands.Context):
         """Show all users currently AFK (bot owner only)."""
+        await ctx.typing()
+        
         if not self.afk_cache:
             return await ctx.reply("No users are currently AFK.", mention_author=False)
 
+        # Fetch all user names in parallel
+        user_tasks = []
+        for user_id in self.afk_cache.keys():
+            user_tasks.append(self.get_user_display_name(user_id))
+        
+        user_names = await asyncio.gather(*user_tasks)
+        
+        # Prepare lines
         lines = []
-        for user_id, (reason, since) in self.afk_cache.items():
-            user = self.bot.get_user(user_id)
-            name = user.name if user else f"Unknown ({user_id})"
+        for (user_id, (reason, since)), name in zip(self.afk_cache.items(), user_names):
             since_dt = datetime.fromisoformat(since)
             duration = human_timedelta(since_dt)
             lines.append(f"**{name}** — {reason} *(for {duration})*")
@@ -493,7 +582,10 @@ class AFK(commands.Cog):
                 description="\n".join(chunk),
                 color=AFK_MENTION_COLOR
             )
-            await ctx.reply(embed=embed, mention_author=False)
+            if i == 0:
+                await ctx.reply(embed=embed, mention_author=False)
+            else:
+                await ctx.send(embed=embed)
 
     @commands.command(name="afkstats")
     @commands.is_owner()
@@ -515,6 +607,10 @@ class AFK(commands.Cog):
         embed.add_field(name="Cache Hits", value=f"{self.stats['cache_hits']} ({cache_hit_rate:.1f}%)", inline=True)
         embed.add_field(name="Cache Misses", value=self.stats['cache_misses'], inline=True)
         embed.add_field(name="Active AFK Users", value=len(self.afk_cache), inline=True)
+        
+        # User fetching stats
+        embed.add_field(name="User API Fetches", value=self.stats['user_fetches'], inline=True)
+        embed.add_field(name="User Cache Size", value=len(self.user_info_cache), inline=True)
         
         # Queue stats
         embed.add_field(name="Message Queue", value=self.message_queue.qsize(), inline=True)
