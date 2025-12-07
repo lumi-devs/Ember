@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands, tasks
-from discord.ui import Select, View
+from discord.ui import Select, View, Button
 import json
 import os
 from datetime import datetime, timedelta
@@ -143,17 +143,254 @@ class DynamicMemberList(commands.Cog):
         """Wait until bot is ready"""
         await self.bot.wait_until_ready()
     
+    class AddMembersButton(Button):
+        """Button to open member selection dropdown"""
+        def __init__(self):
+            super().__init__(
+                label="➕ Add Members",
+                style=discord.ButtonStyle.primary,
+                custom_id="add_members_button",
+                emoji="👥",
+                row=0
+            )
+        
+        async def callback(self, interaction: discord.Interaction):
+            # Defer the response
+            await interaction.response.defer(ephemeral=True)
+            
+            # Get the view instance
+            view: MembersMainView = self.view
+            
+            # Check permissions
+            has_permission = False
+            if not view.cog.ADD_ROLES:  # If empty, allow everyone
+                has_permission = True
+            else:
+                for role in interaction.user.roles:
+                    if str(role.id) in view.cog.ADD_ROLES:
+                        has_permission = True
+                        break
+            
+            if not has_permission:
+                await interaction.followup.send(
+                    "❌ You don't have permission to add members to this list!",
+                    ephemeral=True
+                )
+                return
+            
+            # Get available members (not in list, not bots, not self)
+            users = []
+            for member in view.channel.guild.members:
+                if member.bot:
+                    continue
+                
+                # Check if member is already in the list
+                channel_id = str(view.channel.id)
+                if channel_id in view.cog.member_lists:
+                    if str(member.id) in view.cog.member_lists[channel_id]['members']:
+                        continue
+                
+                users.append(member)
+            
+            if users:
+                # Send dropdown view
+                await interaction.followup.send(
+                    view=DynamicMemberList.UserSelectActionView(
+                        view.cog, 
+                        view.channel_id, 
+                        view.owner_id, 
+                        view.channel, 
+                        users, 
+                        "add", 
+                        "Select members to add to the list..."
+                    ),
+                    ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    "✅ All available members are already in the list or no members available!",
+                    ephemeral=True
+                )
+    
+    class RemoveMembersButton(Button):
+        """Button to remove members (Admin only)"""
+        def __init__(self):
+            super().__init__(
+                label="🗑️ Remove Members",
+                style=discord.ButtonStyle.danger,
+                custom_id="remove_members_button",
+                emoji="❌",
+                row=0
+            )
+        
+        async def callback(self, interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            
+            # Check if user is admin
+            if not interaction.user.guild_permissions.administrator:
+                await interaction.followup.send(
+                    "❌ Only administrators can remove members from the list!",
+                    ephemeral=True
+                )
+                return
+            
+            view: MembersMainView = self.view
+            
+            # Get members currently in the list
+            channel_id = str(view.channel.id)
+            if channel_id not in view.cog.member_lists:
+                await interaction.followup.send(
+                    "❌ No list found in this channel!",
+                    ephemeral=True
+                )
+                return
+            
+            list_data = view.cog.member_lists[channel_id]
+            users_in_list = []
+            
+            for member_id, member_data in list_data['members'].items():
+                member = view.channel.guild.get_member(int(member_id))
+                if member:
+                    users_in_list.append(member)
+            
+            if users_in_list:
+                await interaction.followup.send(
+                    view=DynamicMemberList.UserSelectActionView(
+                        view.cog,
+                        view.channel_id,
+                        view.owner_id,
+                        view.channel,
+                        users_in_list,
+                        "remove",
+                        "Select members to remove from the list..."
+                    ),
+                    ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    "❌ No members in the list to remove!",
+                    ephemeral=True
+                )
+    
+    class RefreshButton(Button):
+        """Button to refresh the list"""
+        def __init__(self):
+            super().__init__(
+                label="🔄 Refresh",
+                style=discord.ButtonStyle.secondary,
+                custom_id="refresh_button",
+                emoji="🔄",
+                row=0
+            )
+        
+        async def callback(self, interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            
+            view: MembersMainView = self.view
+            channel_id = str(view.channel.id)
+            
+            if channel_id not in view.cog.member_lists:
+                await interaction.followup.send(
+                    "❌ No list found in this channel!",
+                    ephemeral=True
+                )
+                return
+            
+            list_data = view.cog.member_lists[channel_id]
+            
+            try:
+                message = await view.channel.fetch_message(int(list_data['message_id']))
+                await view.cog.update_embed(message, list_data)
+                await interaction.followup.send("✅ List refreshed!", ephemeral=True)
+            except Exception as e:
+                await interaction.followup.send(f"❌ Error refreshing: {str(e)}", ephemeral=True)
+    
+    class InfoButton(Button):
+        """Button to show list info"""
+        def __init__(self):
+            super().__init__(
+                label="ℹ️ Info",
+                style=discord.ButtonStyle.secondary,
+                custom_id="info_button",
+                emoji="📊",
+                row=0
+            )
+        
+        async def callback(self, interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            
+            view: MembersMainView = self.view
+            channel_id = str(view.channel.id)
+            
+            if channel_id not in view.cog.member_lists:
+                await interaction.followup.send(
+                    "❌ No list found in this channel!",
+                    ephemeral=True
+                )
+                return
+            
+            list_data = view.cog.member_lists[channel_id]
+            members = list_data['members']
+            
+            embed = discord.Embed(
+                title="📋 List Information",
+                color=discord.Color.blue(),
+                timestamp=datetime.now(pytz.UTC)
+            )
+            
+            # Count members expiring soon
+            expiring_soon = 0
+            now = datetime.now(pytz.UTC)
+            
+            for member_id, member_data in members.items():
+                added_at = datetime.fromisoformat(member_data['added_at'])
+                days_passed = (now - added_at).days
+                if days_passed >= 1:  # Expiring in 1 day or less
+                    expiring_soon += 1
+            
+            embed.add_field(
+                name="Statistics",
+                value=(
+                    f"**Total Members:** {len(members)}/{view.cog.MAX_MEMBERS}\n"
+                    f"**Expiring Soon:** {expiring_soon} member(s)\n"
+                    f"**Duration:** {view.cog.MEMBER_EXPIRY_DAYS} days per member\n"
+                    f"**Last Updated:** <t:{int(now.timestamp())}:R>"
+                ),
+                inline=False
+            )
+            
+            # Show members expiring soon
+            if expiring_soon > 0:
+                expiring_text = ""
+                for member_id, member_data in list(members.items())[:5]:  # Show first 5
+                    added_at = datetime.fromisoformat(member_data['added_at'])
+                    days_left = view.cog.MEMBER_EXPIRY_DAYS - (now - added_at).days
+                    
+                    if days_left <= 1:
+                        member = view.channel.guild.get_member(int(member_id))
+                        name = member.mention if member else member_data['name']
+                        expiring_text += f"• {name} (expires in {days_left} day{'s' if days_left != 1 else ''})\n"
+                
+                if expiring_text:
+                    embed.add_field(
+                        name="Expiring Soon",
+                        value=expiring_text,
+                        inline=False
+                    )
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+    
     class UserSelect(Select):
         """Dropdown for selecting users"""
         def __init__(self, users: List[discord.Member], action_type: str, placeholder: str):
             options = []
             
-            for user in users[:25]:  # Discord limit of 25 options
+            for user in users[:25]:  # Discord limit
                 options.append(
                     discord.SelectOption(
                         label=user.display_name[:100],
                         value=str(user.id),
-                        description=f"ID: {user.id}"[:100],
+                        description=f"Click to {action_type} {user.name[:50]}",
                         emoji="👤"
                     )
                 )
@@ -164,18 +401,18 @@ class DynamicMemberList(commands.Cog):
                 max_values=min(len(users), 10),
                 options=options
             )
-            self.users = users
             self.action_type = action_type
         
         async def callback(self, interaction: discord.Interaction):
-            # This will be handled by the parent View
-            pass
+            # Get the parent view
+            view: UserSelectActionView = self.view
+            await view.handle_selection(interaction, self.values)
     
     class UserSelectActionView(View):
         """View with user dropdown for actions"""
         def __init__(self, cog, channel_id: int, owner_id: int, channel: discord.TextChannel, 
                      users: List[discord.Member], action_type: str, placeholder: str):
-            super().__init__(timeout=None)
+            super().__init__(timeout=300)  # 5 minute timeout
             self.cog = cog
             self.channel_id = channel_id
             self.owner_id = owner_id
@@ -185,7 +422,7 @@ class DynamicMemberList(commands.Cog):
             if users:
                 self.add_item(DynamicMemberList.UserSelect(users, action_type, placeholder))
             else:
-                # Create disabled select if no users
+                # Create disabled select
                 select = Select(
                     placeholder="No users available",
                     options=[discord.SelectOption(label="No users", value="none", description="No users to select")],
@@ -194,25 +431,8 @@ class DynamicMemberList(commands.Cog):
                 self.add_item(select)
         
         async def handle_selection(self, interaction: discord.Interaction, selected_values: List[str]):
-            # Check if user has ADD permission
-            has_add_permission = False
-            if not self.cog.ADD_ROLES:  # If empty, allow everyone
-                has_add_permission = True
-            else:
-                for role in interaction.user.roles:
-                    if str(role.id) in self.cog.ADD_ROLES:
-                        has_add_permission = True
-                        break
-            
-            if not has_add_permission:
-                await interaction.response.send_message(
-                    "❌ You don't have permission to add members to this list!",
-                    ephemeral=True
-                )
-                return
-            
-            # Get list data
             channel_id = str(self.channel_id)
+            
             if channel_id not in self.cog.member_lists:
                 await interaction.response.send_message(
                     "❌ This list no longer exists!",
@@ -221,81 +441,171 @@ class DynamicMemberList(commands.Cog):
                 return
             
             list_data = self.cog.member_lists[channel_id]
-            added_members = []
-            skipped_members = []
             
-            for member_id in selected_values:
-                member_id_str = str(member_id)
+            if self.action_type == "add":
+                # Check ADD permissions again
+                has_permission = False
+                if not self.cog.ADD_ROLES:
+                    has_permission = True
+                else:
+                    for role in interaction.user.roles:
+                        if str(role.id) in self.cog.ADD_ROLES:
+                            has_permission = True
+                            break
                 
-                # Check if already in list
-                if member_id_str in list_data['members']:
-                    skipped_members.append(member_id_str)
-                    continue
+                if not has_permission:
+                    await interaction.response.send_message(
+                        "❌ You don't have permission to add members!",
+                        ephemeral=True
+                    )
+                    return
                 
-                # Check capacity
-                if len(list_data['members']) >= self.cog.MAX_MEMBERS:
-                    # Remove oldest
-                    oldest_member_id = None
-                    oldest_time = None
+                added_members = []
+                skipped_members = []
+                
+                for member_id in selected_values:
+                    member_id_str = str(member_id)
                     
-                    for mid, data in list_data['members'].items():
-                        added_time = datetime.fromisoformat(data['added_at'])
-                        if oldest_time is None or added_time < oldest_time:
-                            oldest_time = added_time
-                            oldest_member_id = mid
+                    if member_id_str in list_data['members']:
+                        skipped_members.append(member_id_str)
+                        continue
                     
-                    if oldest_member_id:
-                        old_member_data = list_data['members'].pop(oldest_member_id)
+                    # Check capacity
+                    if len(list_data['members']) >= self.cog.MAX_MEMBERS:
+                        # Remove oldest
+                        oldest_member_id = None
+                        oldest_time = None
+                        
+                        for mid, data in list_data['members'].items():
+                            added_time = datetime.fromisoformat(data['added_at'])
+                            if oldest_time is None or added_time < oldest_time:
+                                oldest_time = added_time
+                                oldest_member_id = mid
+                        
+                        if oldest_member_id:
+                            old_data = list_data['members'].pop(oldest_member_id)
+                            list_data['removed_members'].append({
+                                'id': oldest_member_id,
+                                'name': old_data['name'],
+                                'removed_at': datetime.now(pytz.UTC).isoformat(),
+                                'removed_by': str(interaction.user.id),
+                                'reason': 'auto_removed_capacity'
+                            })
+                    
+                    # Add member
+                    try:
+                        member = await self.channel.guild.fetch_member(int(member_id))
+                        list_data['members'][member_id_str] = {
+                            'id': member_id_str,
+                            'name': member.name,
+                            'display_name': member.display_name,
+                            'added_at': datetime.now(pytz.UTC).isoformat(),
+                            'added_by': str(interaction.user.id),
+                            'added_by_name': interaction.user.name
+                        }
+                        added_members.append(member)
+                    except:
+                        continue
+                
+                # Save and update
+                self.cog.save_data()
+                
+                try:
+                    message = await self.channel.fetch_message(int(list_data['message_id']))
+                    await self.cog.update_embed(message, list_data)
+                    
+                    response_text = ""
+                    if added_members:
+                        response_text += f"✅ **Added {len(added_members)} member(s):**\n"
+                        for member in added_members:
+                            response_text += f"• {member.mention}\n"
+                    
+                    if skipped_members:
+                        response_text += f"\n⚠️ Skipped {len(skipped_members)} (already in list)"
+                    
+                    await interaction.response.send_message(
+                        response_text or "No members added.",
+                        ephemeral=True
+                    )
+                except Exception as e:
+                    await interaction.response.send_message(
+                        f"❌ Error: {str(e)}",
+                        ephemeral=True
+                    )
+            
+            elif self.action_type == "remove":
+                # Check if user is admin
+                if not interaction.user.guild_permissions.administrator:
+                    await interaction.response.send_message(
+                        "❌ Only admins can remove members!",
+                        ephemeral=True
+                    )
+                    return
+                
+                removed_members = []
+                
+                for member_id in selected_values:
+                    member_id_str = str(member_id)
+                    
+                    if member_id_str in list_data['members']:
+                        member_data = list_data['members'].pop(member_id_str)
                         list_data['removed_members'].append({
-                            'id': oldest_member_id,
-                            'name': old_member_data['name'],
+                            'id': member_id_str,
+                            'name': member_data['name'],
                             'removed_at': datetime.now(pytz.UTC).isoformat(),
                             'removed_by': str(interaction.user.id),
-                            'reason': 'auto_removed_capacity'
+                            'reason': 'admin_removed'
                         })
+                        
+                        member = self.channel.guild.get_member(int(member_id))
+                        if member:
+                            removed_members.append(member)
+                        else:
+                            removed_members.append(member_data['name'])
                 
-                # Add new member
-                try:
-                    member = await self.channel.guild.fetch_member(int(member_id))
-                    list_data['members'][member_id_str] = {
-                        'id': member_id_str,
-                        'name': member.name,
-                        'display_name': member.display_name,
-                        'added_at': datetime.now(pytz.UTC).isoformat(),
-                        'added_by': str(interaction.user.id),
-                        'added_by_name': interaction.user.name
-                    }
-                    added_members.append(member)
-                except:
-                    continue
+                if removed_members:
+                    self.cog.save_data()
+                    
+                    try:
+                        message = await self.channel.fetch_message(int(list_data['message_id']))
+                        await self.cog.update_embed(message, list_data)
+                        
+                        response_text = f"✅ **Removed {len(removed_members)} member(s):**\n"
+                        for member in removed_members:
+                            if isinstance(member, discord.Member):
+                                response_text += f"• {member.mention}\n"
+                            else:
+                                response_text += f"• {member}\n"
+                        
+                        await interaction.response.send_message(
+                            response_text,
+                            ephemeral=True
+                        )
+                    except Exception as e:
+                        await interaction.response.send_message(
+                            f"❌ Error: {str(e)}",
+                            ephemeral=True
+                        )
+                else:
+                    await interaction.response.send_message(
+                        "❌ No members were removed!",
+                        ephemeral=True
+                    )
+    
+    class MembersMainView(View):
+        """Main view with buttons for the member list"""
+        def __init__(self, cog, channel_id: int, owner_id: int, channel: discord.TextChannel):
+            super().__init__(timeout=None)  # Persistent view
+            self.cog = cog
+            self.channel_id = channel_id
+            self.owner_id = owner_id
+            self.channel = channel
             
-            # Save data
-            self.cog.save_data()
-            
-            # Update embed
-            try:
-                message = await self.channel.fetch_message(int(list_data['message_id']))
-                await self.cog.update_embed(message, list_data)
-                
-                # Send response
-                response_text = ""
-                if added_members:
-                    response_text += f"✅ **Added {len(added_members)} member(s) to the list:**\n"
-                    for member in added_members:
-                        response_text += f"• {member.mention}\n"
-                
-                if skipped_members:
-                    response_text += f"\n⚠️ **Skipped {len(skipped_members)} member(s)** (already in list)"
-                
-                await interaction.response.send_message(
-                    response_text or "No members were added.",
-                    ephemeral=True
-                )
-            except Exception as e:
-                await interaction.response.send_message(
-                    f"❌ Error updating list: {str(e)}",
-                    ephemeral=True
-                )
+            # Add buttons
+            self.add_item(DynamicMemberList.AddMembersButton())
+            self.add_item(DynamicMemberList.RemoveMembersButton())
+            self.add_item(DynamicMemberList.RefreshButton())
+            self.add_item(DynamicMemberList.InfoButton())
     
     async def update_embed(self, message, list_data):
         """Update the embed with current member list"""
@@ -304,7 +614,7 @@ class DynamicMemberList(commands.Cog):
         # Create embed
         embed = discord.Embed(
             title="📋 Dynamic Member List",
-            description="Use the dropdown below to add members to the list.",
+            description="Use the buttons below to manage the member list.",
             color=discord.Color.blue(),
             timestamp=datetime.now(pytz.UTC)
         )
@@ -318,17 +628,14 @@ class DynamicMemberList(commands.Cog):
             )
             
             for member_id, member_data in sorted_members:
-                added_time = datetime.fromisoformat(member_data['added_at'])
-                time_ago = self.get_time_ago(added_time)
-                expires_in = self.MEMBER_EXPIRY_DAYS - (datetime.now(pytz.UTC) - added_time).days
+                added_at = datetime.fromisoformat(member_data['added_at'])
+                time_ago = self.get_time_ago(added_at)
+                expires_in = self.MEMBER_EXPIRY_DAYS - (datetime.now(pytz.UTC) - added_at).days
                 
-                try:
-                    member = message.guild.get_member(int(member_id))
-                    if member:
-                        members_list += f"• {member.mention} - Added {time_ago} (Expires in {expires_in} day{'s' if expires_in != 1 else ''})\n"
-                    else:
-                        members_list += f"• **{member_data['name']}** - Added {time_ago} (Expires in {expires_in} day{'s' if expires_in != 1 else ''})\n"
-                except:
+                member = message.guild.get_member(int(member_id))
+                if member:
+                    members_list += f"• {member.mention} - Added {time_ago} (Expires in {expires_in} day{'s' if expires_in != 1 else ''})\n"
+                else:
                     members_list += f"• **{member_data['name']}** - Added {time_ago} (Expires in {expires_in} day{'s' if expires_in != 1 else ''})\n"
             
             embed.add_field(
@@ -339,45 +646,29 @@ class DynamicMemberList(commands.Cog):
         else:
             embed.add_field(
                 name=f"📝 Current Members (0/{self.MAX_MEMBERS})",
-                value="*No members in the list yet*",
+                value="*No members in the list yet*\nUse the **➕ Add Members** button to add members.",
                 inline=False
             )
         
-        # Add statistics
-        stats_text = f"**Capacity:** {len(members)}/{self.MAX_MEMBERS}\n"
-        stats_text += f"**Member Duration:** {self.MEMBER_EXPIRY_DAYS} days\n"
-        stats_text += f"**Last updated:** <t:{int(datetime.now(pytz.UTC).timestamp())}:R>"
-        
-        embed.add_field(name="📊 Statistics", value=stats_text, inline=False)
-        
         # Add rules
         embed.add_field(
-            name="⚙️ Rules & Info",
+            name="⚙️ Rules",
             value=(
-                "• Members stay on list for 2 days\n"
-                "• Max 12 members at a time\n"
-                "• Oldest members removed when full\n"
-                "• Members who leave server are auto-removed\n"
+                f"• **Max {self.MAX_MEMBERS} members** at a time\n"
+                f"• Members stay for **{self.MEMBER_EXPIRY_DAYS} days**\n"
+                f"• Oldest members removed when full\n"
+                f"• Auto-removed if member leaves server\n"
                 f"• Only specific roles can add members"
             ),
             inline=False
         )
         
-        # Get available members (not already in list and not bots)
-        available_members = [
-            member for member in message.guild.members 
-            if not member.bot and str(member.id) not in members
-        ]
-        
-        # Create dropdown view
-        view = self.UserSelectActionView(
+        # Create main view with buttons
+        view = self.MembersMainView(
             cog=self,
             channel_id=message.channel.id,
             owner_id=message.guild.owner_id,
-            channel=message.channel,
-            users=available_members,
-            action_type="add_member",
-            placeholder="Select members to add..."
+            channel=message.channel
         )
         
         # Update message
@@ -422,50 +713,35 @@ class DynamicMemberList(commands.Cog):
         # Create initial embed
         embed = discord.Embed(
             title="📋 Dynamic Member List",
-            description="Use the dropdown below to add members to the list.",
+            description="Use the buttons below to manage the member list.",
             color=discord.Color.blue(),
             timestamp=datetime.now(pytz.UTC)
         )
         
         embed.add_field(
             name=f"📝 Current Members (0/{self.MAX_MEMBERS})",
-            value="*No members in the list yet*",
+            value="*No members in the list yet*\nUse the **➕ Add Members** button to add members.",
             inline=False
         )
         
-        stats_text = f"**Capacity:** 0/{self.MAX_MEMBERS}\n"
-        stats_text += f"**Member Duration:** {self.MEMBER_EXPIRY_DAYS} days\n"
-        stats_text += f"**Last updated:** <t:{int(datetime.now(pytz.UTC).timestamp())}:R>"
-        
-        embed.add_field(name="📊 Statistics", value=stats_text, inline=False)
-        
         embed.add_field(
-            name="⚙️ Rules & Info",
+            name="⚙️ Rules",
             value=(
-                "• Members stay on list for 2 days\n"
-                "• Max 12 members at a time\n"
-                "• Oldest members removed when full\n"
-                "• Members who leave server are auto-removed\n"
+                f"• **Max {self.MAX_MEMBERS} members** at a time\n"
+                f"• Members stay for **{self.MEMBER_EXPIRY_DAYS} days**\n"
+                f"• Oldest members removed when full\n"
+                f"• Auto-removed if member leaves server\n"
                 f"• Only specific roles can add members"
             ),
             inline=False
         )
         
-        # Get available members
-        available_members = [
-            member for member in ctx.guild.members 
-            if not member.bot
-        ]
-        
-        # Create view with dropdown
-        view = self.UserSelectActionView(
+        # Create view with buttons
+        view = self.MembersMainView(
             cog=self,
             channel_id=ctx.channel.id,
             owner_id=ctx.guild.owner_id,
-            channel=ctx.channel,
-            users=available_members,
-            action_type="add_member",
-            placeholder="Select members to add..."
+            channel=ctx.channel
         )
         
         # Send message
@@ -505,67 +781,16 @@ class DynamicMemberList(commands.Cog):
         
         await ctx.send("✅ Member list deleted!")
     
-    @commands.command(name="listinfo")
-    async def list_info(self, ctx):
-        """Get information about the current member list"""
-        channel_id = str(ctx.channel.id)
-        
-        if channel_id not in self.member_lists:
-            await ctx.send("❌ No member list exists in this channel!")
+    @commands.command(name="setaddroles")
+    @commands.has_permissions(administrator=True)
+    async def set_add_roles(self, ctx, *roles: discord.Role):
+        """Set which roles can add members to the list (Admin only)"""
+        if not roles:
+            await ctx.send("❌ Please mention at least one role!")
             return
         
-        list_data = self.member_lists[channel_id]
-        members = list_data['members']
-        
-        embed = discord.Embed(
-            title="📊 Member List Information",
-            color=discord.Color.green(),
-            timestamp=datetime.now(pytz.UTC)
-        )
-        
-        # Basic info
-        created_at = datetime.fromisoformat(list_data['created_at'])
-        embed.add_field(
-            name="General",
-            value=(
-                f"**Created:** <t:{int(created_at.timestamp())}:R>\n"
-                f"**Channel:** {ctx.channel.mention}\n"
-                f"**Members:** {len(members)}/{self.MAX_MEMBERS}"
-            ),
-            inline=False
-        )
-        
-        # Current members
-        if members:
-            current_text = ""
-            for member_id, member_data in members.items():
-                added_at = datetime.fromisoformat(member_data['added_at'])
-                expires_in = self.MEMBER_EXPIRY_DAYS - (datetime.now(pytz.UTC) - added_at).days
-                
-                current_text += (
-                    f"• **{member_data['display_name']}** "
-                    f"(Added <t:{int(added_at.timestamp())}:R>, "
-                    f"Expires in {expires_in} day{'s' if expires_in != 1 else ''})\n"
-                )
-            
-            embed.add_field(
-                name="Current Members",
-                value=current_text,
-                inline=False
-            )
-        
-        # Settings
-        embed.add_field(
-            name="Settings",
-            value=(
-                f"**Max capacity:** {self.MAX_MEMBERS}\n"
-                f"**Expiry days:** {self.MEMBER_EXPIRY_DAYS}\n"
-                f"**Add roles required:** {len(self.ADD_ROLES)} configured"
-            ),
-            inline=False
-        )
-        
-        await ctx.send(embed=embed)
+        self.ADD_ROLES = [str(role.id) for role in roles]
+        await ctx.send(f"✅ Set add permissions to: {', '.join([role.mention for role in roles])}")
     
     @commands.command(name="forceremove")
     @commands.has_permissions(administrator=True)
@@ -607,17 +832,6 @@ class DynamicMemberList(commands.Cog):
             await ctx.send(f"✅ Force removed {member.mention} from the list.")
         except Exception as e:
             await ctx.send(f"❌ Error updating list: {str(e)}")
-    
-    @commands.command(name="setaddroles")
-    @commands.has_permissions(administrator=True)
-    async def set_add_roles(self, ctx, *roles: discord.Role):
-        """Set which roles can add members to the list (Admin only)"""
-        if not roles:
-            await ctx.send("❌ Please mention at least one role!")
-            return
-        
-        self.ADD_ROLES = [str(role.id) for role in roles]
-        await ctx.send(f"✅ Set add permissions to: {', '.join([role.mention for role in roles])}")
 
 async def setup(bot):
     await bot.add_cog(DynamicMemberList(bot))
