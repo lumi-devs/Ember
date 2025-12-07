@@ -43,25 +43,10 @@ class AFK(commands.Cog):
         self.db_path = "data/afk.db"
         self.db = None
         
-        # Worker queue system
-        self.message_queue = deque()
-        self.command_queue = deque()
-        self.db_queue = deque()
-        
-        # Locks for thread safety
-        self.queue_locks = {
-            'message': asyncio.Lock(),
-            'command': asyncio.Lock(), 
-            'db': asyncio.Lock()
-        }
-        
-        # Worker tasks
-        self.workers = {}
-        self.worker_count = 2  # Number of parallel workers per queue
-        
-        # Rate limiting
-        self.last_nick_edit = {}
-        self.nick_edit_cooldown = 0.5  # seconds
+        # Worker queue system - fix: use asyncio.Queue for proper async handling
+        self.message_queue = asyncio.Queue()
+        self.command_queue = asyncio.Queue()
+        self.db_queue = asyncio.Queue()
         
         # Performance tracking
         self.stats = {
@@ -70,11 +55,21 @@ class AFK(commands.Cog):
             'db_operations': 0
         }
         
-        self.ready_event = asyncio.Event()
+        # Rate limiting
+        self.last_nick_edit = {}
+        self.nick_edit_cooldown = 0.5  # seconds
+        
+        # Track running state
+        self.is_running = False
+        
         self.bot.loop.create_task(self.init_system())
 
     async def init_system(self):
         """Initialize database and start worker queues."""
+        # Create data directory if it doesn't exist
+        import os
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        
         self.db = await aiosqlite.connect(self.db_path)
         await self.db.execute("""
             CREATE TABLE IF NOT EXISTS afk (
@@ -86,126 +81,139 @@ class AFK(commands.Cog):
         await self.db.commit()
         
         # Start worker pools
+        self.is_running = True
         await self.start_workers()
-        self.ready_event.set()
         print("[AFK] System initialized with worker queues.")
 
     async def start_workers(self):
         """Start worker pools for different queue types."""
-        queue_types = ['message', 'command', 'db']
+        queue_types = [
+            ('message', self.message_worker, 2),
+            ('command', self.command_worker, 1),
+            ('db', self.db_worker, 1)
+        ]
         
-        for queue_type in queue_types:
-            self.workers[queue_type] = []
-            for i in range(self.worker_count):
-                worker = asyncio.create_task(
-                    self.worker_loop(queue_type, i)
-                )
-                self.workers[queue_type].append(worker)
+        self.worker_tasks = []
+        for queue_name, worker_func, count in queue_types:
+            for i in range(count):
+                task = asyncio.create_task(worker_func(f"{queue_name}-{i}"))
+                self.worker_tasks.append(task)
 
-    async def worker_loop(self, queue_type: str, worker_id: int):
-        """Worker that processes items from its assigned queue."""
-        print(f"[AFK] Started {queue_type} worker {worker_id}")
+    async def message_worker(self, worker_id: str):
+        """Worker that processes message queue items."""
+        print(f"[AFK] Started message worker {worker_id}")
         
-        while not self.bot.is_closed():
+        while self.is_running:
             try:
-                # Get item from queue
-                async with self.queue_locks[queue_type]:
-                    if not getattr(self, f'{queue_type}_queue'):
-                        await asyncio.sleep(0.1)
-                        continue
-                    
-                    if queue_type == 'message':
-                        item = self.message_queue.popleft() if self.message_queue else None
-                    elif queue_type == 'command':
-                        item = self.command_queue.popleft() if self.command_queue else None
-                    elif queue_type == 'db':
-                        item = self.db_queue.popleft() if self.db_queue else None
-                
-                if not item:
-                    await asyncio.sleep(0.1)
+                # Get item from queue with timeout
+                try:
+                    message, task_type = await asyncio.wait_for(
+                        self.message_queue.get(),
+                        timeout=1.0
+                    )
+                except asyncio.TimeoutError:
                     continue
                 
-                # Process based on queue type
-                if queue_type == 'message':
-                    await self.process_message_item(item)
-                elif queue_type == 'command':
-                    await self.process_command_item(item)
-                elif queue_type == 'db':
-                    await self.process_db_item(item)
+                if task_type == 'check_afk_removal':
+                    await self._check_afk_removal(message)
+                elif task_type == 'check_mentions':
+                    await self._check_mentions(message)
                 
-                # Small delay to prevent CPU spinning
-                await asyncio.sleep(0.01)
+                self.stats['messages_processed'] += 1
+                self.message_queue.task_done()
                 
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                print(f"[AFK] Worker {queue_type}-{worker_id} error: {e}")
+                print(f"[AFK] Message worker {worker_id} error: {e}")
                 await asyncio.sleep(1)
 
-    async def process_message_item(self, item):
-        """Process a message from the message queue."""
-        message, task_type = item
+    async def command_worker(self, worker_id: str):
+        """Worker that processes command queue items."""
+        print(f"[AFK] Started command worker {worker_id}")
         
-        try:
-            if task_type == 'check_afk_removal':
-                await self._check_afk_removal(message)
-            elif task_type == 'check_mentions':
-                await self._check_mentions(message)
-            
-            self.stats['messages_processed'] += 1
-        except Exception as e:
-            print(f"[AFK] Message processing error: {e}")
+        while self.is_running:
+            try:
+                try:
+                    ctx, reason = await asyncio.wait_for(
+                        self.command_queue.get(),
+                        timeout=1.0
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                
+                await self._execute_afk_command(ctx, reason)
+                self.stats['commands_processed'] += 1
+                self.command_queue.task_done()
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"[AFK] Command worker {worker_id} error: {e}")
+                await asyncio.sleep(1)
 
-    async def process_command_item(self, item):
-        """Process a command from the command queue."""
-        ctx, reason = item
+    async def db_worker(self, worker_id: str):
+        """Worker that processes database queue items."""
+        print(f"[AFK] Started DB worker {worker_id}")
         
-        try:
-            await self._execute_afk_command(ctx, reason)
-            self.stats['commands_processed'] += 1
-        except Exception as e:
-            print(f"[AFK] Command processing error: {e}")
-
-    async def process_db_item(self, item):
-        """Process a database operation."""
-        operation, args = item
-        
-        try:
-            if operation == 'set_afk':
-                await self._db_set_afk(*args)
-            elif operation == 'remove_afk':
-                await self._db_remove_afk(*args)
-            elif operation == 'get_afk':
-                return await self._db_get_afk(*args)
-            
-            self.stats['db_operations'] += 1
-        except Exception as e:
-            print(f"[AFK] DB operation error: {e}")
+        while self.is_running:
+            try:
+                try:
+                    operation, args, future = await asyncio.wait_for(
+                        self.db_queue.get(),
+                        timeout=1.0
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                
+                try:
+                    if operation == 'set_afk':
+                        result = await self._db_set_afk(*args)
+                    elif operation == 'remove_afk':
+                        result = await self._db_remove_afk(*args)
+                    elif operation == 'get_afk':
+                        result = await self._db_get_afk(*args)
+                    elif operation == 'get_all_afk':
+                        result = await self._db_get_all_afk()
+                    
+                    self.stats['db_operations'] += 1
+                    
+                    # Set result on future if provided
+                    if future and not future.done():
+                        future.set_result(result)
+                        
+                except Exception as e:
+                    if future and not future.done():
+                        future.set_exception(e)
+                
+                self.db_queue.task_done()
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"[AFK] DB worker {worker_id} error: {e}")
+                await asyncio.sleep(1)
 
     # ─── Queue-based DB Operations ─────────────────────
     async def set_afk(self, user_id: int, reason: str):
         """Queue AFK set operation."""
-        async with self.queue_locks['db']:
-            self.db_queue.append(('set_afk', (user_id, reason)))
+        await self.db_queue.put(('set_afk', (user_id, reason), None))
 
     async def remove_afk(self, user_id: int):
         """Queue AFK removal operation."""
-        async with self.queue_locks['db']:
-            self.db_queue.append(('remove_afk', (user_id,)))
+        await self.db_queue.put(('remove_afk', (user_id,), None))
 
     async def get_afk(self, user_id: int):
-        """Get AFK status (immediate, not queued)."""
-        await self.ensure_db()
-        async with self.queue_locks['db']:
-            async with self.db.execute(
-                "SELECT reason, since FROM afk WHERE user_id = ?", (str(user_id),)
-            ) as cursor:
-                return await cursor.fetchone()
+        """Get AFK status (queued with future)."""
+        future = asyncio.Future()
+        await self.db_queue.put(('get_afk', (user_id,), future))
+        return await future
 
     async def get_all_afk(self):
-        """Get all AFK users (immediate, not queued)."""
-        await self.ensure_db()
-        async with self.queue_locks['db']:
-            async with self.db.execute("SELECT user_id, reason, since FROM afk") as cursor:
-                return await cursor.fetchall()
+        """Get all AFK users (queued with future)."""
+        future = asyncio.Future()
+        await self.db_queue.put(('get_all_afk', (), future))
+        return await future
 
     # ─── Direct DB Operations (for workers) ────────────
     async def _db_set_afk(self, user_id: int, reason: str):
@@ -216,11 +224,13 @@ class AFK(commands.Cog):
             (str(user_id), reason, since)
         )
         await self.db.commit()
+        return True
 
     async def _db_remove_afk(self, user_id: int):
         """Worker: Remove AFK from database."""
         await self.db.execute("DELETE FROM afk WHERE user_id = ?", (str(user_id),))
         await self.db.commit()
+        return True
 
     async def _db_get_afk(self, user_id: int):
         """Worker: Get AFK from database."""
@@ -229,9 +239,10 @@ class AFK(commands.Cog):
         ) as cursor:
             return await cursor.fetchone()
 
-    async def ensure_db(self):
-        """Wait until DB connection is ready."""
-        await self.ready_event.wait()
+    async def _db_get_all_afk(self):
+        """Worker: Get all AFK users from database."""
+        async with self.db.execute("SELECT user_id, reason, since FROM afk") as cursor:
+            return await cursor.fetchall()
 
     # ─── Rate Limited Nickname Edits ───────────────────
     async def safe_edit_nick(self, member: discord.Member, new_nick: str):
@@ -240,6 +251,8 @@ class AFK(commands.Cog):
         user_cooldown = self.last_nick_edit.get(member.id, 0)
         
         if current_time - user_cooldown < self.nick_edit_cooldown:
+            # Schedule for later
+            asyncio.create_task(self.delayed_nick_edit(member, new_nick, user_cooldown + self.nick_edit_cooldown - current_time))
             return
         
         try:
@@ -248,33 +261,53 @@ class AFK(commands.Cog):
         except (discord.Forbidden, discord.HTTPException):
             pass
 
+    async def delayed_nick_edit(self, member: discord.Member, new_nick: str, delay: float):
+        """Edit nickname after delay."""
+        await asyncio.sleep(delay)
+        try:
+            await member.edit(nick=new_nick)
+            self.last_nick_edit[member.id] = time.time()
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
     # ─── Command Processing ────────────────────────────
     async def _execute_afk_command(self, ctx: commands.Context, reason: str):
         """Worker: Execute AFK command."""
         user = ctx.author
         
-        # Delete command message
-        try:
-            await ctx.message.delete()
-        except:
-            pass
-
-        await self.set_afk(user.id, reason)
+        # Check if already AFK
+        existing = await self.get_afk(user.id)
+        if existing:
+            # Already AFK, update if reason changed
+            old_reason = existing[0]
+            if old_reason != reason:
+                await self.set_afk(user.id, reason)
+                embed = discord.Embed(
+                    title="✏️ AFK Updated",
+                    description=f"{user.mention}, your AFK reason was updated to: **{reason}**",
+                    color=AFK_SET_COLOR
+                )
+            else:
+                return  # Already AFK with same reason
+        else:
+            # Set new AFK
+            await self.set_afk(user.id, reason)
 
         # Update nickname if in guild
         if ctx.guild and not user.display_name.startswith("[AFK]"):
             await self.safe_edit_nick(user, f"[AFK] {user.display_name}")
 
-        # Send confirmation
-        embed = discord.Embed(
-            title="✅ AFK Set",
-            description=f"{user.mention}, you are now AFK: **{reason}**",
-            color=AFK_SET_COLOR
-        )
-        msg = await ctx.send(embed=embed)
-        
-        # Auto-delete confirmation
-        asyncio.create_task(self.auto_delete_message(msg, 20))
+        # Send confirmation if not already AFK with same reason
+        if not existing or existing[0] != reason:
+            embed = embed if 'embed' in locals() else discord.Embed(
+                title="✅ AFK Set",
+                description=f"{user.mention}, you are now AFK: **{reason}**",
+                color=AFK_SET_COLOR
+            )
+            msg = await ctx.send(embed=embed)
+            
+            # Auto-delete confirmation
+            asyncio.create_task(self.auto_delete_message(msg, 20))
 
     # ─── Message Processing ────────────────────────────
     async def _check_afk_removal(self, message: discord.Message):
@@ -333,8 +366,7 @@ class AFK(commands.Cog):
     async def afk(self, ctx: commands.Context, *, reason: str = "AFK"):
         """Set yourself as AFK (queued)."""
         # Add to command queue for processing
-        async with self.queue_locks['command']:
-            self.command_queue.append((ctx, reason))
+        await self.command_queue.put((ctx, reason))
 
     @commands.command(name="afklist")
     @commands.is_owner()
@@ -347,16 +379,17 @@ class AFK(commands.Cog):
         lines = []
         for user_id, reason, since in afk_users:
             user = self.bot.get_user(int(user_id))
-            name = user.name if user else f"Unknown ({user_id})"
+            name = user.mention if user else f"Unknown ({user_id})"
             since_dt = datetime.fromisoformat(since)
             duration = human_timedelta(since_dt)
-            lines.append(f"**{name}** — {reason} *(for {duration})*")
+            lines.append(f"{name} — `{reason}` *(for {duration})*")
 
         embed = discord.Embed(
             title="📜 AFK List",
             description="\n".join(lines),
             color=AFK_MENTION_COLOR
         )
+        embed.set_footer(text=f"Total AFK users: {len(afk_users)}")
         await ctx.reply(embed=embed, mention_author=False)
 
     @commands.command(name="afkstats")
@@ -371,15 +404,17 @@ class AFK(commands.Cog):
         embed.add_field(name="Commands Processed", value=self.stats['commands_processed'], inline=True)
         embed.add_field(name="DB Operations", value=self.stats['db_operations'], inline=True)
         
+        # Get queue sizes
         queue_sizes = {
-            'Message Queue': len(self.message_queue),
-            'Command Queue': len(self.command_queue),
-            'DB Queue': len(self.db_queue)
+            'Message Queue': self.message_queue.qsize(),
+            'Command Queue': self.command_queue.qsize(),
+            'DB Queue': self.db_queue.qsize()
         }
         
         for queue_name, size in queue_sizes.items():
             embed.add_field(name=queue_name, value=size, inline=True)
         
+        embed.set_footer(text=f"Active worker tasks: {len(self.worker_tasks)}")
         await ctx.reply(embed=embed, mention_author=False)
 
     # ─── Listeners ─────────────────────────────────────
@@ -388,22 +423,35 @@ class AFK(commands.Cog):
         if message.author.bot:
             return
 
+        # Don't process if it's an AFK command (let the command handler do it)
+        ctx = await self.bot.get_context(message)
+        if ctx.valid and ctx.command == self.afk:
+            await self.bot.process_commands(message)
+            return
+
         # Queue message for processing
-        async with self.queue_locks['message']:
-            # Check for AFK removal
-            self.message_queue.append((message, 'check_afk_removal'))
-            # Check mentions
-            if message.mentions:
-                self.message_queue.append((message, 'check_mentions'))
+        # Check for AFK removal
+        await self.message_queue.put((message, 'check_afk_removal'))
+        
+        # Check mentions
+        if message.mentions:
+            await self.message_queue.put((message, 'check_mentions'))
 
         await self.bot.process_commands(message)
 
     async def cog_unload(self):
         """Clean shutdown of workers and database."""
-        # Cancel all workers
-        for queue_type, workers in self.workers.items():
-            for worker in workers:
-                worker.cancel()
+        self.is_running = False
+        
+        # Cancel all worker tasks
+        for task in self.worker_tasks:
+            task.cancel()
+        
+        # Wait for tasks to complete
+        try:
+            await asyncio.gather(*self.worker_tasks, return_exceptions=True)
+        except:
+            pass
         
         # Close database
         if self.db:
