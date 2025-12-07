@@ -116,6 +116,15 @@ class RoleMentionTracker(commands.Cog):
         # Get total mentions for this guild
         total_mentions = sum(self.role_mentions[guild_id].values())
         
+        # Get list of unique roles mentioned today with their counts
+        unique_roles_info = []
+        for role_id, count in self.role_mentions[guild_id].items():
+            role_obj = message.guild.get_role(int(role_id))
+            if role_obj:
+                unique_roles_info.append(f"{role_obj.mention} ({count})")
+            else:
+                unique_roles_info.append(f"Deleted Role ({role_id}) ({count})")
+        
         # Create detailed embed
         embed = discord.Embed(
             title="📢 New Role Mention(s) Detected",
@@ -160,10 +169,27 @@ class RoleMentionTracker(commands.Cog):
         )
         
         # Add current statistics
+        stats_text = f"**Total Role Mentions:** {total_mentions}\n"
+        stats_text += f"**Unique Roles Mentioned:** {len(self.role_mentions[guild_id])}\n\n"
+        
+        # Show unique roles with counts
+        if unique_roles_info:
+            # Show all roles if 5 or fewer, otherwise show first 5 with "and X more"
+            if len(unique_roles_info) <= 5:
+                stats_text += "**Roles mentioned today:**\n"
+                for role_info in unique_roles_info:
+                    stats_text += f"• {role_info}\n"
+            else:
+                stats_text += "**Roles mentioned today (first 5):**\n"
+                for role_info in unique_roles_info[:5]:
+                    stats_text += f"• {role_info}\n"
+                stats_text += f"*...and {len(unique_roles_info) - 5} more*"
+        else:
+            stats_text += "**No roles mentioned yet today**"
+        
         embed.add_field(
             name="📊 Today's Statistics",
-            value=f"**Total Role Mentions:** {total_mentions}\n"
-                  f"**Unique Roles Mentioned:** {len(self.role_mentions[guild_id])}",
+            value=stats_text,
             inline=False
         )
         
@@ -278,32 +304,38 @@ class RoleMentionTracker(commands.Cog):
             # Get all role stats
             total_mentions = sum(self.role_mentions[guild_id].values())
             
-            # Sort roles by mention count
-            sorted_mentions = sorted(
-                self.role_mentions[guild_id].items(),
-                key=lambda x: x[1],
-                reverse=True
-            )
+            # Get list of all mentioned roles with counts
+            all_roles_info = []
+            for role_id, count in self.role_mentions[guild_id].items():
+                role_obj = ctx.guild.get_role(int(role_id))
+                if role_obj:
+                    all_roles_info.append((role_obj.name, count, role_obj.id))
+                else:
+                    all_roles_info.append((f"Deleted Role ({role_id})", count, role_id))
+            
+            # Sort by count
+            all_roles_info.sort(key=lambda x: x[1], reverse=True)
             
             embed = discord.Embed(
                 title=f"Role Mention Statistics",
                 description=f"**Total mentions today:** `{total_mentions}`\n"
-                           f"**Unique roles mentioned:** `{len(self.role_mentions[guild_id])}`",
+                           f"**Unique roles mentioned:** `{len(all_roles_info)}`",
                 color=discord.Color.blue()
             )
             
-            # Add top 10 mentioned roles to embed
-            for i, (role_id, count) in enumerate(sorted_mentions[:10], 1):
-                role_obj = ctx.guild.get_role(int(role_id))
-                role_name = role_obj.name if role_obj else f"Deleted Role ({role_id})"
-                embed.add_field(
-                    name=f"{i}. {role_name}",
-                    value=f"**Mentions:** {count}\n**ID:** `{role_id}`",
-                    inline=True
-                )
+            # Show all roles with their mention counts
+            roles_list_text = ""
+            for i, (role_name, count, role_id) in enumerate(all_roles_info[:15], 1):
+                roles_list_text += f"{i}. **{role_name}** - {count} mention{'s' if count != 1 else ''} (ID: `{role_id}`)\n"
             
-            if len(sorted_mentions) > 10:
-                embed.set_footer(text=f"Showing top 10 of {len(sorted_mentions)} roles | Resets daily at 4 AM IST")
+            embed.add_field(
+                name="Roles Mentioned Today",
+                value=roles_list_text if roles_list_text else "*No roles mentioned*",
+                inline=False
+            )
+            
+            if len(all_roles_info) > 15:
+                embed.set_footer(text=f"Showing 15 of {len(all_roles_info)} roles | Resets daily at 4 AM IST")
             else:
                 embed.set_footer(text="Data resets daily at 4 AM IST")
         
@@ -323,33 +355,64 @@ class RoleMentionTracker(commands.Cog):
             await ctx.send("No role mentions recorded yet today!")
             return
         
-        # Sort roles by mention count
-        sorted_mentions = sorted(
-            self.role_mentions[guild_id].items(),
-            key=lambda x: x[1],
-            reverse=True
-        )[:limit]
+        # Get all roles with counts
+        roles_data = []
+        for role_id, count in self.role_mentions[guild_id].items():
+            role_obj = ctx.guild.get_role(int(role_id))
+            if role_obj:
+                roles_data.append((role_obj.name, count, role_obj.id, role_obj))
+            else:
+                roles_data.append((f"Deleted Role ({role_id})", count, role_id, None))
+        
+        # Sort by count
+        roles_data.sort(key=lambda x: x[1], reverse=True)
+        top_roles = roles_data[:limit]
         
         embed = discord.Embed(
             title=f"Top {limit} Most Mentioned Roles",
             color=discord.Color.gold()
         )
         
-        for i, (role_id, count) in enumerate(sorted_mentions, 1):
-            role_obj = ctx.guild.get_role(int(role_id))
-            role_name = role_obj.name if role_obj else f"Deleted Role ({role_id})"
+        # Add each top role
+        for i, (role_name, count, role_id, role_obj) in enumerate(top_roles, 1):
+            if role_obj:
+                role_display = role_obj.mention
+            else:
+                role_display = f"**{role_name}**"
+            
             embed.add_field(
                 name=f"{i}. {role_name}",
-                value=f"**{count}** mention{'s' if count != 1 else ''}\nID: `{role_id}`",
+                value=f"{role_display}\n**{count}** mention{'s' if count != 1 else ''}\nID: `{role_id}`",
                 inline=False
             )
         
         total_mentions = sum(self.role_mentions[guild_id].values())
+        total_unique = len(roles_data)
+        
         embed.add_field(
             name="📊 Summary",
-            value=f"**Total Mentions Today:** {total_mentions}",
+            value=f"**Total Mentions Today:** {total_mentions}\n"
+                  f"**Unique Roles Mentioned:** {total_unique}",
             inline=False
         )
+        
+        # List all unique roles mentioned
+        if total_unique <= 10:
+            all_roles_text = ""
+            for role_name, count, role_id, role_obj in roles_data:
+                all_roles_text += f"• {role_name} ({count})\n"
+            
+            embed.add_field(
+                name="All Roles Mentioned Today",
+                value=all_roles_text,
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="All Roles Mentioned Today",
+                value=f"{total_unique} unique roles have been mentioned today. Use `!rm stats` to see all.",
+                inline=False
+            )
         
         embed.set_footer(text=f"Resets daily at 4 AM IST")
         
