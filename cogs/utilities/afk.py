@@ -43,7 +43,7 @@ class AFK(commands.Cog):
         self.db_path = "data/afk.db"
         self.db = None
         
-        # Worker queue system - fix: use asyncio.Queue for proper async handling
+        # Worker queue system - using asyncio.Queue for proper async handling
         self.message_queue = asyncio.Queue()
         self.command_queue = asyncio.Queue()
         self.db_queue = asyncio.Queue()
@@ -275,6 +275,12 @@ class AFK(commands.Cog):
         """Worker: Execute AFK command."""
         user = ctx.author
         
+        # Delete command message
+        try:
+            await ctx.message.delete()
+        except:
+            pass
+        
         # Check if already AFK
         existing = await self.get_afk(user.id)
         if existing:
@@ -423,12 +429,6 @@ class AFK(commands.Cog):
         if message.author.bot:
             return
 
-        # Don't process if it's an AFK command (let the command handler do it)
-        ctx = await self.bot.get_context(message)
-        if ctx.valid and ctx.command == self.afk:
-            await self.bot.process_commands(message)
-            return
-
         # Queue message for processing
         # Check for AFK removal
         await self.message_queue.put((message, 'check_afk_removal'))
@@ -437,6 +437,7 @@ class AFK(commands.Cog):
         if message.mentions:
             await self.message_queue.put((message, 'check_mentions'))
 
+        # Process commands (moved outside to ensure it always runs)
         await self.bot.process_commands(message)
 
     async def cog_unload(self):
