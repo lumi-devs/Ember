@@ -195,14 +195,14 @@ class RoleMentionTracker(commands.Cog):
         
         # Add command usage info
         command_usage = ""
-        if message.content.startswith('!'):
+        if message.content.startswith('.'):
             command_usage = f"**Command Detected:** `{message.content.split()[0]}`\n"
         
         embed.add_field(
             name="⚙️ Available Commands",
-            value=f"{command_usage}**`!rm stats [role]`** - Get role mention statistics\n"
-                  f"**`!rm top [limit]`** - See most mentioned roles\n"
-                  f"**`!rm reset`** - Reset counters (Admin only)",
+            value=f"{command_usage}**`.rm stats [role]`** - Get role mention statistics\n"
+                  f"**`.rm top [limit]`** - See most mentioned roles\n"
+                  f"**`.rm reset`** - Reset counters (Admin only)",
             inline=True
         )
         
@@ -252,9 +252,9 @@ class RoleMentionTracker(commands.Cog):
         embed.add_field(
             name="Available Commands",
             value=(
-                "**`!rm stats [role]`** - Get role mention statistics\n"
-                "**`!rm top [limit]`** - Get top mentioned roles (default: 5)\n"
-                "**`!rm reset`** - Manually reset counters (Admin only)"
+                "**`.rm stats [role]`** - Get role mention statistics\n"
+                "**`.rm top [limit]`** - Get top mentioned roles (default: 5)\n"
+                "**`.rm reset`** - Manually reset counters (Admin only)"
             ),
             inline=False
         )
@@ -410,7 +410,7 @@ class RoleMentionTracker(commands.Cog):
         else:
             embed.add_field(
                 name="All Roles Mentioned Today",
-                value=f"{total_unique} unique roles have been mentioned today. Use `!rm stats` to see all.",
+                value=f"{total_unique} unique roles have been mentioned today. Use `.rm stats` to see all.",
                 inline=False
             )
         
