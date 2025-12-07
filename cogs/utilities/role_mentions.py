@@ -16,8 +16,8 @@ class RoleMentionTracker(commands.Cog):
         # Load existing data or initialize
         self.role_mentions = self.load_data()
         
-        # HARDCODED LOG CHANNEL ID - CHANGE THIS TO YOUR DESIRED CHANNEL ID
-        self.LOG_CHANNEL_ID = 1447323258478133298  # CHANGE THIS TO YOUR ACTUAL CHANNEL ID
+        # HARDCODED LOG CHANNEL ID
+        self.LOG_CHANNEL_ID = 1447323258478133298
         
         # Start the daily reset task
         self.daily_reset.start()
@@ -129,20 +129,6 @@ class RoleMentionTracker(commands.Cog):
             icon_url=message.author.avatar.url if message.author.avatar else None
         )
         
-        # Add guild info
-        embed.add_field(
-            name="Server",
-            value=f"**{message.guild.name}** (ID: {message.guild.id})",
-            inline=True
-        )
-        
-        # Add channel info
-        embed.add_field(
-            name="Channel",
-            value=f"{message.channel.mention} (#{message.channel.name})",
-            inline=True
-        )
-        
         # Add message link
         embed.add_field(
             name="Message Link",
@@ -156,7 +142,7 @@ class RoleMentionTracker(commands.Cog):
             content_preview = "*[No text content]*"
         
         embed.add_field(
-            name="Message Preview",
+            name="Message Content",
             value=f"```{content_preview}```",
             inline=False
         )
@@ -165,7 +151,7 @@ class RoleMentionTracker(commands.Cog):
         roles_text = ""
         for role in mentioned_roles:
             role_count = self.role_mentions[guild_id].get(str(role.id), 0)
-            roles_text += f"• {role.mention} (`{role.id}`) - **{role_count}** mention{'s' if role_count != 1 else ''} today\n"
+            roles_text += f"• {role.mention} - **{role_count}** mention{'s' if role_count != 1 else ''} today\n"
         
         embed.add_field(
             name=f"Mentioned Roles ({len(mentioned_roles)})",
@@ -180,26 +166,6 @@ class RoleMentionTracker(commands.Cog):
                   f"**Unique Roles Mentioned:** {len(self.role_mentions[guild_id])}",
             inline=False
         )
-        
-        # Add top 3 mentioned roles
-        if self.role_mentions[guild_id]:
-            sorted_roles = sorted(
-                self.role_mentions[guild_id].items(),
-                key=lambda x: x[1],
-                reverse=True
-            )[:3]
-            
-            top_roles_text = ""
-            for i, (role_id, count) in enumerate(sorted_roles, 1):
-                role_obj = message.guild.get_role(int(role_id))
-                role_name = role_obj.name if role_obj else f"Deleted Role ({role_id})"
-                top_roles_text += f"{i}. **{role_name}** - {count} mention{'s' if count != 1 else ''}\n"
-            
-            embed.add_field(
-                name="🏆 Top 3 Most Mentioned",
-                value=top_roles_text,
-                inline=True
-            )
         
         # Add command usage info
         command_usage = ""
@@ -306,8 +272,7 @@ class RoleMentionTracker(commands.Cog):
             )
             embed.add_field(name="Today's Mentions", value=str(role_count), inline=True)
             embed.add_field(name="Role ID", value=f"`{role.id}`", inline=True)
-            embed.add_field(name="Server", value=ctx.guild.name, inline=True)
-            embed.set_footer(text=f"Data resets daily at 4 AM IST | Logs sent to #{self.bot.get_channel(self.LOG_CHANNEL_ID).name if self.bot.get_channel(self.LOG_CHANNEL_ID) else 'Unknown'}")
+            embed.set_footer(text=f"Data resets daily at 4 AM IST")
             
         else:
             # Get all role stats
@@ -321,10 +286,9 @@ class RoleMentionTracker(commands.Cog):
             )
             
             embed = discord.Embed(
-                title=f"Role Mention Statistics - {ctx.guild.name}",
+                title=f"Role Mention Statistics",
                 description=f"**Total mentions today:** `{total_mentions}`\n"
-                           f"**Unique roles mentioned:** `{len(self.role_mentions[guild_id])}`\n"
-                           f"**Log Channel:** <#{self.LOG_CHANNEL_ID}>",
+                           f"**Unique roles mentioned:** `{len(self.role_mentions[guild_id])}`",
                 color=discord.Color.blue()
             )
             
@@ -367,7 +331,7 @@ class RoleMentionTracker(commands.Cog):
         )[:limit]
         
         embed = discord.Embed(
-            title=f"Top {limit} Most Mentioned Roles - {ctx.guild.name}",
+            title=f"Top {limit} Most Mentioned Roles",
             color=discord.Color.gold()
         )
         
@@ -383,8 +347,7 @@ class RoleMentionTracker(commands.Cog):
         total_mentions = sum(self.role_mentions[guild_id].values())
         embed.add_field(
             name="📊 Summary",
-            value=f"**Total Mentions Today:** {total_mentions}\n"
-                  f"**Log Channel:** <#{self.LOG_CHANNEL_ID}>",
+            value=f"**Total Mentions Today:** {total_mentions}",
             inline=False
         )
         
@@ -408,17 +371,12 @@ class RoleMentionTracker(commands.Cog):
                 if log_channel:
                     embed = discord.Embed(
                         title="🔄 Manual Role Mention Reset",
-                        description=f"Role mention counters have been manually reset for **{ctx.guild.name}**",
+                        description=f"Role mention counters have been manually reset",
                         color=discord.Color.orange()
                     )
                     embed.add_field(
                         name="Reset By",
                         value=f"{ctx.author.mention} ({ctx.author.id})",
-                        inline=True
-                    )
-                    embed.add_field(
-                        name="Server",
-                        value=f"{ctx.guild.name} ({ctx.guild.id})",
                         inline=True
                     )
                     embed.set_footer(text=f"Reset at {datetime.now(self.ist).strftime('%Y-%m-%d %H:%M:%S')} IST")
