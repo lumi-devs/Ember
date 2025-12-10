@@ -16,7 +16,7 @@ class DynamicMemberList(commands.Cog):
         # Configuration
         self.MAX_MEMBERS = 12
         self.MEMBER_EXPIRY_DAYS = 2
-        self.ADD_ROLES = [1406324000736542911, 1410302930485121106, 1408709182856630332, 1438551732807536690]  # Add role IDs here that can ADD members
+        self.ADD_ROLES = [1406324000736542911, 1410302930485121106, 1408709182856630332, 1438551732807536690, 1393170995157798983]  # Add role IDs here that can ADD members
         
         # Load existing data
         self.member_lists = self.load_data()
