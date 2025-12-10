@@ -13,7 +13,7 @@ class DynamicMemberList(commands.Cog):
         self.data_file = "data/member_list_data.json"
         self.ist = pytz.timezone('Asia/Kolkata')
         
-        # Configuration
+        # Configuration - KEEP AS INTEGERS
         self.MAX_MEMBERS = 12
         self.MEMBER_EXPIRY_DAYS = 2
         self.ADD_ROLES = [1406324000736542911, 1410302930485121106, 1408709182856630332, 1438551732807536690, 1393170995157798983]  # Add role IDs here that can ADD members
@@ -134,7 +134,7 @@ class DynamicMemberList(commands.Cog):
                                     if message:
                                         await self.update_embed(message, list_data)
                         except:
-                            pass
+                        pass
                 except Exception as e:
                     print(f"Error in cleanup_left_members: {e}")
         
@@ -168,19 +168,38 @@ class DynamicMemberList(commands.Cog):
             
             channel = interaction.channel
             
-            # Check permissions
+            # Check permissions - FIXED VERSION
             has_permission = False
-            if not self.cog.ADD_ROLES:  # If empty, allow everyone
+            
+            # If ADD_ROLES is empty, allow everyone
+            if not self.cog.ADD_ROLES:
                 has_permission = True
             else:
+                # Check each role the user has
                 for role in interaction.user.roles:
-                    if str(role.id) in self.cog.ADD_ROLES:
+                    # Compare role.id (int) with ADD_ROLES (int)
+                    if role.id in self.cog.ADD_ROLES:
                         has_permission = True
                         break
+                
+                # Also check if user is admin (optional, but good to have)
+                if not has_permission and interaction.user.guild_permissions.administrator:
+                    has_permission = True
             
             if not has_permission:
+                # Show which roles are required for debugging
+                required_roles = []
+                for role_id in self.cog.ADD_ROLES:
+                    role = interaction.guild.get_role(role_id)
+                    if role:
+                        required_roles.append(role.mention)
+                    else:
+                        required_roles.append(f"Unknown Role ({role_id})")
+                
                 await interaction.followup.send(
-                    "❌ You don't have permission to add members to this list!",
+                    f"❌ You don't have permission to add members to this list!\n"
+                    f"**Required roles:** {', '.join(required_roles) if required_roles else 'None configured'}\n"
+                    f"**Your roles:** {', '.join([r.mention for r in interaction.user.roles[1:]])}",
                     ephemeral=True
                 )
                 return
@@ -399,13 +418,13 @@ class DynamicMemberList(commands.Cog):
             list_data = self.cog.member_lists[channel_id]
             
             if self.action_type == "add":
-                # Check ADD permissions
+                # Check ADD permissions - FIXED VERSION
                 has_permission = False
                 if not self.cog.ADD_ROLES:
                     has_permission = True
                 else:
                     for role in interaction.user.roles:
-                        if str(role.id) in self.cog.ADD_ROLES:
+                        if role.id in self.cog.ADD_ROLES:
                             has_permission = True
                             break
                 
@@ -686,7 +705,7 @@ class DynamicMemberList(commands.Cog):
             await ctx.send("❌ Please mention at least one role!")
             return
         
-        self.ADD_ROLES = [str(role.id) for role in roles]
+        self.ADD_ROLES = [role.id for role in roles]
         await ctx.send(f"✅ Set add permissions to: {', '.join([role.mention for role in roles])}")
     
     @commands.command(name="forceremove")
@@ -743,6 +762,86 @@ class DynamicMemberList(commands.Cog):
         self.bot.add_view(self.MembersMainView(cog=self))
         
         await ctx.send("✅ Persistent views reloaded!")
+    
+    @commands.command(name="checkperms")
+    async def check_perms(self, ctx):
+        """Check your permissions for the member list"""
+        user = ctx.author
+        
+        # Check which ADD_ROLES user has
+        user_role_ids = [role.id for role in user.roles]
+        matching_roles = []
+        
+        for role_id in self.ADD_ROLES:
+            if role_id in user_role_ids:
+                role = ctx.guild.get_role(role_id)
+                matching_roles.append(role.mention if role else f"Role {role_id}")
+        
+        embed = discord.Embed(
+            title="🔍 Permission Check",
+            color=discord.Color.blue()
+        )
+        
+        embed.add_field(
+            name="Configured ADD_ROLES",
+            value="\n".join([f"• <@&{role_id}> ({role_id})" for role_id in self.ADD_ROLES]) or "None",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Your Roles",
+            value="\n".join([f"• {role.mention} ({role.id})" for role in user.roles[1:]]) or "None",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Matching Roles",
+            value="\n".join(matching_roles) if matching_roles else "❌ No matching roles",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Has Permission?",
+            value="✅ YES" if matching_roles or not self.ADD_ROLES else "❌ NO",
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
+    
+    @commands.command(name="listconfig")
+    @commands.has_permissions(administrator=True)
+    async def list_config(self, ctx):
+        """Show current configuration (Admin only)"""
+        embed = discord.Embed(
+            title="⚙️ Dynamic Member List Configuration",
+            color=discord.Color.green()
+        )
+        
+        embed.add_field(
+            name="Max Members",
+            value=str(self.MAX_MEMBERS),
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Expiry Days",
+            value=str(self.MEMBER_EXPIRY_DAYS),
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Add Roles",
+            value="\n".join([f"• <@&{role_id}>" for role_id in self.ADD_ROLES]) or "None (everyone can add)",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Active Lists",
+            value=str(len(self.member_lists)),
+            inline=True
+        )
+        
+        await ctx.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(DynamicMemberList(bot))
