@@ -11,7 +11,7 @@ from .views import BasicControlsView
 
 
 class TempVoice(commands.Cog):
-    """Temp Voice with stability queue (same functionality, no behavior changes)"""
+    """Temp Voice with stability queue and organized channel ordering"""
 
     def __init__(self, bot):
         self.bot = bot
@@ -20,6 +20,7 @@ class TempVoice(commands.Cog):
         self.creation_queues = {}   # join_channel.id -> deque()
         self.queue_locks = {}       # join_channel.id -> asyncio.Lock()
         self.cleanup_locks = {}     # guild.id -> asyncio.Lock()
+        self.owner_leave_times = {}  # channel_id -> timestamp when owner left
         self._heartbeat.start()
 
     async def cog_load(self):
@@ -79,6 +80,18 @@ class TempVoice(commands.Cog):
         if not member or member.bot:
             return
 
+        # Track when VC owners leave their channels
+        if before.channel:
+            # Check if this member owns the channel they're leaving
+            async with aiosqlite.connect(DB_PATH) as db:
+                async with db.execute(
+                    "SELECT 1 FROM voiceChannel WHERE voiceID = ? AND userID = ?",
+                    (before.channel.id, member.id)
+                ) as c:
+                    if await c.fetchone():
+                        # This is the owner leaving their own channel
+                        self.owner_leave_times[before.channel.id] = time.time()
+        
         # JOIN HANDLER
         if after.channel and after.channel.id in JOIN_CHANNELS:
             join_id = after.channel.id
@@ -96,6 +109,19 @@ class TempVoice(commands.Cog):
                             await self._schedule_cleanup(before.channel)
             except Exception as e:
                 print(f"[TempVoice] cleanup schedule fail: {e}")
+        
+        # If owner rejoins their channel, remove the leave time
+        if after.channel:
+            if after.channel.id in self.owner_leave_times:
+                # Check if this member owns the channel
+                async with aiosqlite.connect(DB_PATH) as db:
+                    async with db.execute(
+                        "SELECT 1 FROM voiceChannel WHERE voiceID = ? AND userID = ?",
+                        (after.channel.id, member.id)
+                    ) as c:
+                        if await c.fetchone():
+                            # Owner rejoined, remove the leave time
+                            self.owner_leave_times.pop(after.channel.id, None)
 
     # ---------------- QUEUE SYSTEM ----------------
     async def _queue_worker(self, join_id):
@@ -138,45 +164,168 @@ class TempVoice(commands.Cog):
     async def _create_vc(self, member, join_channel):
         guild = member.guild
         category = join_channel.category
+        
+        # Get base name and limit for this generator type
         base_name, limit = JOIN_CHANNELS.get(join_channel.id, ("VC ", 0))
-
+        
+        # Clean base name for comparison (remove spaces)
+        clean_base = base_name.strip()
+        
+        # Get all voice channels in category
+        all_vcs = category.voice_channels
+        
+        # Separate generators and temp VCs
+        generator_vcs = []
+        temp_vcs = []
+        
+        for vc in all_vcs:
+            if vc.id in JOIN_CHANNELS:
+                generator_vcs.append(vc)
+            else:
+                temp_vcs.append(vc)
+        
+        # Sort generators by position
+        generator_vcs.sort(key=lambda x: x.position)
+        
+        # Find lowest available number for this type
         used_nums = []
-        channel_map = {}
-
-        # Scan all existing VCs with same base name
-        for vc in category.voice_channels:
-            if vc.name.startswith(base_name):
+        for vc in temp_vcs:
+            if vc.name.startswith(clean_base):
                 try:
-                    n = int(vc.name[len(base_name):].split()[0])
+                    # Extract number from name (e.g., "Duo 1" -> 1)
+                    num_str = vc.name[len(clean_base):].strip().split()[0]
+                    n = int(num_str)
                     used_nums.append(n)
-                    channel_map[n] = vc
                 except Exception:
                     pass
-
-        # Find the lowest unused number
+        
+        # Find lowest unused number
         num = 1
         while num in used_nums:
             num += 1
-
-        name = f"{base_name}{num}"
-
-        # Determine position
-        try:
-            if num == 1:
-                # Place directly below generator
-                position = join_channel.position
+        
+        name = f"{clean_base} {num}"
+        
+        # Determine position based on type hierarchy
+        # Order: Generators -> Duos -> Trios -> Squads
+        
+        # Define type hierarchy
+        type_hierarchy = {
+            "Duo": 1,
+            "Trio": 2,
+            "Squad": 3
+        }
+        
+        current_type_order = type_hierarchy.get(clean_base, 99)
+        
+        # Find where to place the new channel
+        position = None
+        
+        if not temp_vcs:
+            # No temp VCs exist yet, place after last generator
+            if generator_vcs:
+                position = generator_vcs[-1].position + 1
             else:
-                # Find the previous channel (e.g., Duo 1 before creating Duo 2)
-                prev_vc = channel_map.get(num - 1)
-                if prev_vc:
-                    position = prev_vc.position
+                position = 0
+        else:
+            # Group temp VCs by type
+            typed_vcs = {}
+            for vc in temp_vcs:
+                # Extract type from name
+                vc_type = vc.name.split()[0]
+                if vc_type not in typed_vcs:
+                    typed_vcs[vc_type] = []
+                typed_vcs[vc_type].append(vc)
+            
+            # Sort VCs within each type by number
+            for vc_type in typed_vcs:
+                typed_vcs[vc_type].sort(key=lambda x: int(x.name.split()[1]) if x.name.split()[1].isdigit() else 999)
+            
+            # Build ordered list of all temp VCs
+            ordered_temp_vcs = []
+            
+            # Add Duos first
+            if "Duo" in typed_vcs:
+                ordered_temp_vcs.extend(typed_vcs["Duo"])
+            
+            # Add Trios second
+            if "Trio" in typed_vcs:
+                ordered_temp_vcs.extend(typed_vcs["Trio"])
+            
+            # Add Squads third
+            if "Squad" in typed_vcs:
+                ordered_temp_vcs.extend(typed_vcs["Squad"])
+            
+            # Add any other types
+            for vc_type in typed_vcs:
+                if vc_type not in ["Duo", "Trio", "Squad"]:
+                    ordered_temp_vcs.extend(typed_vcs[vc_type])
+            
+            # Find insertion point
+            if clean_base in ["Duo", "Trio", "Squad"]:
+                # Find the last VC of the same type
+                last_same_type = None
+                for vc in reversed(ordered_temp_vcs):
+                    if vc.name.startswith(clean_base):
+                        last_same_type = vc
+                        break
+                
+                if last_same_type:
+                    # Insert after the last VC of same type
+                    position = last_same_type.position + 1
                 else:
-                    # fallback — if previous VC somehow missing
-                    position = join_channel.position + num
-        except Exception:
-            position = None
-
-        # Create VC at correct spot
+                    # First VC of this type, find where to insert
+                    if clean_base == "Duo":
+                        # Duos go after generators
+                        if generator_vcs:
+                            position = generator_vcs[-1].position + 1
+                        else:
+                            position = 0
+                    elif clean_base == "Trio":
+                        # Find last Duo or start after generators
+                        last_duo = None
+                        for vc in ordered_temp_vcs:
+                            if vc.name.startswith("Duo"):
+                                last_duo = vc
+                        if last_duo:
+                            position = last_duo.position + 1
+                        elif generator_vcs:
+                            position = generator_vcs[-1].position + 1
+                        else:
+                            position = 0
+                    elif clean_base == "Squad":
+                        # Find last Trio or last Duo or start after generators
+                        last_trio = None
+                        for vc in reversed(ordered_temp_vcs):
+                            if vc.name.startswith("Trio"):
+                                last_trio = vc
+                                break
+                        
+                        if last_trio:
+                            position = last_trio.position + 1
+                        else:
+                            # Find last Duo
+                            last_duo = None
+                            for vc in reversed(ordered_temp_vcs):
+                                if vc.name.startswith("Duo"):
+                                    last_duo = vc
+                                    break
+                            if last_duo:
+                                position = last_duo.position + 1
+                            elif generator_vcs:
+                                position = generator_vcs[-1].position + 1
+                            else:
+                                position = 0
+            else:
+                # Other types go at the end
+                if ordered_temp_vcs:
+                    position = ordered_temp_vcs[-1].position + 1
+                elif generator_vcs:
+                    position = generator_vcs[-1].position + 1
+                else:
+                    position = 0
+        
+        # Create VC at correct position
         vc = await guild.create_voice_channel(
             name=name,
             category=category,
@@ -198,9 +347,68 @@ class TempVoice(commands.Cog):
             )
             await db.commit()
 
-        # keep control panel same
+        # Reorganize all channels to maintain proper order
+        await self._reorganize_channels(category)
+        
         await self._send_panel(vc, member.id)
-        print(f"[TempVoice] ✅ Created {name}")
+        print(f"[TempVoice] ✅ Created {name} at position {position}")
+
+    async def _reorganize_channels(self, category):
+        """Reorganize all channels to maintain proper order"""
+        try:
+            all_vcs = category.voice_channels
+            
+            # Separate generators and temp VCs
+            generator_vcs = []
+            temp_vcs = []
+            
+            for vc in all_vcs:
+                if vc.id in JOIN_CHANNELS:
+                    generator_vcs.append(vc)
+                else:
+                    temp_vcs.append(vc)
+            
+            # Sort generators by position
+            generator_vcs.sort(key=lambda x: x.position)
+            
+            # Group temp VCs by type
+            typed_vcs = {}
+            for vc in temp_vcs:
+                vc_type = vc.name.split()[0] if vc.name else "Other"
+                if vc_type not in typed_vcs:
+                    typed_vcs[vc_type] = []
+                typed_vcs[vc_type].append(vc)
+            
+            # Sort each type by number
+            for vc_type in typed_vcs:
+                typed_vcs[vc_type].sort(key=lambda x: (
+                    int(x.name.split()[1]) if len(x.name.split()) > 1 and x.name.split()[1].isdigit() else 999
+                ))
+            
+            # Build ordered list
+            ordered_vcs = generator_vcs.copy()
+            
+            # Add in order: Duos, Trios, Squads, Others
+            for vc_type in ["Duo", "Trio", "Squad"]:
+                if vc_type in typed_vcs:
+                    ordered_vcs.extend(typed_vcs[vc_type])
+            
+            # Add any other types
+            for vc_type in typed_vcs:
+                if vc_type not in ["Duo", "Trio", "Squad"]:
+                    ordered_vcs.extend(typed_vcs[vc_type])
+            
+            # Reposition channels
+            for index, vc in enumerate(ordered_vcs):
+                if vc.position != index:
+                    try:
+                        await vc.edit(position=index)
+                        await asyncio.sleep(0.1)  # Small delay to avoid rate limits
+                    except Exception:
+                        pass
+                        
+        except Exception as e:
+            print(f"[TempVoice] Error reorganizing channels: {e}")
 
     # ---------------- CLEANUP ----------------
     async def _schedule_cleanup(self, ch):
@@ -226,6 +434,14 @@ class TempVoice(commands.Cog):
                 await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (ch.id,))
                 await db.commit()
             print(f"[TempVoice] 🧹 Cleaned {ch.name}")
+            
+            # Remove from leave times tracking if it exists
+            self.owner_leave_times.pop(ch.id, None)
+            
+            # Reorganize remaining channels after deletion
+            if ch.category:
+                await self._reorganize_channels(ch.category)
+                
         except Exception:
             print(f"[TempVoice] cleanup error:\n{traceback.format_exc()}")
         finally:
@@ -253,15 +469,29 @@ class TempVoice(commands.Cog):
     async def _send_panel(self, channel, owner_id):
         try:
             embed = discord.Embed(
-                title="🎯 Voice Channel Controls", description=( "**Use the buttons below to manage your voice channel:**\n" "**Use `/panel` to access these controls anytime**\n\n" "**🔒 Access Controls:**\n" "• Lock/Unlock - Control who can join\n" "• Hide/Unhide - Control visibility\n" "**👥 Member Management:**\n" "• Trust users - Allow specific users to join\n" "• Ban users - Block specific users\n" "• Kick users - Remove from VC\n\n" "**🔄 Advanced:**\n" "• Reset - Reset all settings\n" "• Transfer - Give ownership to someone else" ),
-            
+                title="🎯 Voice Channel Controls", 
+                description=(
+                    "**Use the buttons below to manage your voice channel:**\n"
+                    "**Use `/panel` to access these controls anytime**\n\n"
+                    "**🔒 Access Controls:**\n"
+                    "• Lock/Unlock - Control who can join\n"
+                    "• Hide/Unhide - Control visibility\n"
+                    "**👥 Member Management:**\n"
+                    "• Trust users - Allow specific users to join\n"
+                    "• Ban users - Block specific users\n"
+                    "• Kick users - Remove from VC\n\n"
+                    "**🔄 Advanced:**\n"
+                    "• Reset - Reset all settings\n"
+                    "• Transfer - Give ownership to someone else\n\n"
+                    "**📌 Need help dragging members?**\n"
+                    "Use <#1418501302626816010> for drag requests!"
+                ),
                 color=discord.Color.orange()
             )
             embed.set_footer(text="Only the VC owner can use these controls")
             await channel.send(embed=embed, view=BasicControlsView(self, channel.id, owner_id))
         except Exception:
             pass
-
 
     @app_commands.command(name="panel", description="Open your voice channel control panel")
     @app_commands.guild_only()
@@ -316,7 +546,9 @@ class TempVoice(commands.Cog):
                 "• Kick users - Remove from VC\n\n"
                 "**🔄 Advanced:**\n"
                 "• Reset - Reset all settings\n"
-                "• Transfer - Give ownership to someone else"
+                "• Transfer - Give ownership to someone else\n\n"
+                "**📌 Need help dragging members?**\n"
+                "Use <#1418501302626816010> for drag requests!"
             ),
             color=discord.Color.orange()
         )
@@ -329,4 +561,4 @@ class TempVoice(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(TempVoice(bot))
-    print("[TempVoice] loaded with queue system ✅")
+    print("[TempVoice] loaded with organized channel system ✅")

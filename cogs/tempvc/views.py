@@ -3,6 +3,7 @@ from discord.ui import Button, View, UserSelect
 from .modals import RenameModal, TransferModal
 from .config import JOIN_CHANNELS, DB_PATH
 import aiosqlite
+import time
 from typing import Iterable, List
 
 
@@ -589,40 +590,104 @@ class ClaimButton(Button):
             )
 
         channel = interaction.user.voice.channel
+        
+        # Check if user is trying to claim a generator channel
+        if channel.id in JOIN_CHANNELS:
+            return await interaction.followup.send(
+                "❌ You cannot claim a generator channel!",
+                ephemeral=True
+            )
 
         async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT userID FROM voiceChannel WHERE voiceID = ?", (channel.id,)) as cursor:
+            async with db.execute(
+                "SELECT userID FROM voiceChannel WHERE voiceID = ?", 
+                (channel.id,)
+            ) as cursor:
                 data = await cursor.fetchone()
 
             if data:
                 owner_id = data[0]
                 owner = interaction.guild.get_member(owner_id)
 
-                # --- Case 1: Owner still in VC
+                # --- Case 1: Owner is currently in the VC
                 if owner and owner in channel.members:
                     return await interaction.followup.send(
-                        f"❌ {owner.display_name} is still active in this VC. You can't claim it yet!",
+                        f"❌ {owner.display_name} is currently in this VC. You can't claim it while they're here!",
                         ephemeral=True
                     )
 
-                # --- Case 2: Owner gone, transfer ownership
+                # --- Case 2: Check 10-second rule using the tracking from TempVoice cog
+                cog = view.cog
+                leave_time = cog.owner_leave_times.get(channel.id, 0)
+                current_time = time.time()
+                time_since_leave = current_time - leave_time
+                
+                if time_since_leave < 10:
+                    remaining = 10 - time_since_leave
+                    return await interaction.followup.send(
+                        f"⏳ The owner left {time_since_leave:.1f} seconds ago.\n"
+                        f"Please wait {remaining:.1f} more seconds before claiming this channel.",
+                        ephemeral=True
+                    )
+
+                # --- Case 3: Owner has been gone for at least 10 seconds, proceed with claim
                 await db.execute(
                     "UPDATE voiceChannel SET userID = ? WHERE voiceID = ?",
                     (interaction.user.id, channel.id)
                 )
                 await db.commit()
-                return await interaction.followup.send(
-                    f"🔄 Ownership transferred to you for {channel.mention}.",
-                    ephemeral=True
-                )
+                
+                # Update permissions
+                try:
+                    # Remove old owner's manage permissions
+                    if owner:
+                        await channel.set_permissions(owner, manage_channels=False)
+                    
+                    # Give new owner manage permissions
+                    await channel.set_permissions(interaction.user, manage_channels=True)
+                    
+                    # Remove the leave time tracking
+                    cog.owner_leave_times.pop(channel.id, None)
+                    
+                    # Send notification
+                    embed = discord.Embed(
+                        title="🎯 VC Ownership Transferred",
+                        description=f"{interaction.user.mention} has claimed ownership of this voice channel!\n"
+                                  f"The original owner was absent for more than 10 seconds.",
+                        color=discord.Color.green()
+                    )
+                    await channel.send(embed=embed)
+                    
+                    await interaction.followup.send(
+                        f"✅ You have successfully claimed ownership of {channel.mention}!",
+                        ephemeral=True
+                    )
+                except Exception as e:
+                    print(f"Error during claim transfer: {e}")
+                    await interaction.followup.send(
+                        f"❌ Failed to complete claim. Please try again.",
+                        ephemeral=True
+                    )
+                return
 
-            # --- Case 3: No owner entry, create new
+            # --- Case 4: No owner entry, create new
             limit = channel.user_limit
             await db.execute(
-                "INSERT INTO voiceChannel (userID, voiceID, channelName, channelLimit) VALUES (?, ?, ?, ?)",
-                (interaction.user.id, channel.id, channel.name, limit)
+                "INSERT INTO voiceChannel (userID, voiceID, channelName, channelLimit, guildID) VALUES (?, ?, ?, ?, ?)",
+                (interaction.user.id, channel.id, channel.name, limit, interaction.guild.id)
             )
             await db.commit()
+            
+            # Give owner manage permissions
+            await channel.set_permissions(interaction.user, manage_channels=True)
+            
+            # Send notification
+            embed = discord.Embed(
+                title="🎯 VC Ownership Claimed",
+                description=f"{interaction.user.mention} has claimed ownership of this voice channel!",
+                color=discord.Color.blue()
+            )
+            await channel.send(embed=embed)
 
         await interaction.followup.send(
             f"✅ You have successfully claimed {channel.mention}!",
