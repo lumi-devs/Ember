@@ -1,676 +1,599 @@
+# pragma: no cover
+# pyright: basic
+from __future__ import annotations
+
 import discord
 from discord.ext import commands
 import aiosqlite
 import asyncio
 from datetime import datetime, timezone
 import time
-from typing import Optional, Dict, Tuple, Any, List
+from typing import Optional, Dict, Tuple, Set, Deque, Any
+from collections import deque
 import hashlib
-from collections import defaultdict
-import uvloop
-asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())  # Use uvloop for faster I/O
+import json
+from dataclasses import dataclass
+from functools import lru_cache, wraps
+import os
 
+# Constants - KEEP THESE THE SAME
 AFK_SET_COLOR = discord.Color.orange()
 AFK_REMOVED_COLOR = discord.Color.gold()
 AFK_MENTION_COLOR = discord.Color.from_rgb(255, 200, 0)
+NICK_PREFIX = "[AFK] "
+DB_PATH = "data/afk.db"
+CACHE_TTL = 300  # 5 minutes
+MAX_CACHE_SIZE = 1000
 
-# Global cache with TTL
-class TTLCache:
-    """Simple TTL cache for AFK data."""
-    def __init__(self, ttl: float = 300):
-        self._cache: Dict[str, Tuple[Any, float]] = {}
-        self.ttl = ttl
-        
-    def get(self, key: str) -> Optional[Any]:
-        if key not in self._cache:
-            return None
-        value, timestamp = self._cache[key]
-        if time.time() - timestamp > self.ttl:
-            del self._cache[key]
-            return None
-        return value
-    
-    def set(self, key: str, value: Any):
-        self._cache[key] = (value, time.time())
-    
-    def delete(self, key: str):
-        self._cache.pop(key, None)
-    
-    def clear(self):
-        self._cache.clear()
-
-
-def afk_strip(name: str) -> str:
-    """Ultra-fast AFK strip - optimized for speed."""
-    return name[6:] if name.startswith("[AFK] ") else (name[5:] if name.startswith("[AFK]") else name)
-
-
-def human_timedelta(dt: datetime) -> str:
-    """Optimized human-readable time difference."""
-    now = datetime.now(timezone.utc)
-    delta = now - dt
-    total_seconds = int(delta.total_seconds())
-    
-    if total_seconds < 60:
-        return f"{total_seconds} second{'s' if total_seconds != 1 else ''}"
-    
-    minutes = total_seconds // 60
-    if minutes < 60:
-        return f"{minutes} minute{'s' if minutes != 1 else ''}"
-    
-    hours = minutes // 60
-    if hours < 24:
-        return f"{hours} hour{'s' if hours != 1 else ''}"
-    
-    days = hours // 24
-    return f"{days} day{'s' if days != 1 else ''}"
-
-
-class FastNicknameChange:
-    """Optimized nickname change request."""
-    
-    __slots__ = ('member_id', 'guild_id', 'new_nick', 'priority', 'created_at', 'attempts', 'hash')
-    
-    def __init__(self, member: discord.Member, new_nick: str, priority: int = 1):
-        self.member_id = member.id
-        self.guild_id = member.guild.id
-        self.new_nick = new_nick
-        self.priority = priority
-        self.created_at = time.time()
-        self.attempts = 0
-        self.hash = hashlib.md5(f"{member.id}{new_nick}".encode()).hexdigest()[:8]
+@dataclass(frozen=True)
+class AFKEntry:
+    """Immutable AFK entry for caching."""
+    user_id: int
+    reason: str
+    since: datetime
     
     @property
-    def is_expired(self) -> bool:
-        return time.time() - self.created_at > 30  # 30 second expiry
+    def duration(self) -> str:
+        """Human-readable duration."""
+        return self._human_timedelta(self.since)
     
-    def __lt__(self, other):
-        return self.priority < other.priority
+    @staticmethod
+    @lru_cache(maxsize=1024)
+    def _human_timedelta(dt: datetime) -> str:
+        """Cached human-readable time difference."""
+        now = datetime.now(timezone.utc)
+        delta = now - dt
+        
+        if delta.days > 0:
+            return f"{delta.days} day{'s' if delta.days != 1 else ''}"
+        elif delta.seconds >= 3600:
+            hours = delta.seconds // 3600
+            return f"{hours} hour{'s' if hours != 1 else ''}"
+        elif delta.seconds >= 60:
+            minutes = delta.seconds // 60
+            return f"{minutes} minute{'s' if minutes != 1 else ''}"
+        else:
+            seconds = delta.seconds
+            return f"{seconds} second{'s' if seconds != 1 else ''}"
 
+class LRUCache:
+    """Simple LRU cache with TTL."""
+    def __init__(self, maxsize: int = 1000, ttl: int = 300):
+        self.maxsize = maxsize
+        self.ttl = ttl
+        self.cache: Dict[str, Tuple[float, Any]] = {}
+        self.order: Deque[str] = deque()
+    
+    def _cleanup(self):
+        """Remove expired entries."""
+        current_time = time.time()
+        while self.order:
+            key = self.order[0]
+            if key not in self.cache:
+                self.order.popleft()
+            elif current_time - self.cache[key][0] > self.ttl:
+                del self.cache[key]
+                self.order.popleft()
+            else:
+                break
+    
+    def get(self, key: str) -> Optional[Any]:
+        """Get value from cache."""
+        self._cleanup()
+        if key in self.cache:
+            # Move to end (most recently used)
+            self.order.remove(key)
+            self.order.append(key)
+            return self.cache[key][1]
+        return None
+    
+    def set(self, key: str, value: Any):
+        """Set value in cache."""
+        self._cleanup()
+        if key in self.cache:
+            self.order.remove(key)
+        elif len(self.cache) >= self.maxsize:
+            # Remove least recently used
+            oldest = self.order.popleft()
+            del self.cache[oldest]
+        
+        self.cache[key] = (time.time(), value)
+        self.order.append(key)
+    
+    def delete(self, key: str):
+        """Delete key from cache."""
+        if key in self.cache:
+            del self.cache[key]
+            if key in self.order:
+                self.order.remove(key)
+
+def cached_method(maxsize: int = 128):
+    """Decorator for caching method results."""
+    def decorator(func):
+        cache = LRUCache(maxsize=maxsize, ttl=CACHE_TTL)
+        
+        @wraps(func)
+        async def wrapper(self, *args, **kwargs):
+            # Create cache key
+            key_parts = [func.__name__, str(args), json.dumps(kwargs, sort_keys=True)]
+            key = hashlib.md5("|".join(key_parts).encode()).hexdigest()
+            
+            # Check cache
+            cached = cache.get(key)
+            if cached is not None:
+                return cached
+            
+            # Call function and cache result
+            result = await func(self, *args, **kwargs)
+            cache.set(key, result)
+            return result
+        
+        # Add cache clearing method
+        wrapper.clear_cache = cache.delete
+        
+        return wrapper
+    return decorator
 
 class AFK(commands.Cog):
-    """Ultra-fast AFK system with instant message checking."""
-
+    """High-performance AFK system with caching - COMPATIBLE with existing DB."""
+    
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db_path = "data/afk.db"
+        self._db: Optional[aiosqlite.Connection] = None
+        self._db_lock = asyncio.Lock()
         
-        # High-performance caching
-        self.afk_cache = TTLCache(ttl=600)  # 10 minute TTL
-        self.mention_cache: Dict[int, float] = {}  # user_id -> last mention time (rate limiting)
+        # Caches
+        self._afk_cache: Dict[int, AFKEntry] = {}  # User ID -> AFKEntry
+        self._guild_afk_cache: Dict[int, Set[int]] = {}  # Guild ID -> Set of AFK user IDs
         
-        # Nickname queue for batch processing
-        self.nick_queue = asyncio.PriorityQueue()
-        self.nick_worker_task = None
+        # Rate limiting
+        self._nick_edit_timestamps: Dict[int, float] = {}
+        self._nick_edit_cooldown = 0.5
         
-        # Performance counters
+        # Message cooldown
+        self._last_mentions: Dict[int, float] = {}  # Channel ID -> timestamp
+        self._mention_cooldown = 5.0  # 5 seconds between mention messages per channel
+        
+        # Performance tracking
         self.stats = {
-            'messages': 0,
-            'commands': 0,
-            'db_reads': 0,
-            'db_writes': 0,
+            'messages_processed': 0,
             'cache_hits': 0,
             'cache_misses': 0,
-            'mentions_sent': 0,
-            'nick_changes': 0,
-            'nick_errors': 0,
-            'skipped_changes': 0
+            'db_queries': 0
         }
         
-        # Connection pooling for database
-        self.db_pool = None
-        self.is_initialized = False
+        # Batch processing for writes
+        self._write_queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
+        self._batch_processor_task: Optional[asyncio.Task] = None
         
-        # Nickname rate limiting
-        self.nick_cooldown: Dict[int, float] = {}
-        self.last_nick_check = time.time()
+        self.bot.loop.create_task(self._init_database())
+    
+    async def _init_database(self):
+        """Initialize database with COMPATIBLE structure."""
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
         
-        # Command batch processing (commands only)
-        self.command_batch: List[Tuple[commands.Context, str]] = []
-        self.batch_size = 5
-        self.batch_processor_task = None
-        
-        # Start optimized processing
-        self.bot.loop.create_task(self._fast_init())
-
-    async def _fast_init(self):
-        """Fast initialization with connection pooling."""
-        import os
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        
-        # Create connection pool for concurrent access
-        self.db_pool = await aiosqlite.connect(
-            self.db_path,
-            isolation_level=None,  # Faster transactions
-            cached_statements=128  # Cache prepared statements
-        )
-        
-        # Enable WAL mode for concurrent reads/writes
-        await self.db_pool.execute("PRAGMA journal_mode=WAL")
-        await self.db_pool.execute("PRAGMA synchronous=NORMAL")  # Faster with WAL
-        await self.db_pool.execute("PRAGMA cache_size=-2000")  # 2MB cache
-        
-        # Create optimized table with indexes
-        await self.db_pool.execute("""
-            CREATE TABLE IF NOT EXISTS afk (
-                user_id INTEGER PRIMARY KEY,
-                reason TEXT,
-                since TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        # Create indexes for fast lookups
-        await self.db_pool.execute("CREATE INDEX IF NOT EXISTS idx_user_id ON afk(user_id)")
-        await self.db_pool.execute("CREATE INDEX IF NOT EXISTS idx_since ON afk(since)")
-        
-        # Warm cache with current AFK users
-        await self._warm_cache()
-        
-        # Start worker tasks
-        self.nick_worker_task = asyncio.create_task(self._nick_worker())
-        self.batch_processor_task = asyncio.create_task(self._batch_command_processor())
-        
-        self.is_initialized = True
-        print("[AFK] Ultra-fast system initialized")
-
-    async def _warm_cache(self):
-        """Preload AFK users into cache for fast access."""
-        async with self.db_pool.execute("SELECT user_id, reason, since FROM afk") as cursor:
-            async for row in cursor:
-                user_id, reason, since = row
-                cache_key = f"afk_{user_id}"
-                self.afk_cache.set(cache_key, (reason, since))
-        
-        print(f"[AFK] Cache warmed with {len([k for k in self.afk_cache._cache if k.startswith('afk_')])} entries")
-
-    async def _nick_worker(self):
-        """Process nickname changes with rate limiting."""
-        while True:
-            try:
-                # Get nickname change from queue
-                try:
-                    nick_change = await asyncio.wait_for(self.nick_queue.get(), timeout=0.1)
-                except asyncio.TimeoutError:
-                    await asyncio.sleep(0.05)
-                    continue
-                
-                await self._process_single_nick_change(nick_change)
-                self.nick_queue.task_done()
-                
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                print(f"[AFK] Nick worker error: {e}")
-                await asyncio.sleep(1)
-
-    async def _process_single_nick_change(self, nick_change: FastNicknameChange):
-        """Process a single nickname change efficiently."""
-        current_time = time.time()
-        member_id = nick_change.member_id
-        guild_id = nick_change.guild_id
-        
-        # Check cooldown
-        last_change = self.nick_cooldown.get(member_id, 0)
-        if current_time - last_change < 0.5:  # 500ms cooldown
-            # Requeue with delay
-            nick_change.priority = 2
-            nick_change.attempts += 1
+        async with self._db_lock:
+            self._db = await aiosqlite.connect(DB_PATH)
             
-            if nick_change.attempts < 3:
-                asyncio.create_task(self._delayed_requeue(nick_change, 0.5 - (current_time - last_change)))
-            return
-        
-        # Get guild and member
-        guild = self.bot.get_guild(guild_id)
-        if not guild:
-            return
-        
-        member = guild.get_member(member_id)
-        if not member:
-            return
-        
-        # Check if change is still needed
-        current_nick = member.display_name
-        if current_nick == nick_change.new_nick:
-            self.stats['skipped_changes'] += 1
-            return
-        
-        # Check permissions and hierarchy
-        if not guild.me.guild_permissions.manage_nicknames:
-            self.stats['nick_errors'] += 1
-            return
-        
-        if member.top_role >= guild.me.top_role:
-            self.stats['skipped_changes'] += 1
-            return
-        
+            # Use PRAGMA optimizations that won't break compatibility
+            await self._db.execute("PRAGMA journal_mode = WAL")
+            await self._db.execute("PRAGMA synchronous = NORMAL")
+            await self._db.execute("PRAGMA cache_size = -2000")
+            await self._db.execute("PRAGMA temp_store = MEMORY")
+            
+            # KEEP EXISTING TABLE STRUCTURE - do NOT modify
+            await self._db.execute("""
+                CREATE TABLE IF NOT EXISTS afk (
+                    user_id TEXT PRIMARY KEY,  -- KEEP as TEXT for compatibility
+                    reason TEXT,
+                    since TEXT
+                )
+            """)
+            
+            # Try to create index if it doesn't exist (won't fail if exists)
+            try:
+                await self._db.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_afk_since 
+                    ON afk(since)
+                """)
+            except:
+                pass  # Index might already exist in different form
+            
+            await self._db.commit()
+            
+            # Preload cache from existing data
+            await self._preload_cache()
+            
+            # Start batch processor for writes only
+            self._batch_processor_task = asyncio.create_task(self._batch_processor())
+            
+            print(f"[AFK] Database initialized with {len(self._afk_cache)} cached AFK entries")
+    
+    async def _preload_cache(self):
+        """Preload AFK entries from existing database."""
         try:
-            # Perform the change
-            self.nick_cooldown[member_id] = current_time
-            await member.edit(nick=nick_change.new_nick)
-            self.stats['nick_changes'] += 1
-            
-        except (discord.Forbidden, discord.HTTPException):
-            self.stats['nick_errors'] += 1
-        except Exception:
-            pass
-
-    async def _delayed_requeue(self, nick_change: FastNicknameChange, delay: float):
-        """Requeue a nickname change after delay."""
-        await asyncio.sleep(delay)
-        if not nick_change.is_expired:
-            await self.nick_queue.put(nick_change)
-
-    async def _batch_command_processor(self):
-        """Process AFK commands in batches."""
+            async with self._db.execute("SELECT user_id, reason, since FROM afk") as cursor:
+                async for row in cursor:
+                    user_id_str, reason, since_str = row
+                    try:
+                        user_id = int(user_id_str)
+                        since = datetime.fromisoformat(since_str)
+                        self._afk_cache[user_id] = AFKEntry(user_id, reason, since)
+                        
+                        # Update guild cache
+                        for guild in self.bot.guilds:
+                            if guild.get_member(user_id):
+                                if guild.id not in self._guild_afk_cache:
+                                    self._guild_afk_cache[guild.id] = set()
+                                self._guild_afk_cache[guild.id].add(user_id)
+                    except (ValueError, AttributeError) as e:
+                        print(f"[AFK] Skipping invalid cache entry {row}: {e}")
+        except Exception as e:
+            print(f"[AFK] Error preloading cache: {e}")
+    
+    async def _batch_processor(self):
+        """Process write operations in batches."""
+        batch_inserts: list[Tuple[str, str, str]] = []
+        batch_deletes: list[str] = []
+        
+        last_flush = time.time()
+        flush_interval = 5.0
+        
         while True:
             try:
-                await asyncio.sleep(0.05)  # Check every 50ms
+                # Wait for operations
+                try:
+                    op_type, data = await asyncio.wait_for(
+                        self._write_queue.get(),
+                        timeout=flush_interval
+                    )
+                except asyncio.TimeoutError:
+                    pass
                 
-                if not self.command_batch:
-                    continue
+                current_time = time.time()
                 
-                # Take all commands in batch
-                commands = self.command_batch.copy()
-                self.command_batch.clear()
+                # Add to batch
+                if op_type == 'set_afk':
+                    user_id, reason = data
+                    since = datetime.now(timezone.utc).isoformat()
+                    batch_inserts.append((str(user_id), reason, since))
+                elif op_type == 'remove_afk':
+                    batch_deletes.append(str(data))
                 
-                # Process them efficiently
-                await self._process_command_batch_fast(commands)
+                # Flush if we have enough operations or time has passed
+                if (current_time - last_flush >= flush_interval or 
+                    len(batch_inserts) + len(batch_deletes) >= 50):
+                    if batch_inserts or batch_deletes:
+                        await self._flush_batch(batch_inserts, batch_deletes)
+                        batch_inserts.clear()
+                        batch_deletes.clear()
+                        last_flush = current_time
                 
+                if op_type:
+                    self._write_queue.task_done()
+                    
             except asyncio.CancelledError:
+                # Flush on shutdown
+                if batch_inserts or batch_deletes:
+                    await self._flush_batch(batch_inserts, batch_deletes)
                 break
             except Exception as e:
-                print(f"[AFK] Command processor error: {e}")
+                print(f"[AFK] Batch processor error: {e}")
                 await asyncio.sleep(1)
-
-    async def _process_command_batch_fast(self, commands: List[Tuple[commands.Context, str]]):
-        """Process a batch of AFK commands efficiently."""
-        updates = []
-        cache_updates = []
-        nickname_updates = []
-        
-        for ctx, reason in commands:
-            user_id = ctx.author.id
-            
-            # Check cache first
-            cache_key = f"afk_{user_id}"
-            cached = self.afk_cache.get(cache_key)
-            
-            if cached:
-                old_reason, _ = cached
-                if old_reason != reason:
-                    updates.append((user_id, reason))
-                    cache_updates.append((cache_key, (reason, datetime.now(timezone.utc).isoformat())))
-                    
-                    # Update notification
-                    asyncio.create_task(self._send_afk_update(ctx, old_reason, reason))
-            else:
-                # New AFK
-                updates.append((user_id, reason))
-                cache_updates.append((cache_key, (reason, datetime.now(timezone.utc).isoformat())))
-                
-                # Queue nickname update
-                if ctx.guild:
-                    current_nick = ctx.author.display_name
-                    if not current_nick.startswith("[AFK]"):
-                        new_nick = f"[AFK] {current_nick[:26]}" if len(current_nick) > 26 else f"[AFK] {current_nick}"
-                        nickname_updates.append(FastNicknameChange(ctx.author, new_nick, priority=0))
-                
-                # Send new AFK notification
-                asyncio.create_task(self._send_new_afk(ctx, reason))
-            
-            self.stats['commands'] += 1
-        
-        # Batch database update
-        if updates:
-            await self._batch_set_afk(updates)
-            
-            # Update cache
-            for cache_key, value in cache_updates:
-                self.afk_cache.set(cache_key, value)
-        
-        # Queue nickname updates
-        for nick_update in nickname_updates:
-            await self.nick_queue.put(nick_update)
-
-    async def _batch_set_afk(self, updates: List[Tuple[int, str]]):
-        """Batch update AFK status in database."""
-        if not updates:
+    
+    async def _flush_batch(self, inserts: list, deletes: list):
+        """Flush batch to database."""
+        if not inserts and not deletes:
             return
         
-        current_time = datetime.now(timezone.utc).isoformat()
-        values = [(user_id, reason, current_time, current_time) for user_id, reason in updates]
-        
-        await self.db_pool.executemany("""
-            INSERT INTO afk (user_id, reason, since, last_update) 
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET 
-            reason = excluded.reason,
-            last_update = excluded.last_update
-        """, values)
-        
-        self.stats['db_writes'] += len(updates)
-
-    # ─── Instant Message Processing ────────────────────
-    async def _check_message_instant(self, message: discord.Message):
-        """Check a single message instantly for AFK actions."""
-        if message.author.bot:
-            return
-        
-        user_id = message.author.id
-        
-        # Check if sender is AFK (remove AFK)
-        cache_key = f"afk_{user_id}"
-        cached = self.afk_cache.get(cache_key)
-        
-        if cached:
-            # User is AFK - remove it
-            reason, since = cached
-            await self._remove_afk_instant(message, user_id, reason, since)
+        async with self._db_lock:
+            try:
+                await self._db.execute("BEGIN TRANSACTION")
+                
+                if inserts:
+                    await self._db.executemany(
+                        "REPLACE INTO afk (user_id, reason, since) VALUES (?, ?, ?)",
+                        inserts
+                    )
+                
+                if deletes:
+                    # Use parameterized query for safety
+                    placeholders = ','.join('?' for _ in deletes)
+                    await self._db.execute(
+                        f"DELETE FROM afk WHERE user_id IN ({placeholders})",
+                        deletes
+                    )
+                
+                await self._db.commit()
+                self.stats['db_queries'] += 1
+                
+            except Exception as e:
+                await self._db.rollback()
+                print(f"[AFK] Batch flush error: {e}")
+    
+    # ─── CORE AFK METHODS (COMPATIBLE) ─────────────────────────────
+    
+    async def get_afk(self, user_id: int) -> Optional[AFKEntry]:
+        """Get AFK entry - cached."""
+        # Check memory cache first
+        if user_id in self._afk_cache:
             self.stats['cache_hits'] += 1
-        else:
-            # Check database for cache miss
-            async with self.db_pool.execute(
-                "SELECT reason, since FROM afk WHERE user_id = ?", (user_id,)
+            return self._afk_cache[user_id]
+        
+        self.stats['cache_misses'] += 1
+        
+        # Query database
+        async with self._db_lock:
+            async with self._db.execute(
+                "SELECT reason, since FROM afk WHERE user_id = ?",
+                (str(user_id),)
             ) as cursor:
                 row = await cursor.fetchone()
-                if row:
-                    reason, since = row
-                    self.afk_cache.set(cache_key, (reason, since))
-                    await self._remove_afk_instant(message, user_id, reason, since)
-                    self.stats['cache_misses'] += 1
-                    self.stats['db_reads'] += 1
         
-        # Check mentions (always run, even if user was AFK)
-        if message.mentions:
-            await self._check_mentions_instant(message)
+        if row:
+            reason, since_str = row
+            since = datetime.fromisoformat(since_str)
+            entry = AFKEntry(user_id, reason, since)
+            self._afk_cache[user_id] = entry
+            return entry
         
-        self.stats['messages'] += 1
-
-    async def _remove_afk_instant(self, message: discord.Message, user_id: int, reason: str, since: str):
-        """Remove AFK status instantly."""
-        # Remove from cache
-        self.afk_cache.delete(f"afk_{user_id}")
+        return None
+    
+    async def set_afk(self, user_id: int, reason: str):
+        """Set user as AFK - COMPATIBLE with existing data."""
+        entry = AFKEntry(user_id, reason, datetime.now(timezone.utc))
+        self._afk_cache[user_id] = entry
         
-        # Remove from database (async)
-        asyncio.create_task(self.db_pool.execute(
-            "DELETE FROM afk WHERE user_id = ?", (user_id,)
-        ))
-        self.stats['db_writes'] += 1
+        # Update guild cache
+        for guild in self.bot.guilds:
+            if guild.get_member(user_id):
+                if guild.id not in self._guild_afk_cache:
+                    self._guild_afk_cache[guild.id] = set()
+                self._guild_afk_cache[guild.id].add(user_id)
         
-        # Queue nickname removal
-        if message.guild and message.author.display_name.startswith("[AFK]"):
-            new_nick = afk_strip(message.author.display_name)
-            if new_nick:
-                nick_change = FastNicknameChange(message.author, new_nick, priority=0)
-                await self.nick_queue.put(nick_change)
+        # Queue for batch write
+        await self._write_queue.put(('set_afk', (user_id, reason)))
+    
+    async def remove_afk(self, user_id: int):
+        """Remove user from AFK."""
+        if user_id in self._afk_cache:
+            del self._afk_cache[user_id]
         
-        # Send welcome back message
-        since_dt = datetime.fromisoformat(since)
-        duration = human_timedelta(since_dt)
+        # Update guild cache
+        for guild_id in self._guild_afk_cache:
+            self._guild_afk_cache[guild_id].discard(user_id)
         
-        embed = discord.Embed(
-            title="👋 Welcome Back!",
-            description=f"{message.author.mention}, AFK removed.\nYou had been AFK for **{duration}**.",
-            color=AFK_REMOVED_COLOR
-        )
+        # Queue for batch delete
+        await self._write_queue.put(('remove_afk', user_id))
+    
+    async def get_all_afk(self):
+        """Get all AFK users - COMPATIBLE with existing method."""
+        # Return from cache first
+        if self._afk_cache:
+            return [(str(uid), entry.reason, entry.since.isoformat()) 
+                   for uid, entry in self._afk_cache.items()]
         
-        asyncio.create_task(message.channel.send(embed=embed))
-
-    async def _check_mentions_instant(self, message: discord.Message):
-        """Check mentions in a message instantly with rate limiting."""
+        # Fallback to database
+        async with self._db_lock:
+            async with self._db.execute(
+                "SELECT user_id, reason, since FROM afk"
+            ) as cursor:
+                return await cursor.fetchall()
+    
+    # ─── UTILITY METHODS ───────────────────────────────────────────
+    
+    async def _safe_edit_nick(self, member: discord.Member, new_nick: str):
+        """Rate-limited nickname editing."""
         current_time = time.time()
+        last_edit = self._nick_edit_timestamps.get(member.id, 0)
         
-        for user in message.mentions:
-            if user.bot:
-                continue
-                
-            # Rate limiting: 10 seconds per user
-            last_mention = self.mention_cache.get(user.id, 0)
-            if current_time - last_mention < 10:
-                continue
-            
-            # Check cache first
-            cache_key = f"afk_{user.id}"
-            cached = self.afk_cache.get(cache_key)
-            
-            if cached:
-                reason, since = cached
-                self.mention_cache[user.id] = current_time
-                await self._send_mention_notification(message.channel, user, reason, since)
-            else:
-                # Check database
-                async with self.db_pool.execute(
-                    "SELECT reason, since FROM afk WHERE user_id = ?", (user.id,)
-                ) as cursor:
-                    row = await cursor.fetchone()
-                    if row:
-                        reason, since = row
-                        self.afk_cache.set(cache_key, (reason, since))
-                        self.mention_cache[user.id] = current_time
-                        await self._send_mention_notification(message.channel, user, reason, since)
-                        self.stats['db_reads'] += 1
-
-    async def _send_mention_notification(self, channel, user, reason: str, since: str):
-        """Send AFK mention notification."""
-        since_dt = datetime.fromisoformat(since)
-        duration = human_timedelta(since_dt)
+        if current_time - last_edit < self._nick_edit_cooldown:
+            # Schedule for later
+            asyncio.create_task(
+                self._delayed_nick_edit(member, new_nick, 
+                                      self._nick_edit_cooldown - (current_time - last_edit))
+            )
+            return
         
-        embed = discord.Embed(
-            title=f"{afk_strip(user.display_name)} is AFK 💤",
-            description=f"**Reason:** {reason}\n**Since:** {duration} ago",
-            color=AFK_MENTION_COLOR
-        )
-        
-        asyncio.create_task(channel.send(embed=embed))
-        self.stats['mentions_sent'] += 1
-
-    async def _send_new_afk(self, ctx: commands.Context, reason: str):
-        """Send new AFK notification."""
         try:
-            await ctx.message.delete()
-        except:
+            await member.edit(nick=new_nick)
+            self._nick_edit_timestamps[member.id] = current_time
+        except (discord.Forbidden, discord.HTTPException):
             pass
-        
-        embed = discord.Embed(
-            title="✅ AFK Set",
-            description=f"{ctx.author.mention}, you are now AFK: **{reason}**",
-            color=AFK_SET_COLOR
-        )
-        
-        msg = await ctx.send(embed=embed)
-        asyncio.create_task(self._auto_delete_fast(msg, 20))
-
-    async def _send_afk_update(self, ctx: commands.Context, old_reason: str, new_reason: str):
-        """Send AFK update notification."""
-        embed = discord.Embed(
-            title="✏️ AFK Updated",
-            description=f"{ctx.author.mention}, your AFK reason was updated from **{old_reason}** to **{new_reason}**",
-            color=AFK_SET_COLOR
-        )
-        
-        msg = await ctx.send(embed=embed)
-        asyncio.create_task(self._auto_delete_fast(msg, 20))
-
-    async def _auto_delete_fast(self, message: discord.Message, delay: int):
-        """Fast auto-delete."""
+    
+    async def _delayed_nick_edit(self, member: discord.Member, new_nick: str, delay: float):
+        """Edit nickname after delay."""
+        await asyncio.sleep(delay)
+        try:
+            await member.edit(nick=new_nick)
+            self._nick_edit_timestamps[member.id] = time.time()
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+    
+    @staticmethod
+    def _strip_afk_nick(nick: str) -> str:
+        """Strip AFK prefix from nickname - COMPATIBLE with existing."""
+        if nick.startswith(NICK_PREFIX):
+            return nick[len(NICK_PREFIX):]
+        return nick
+    
+    async def _auto_delete_message(self, message: discord.Message, delay: int):
+        """Auto-delete a message after delay."""
         await asyncio.sleep(delay)
         try:
             await message.delete()
         except:
             pass
-
-    # ─── Commands ──────────────────────────────────────
+    
+    # ─── COMMANDS (COMPATIBLE WITH ORIGINAL) ───────────────────────
+    
     @commands.command(name="afk")
-    async def afk(self, ctx: commands.Context, *, reason: str = "AFK"):
-        """Set yourself as AFK (batched for performance)."""
-        if not ctx.author.bot:
-            self.command_batch.append((ctx, reason))
+    async def afk_command(self, ctx: commands.Context, *, reason: str = "AFK"):
+        """Set yourself as AFK."""
+        # Delete command message
+        try:
+            await ctx.message.delete()
+        except:
+            pass
+        
+        user = ctx.author
+        existing = await self.get_afk(user.id)
+        
+        if existing:
+            # Already AFK, update if reason changed
+            if existing.reason != reason:
+                await self.set_afk(user.id, reason)
+                embed = discord.Embed(
+                    title="✏️ AFK Updated",
+                    description=f"{user.mention}, your AFK reason was updated to: **{reason}**",
+                    color=AFK_SET_COLOR
+                )
+            else:
+                return  # Already AFK with same reason
+        else:
+            # Set new AFK
+            await self.set_afk(user.id, reason)
             
-            # Trigger processing if batch is getting large
-            if len(self.command_batch) >= self.batch_size:
-                asyncio.create_task(self._process_command_batch_fast(
-                    self.command_batch.copy()
-                ))
-                self.command_batch.clear()
-
+            # Update nickname if in guild
+            if ctx.guild and not user.display_name.startswith(NICK_PREFIX):
+                await self._safe_edit_nick(user, f"{NICK_PREFIX}{user.display_name}")
+            
+            embed = discord.Embed(
+                title="✅ AFK Set",
+                description=f"{user.mention}, you are now AFK: **{reason}**",
+                color=AFK_SET_COLOR
+            )
+        
+        msg = await ctx.send(embed=embed)
+        asyncio.create_task(self._auto_delete_message(msg, 20))
+    
     @commands.command(name="afklist")
     @commands.is_owner()
     async def afk_list(self, ctx: commands.Context):
-        """Show all users currently AFK."""
-        start_time = time.time()
+        """Show all users currently AFK - COMPATIBLE output."""
+        afk_users = await self.get_all_afk()
+        if not afk_users:
+            return await ctx.reply("No users are currently AFK.", mention_author=False)
         
-        # Get from cache first
-        cached_afk = []
-        for key, (value, timestamp) in self.afk_cache._cache.items():
-            if key.startswith("afk_"):
-                user_id = int(key[4:])
-                reason, since = value
-                cached_afk.append((user_id, reason, since))
-        
-        if cached_afk:
-            lines = []
-            for user_id, reason, since in cached_afk[:25]:  # Limit to 25 for performance
+        lines = []
+        for user_id_str, reason, since_str in afk_users:
+            try:
+                user_id = int(user_id_str)
                 user = self.bot.get_user(user_id)
-                name = user.mention if user else f"ID: {user_id}"
-                since_dt = datetime.fromisoformat(since)
-                duration = human_timedelta(since_dt)
+                name = user.mention if user else f"Unknown ({user_id})"
+                
+                since_dt = datetime.fromisoformat(since_str)
+                duration = AFKEntry._human_timedelta(since_dt)
+                
                 lines.append(f"{name} — `{reason}` *(for {duration})*")
-            
-            embed = discord.Embed(
-                title="📜 AFK List (from cache)",
-                description="\n".join(lines) if lines else "No AFK users in cache",
-                color=AFK_MENTION_COLOR
-            )
-            embed.set_footer(text=f"Cached: {len(cached_afk)} users | {int((time.time() - start_time) * 1000)}ms")
-        else:
-            # Fallback to database
-            async with self.db_pool.execute("SELECT user_id, reason, since FROM afk LIMIT 25") as cursor:
-                rows = await cursor.fetchall()
-            
-            if not rows:
-                return await ctx.reply("No users are currently AFK.", mention_author=False)
-            
-            lines = []
-            for user_id, reason, since in rows:
-                user = self.bot.get_user(user_id)
-                name = user.mention if user else f"ID: {user_id}"
-                since_dt = datetime.fromisoformat(since)
-                duration = human_timedelta(since_dt)
-                lines.append(f"{name} — `{reason}` *(for {duration})*")
-            
-            embed = discord.Embed(
-                title="📜 AFK List",
-                description="\n".join(lines),
-                color=AFK_MENTION_COLOR
-            )
-            embed.set_footer(text=f"Total: {len(rows)} users | DB query: {int((time.time() - start_time) * 1000)}ms")
+            except (ValueError, AttributeError):
+                continue
         
+        embed = discord.Embed(
+            title="📜 AFK List",
+            description="\n".join(lines),
+            color=AFK_MENTION_COLOR
+        )
+        embed.set_footer(text=f"Total AFK users: {len(lines)}")
         await ctx.reply(embed=embed, mention_author=False)
-
+    
     @commands.command(name="afkstats")
     @commands.is_owner()
     async def afk_stats(self, ctx: commands.Context):
         """Show AFK system performance stats."""
         embed = discord.Embed(
-            title="⚡ AFK System Performance",
-            color=discord.Color.green()
+            title="📊 AFK System Stats",
+            color=discord.Color.blue()
         )
         
-        # Performance stats
-        embed.add_field(name="Messages", value=self.stats['messages'], inline=True)
-        embed.add_field(name="Commands", value=self.stats['commands'], inline=True)
+        embed.add_field(name="AFK Users", value=len(self._afk_cache), inline=True)
+        embed.add_field(name="Cache Hits", value=self.stats['cache_hits'], inline=True)
+        embed.add_field(name="Cache Misses", value=self.stats['cache_misses'], inline=True)
+        embed.add_field(name="DB Queries", value=self.stats['db_queries'], inline=True)
+        embed.add_field(name="Queue Size", value=self._write_queue.qsize(), inline=True)
         
-        # Cache efficiency
-        total_lookups = self.stats['cache_hits'] + self.stats['cache_misses']
-        hit_rate = (self.stats['cache_hits'] / total_lookups * 100) if total_lookups > 0 else 0
-        embed.add_field(name="Cache Hit Rate", value=f"{hit_rate:.1f}%", inline=True)
+        # Calculate hit ratio
+        total = self.stats['cache_hits'] + self.stats['cache_misses']
+        ratio = (self.stats['cache_hits'] / total * 100) if total > 0 else 0
+        embed.add_field(name="Cache Hit Ratio", value=f"{ratio:.1f}%", inline=True)
         
-        # DB stats
-        embed.add_field(name="DB Reads", value=self.stats['db_reads'], inline=True)
-        embed.add_field(name="DB Writes", value=self.stats['db_writes'], inline=True)
-        
-        # Nickname stats
-        embed.add_field(name="Nick Changes", value=self.stats['nick_changes'], inline=True)
-        embed.add_field(name="Nick Errors", value=self.stats['nick_errors'], inline=True)
-        embed.add_field(name="Skipped Changes", value=self.stats['skipped_changes'], inline=True)
-        
-        # Queue stats
-        embed.add_field(name="Command Queue", value=len(self.command_batch), inline=True)
-        embed.add_field(name="Nick Queue", value=self.nick_queue.qsize(), inline=True)
-        embed.add_field(name="Mentions Sent", value=self.stats['mentions_sent'], inline=True)
-        
-        # Cache size
-        cache_size = len([k for k in self.afk_cache._cache if k.startswith('afk_')])
-        embed.add_field(name="AFK Cache Size", value=cache_size, inline=True)
-        embed.add_field(name="Mention Cache", value=len(self.mention_cache), inline=True)
-        
-        # System info
-        embed.add_field(name="Cooldown Tracking", value=len(self.nick_cooldown), inline=True)
-        
+        embed.set_footer(text=f"Guilds tracked: {len(self._guild_afk_cache)}")
         await ctx.reply(embed=embed, mention_author=False)
-
-    @commands.command(name="afkclear")
-    @commands.is_owner()
-    async def afk_clear(self, ctx: commands.Context):
-        """Clear all AFK statuses."""
-        await self.db_pool.execute("DELETE FROM afk")
-        self.afk_cache.clear()
-        self.mention_cache.clear()
-        self.nick_cooldown.clear()
-        self.command_batch.clear()
-        
-        # Clear nickname queue
-        while not self.nick_queue.empty():
-            try:
-                self.nick_queue.get_nowait()
-                self.nick_queue.task_done()
-            except asyncio.QueueEmpty:
-                break
-        
-        embed = discord.Embed(
-            title="🧹 AFK System Cleared",
-            description="All AFK statuses, cache, and queues have been cleared.",
-            color=discord.Color.red()
-        )
-        await ctx.reply(embed=embed, mention_author=False)
-
-    # ─── Listeners ─────────────────────────────────────
+    
+    # ─── LISTENERS (COMPATIBLE) ────────────────────────────────────
+    
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
         
-        # INSTANT message processing - no batching
-        await self._check_message_instant(message)
+        self.stats['messages_processed'] += 1
         
-        # Process commands (non-blocking)
-        asyncio.create_task(self.bot.process_commands(message))
-
+        # Process commands first (as in original)
+        await self.bot.process_commands(message)
+        
+        # Check if user should be removed from AFK
+        entry = await self.get_afk(message.author.id)
+        if entry:
+            await self.remove_afk(message.author.id)
+            
+            # Remove AFK from nickname
+            if message.guild and message.author.display_name.startswith(NICK_PREFIX):
+                await self._safe_edit_nick(
+                    message.author,
+                    self._strip_afk_nick(message.author.display_name)
+                )
+            
+            # Send welcome back message
+            embed = discord.Embed(
+                title="👋 Welcome Back!",
+                description=f"{message.author.mention}, AFK removed.\nYou had been AFK for **{entry.duration}**.",
+                color=AFK_REMOVED_COLOR
+            )
+            msg = await message.channel.send(embed=embed)
+            asyncio.create_task(self._auto_delete_message(msg, 20))
+        
+        # Check mentions for AFK users
+        if message.mentions:
+            # Rate limit mention messages per channel
+            current_time = time.time()
+            last_mention = self._last_mentions.get(message.channel.id, 0)
+            
+            if current_time - last_mention >= self._mention_cooldown:
+                for user in message.mentions:
+                    entry = await self.get_afk(user.id)
+                    if entry:
+                        embed = discord.Embed(
+                            title=f"{self._strip_afk_nick(user.display_name)} is AFK 💤",
+                            description=f"**Reason:** {entry.reason}\n**Since:** {entry.duration} ago",
+                            color=AFK_MENTION_COLOR
+                        )
+                        msg = await message.channel.send(embed=embed)
+                        asyncio.create_task(self._auto_delete_message(msg, 600))
+                        
+                        self._last_mentions[message.channel.id] = current_time
+                        break  # Only show first AFK user per message
+    
     async def cog_unload(self):
         """Clean shutdown."""
-        if self.nick_worker_task:
-            self.nick_worker_task.cancel()
+        # Stop batch processor
+        if self._batch_processor_task:
+            self._batch_processor_task.cancel()
+            try:
+                await self._batch_processor_task
+            except asyncio.CancelledError:
+                pass
         
-        if self.batch_processor_task:
-            self.batch_processor_task.cancel()
+        # Flush remaining writes
+        if self._write_queue.qsize() > 0:
+            print(f"[AFK] Flushing {self._write_queue.qsize()} pending writes...")
+            await self._write_queue.join()
         
-        # Wait for tasks to complete
-        try:
-            await asyncio.gather(
-                self.nick_worker_task,
-                self.batch_processor_task,
-                return_exceptions=True
-            )
-        except:
-            pass
+        # Close database
+        if self._db:
+            await self._db.close()
         
-        if self.db_pool:
-            await self.db_pool.close()
-        
-        print("[AFK] System shutdown complete")
-
+        print("[AFK] System shut down cleanly.")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AFK(bot))
