@@ -134,7 +134,7 @@ class DynamicMemberList(commands.Cog):
                                     if message:
                                         await self.update_embed(message, list_data)
                         except:
-                        pass
+                            pass
                 except Exception as e:
                     print(f"Error in cleanup_left_members: {e}")
         
