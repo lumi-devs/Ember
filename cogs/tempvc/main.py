@@ -171,25 +171,23 @@ class TempVoice(commands.Cog):
         # Clean base name for comparison (remove spaces)
         clean_base = base_name.strip()
         
-        # Get all voice channels in category
-        all_vcs = category.voice_channels
+        # Get only our bot-created voice channels in the category
+        bot_vcs = []
         
-        # Separate generators and temp VCs
-        generator_vcs = []
-        temp_vcs = []
+        # First, get all voice channels from database
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT voiceID FROM voiceChannel WHERE guildID = ?", (guild.id,)) as c:
+                rows = await c.fetchall()
         
-        for vc in all_vcs:
-            if vc.id in JOIN_CHANNELS:
-                generator_vcs.append(vc)
-            else:
-                temp_vcs.append(vc)
-        
-        # Sort generators by position
-        generator_vcs.sort(key=lambda x: x.position)
+        # Get the actual channel objects for our bot-created channels
+        for (voice_id,) in rows:
+            vc = guild.get_channel(voice_id)
+            if vc and vc.category == category:
+                bot_vcs.append(vc)
         
         # Find lowest available number for this type
         used_nums = []
-        for vc in temp_vcs:
+        for vc in bot_vcs:
             if vc.name.startswith(clean_base):
                 try:
                     # Extract number from name (e.g., "Duo 1" -> 1)
@@ -206,66 +204,52 @@ class TempVoice(commands.Cog):
         
         name = f"{clean_base} {num}"
         
-        # Determine position based on type hierarchy
-        # Order: Generators -> Duos -> Trios -> Squads
+        # Determine position - ONLY organize our bot-created channels
+        # We'll place it at the end of our bot channels, not touching other channels
         
-        # Define type hierarchy
-        type_hierarchy = {
-            "Duo": 1,
-            "Trio": 2,
-            "Squad": 3
-        }
-        
-        current_type_order = type_hierarchy.get(clean_base, 99)
-        
-        # Find where to place the new channel
-        position = None
-        
-        if not temp_vcs:
-            # No temp VCs exist yet, place after last generator
+        if not bot_vcs:
+            # No bot channels yet, place after generators
+            generator_vcs = [vc for vc in category.voice_channels if vc.id in JOIN_CHANNELS]
             if generator_vcs:
-                position = generator_vcs[-1].position + 1
+                position = max(vc.position for vc in generator_vcs) + 1
             else:
-                position = 0
+                position = len(category.voice_channels)
         else:
-            # Group temp VCs by type
+            # Sort our bot channels by position
+            sorted_bot_vcs = sorted(bot_vcs, key=lambda x: x.position)
+            
+            # Group by type
             typed_vcs = {}
-            for vc in temp_vcs:
-                # Extract type from name
-                vc_type = vc.name.split()[0]
+            for vc in sorted_bot_vcs:
+                vc_type = vc.name.split()[0] if vc.name else "Other"
                 if vc_type not in typed_vcs:
                     typed_vcs[vc_type] = []
                 typed_vcs[vc_type].append(vc)
             
-            # Sort VCs within each type by number
+            # Sort each type by number
             for vc_type in typed_vcs:
-                typed_vcs[vc_type].sort(key=lambda x: int(x.name.split()[1]) if x.name.split()[1].isdigit() else 999)
+                typed_vcs[vc_type].sort(key=lambda x: (
+                    int(x.name.split()[1]) if len(x.name.split()) > 1 and x.name.split()[1].isdigit() else 999
+                ))
             
-            # Build ordered list of all temp VCs
-            ordered_temp_vcs = []
+            # Build ordered list of our bot channels
+            ordered_bot_vcs = []
             
-            # Add Duos first
-            if "Duo" in typed_vcs:
-                ordered_temp_vcs.extend(typed_vcs["Duo"])
-            
-            # Add Trios second
-            if "Trio" in typed_vcs:
-                ordered_temp_vcs.extend(typed_vcs["Trio"])
-            
-            # Add Squads third
-            if "Squad" in typed_vcs:
-                ordered_temp_vcs.extend(typed_vcs["Squad"])
+            # Add in order: Duos, Trios, Squads, Others
+            for vc_type in ["Duo", "Trio", "Squad"]:
+                if vc_type in typed_vcs:
+                    ordered_bot_vcs.extend(typed_vcs[vc_type])
             
             # Add any other types
             for vc_type in typed_vcs:
                 if vc_type not in ["Duo", "Trio", "Squad"]:
-                    ordered_temp_vcs.extend(typed_vcs[vc_type])
+                    ordered_bot_vcs.extend(typed_vcs[vc_type])
             
-            # Find insertion point
+            # Find where to insert the new channel
             if clean_base in ["Duo", "Trio", "Squad"]:
                 # Find the last VC of the same type
                 last_same_type = None
-                for vc in reversed(ordered_temp_vcs):
+                for vc in reversed(ordered_bot_vcs):
                     if vc.name.startswith(clean_base):
                         last_same_type = vc
                         break
@@ -274,29 +258,33 @@ class TempVoice(commands.Cog):
                     # Insert after the last VC of same type
                     position = last_same_type.position + 1
                 else:
-                    # First VC of this type, find where to insert
+                    # First VC of this type, find insertion point based on hierarchy
                     if clean_base == "Duo":
-                        # Duos go after generators
+                        # Find highest generator position
+                        generator_vcs = [vc for vc in category.voice_channels if vc.id in JOIN_CHANNELS]
                         if generator_vcs:
-                            position = generator_vcs[-1].position + 1
+                            position = max(vc.position for vc in generator_vcs) + 1
                         else:
                             position = 0
                     elif clean_base == "Trio":
-                        # Find last Duo or start after generators
+                        # Find last Duo
                         last_duo = None
-                        for vc in ordered_temp_vcs:
+                        for vc in ordered_bot_vcs:
                             if vc.name.startswith("Duo"):
                                 last_duo = vc
                         if last_duo:
                             position = last_duo.position + 1
-                        elif generator_vcs:
-                            position = generator_vcs[-1].position + 1
                         else:
-                            position = 0
+                            # Find highest generator position
+                            generator_vcs = [vc for vc in category.voice_channels if vc.id in JOIN_CHANNELS]
+                            if generator_vcs:
+                                position = max(vc.position for vc in generator_vcs) + 1
+                            else:
+                                position = 0
                     elif clean_base == "Squad":
-                        # Find last Trio or last Duo or start after generators
+                        # Find last Trio or last Duo
                         last_trio = None
-                        for vc in reversed(ordered_temp_vcs):
+                        for vc in reversed(ordered_bot_vcs):
                             if vc.name.startswith("Trio"):
                                 last_trio = vc
                                 break
@@ -306,24 +294,30 @@ class TempVoice(commands.Cog):
                         else:
                             # Find last Duo
                             last_duo = None
-                            for vc in reversed(ordered_temp_vcs):
+                            for vc in reversed(ordered_bot_vcs):
                                 if vc.name.startswith("Duo"):
                                     last_duo = vc
                                     break
                             if last_duo:
                                 position = last_duo.position + 1
-                            elif generator_vcs:
-                                position = generator_vcs[-1].position + 1
                             else:
-                                position = 0
+                                # Find highest generator position
+                                generator_vcs = [vc for vc in category.voice_channels if vc.id in JOIN_CHANNELS]
+                                if generator_vcs:
+                                    position = max(vc.position for vc in generator_vcs) + 1
+                                else:
+                                    position = 0
             else:
-                # Other types go at the end
-                if ordered_temp_vcs:
-                    position = ordered_temp_vcs[-1].position + 1
-                elif generator_vcs:
-                    position = generator_vcs[-1].position + 1
+                # Other types go at the end of our bot channels
+                if ordered_bot_vcs:
+                    position = ordered_bot_vcs[-1].position + 1
                 else:
-                    position = 0
+                    # Find highest generator position
+                    generator_vcs = [vc for vc in category.voice_channels if vc.id in JOIN_CHANNELS]
+                    if generator_vcs:
+                        position = max(vc.position for vc in generator_vcs) + 1
+                    else:
+                        position = len(category.voice_channels)
         
         # Create VC at correct position
         vc = await guild.create_voice_channel(
@@ -347,33 +341,35 @@ class TempVoice(commands.Cog):
             )
             await db.commit()
 
-        # Reorganize all channels to maintain proper order
-        await self._reorganize_channels(category)
+        # Reorganize ONLY our bot-created channels
+        await self._reorganize_bot_channels(category)
         
         await self._send_panel(vc, member.id)
         print(f"[TempVoice] ✅ Created {name} at position {position}")
 
-    async def _reorganize_channels(self, category):
-        """Reorganize all channels to maintain proper order"""
+    async def _reorganize_bot_channels(self, category):
+        """Reorganize ONLY our bot-created channels, leaving other channels untouched"""
         try:
-            all_vcs = category.voice_channels
+            # Get all our bot-created channels in this category
+            async with aiosqlite.connect(DB_PATH) as db:
+                async with db.execute("SELECT voiceID FROM voiceChannel") as c:
+                    rows = await c.fetchall()
             
-            # Separate generators and temp VCs
-            generator_vcs = []
-            temp_vcs = []
+            bot_vcs = []
+            for (voice_id,) in rows:
+                vc = category.guild.get_channel(voice_id)
+                if vc and vc.category == category:
+                    bot_vcs.append(vc)
             
-            for vc in all_vcs:
-                if vc.id in JOIN_CHANNELS:
-                    generator_vcs.append(vc)
-                else:
-                    temp_vcs.append(vc)
+            if not bot_vcs:
+                return
             
-            # Sort generators by position
-            generator_vcs.sort(key=lambda x: x.position)
+            # Sort existing bot channels by current position
+            bot_vcs.sort(key=lambda x: x.position)
             
-            # Group temp VCs by type
+            # Group by type
             typed_vcs = {}
-            for vc in temp_vcs:
+            for vc in bot_vcs:
                 vc_type = vc.name.split()[0] if vc.name else "Other"
                 if vc_type not in typed_vcs:
                     typed_vcs[vc_type] = []
@@ -386,32 +382,41 @@ class TempVoice(commands.Cog):
                 ))
             
             # Build ordered list
-            ordered_vcs = generator_vcs.copy()
+            ordered_bot_vcs = []
             
             # Add in order: Duos, Trios, Squads, Others
             for vc_type in ["Duo", "Trio", "Squad"]:
                 if vc_type in typed_vcs:
-                    ordered_vcs.extend(typed_vcs[vc_type])
+                    ordered_bot_vcs.extend(typed_vcs[vc_type])
             
             # Add any other types
             for vc_type in typed_vcs:
                 if vc_type not in ["Duo", "Trio", "Squad"]:
-                    ordered_vcs.extend(typed_vcs[vc_type])
+                    ordered_bot_vcs.extend(typed_vcs[vc_type])
             
-            # Reposition channels
-            for index, vc in enumerate(ordered_vcs):
-                if vc.position != index:
+            # Find starting position (after generators)
+            generator_vcs = [vc for vc in category.voice_channels if vc.id in JOIN_CHANNELS]
+            if generator_vcs:
+                start_position = max(vc.position for vc in generator_vcs) + 1
+            else:
+                start_position = 0
+            
+            # Reposition ONLY our bot channels
+            for index, vc in enumerate(ordered_bot_vcs):
+                target_position = start_position + index
+                if vc.position != target_position:
                     try:
-                        await vc.edit(position=index)
+                        await vc.edit(position=target_position)
                         await asyncio.sleep(0.1)  # Small delay to avoid rate limits
                     except Exception:
                         pass
                         
         except Exception as e:
-            print(f"[TempVoice] Error reorganizing channels: {e}")
+            print(f"[TempVoice] Error reorganizing bot channels: {e}")
 
     # ---------------- CLEANUP ----------------
     async def _schedule_cleanup(self, ch):
+        # Only cleanup channels we created
         guild_id = ch.guild.id
         self._ensure_structs(ch.id, guild_id)
         async with self.cleanup_locks[guild_id]:
@@ -425,22 +430,27 @@ class TempVoice(commands.Cog):
         try:
             if ch.members:
                 return
+            
+            # Double-check this is our channel
             async with aiosqlite.connect(DB_PATH) as db:
                 async with db.execute("SELECT 1 FROM voiceChannel WHERE voiceID = ?", (ch.id,)) as c:
                     if not await c.fetchone():
                         return
+            
             await ch.delete(reason="Empty temp VC cleanup")
+            
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (ch.id,))
                 await db.commit()
+            
             print(f"[TempVoice] 🧹 Cleaned {ch.name}")
             
             # Remove from leave times tracking if it exists
             self.owner_leave_times.pop(ch.id, None)
             
-            # Reorganize remaining channels after deletion
+            # Reorganize remaining bot channels
             if ch.category:
-                await self._reorganize_channels(ch.category)
+                await self._reorganize_bot_channels(ch.category)
                 
         except Exception:
             print(f"[TempVoice] cleanup error:\n{traceback.format_exc()}")
@@ -448,6 +458,7 @@ class TempVoice(commands.Cog):
             self.cleanup_tasks.pop(ch.id, None)
 
     async def _cleanup_ghost(self, guild):
+        """Clean up database entries for channels that no longer exist"""
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute("SELECT voiceID FROM voiceChannel WHERE guildID = ?", (guild.id,)) as c:
                 rows = await c.fetchall()
@@ -457,6 +468,7 @@ class TempVoice(commands.Cog):
             await db.commit()
 
     async def _cleanup_empty(self, guild):
+        """Schedule cleanup for empty channels we created"""
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute("SELECT voiceID FROM voiceChannel WHERE guildID = ?", (guild.id,)) as c:
                 rows = await c.fetchall()
