@@ -521,7 +521,7 @@ class AFK(commands.Cog):
         await ctx.reply(embed=embed, mention_author=False)
     
     # ─── LISTENERS (COMPATIBLE) ────────────────────────────────────
-    
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot:
@@ -529,12 +529,17 @@ class AFK(commands.Cog):
         
         self.stats['messages_processed'] += 1
         
-        # Process commands first (as in original)
-        await self.bot.process_commands(message)
+        # FIRST: Check if this is an AFK command
+        ctx = await self.bot.get_context(message)
         
-        # Check if user should be removed from AFK
+        # Check if user should be removed from AFK (but NOT if they're using .afk command)
         entry = await self.get_afk(message.author.id)
-        if entry:
+        
+        # Only remove AFK if:
+        # 1. User is AFK
+        # 2. This is NOT an AFK command (either .afk or .afk <reason>)
+        # 3. This is NOT a bot command at all (optional, but good practice)
+        if entry and not ctx.valid:
             await self.remove_afk(message.author.id)
             
             # Remove AFK from nickname
@@ -552,6 +557,9 @@ class AFK(commands.Cog):
             )
             msg = await message.channel.send(embed=embed)
             asyncio.create_task(self._auto_delete_message(msg, 20))
+        
+        # Process commands (always)
+        await self.bot.process_commands(message)
         
         # Check mentions for AFK users
         if message.mentions:
