@@ -241,34 +241,41 @@ class AFK(commands.Cog):
         
         while True:
             try:
-                # Wait for operations
+                # Get operation from queue with timeout
                 try:
                     op_type, data = await asyncio.wait_for(
                         self._write_queue.get(),
                         timeout=flush_interval
                     )
                 except asyncio.TimeoutError:
-                    pass
+                    # Timeout means no items, just check if we need to flush
+                    op_type = None
+                    data = None
                 
                 current_time = time.time()
                 
-                # Add to batch
-                if op_type == 'set_afk':
-                    user_id, reason = data
-                    since = datetime.now(timezone.utc).isoformat()
-                    batch_inserts.append((str(user_id), reason, since))
-                elif op_type == 'remove_afk':
-                    batch_deletes.append(str(data))
+                # Process operation if we got one
+                if op_type:
+                    if op_type == 'set_afk':
+                        user_id, reason = data
+                        since = datetime.now(timezone.utc).isoformat()
+                        batch_inserts.append((str(user_id), reason, since))
+                    elif op_type == 'remove_afk':
+                        batch_deletes.append(str(data))
                 
                 # Flush if we have enough operations or time has passed
-                if (current_time - last_flush >= flush_interval or 
-                    len(batch_inserts) + len(batch_deletes) >= 50):
-                    if batch_inserts or batch_deletes:
-                        await self._flush_batch(batch_inserts, batch_deletes)
-                        batch_inserts.clear()
-                        batch_deletes.clear()
-                        last_flush = current_time
+                should_flush = (
+                    current_time - last_flush >= flush_interval or 
+                    len(batch_inserts) + len(batch_deletes) >= 50
+                )
                 
+                if should_flush and (batch_inserts or batch_deletes):
+                    await self._flush_batch(batch_inserts, batch_deletes)
+                    batch_inserts.clear()
+                    batch_deletes.clear()
+                    last_flush = current_time
+                
+                # Mark task as done AFTER processing (only if we got an item)
                 if op_type:
                     self._write_queue.task_done()
                     
@@ -529,39 +536,37 @@ class AFK(commands.Cog):
         
         self.stats['messages_processed'] += 1
         
-        # FIRST: Check if this is an AFK command
-        ctx = await self.bot.get_context(message)
+        # Check if this is a command (check for bot prefix)
+        content = message.content.strip()
+        is_command = content.startswith(tuple(await self.bot.get_prefix(message)))
         
-        # Check if user should be removed from AFK (but NOT if they're using .afk command)
-        entry = await self.get_afk(message.author.id)
-        
-        # Only remove AFK if:
-        # 1. User is AFK
-        # 2. This is NOT an AFK command (either .afk or .afk <reason>)
-        # 3. This is NOT a bot command at all (optional, but good practice)
-        if entry and not ctx.valid:
-            await self.remove_afk(message.author.id)
-            
-            # Remove AFK from nickname
-            if message.guild and message.author.display_name.startswith(NICK_PREFIX):
-                await self._safe_edit_nick(
-                    message.author,
-                    self._strip_afk_nick(message.author.display_name)
+        # Only check for AFK removal if this is NOT a command
+        # This prevents instant removal when using .afk command
+        if not is_command:
+            entry = await self.get_afk(message.author.id)
+            if entry:
+                await self.remove_afk(message.author.id)
+                
+                # Remove AFK from nickname
+                if message.guild and message.author.display_name.startswith(NICK_PREFIX):
+                    await self._safe_edit_nick(
+                        message.author,
+                        self._strip_afk_nick(message.author.display_name)
+                    )
+                
+                # Send welcome back message
+                embed = discord.Embed(
+                    title="👋 Welcome Back!",
+                    description=f"{message.author.mention}, AFK removed.\nYou had been AFK for **{entry.duration}**.",
+                    color=AFK_REMOVED_COLOR
                 )
-            
-            # Send welcome back message
-            embed = discord.Embed(
-                title="👋 Welcome Back!",
-                description=f"{message.author.mention}, AFK removed.\nYou had been AFK for **{entry.duration}**.",
-                color=AFK_REMOVED_COLOR
-            )
-            msg = await message.channel.send(embed=embed)
-            asyncio.create_task(self._auto_delete_message(msg, 20))
+                msg = await message.channel.send(embed=embed)
+                asyncio.create_task(self._auto_delete_message(msg, 20))
         
         # Process commands (always)
         await self.bot.process_commands(message)
         
-        # Check mentions for AFK users
+        # Check mentions for AFK users (even in commands)
         if message.mentions:
             # Rate limit mention messages per channel
             current_time = time.time()
