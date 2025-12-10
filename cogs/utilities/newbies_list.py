@@ -16,7 +16,7 @@ class DynamicMemberList(commands.Cog):
         # Configuration
         self.MAX_MEMBERS = 12
         self.MEMBER_EXPIRY_DAYS = 2
-        self.ADD_ROLES = []  # Add role IDs here that can ADD members
+        self.ADD_ROLES = [1406324000736542911, 1410302930485121106, 1408709182856630332, 1438551732807536690]  # Add role IDs here that can ADD members
         
         # Load existing data
         self.member_lists = self.load_data()
@@ -589,18 +589,6 @@ class DynamicMemberList(commands.Cog):
                 inline=False
             )
         
-        # Add rules
-        embed.add_field(
-            name="⚙️ Rules",
-            value=(
-                f"• **Max {self.MAX_MEMBERS} members** at a time\n"
-                f"• Members stay for **{self.MEMBER_EXPIRY_DAYS} days**\n"
-                f"• Oldest members removed when full\n"
-                f"• Auto-removed if member leaves server\n"
-                f"• Only specific roles can add members"
-            ),
-            inline=False
-        )
         
         # Create main view with buttons
         view = self.MembersMainView(
@@ -665,17 +653,6 @@ class DynamicMemberList(commands.Cog):
             inline=False
         )
         
-        embed.add_field(
-            name="⚙️ Rules",
-            value=(
-                f"• **Max {self.MAX_MEMBERS} members** at a time\n"
-                f"• Members stay for **{self.MEMBER_EXPIRY_DAYS} days**\n"
-                f"• Oldest members removed when full\n"
-                f"• Auto-removed if member leaves server\n"
-                f"• Only specific roles can add members"
-            ),
-            inline=False
-        )
         
         # Create view with buttons
         view = self.MembersMainView(
