@@ -23,7 +23,6 @@ class DynamicMemberList(commands.Cog):
         
         # Start cleanup tasks
         self.cleanup_expired_members.start()
-        self.cleanup_left_members.start()
         
         # Register persistent views
         self.bot.add_view(self.MembersMainView(cog=self))
@@ -33,7 +32,6 @@ class DynamicMemberList(commands.Cog):
     def cog_unload(self):
         """Cleanup when cog is unloaded"""
         self.cleanup_expired_members.cancel()
-        self.cleanup_left_members.cancel()
         self.save_data()
     
     def load_data(self):
@@ -94,37 +92,38 @@ class DynamicMemberList(commands.Cog):
         if expired_count > 0:
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Cleaned up {expired_count} expired members")
     
-    @tasks.loop(hours=1)
-    async def cleanup_left_members(self):
-        """Clean up members who have left the server"""
+    @cleanup_expired_members.before_loop
+    async def before_cleanup(self):
+        """Wait until bot is ready"""
+        await self.bot.wait_until_ready()
+    
+    @commands.Cog.listener()
+    async def on_member_remove(self, member):
+        """Immediately remove members when they leave the server"""
         now = datetime.now(pytz.UTC)
-        left_count = 0
+        removed_from_lists = 0
         
         for channel_id, list_data in list(self.member_lists.items()):
             if 'members' in list_data and 'guild_id' in list_data:
-                try:
-                    guild = self.bot.get_guild(int(list_data['guild_id']))
-                    if not guild:
-                        continue
+                # Check if this list belongs to the member's guild
+                if int(list_data['guild_id']) == member.guild.id:
+                    member_id_str = str(member.id)
                     
-                    members_to_remove = []
-                    for member_id, member_data in list_data['members'].items():
-                        member_in_guild = guild.get_member(int(member_id))
-                        if not member_in_guild:
-                            members_to_remove.append((member_id, member_data))
-                    
-                    for member_id, member_data in members_to_remove:
-                        del list_data['members'][member_id]
+                    if member_id_str in list_data['members']:
+                        # Remove the member from this list
+                        member_data = list_data['members'].pop(member_id_str)
                         list_data['removed_members'].append({
-                            'id': member_id,
+                            'id': member_id_str,
                             'name': member_data['name'],
                             'removed_at': now.isoformat(),
-                            'reason': 'left_server'
+                            'reason': 'left_server_immediately'
                         })
-                        left_count += 1
-                    
-                    if members_to_remove:
+                        removed_from_lists += 1
+                        
+                        # Save data
                         self.save_data()
+                        
+                        # Update the embed
                         try:
                             channel = self.bot.get_channel(int(channel_id))
                             if channel:
@@ -133,19 +132,11 @@ class DynamicMemberList(commands.Cog):
                                     message = await channel.fetch_message(int(message_id))
                                     if message:
                                         await self.update_embed(message, list_data)
-                        except:
-                            pass
-                except Exception as e:
-                    print(f"Error in cleanup_left_members: {e}")
+                        except Exception as e:
+                            print(f"Error updating list after member left: {e}")
         
-        if left_count > 0:
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Cleaned up {left_count} members who left the server")
-    
-    @cleanup_expired_members.before_loop
-    @cleanup_left_members.before_loop
-    async def before_cleanup(self):
-        """Wait until bot is ready"""
-        await self.bot.wait_until_ready()
+        if removed_from_lists > 0:
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Removed {member.name} from {removed_from_lists} list(s) (left server)")
     
     # ------------------------------------------------------------
     # Button Classes
@@ -362,25 +353,6 @@ class DynamicMemberList(commands.Cog):
                 inline=False
             )
             
-            # Show members expiring soon
-            if expiring_soon > 0:
-                expiring_text = ""
-                for member_id, member_data in list(members.items())[:5]:  # Show first 5
-                    added_at = datetime.fromisoformat(member_data['added_at'])
-                    days_left = self.cog.MEMBER_EXPIRY_DAYS - (now - added_at).days
-                    
-                    if days_left <= 1:
-                        member = channel.guild.get_member(int(member_id))
-                        name = member.mention if member else member_data['name']
-                        expiring_text += f"• {name} (expires in {days_left} day{'s' if days_left != 1 else ''})\n"
-                
-                if expiring_text:
-                    embed.add_field(
-                        name="Expiring Soon",
-                        value=expiring_text,
-                        inline=False
-                    )
-            
             await interaction.followup.send(embed=embed, ephemeral=True)
     
     # ------------------------------------------------------------
@@ -464,7 +436,7 @@ class DynamicMemberList(commands.Cog):
                                 'reason': 'auto_removed_capacity'
                             })
                     
-                    # Add member
+                    # Add member WITHOUT avatar URL
                     list_data['members'][member_id_str] = {
                         'id': member_id_str,
                         'name': member.name,
@@ -486,7 +458,7 @@ class DynamicMemberList(commands.Cog):
                     if added_members:
                         response_text += f"✅ **Added {len(added_members)} member(s):**\n"
                         for member in added_members:
-                            response_text += f"• {member.mention}\n"
+                            response_text += f"• **{member.display_name or member.name}** (@{member.name})\n"
                     
                     if skipped_members:
                         response_text += f"\n⚠️ Skipped {len(skipped_members)} (already in list)"
@@ -526,7 +498,7 @@ class DynamicMemberList(commands.Cog):
                         
                         response_text = f"✅ **Removed {len(removed_members)} member(s):**\n"
                         for member in removed_members:
-                            response_text += f"• {member.mention}\n"
+                            response_text += f"• **{member.display_name or member.name}** (@{member.name})\n"
                         
                         await interaction.followup.send(response_text, ephemeral=True)
                     except Exception as e:
@@ -568,31 +540,42 @@ class DynamicMemberList(commands.Cog):
         
         # Add member list
         if members:
-            members_list = ""
+            # Sort members by when they were added (oldest first)
             sorted_members = sorted(
                 members.items(),
                 key=lambda x: datetime.fromisoformat(x[1]['added_at'])
             )
             
-            for member_id, member_data in sorted_members:
-                added_at = datetime.fromisoformat(member_data['added_at'])
-                time_ago = self.get_time_ago(added_at)
-                expires_in = self.MEMBER_EXPIRY_DAYS - (datetime.now(pytz.UTC) - added_at).days
-                
-                member = message.guild.get_member(int(member_id))
-                if member:
-                    members_list += f"• {member.mention} - Added {time_ago} (Expires in {expires_in} day{'s' if expires_in != 1 else ''})\n"
-                else:
-                    members_list += f"• **{member_data['name']}** - Added {time_ago} (Expires in {expires_in} day{'s' if expires_in != 1 else ''})\n"
+            # Simple member list format
+            member_text = ""
+            member_count = 1
             
-            embed.add_field(
-                name=f"📝 Current Members ({len(members)}/{self.MAX_MEMBERS})",
-                value=members_list,
-                inline=False
-            )
+            for member_id, member_data in sorted_members:
+                member = message.guild.get_member(int(member_id))
+                
+                if member:
+                    # Member is in the server
+                    member_text += f"**{member_count}.** **{member.display_name or member.name}** `(@{member.name})`\n"
+                    member_count += 1
+                else:
+                    # Member left - skip them
+                    continue
+            
+            if member_text:
+                embed.add_field(
+                    name=f"👥 Current Members ({len(members)}/{self.MAX_MEMBERS})",
+                    value=member_text,
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name=f"👥 Current Members (0/{self.MAX_MEMBERS})",
+                    value="*No members in the list yet*\nUse the **➕ Add Members** button to add members.",
+                    inline=False
+                )
         else:
             embed.add_field(
-                name=f"📝 Current Members (0/{self.MAX_MEMBERS})",
+                name=f"👥 Current Members (0/{self.MAX_MEMBERS})",
                 value="*No members in the list yet*\nUse the **➕ Add Members** button to add members.",
                 inline=False
             )
@@ -602,22 +585,6 @@ class DynamicMemberList(commands.Cog):
         
         # Update message
         await message.edit(embed=embed, view=view)
-    
-    def get_time_ago(self, dt):
-        """Convert datetime to human-readable time ago string"""
-        now = datetime.now(pytz.UTC)
-        diff = now - dt
-        
-        if diff.days > 0:
-            return f"{diff.days} day{'s' if diff.days != 1 else ''} ago"
-        elif diff.seconds >= 3600:
-            hours = diff.seconds // 3600
-            return f"{hours} hour{'s' if hours != 1 else ''} ago"
-        elif diff.seconds >= 60:
-            minutes = diff.seconds // 60
-            return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
-        else:
-            return "just now"
     
     # ------------------------------------------------------------
     # Commands
@@ -652,7 +619,7 @@ class DynamicMemberList(commands.Cog):
         )
         
         embed.add_field(
-            name=f"📝 Current Members (0/{self.MAX_MEMBERS})",
+            name=f"👥 Current Members (0/{self.MAX_MEMBERS})",
             value="*No members in the list yet*\nUse the **➕ Add Members** button to add members.",
             inline=False
         )
@@ -726,7 +693,7 @@ class DynamicMemberList(commands.Cog):
         member_id = str(member.id)
         
         if member_id not in list_data['members']:
-            await ctx.send(f"❌ {member.mention} is not in the list!")
+            await ctx.send(f"❌ **{member.display_name or member.name}** (@{member.name}) is not in the list!")
             return
         
         # Remove member
@@ -745,7 +712,7 @@ class DynamicMemberList(commands.Cog):
         try:
             message = await ctx.channel.fetch_message(int(list_data['message_id']))
             await self.update_embed(message, list_data)
-            await ctx.send(f"✅ Force removed {member.mention} from the list.")
+            await ctx.send(f"✅ Force removed **{member.display_name or member.name}** (@{member.name}) from the list.")
         except Exception as e:
             await ctx.send(f"❌ Error updating list: {str(e)}")
     
@@ -839,6 +806,50 @@ class DynamicMemberList(commands.Cog):
             name="Active Lists",
             value=str(len(self.member_lists)),
             inline=True
+        )
+        
+        await ctx.send(embed=embed)
+    
+    @commands.command(name="showmembers")
+    async def show_members(self, ctx):
+        """Show all members in the current list"""
+        channel_id = str(ctx.channel.id)
+        
+        if channel_id not in self.member_lists:
+            await ctx.send("❌ No member list exists in this channel!")
+            return
+        
+        list_data = self.member_lists[channel_id]
+        members = list_data['members']
+        
+        if not members:
+            await ctx.send("📭 The list is currently empty!")
+            return
+        
+        # Create an embed
+        embed = discord.Embed(
+            title="👥 Members in List",
+            color=discord.Color.blue(),
+            timestamp=datetime.now(pytz.UTC)
+        )
+        
+        member_text = ""
+        member_count = 1
+        
+        for member_id, member_data in members.items():
+            member = ctx.guild.get_member(int(member_id))
+            
+            if member:
+                member_text += f"**{member_count}.** **{member.display_name or member.name}** (@{member.name})\n"
+                member_count += 1
+            else:
+                # Member left - skip (should have been removed)
+                continue
+        
+        embed.add_field(
+            name=f"Total: {len(members)}/{self.MAX_MEMBERS}",
+            value=member_text or "No active members in the list.",
+            inline=False
         )
         
         await ctx.send(embed=embed)
