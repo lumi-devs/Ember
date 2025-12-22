@@ -71,14 +71,31 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             # Send message
             msg = await channel.send(embed=embed)
 
-            # Save message_id
+            # Create thread for this confession (no initial message)
+            thread_name = f"Confession #{confession_id}"
+            if self.title_input.value:
+                thread_name += f" - {self.title_input.value[:50]}"
+            elif len(self.description_input.value) > 50:
+                thread_name += f" - {self.description_input.value[:50]}..."
+            
+            # Create public thread with 60 minute auto-archive duration
+            thread = await msg.create_thread(
+                name=thread_name,
+                auto_archive_duration=60  # 60 minutes
+            )
+
+            # Save message_id and thread_id
             async with aiosqlite.connect(DB_PATH) as db:
-                await db.execute("UPDATE confessions SET message_id=? WHERE id=?", (msg.id, confession_id))
+                await db.execute(
+                    "UPDATE confessions SET message_id=?, thread_id=? WHERE id=?", 
+                    (msg.id, thread.id, confession_id)
+                )
                 await db.commit()
 
             await interaction.followup.send(
                 "✅ Confession submitted! You have **30 seconds** to reply with an image URL or attachment. "
-                "Send `skip` to continue without media.",
+                "Send `skip` to continue without media.\n\n"
+                f"📝 A discussion thread has been created: {thread.mention}",
                 ephemeral=True
             )
 
@@ -93,7 +110,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                     await db.commit()
 
             # Attach persistent view
-            final_view = ConfessionView(self.bot, confession_id, msg.id)
+            final_view = ConfessionView(self.bot, confession_id, msg.id, thread.id)
             await msg.edit(embed=embed, view=final_view)
 
             # Log confession
@@ -162,14 +179,15 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             print(f"Error logging confession: {e}")
 
 # ==============================
-# CONFESSION VIEW (Buttons) - UNCHANGED but more robust
+# CONFESSION VIEW (Buttons) - Updated with thread_id
 # ==============================
 class ConfessionView(ui.View):
-    def __init__(self, bot, confession_id, message_id=None):
+    def __init__(self, bot, confession_id, message_id=None, thread_id=None):
         super().__init__(timeout=None)
         self.bot = bot
         self.confession_id = confession_id
         self.message_id = message_id
+        self.thread_id = thread_id
 
     @ui.button(label="Reply", style=discord.ButtonStyle.primary, custom_id="confession_reply", row=0)
     async def reply(self, interaction: discord.Interaction, button: ui.Button):
@@ -229,7 +247,7 @@ class ConfessionView(ui.View):
             await interaction.response.send_message("❌ An error occurred while reporting.", ephemeral=True)
 
 # ==============================
-# MAIN COG - Improved with better error handling
+# MAIN COG - Updated to handle thread_id in view loading
 # ==============================
 class Confessions(commands.Cog):
     def __init__(self, bot):
@@ -252,9 +270,9 @@ class Confessions(commands.Cog):
         await self.bot.wait_until_ready()
         try:
             async with aiosqlite.connect(DB_PATH) as db:
-                async with db.execute("SELECT id, message_id FROM confessions WHERE message_id IS NOT NULL") as cursor:
-                    async for confession_id, message_id in cursor:
-                        self.bot.add_view(ConfessionView(self.bot, confession_id, message_id))
+                async with db.execute("SELECT id, message_id, thread_id FROM confessions WHERE message_id IS NOT NULL") as cursor:
+                    async for confession_id, message_id, thread_id in cursor:
+                        self.bot.add_view(ConfessionView(self.bot, confession_id, message_id, thread_id))
             print("[Confessions] ✅ All persistent views reloaded successfully.")
         except Exception as e:
             print(f"[Confessions] ❌ Error loading views: {e}")

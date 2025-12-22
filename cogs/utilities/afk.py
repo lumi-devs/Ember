@@ -33,28 +33,14 @@ class AFKEntry:
     since: datetime
     
     @property
-    def duration(self) -> str:
-        """Human-readable duration."""
-        return self._human_timedelta(self.since)
+    def discord_timestamp(self) -> str:
+        """Discord dynamic timestamp (relative)."""
+        return f"<t:{int(self.since.timestamp())}:R>"
     
-    @staticmethod
-    @lru_cache(maxsize=1024)
-    def _human_timedelta(dt: datetime) -> str:
-        """Cached human-readable time difference."""
-        now = datetime.now(timezone.utc)
-        delta = now - dt
-        
-        if delta.days > 0:
-            return f"{delta.days} day{'s' if delta.days != 1 else ''}"
-        elif delta.seconds >= 3600:
-            hours = delta.seconds // 3600
-            return f"{hours} hour{'s' if hours != 1 else ''}"
-        elif delta.seconds >= 60:
-            minutes = delta.seconds // 60
-            return f"{minutes} minute{'s' if minutes != 1 else ''}"
-        else:
-            seconds = delta.seconds
-            return f"{seconds} second{'s' if seconds != 1 else ''}"
+    @property
+    def discord_timestamp_full(self) -> str:
+        """Discord dynamic timestamp (full)."""
+        return f"<t:{int(self.since.timestamp())}:F>"
 
 class LRUCache:
     """Simple LRU cache with TTL."""
@@ -467,7 +453,7 @@ class AFK(commands.Cog):
             
             embed = discord.Embed(
                 title="✅ AFK Set",
-                description=f"{user.mention}, you are now AFK: **{reason}**",
+                description=f"{user.mention}, you are now AFK: **{reason}**\nSet {existing.discord_timestamp}",
                 color=AFK_SET_COLOR
             )
         
@@ -490,9 +476,10 @@ class AFK(commands.Cog):
                 name = user.mention if user else f"Unknown ({user_id})"
                 
                 since_dt = datetime.fromisoformat(since_str)
-                duration = AFKEntry._human_timedelta(since_dt)
+                timestamp = int(since_dt.timestamp())
+                discord_time = f"<t:{timestamp}:R>"
                 
-                lines.append(f"{name} — `{reason}` *(for {duration})*")
+                lines.append(f"{name} — `{reason}` ({discord_time})")
             except (ValueError, AttributeError):
                 continue
         
@@ -557,7 +544,7 @@ class AFK(commands.Cog):
                 # Send welcome back message
                 embed = discord.Embed(
                     title="👋 Welcome Back!",
-                    description=f"{message.author.mention}, AFK removed.\nYou had been AFK for **{entry.duration}**.",
+                    description=f"{message.author.mention}, AFK removed.\nYou had been AFK for {entry.discord_timestamp}.",
                     color=AFK_REMOVED_COLOR
                 )
                 msg = await message.channel.send(embed=embed)
@@ -578,7 +565,7 @@ class AFK(commands.Cog):
                     if entry:
                         embed = discord.Embed(
                             title=f"{self._strip_afk_nick(user.display_name)} is AFK 💤",
-                            description=f"**Reason:** {entry.reason}\n**Since:** {entry.duration} ago",
+                            description=f"**Reason:** {entry.reason}\n**Set {entry.discord_timestamp}**",
                             color=AFK_MENTION_COLOR
                         )
                         msg = await message.channel.send(embed=embed)
