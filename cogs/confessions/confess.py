@@ -71,31 +71,33 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             # Send message
             msg = await channel.send(embed=embed)
 
-            # Create thread for this confession (no initial message)
+            # Create thread for this confession with simple name
             thread_name = f"Confession #{confession_id}"
-            if self.title_input.value:
-                thread_name += f" - {self.title_input.value[:50]}"
-            elif len(self.description_input.value) > 50:
-                thread_name += f" - {self.description_input.value[:50]}..."
             
             # Create public thread with 60 minute auto-archive duration
-            thread = await msg.create_thread(
-                name=thread_name,
-                auto_archive_duration=60  # 60 minutes
-            )
+            try:
+                thread = await msg.create_thread(
+                    name=thread_name,
+                    auto_archive_duration=60  # 60 minutes
+                )
+            except discord.HTTPException as e:
+                print(f"Error creating thread: {e}")
+                # Continue without thread if creation fails
+                thread = None
 
-            # Save message_id and thread_id
+            # Save only message_id
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute(
-                    "UPDATE confessions SET message_id=?, thread_id=? WHERE id=?", 
-                    (msg.id, thread.id, confession_id)
+                    "UPDATE confessions SET message_id=? WHERE id=?", 
+                    (msg.id, confession_id)
                 )
                 await db.commit()
 
+            # Send media prompt FIRST
             await interaction.followup.send(
                 "✅ Confession submitted! You have **30 seconds** to reply with an image URL or attachment. "
                 "Send `skip` to continue without media.\n\n"
-                f"📝 A discussion thread has been created: {thread.mention}",
+                f"📝 Your confession ID: #{confession_id}",
                 ephemeral=True
             )
 
@@ -109,15 +111,28 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                     await db.execute("UPDATE confessions SET image_url=? WHERE id=?", (image_url, confession_id))
                     await db.commit()
 
-            # Attach persistent view
-            final_view = ConfessionView(self.bot, confession_id, msg.id, thread.id)
+            # Create and attach persistent view
+            final_view = PersistentConfessionView(confession_id)
             await msg.edit(embed=embed, view=final_view)
 
             # Log confession
             await self.log_confession(confession_id, image_url)
 
+            # Send final confirmation
+            if thread:
+                thread_msg = f"A discussion thread has been created: {thread.mention}"
+            else:
+                thread_msg = "Note: Could not create discussion thread."
+            
+            await interaction.followup.send(
+                f"✅ Confession #{confession_id} is now public! {thread_msg}",
+                ephemeral=True
+            )
+
         except Exception as e:
             print(f"Error submitting confession: {e}")
+            import traceback
+            traceback.print_exc()
             await interaction.followup.send("❌ An error occurred while submitting your confession.", ephemeral=True)
 
     async def wait_for_media(self, interaction, confession_id):
@@ -126,6 +141,9 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             return m.author.id == self.user_id and m.channel.id == interaction.channel.id
 
         try:
+            # First, let user know we're waiting
+            await interaction.followup.send("⏳ Waiting for media... You have 30 seconds.", ephemeral=True)
+            
             msg_received = await self.bot.wait_for("message", timeout=30.0, check=check)
             
             # Clean up the message
@@ -135,12 +153,17 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 pass
 
             if msg_received.content.lower() != 'skip':
-                return await process_media(
+                result = await process_media(
                     self.bot, msg_received.content, msg_received.attachments, MEDIA_CHANNEL_ID
                 )
+                if result:
+                    await interaction.followup.send("✅ Media added to confession!", ephemeral=True)
+                return result
+            else:
+                await interaction.followup.send("✅ Skipped media upload.", ephemeral=True)
                 
         except asyncio.TimeoutError:
-            pass
+            await interaction.followup.send("⏰ Media upload timed out. Continuing without media.", ephemeral=True)
             
         return None
 
@@ -179,29 +202,53 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             print(f"Error logging confession: {e}")
 
 # ==============================
-# CONFESSION VIEW (Buttons) - Updated with thread_id
+# PERSISTENT CONFESSION VIEW (Buttons)
 # ==============================
-class ConfessionView(ui.View):
-    def __init__(self, bot, confession_id, message_id=None, thread_id=None):
+class PersistentConfessionView(ui.View):
+    def __init__(self, confession_id):
         super().__init__(timeout=None)
-        self.bot = bot
         self.confession_id = confession_id
-        self.message_id = message_id
-        self.thread_id = thread_id
+        
+        # Add persistent buttons with custom IDs
+        self.add_item(PersistentReplyButton(confession_id))
+        self.add_item(PersistentReportButton(confession_id))
 
-    @ui.button(label="Reply", style=discord.ButtonStyle.primary, custom_id="confession_reply", row=0)
-    async def reply(self, interaction: discord.Interaction, button: ui.Button):
+# ==============================
+# PERSISTENT BUTTONS
+# ==============================
+class PersistentReplyButton(ui.Button):
+    def __init__(self, confession_id):
+        super().__init__(
+            label="Reply",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"confession_reply_{confession_id}"
+        )
+        self.confession_id = confession_id
+
+    async def callback(self, interaction: discord.Interaction):
+        bot = interaction.client
+        
         # Check if confession still exists
         confession = await get_confession_by_id(self.confession_id)
         if not confession:
             return await interaction.response.send_message("❌ Confession not found.", ephemeral=True)
             
         message_id, author_id = confession[5], confession[1]  # message_id, user_id
-        modal = ReplyModal(self.bot, self.confession_id, message_id, author_id)
+        modal = ReplyModal(bot, self.confession_id, message_id, author_id)
         await interaction.response.send_modal(modal)
 
-    @ui.button(label="Report", style=discord.ButtonStyle.danger, custom_id="confession_report", row=0)
-    async def report(self, interaction: discord.Interaction, button: ui.Button):
+class PersistentReportButton(ui.Button):
+    def __init__(self, confession_id):
+        super().__init__(
+            label="Report",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"confession_report_{confession_id}"
+        )
+        self.confession_id = confession_id
+
+    async def callback(self, interaction: discord.Interaction):
+        bot = interaction.client
+        
         try:
             async with aiosqlite.connect(DB_PATH) as db:
                 cursor = await db.execute(
@@ -236,7 +283,7 @@ class ConfessionView(ui.View):
             if image_url:
                 embed.set_image(url=image_url)
 
-            mod_channel = self.bot.get_channel(REPORT_CHANNEL_ID)
+            mod_channel = bot.get_channel(REPORT_CHANNEL_ID)
             if mod_channel:
                 await mod_channel.send("<@&1393170995157798983> <@&1406325951234794615>", embed=embed)
 
@@ -247,7 +294,7 @@ class ConfessionView(ui.View):
             await interaction.response.send_message("❌ An error occurred while reporting.", ephemeral=True)
 
 # ==============================
-# MAIN COG - Updated to handle thread_id in view loading
+# MAIN COG
 # ==============================
 class Confessions(commands.Cog):
     def __init__(self, bot):
@@ -256,24 +303,29 @@ class Confessions(commands.Cog):
         self.bot.loop.create_task(self.initialize())
 
     async def initialize(self):
-        """Initialize database and load views"""
+        """Initialize database and load persistent views"""
         try:
             await init_db()
-            await self.load_views()
+            await self.load_persistent_views()
             self.initialized = True
             print("[Confessions] ✅ System initialized successfully.")
         except Exception as e:
             print(f"[Confessions] ❌ Initialization failed: {e}")
 
-    async def load_views(self):
-        """Reload all persistent confession views on startup"""
+    async def load_persistent_views(self):
+        """Load all persistent confession views on startup"""
         await self.bot.wait_until_ready()
         try:
             async with aiosqlite.connect(DB_PATH) as db:
-                async with db.execute("SELECT id, message_id, thread_id FROM confessions WHERE message_id IS NOT NULL") as cursor:
-                    async for confession_id, message_id, thread_id in cursor:
-                        self.bot.add_view(ConfessionView(self.bot, confession_id, message_id, thread_id))
-            print("[Confessions] ✅ All persistent views reloaded successfully.")
+                async with db.execute("SELECT id, message_id FROM confessions WHERE message_id IS NOT NULL") as cursor:
+                    async for confession_id, message_id in cursor:
+                        # Add persistent view for each confession
+                        try:
+                            view = PersistentConfessionView(confession_id)
+                            self.bot.add_view(view)
+                        except Exception as e:
+                            print(f"Error loading view for confession {confession_id}: {e}")
+            print(f"[Confessions] ✅ Persistent views loaded.")
         except Exception as e:
             print(f"[Confessions] ❌ Error loading views: {e}")
 

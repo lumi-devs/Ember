@@ -622,7 +622,7 @@ class AFK(commands.Cog):
                     if entry:
                         embed = discord.Embed(
                             title=f"{self._strip_afk_nick(user.display_name)} is AFK 💤",
-                            description=f"**Reason:** {entry.reason}\n**Been AFK for:** {entry.human_readable_duration}",
+                            description=f"**Reason:** {entry.reason}\n**AFK for:** {entry.human_readable_duration}",
                             color=AFK_MENTION_COLOR
                         )
                         msg = await message.channel.send(embed=embed)
