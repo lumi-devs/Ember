@@ -34,6 +34,64 @@ class GitHubSync(commands.Cog):
         if self.sync_loop.is_running():
             self.sync_loop.cancel()
 
+    async def _force_sqlite_checkpoints(self):
+        """Force checkpoint for all SQLite databases to ensure changes are saved."""
+        logging.info("🔧 Forcing SQLite checkpoints for git sync...")
+        
+        success_count = 0
+        total_count = 0
+        
+        # Try to checkpoint all known database cogs
+        database_cogs = [
+            ("AFK", "force_checkpoint"),  # Your AFK cog
+            # Add other database cogs here if needed:
+            # ("SomeOtherCog", "checkpoint_method"),
+        ]
+        
+        for cog_name, method_name in database_cogs:
+            cog = self.bot.get_cog(cog_name)
+            if cog and hasattr(cog, method_name):
+                total_count += 1
+                try:
+                    method = getattr(cog, method_name)
+                    if asyncio.iscoroutinefunction(method):
+                        result = await method()
+                    else:
+                        result = method()
+                    
+                    if result:
+                        success_count += 1
+                        logging.info(f"  ✅ {cog_name} checkpoint successful")
+                    else:
+                        logging.warning(f"  ⚠️ {cog_name} checkpoint failed")
+                except Exception as e:
+                    logging.warning(f"  ⚠️ {cog_name} checkpoint error: {e}")
+        
+        # Also handle any .db files in data folder that might be SQLite
+        if DATA_FOLDER.exists():
+            for db_file in DATA_FOLDER.glob("*.db"):
+                # Skip if we already handled it via cog
+                if db_file.name in ["afk.db"]:  # Add other known db files
+                    continue
+                    
+                # Try to checkpoint via direct SQLite connection
+                try:
+                    import sqlite3
+                    # Open connection just for checkpoint
+                    conn = await asyncio.to_thread(sqlite3.connect, str(db_file))
+                    await asyncio.to_thread(conn.execute, "PRAGMA wal_checkpoint(FULL)")
+                    await asyncio.to_thread(conn.commit)
+                    await asyncio.to_thread(conn.close)
+                    success_count += 1
+                    total_count += 1
+                    logging.info(f"  ✅ {db_file.name} direct checkpoint successful")
+                except Exception as e:
+                    total_count += 1
+                    logging.warning(f"  ⚠️ {db_file.name} direct checkpoint failed: {e}")
+        
+        logging.info(f"🔧 Checkpoints complete: {success_count}/{total_count} successful")
+        return success_count > 0
+
     async def startup_tasks(self):
         """Run pull first, then start the push loop."""
         await self.bot.wait_until_ready()
@@ -119,6 +177,14 @@ class GitHubSync(commands.Cog):
             
         try:
             DATA_FOLDER.mkdir(exist_ok=True)
+            
+            # ===== NEW: FORCE SQLITE CHECKPOINTS =====
+            # Force checkpoints for all SQLite databases before comparing
+            checkpoint_success = await self._force_sqlite_checkpoints()
+            if not checkpoint_success:
+                logging.warning("⚠️ Some databases may not be fully synced")
+            # =========================================
+            
             files = list(DATA_FOLDER.iterdir())
             
             if not files:

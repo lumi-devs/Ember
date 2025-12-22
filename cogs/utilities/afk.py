@@ -281,6 +281,56 @@ class AFK(commands.Cog):
             except Exception as e:
                 print(f"[AFK] Batch processor error: {e}")
                 await asyncio.sleep(1)
+
+    # Add this method after the _batch_processor method:
+    async def force_checkpoint(self):
+        """Force WAL checkpoint to write changes to main DB file for git sync."""
+        if not self._db:
+            return False
+        
+        async with self._db_lock:
+            try:
+                # First flush any pending writes
+                if self._write_queue.qsize() > 0:
+                    # Process pending writes
+                    batch_inserts = []
+                    batch_deletes = []
+                    
+                    # Get all pending operations
+                    while not self._write_queue.empty():
+                        try:
+                            op_type, data = self._write_queue.get_nowait()
+                            if op_type == 'set_afk':
+                                user_id, reason = data
+                                since = datetime.now(timezone.utc).isoformat()
+                                batch_inserts.append((str(user_id), reason, since))
+                            elif op_type == 'remove_afk':
+                                batch_deletes.append(str(data))
+                            self._write_queue.task_done()
+                        except asyncio.QueueEmpty:
+                            break
+                    
+                    # Flush them
+                    if batch_inserts or batch_deletes:
+                        await self._flush_batch(batch_inserts, batch_deletes)
+                
+                # Commit any pending transaction
+                await self._db.commit()
+                
+                # Force checkpoint
+                await self._db.execute("PRAGMA wal_checkpoint(FULL)")
+                await self._db.commit()
+                
+                print(f"[AFK] Checkpoint forced for git sync. Cache size: {len(self._afk_cache)}")
+                return True
+                
+            except Exception as e:
+                print(f"[AFK] Checkpoint error: {e}")
+                try:
+                    await self._db.rollback()
+                except:
+                    pass
+                return False
     
     async def _flush_batch(self, inserts: list, deletes: list):
         """Flush batch to database."""
