@@ -52,8 +52,8 @@ class GitHubSync(commands.Cog):
                 all_files.append(full_path)
         return all_files
 
-    async def upload_all_files(self):
-        """Upload ALL files to GitHub - NO CHECKING, NO COMPARING."""
+    def upload_all_files_sync(self):
+        """Upload ALL files to GitHub - Synchronous version for to_thread."""
         if not self.repo:
             return
             
@@ -101,11 +101,17 @@ class GitHubSync(commands.Cog):
         
         logging.info("✅ All files uploaded!")
 
+    async def upload_all_files(self):
+        """Async wrapper for upload_all_files_sync."""
+        if not self.repo:
+            return
+        await asyncio.to_thread(self.upload_all_files_sync)
+
     @tasks.loop(seconds=SYNC_INTERVAL_SECONDS)
     async def upload_loop(self):
         """Periodic upload to GitHub."""
         if self.repo:
-            await asyncio.to_thread(self.upload_all_files)
+            await self.upload_all_files()
 
     @upload_loop.before_loop
     async def before_upload_loop(self):
@@ -126,7 +132,7 @@ class GitHubSync(commands.Cog):
         if afk_cog and hasattr(afk_cog, 'force_checkpoint'):
             await afk_cog.force_checkpoint()
         
-        await asyncio.to_thread(self.upload_all_files)
+        await self.upload_all_files()
         await ctx.send("✅ ALL files uploaded to GitHub!")
 
     @commands.command(name="gitlist")

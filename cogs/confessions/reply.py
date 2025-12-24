@@ -29,11 +29,8 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
     async def on_submit(self, interaction: discord.Interaction):
         self.user_id = interaction.user.id
 
-        # Defer immediately
-        await interaction.response.defer(ephemeral=True, thinking=True)
-
-        # Inform user
-        await interaction.followup.send(
+        # Send initial response
+        await interaction.response.send_message(
             "✅ Reply submitted! You have **30 seconds** to send an image/URL here or type `skip`.",
             ephemeral=True
         )
@@ -49,6 +46,12 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
         # Finalize reply
         await self.finalize_reply_directly(image_url)
 
+        # Send completion message
+        await interaction.followup.send(
+            "✅ Your reply has been posted!",
+            ephemeral=True
+        )
+
     async def wait_for_media(self, interaction):
         """Wait for media response"""
         def check(m):
@@ -57,14 +60,16 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
         try:
             msg_received = await self.bot.wait_for("message", timeout=30.0, check=check)
 
+            # Check if user wants to skip
             if msg_received.content.lower() != "skip":
+                # Process media FIRST
                 image_url = await process_media(
                     self.bot, msg_received.content, msg_received.attachments, MEDIA_CHANNEL_ID
                 )
             else:
                 image_url = None
 
-            # Delete user's message
+            # Delete user's message AFTER processing
             try:
                 await msg_received.delete()
             except:
@@ -90,7 +95,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                 title=f"↩️ Reply to Confession #{self.confession_id}",
                 description=self.reply_input.value,
                 color=color,
-                timestamp=datetime.utcnow()  # Fixed: Use UTC now instead of IST
+                timestamp=datetime.utcnow()
             )
 
             if image_url:
@@ -100,15 +105,28 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                 embed.set_footer(text="👑 OP")
 
             # Get confession message and thread
-            confession_msg = await channel.fetch_message(self.confession_message_id)
+            try:
+                confession_msg = await channel.fetch_message(self.confession_message_id)
+            except discord.NotFound:
+                print(f"Confession message {self.confession_message_id} not found")
+                return
+            except discord.Forbidden:
+                print(f"No permission to fetch message {self.confession_message_id}")
+                return
 
+            # Get or create thread
             thread = confession_msg.thread
             if not thread:
-                thread = await confession_msg.create_thread(
-                    name=f"Confession #{self.confession_id} Replies",
-                    auto_archive_duration=60
-                )
+                try:
+                    thread = await confession_msg.create_thread(
+                        name=f"Confession #{self.confession_id} Replies",
+                        auto_archive_duration=60
+                    )
+                except discord.HTTPException as e:
+                    print(f"Error creating thread: {e}")
+                    return
 
+            # Send reply to thread
             await thread.send(embed=embed)
 
             # Save reply to database
@@ -126,10 +144,10 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             if not is_owner_reply:
                 await self.notify_author(confession_msg)
 
-        except discord.NotFound:
-            print(f"Confession message {self.confession_message_id} not found")
         except Exception as e:
             print(f"Error finalizing reply: {e}")
+            import traceback
+            traceback.print_exc()
 
     async def log_reply(self, image_url, color):
         """Log reply to log channel"""
@@ -171,6 +189,6 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             )
             await confession_author.send(embed=notify_embed)
         except discord.Forbidden:
-            pass  #User has DMs disabled
+            pass  # User has DMs disabled
         except Exception as e:
             print(f"Error notifying confession author: {e}")
