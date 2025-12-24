@@ -146,27 +146,49 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             
             msg_received = await self.bot.wait_for("message", timeout=60.0, check=check)
             
-            # Clean up the message
-            try:
-                await msg_received.delete()
-            except:
-                pass
-
+            # Check if user wants to skip
             if msg_received.content.lower() != 'skip':
-                result = await process_media(
-                    self.bot, msg_received.content, msg_received.attachments, MEDIA_CHANNEL_ID
+                # Process media FIRST - upload to media channel
+                image_url = await process_media(
+                    self.bot, 
+                    msg_received.content, 
+                    msg_received.attachments, 
+                    MEDIA_CHANNEL_ID
                 )
-                if result:
-                    await interaction.followup.send("✅ Media added to confession!", ephemeral=True)
-                return result
-            else:
-                await interaction.followup.send("✅ Skipped media upload.", ephemeral=True)
                 
+                # Only delete the message AFTER successful media processing
+                try:
+                    await msg_received.delete()
+                except discord.Forbidden:
+                    print(f"No permission to delete message from {msg_received.author}")
+                except discord.NotFound:
+                    print("Message already deleted")
+                except Exception as e:
+                    print(f"Error deleting message: {e}")
+                
+                if image_url:
+                    await interaction.followup.send("✅ Media added to confession!", ephemeral=True)
+                    return image_url
+                else:
+                    await interaction.followup.send("❌ Could not process media. Continuing without media.", ephemeral=True)
+                    return None
+            else:
+                # User typed 'skip' - delete the skip message
+                try:
+                    await msg_received.delete()
+                except:
+                    pass
+                await interaction.followup.send("✅ Skipped media upload.", ephemeral=True)
+                return None
+                    
         except asyncio.TimeoutError:
             await interaction.followup.send("⏰ Media upload timed out. Continuing without media.", ephemeral=True)
-            
-        return None
-
+            return None
+        except Exception as e:
+            print(f"Error in wait_for_media: {e}")
+            await interaction.followup.send("❌ An error occurred while processing media.", ephemeral=True)
+            return None
+    
     async def log_confession(self, confession_id, image_url):
         """Log confession to log channel"""
         log_channel = self.bot.get_channel(LOG_CHANNEL_ID)
