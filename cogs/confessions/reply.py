@@ -6,7 +6,7 @@ import aiosqlite
 from cogs.confessions.helpers import process_media, DB_PATH
 
 CONFESSION_CHANNEL_ID = 1399658407178272798
-LOG_CHANNEL_ID = 1424792373837172899
+LOG_CHANNEL_ID = 1453409054314467339
 MEDIA_CHANNEL_ID = 1424139009931743382
 
 class ReplyModal(ui.Modal, title="Anonymous Reply"):
