@@ -196,7 +196,7 @@ class TempVoice(commands.Cog):
             
             used_numbers = {row[0] for row in rows}
             
-            # Find the lowest available number
+            # Find the lowest available number starting from 1
             channel_number = 1
             while channel_number in used_numbers:
                 channel_number += 1
@@ -207,9 +207,9 @@ class TempVoice(commands.Cog):
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute(
                 """SELECT v.voiceID, v.channelNumber 
-                   FROM voiceChannel v 
-                   WHERE v.guildID = ? AND v.vcType = ? 
-                   ORDER BY v.channelNumber""",
+                FROM voiceChannel v 
+                WHERE v.guildID = ? AND v.vcType = ? 
+                ORDER BY v.channelNumber""",
                 (guild.id, vc_type)
             ) as c:
                 type_channels = await c.fetchall()
@@ -276,8 +276,8 @@ class TempVoice(commands.Cog):
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
                 """INSERT OR REPLACE INTO voiceChannel 
-                   (guildID, userID, voiceID, vcType, channelNumber, channelName, channelLimit) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (guildID, userID, voiceID, vcType, channelNumber, channelName, channelLimit) 
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (guild.id, member.id, vc.id, vc_type, channel_number, name, limit)
             )
             await db.commit()
