@@ -23,7 +23,7 @@ ALLOWED_ROLE_IDS = [
 class MediaWaitView(ui.View):
     """View for waiting for media with cancel button"""
     def __init__(self, user_id: int, confession_id: int):
-        super().__init__(timeout=30)
+        super().__init__(timeout=60)
         self.user_id = user_id
         self.confession_id = confession_id
         self.media_received = asyncio.Event()
@@ -119,7 +119,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             # Send media prompt with cancel button
             media_view = MediaWaitView(self.user_id, confession_id)
             prompt_msg = await interaction.followup.send(
-                f"✅ Confession submitted! You have **30 seconds** to send an image URL or attachment in this channel.\n"
+                f"✅ Confession submitted! You have **1 minute** to send an image URL or attachment in this channel.\n"
                 f"**Please send your image or link in the confession channel now.**\n"
                 f"Send `skip` to continue without media.\n\n"
                 f"📝 Your confession ID: #{confession_id}",
