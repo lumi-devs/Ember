@@ -11,7 +11,7 @@ from typing import Optional
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("REPO_NAME")
 DATA_FOLDER = Path("data")
-SYNC_INTERVAL_SECONDS = 300
+SYNC_INTERVAL_SECONDS = 45
 
 logging.basicConfig(level=logging.INFO)
 
