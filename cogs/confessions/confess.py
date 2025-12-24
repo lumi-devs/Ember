@@ -20,29 +20,6 @@ ALLOWED_ROLE_IDS = [
     1393171034701561908, 1393171033774624848, 1393171032726306966, 1420878388297465866
 ]
 
-class MediaWaitView(ui.View):
-    """View for waiting for media with cancel button"""
-    def __init__(self, user_id: int, confession_id: int):
-        super().__init__(timeout=60)
-        self.user_id = user_id
-        self.confession_id = confession_id
-        self.media_received = asyncio.Event()
-        self.media_url = None
-        self.cancelled = False
-
-    @ui.button(label="Cancel Media Upload", style=discord.ButtonStyle.danger, custom_id="cancel_media")
-    async def cancel_button(self, interaction: discord.Interaction, button: ui.Button):
-        if interaction.user.id == self.user_id:
-            self.cancelled = True
-            self.media_received.set()
-            await interaction.response.send_message("Media upload cancelled. Your confession will be posted without media.", ephemeral=True)
-            self.stop()
-
-    async def on_timeout(self):
-        if not self.media_received.is_set():
-            self.media_received.set()
-        self.stop()
-
 class ConfessionModal(ui.Modal, title="Submit a Confession"):
     title_input = ui.TextInput(label="Title", max_length=100, required=False, placeholder="Optional title for your confession")
     description_input = ui.TextInput(
@@ -82,7 +59,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 await db.commit()
                 confession_id = cursor.lastrowid
 
-            # Create initial embed WITHOUT buttons yet
+            # Create initial embed
             embed = discord.Embed(
                 title=f"💌 {self.title_input.value or f'Confession #{confession_id}'}",
                 description=self.description_input.value,
@@ -91,7 +68,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             )
             embed.set_footer(text=f"Confession #{confession_id}")
 
-            # Send message WITHOUT view initially
+            # Send message
             msg = await channel.send(embed=embed)
 
             # Create thread for this confession with simple name
@@ -108,7 +85,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 # Continue without thread if creation fails
                 thread = None
 
-            # Save message_id
+            # Save only message_id
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute(
                     "UPDATE confessions SET message_id=? WHERE id=?", 
@@ -116,27 +93,17 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 )
                 await db.commit()
 
-            # Send media prompt with cancel button
-            media_view = MediaWaitView(self.user_id, confession_id)
-            prompt_msg = await interaction.followup.send(
-                f"✅ Confession submitted! You have **1 minute** to send an image URL or attachment in this channel.\n"
-                f"**Please send your image or link in the confession channel now.**\n"
-                f"Send `skip` to continue without media.\n\n"
+            # Send media prompt FIRST
+            await interaction.followup.send(
+                "✅ Confession submitted! You have **1 minute** to reply with an image URL or attachment. "
+                "Send `skip` to continue without media.\n\n"
                 f"📝 Your confession ID: #{confession_id}",
-                view=media_view,
-                ephemeral=True,
-                wait=True
+                ephemeral=True
             )
 
-            # Wait for media in the confession channel
-            image_url = await self.wait_for_media_channel(interaction, confession_id, media_view)
+            # Wait for optional media with timeout
+            image_url = await self.wait_for_media(interaction, confession_id)
             
-            # Clean up the media wait view
-            try:
-                await prompt_msg.edit(view=None)
-            except:
-                pass
-
             # Update embed with image if available
             if image_url:
                 embed.set_image(url=image_url)
@@ -144,7 +111,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                     await db.execute("UPDATE confessions SET image_url=? WHERE id=?", (image_url, confession_id))
                     await db.commit()
 
-            # Create and attach persistent view AFTER media processing
+            # Create and attach persistent view
             final_view = PersistentConfessionView(confession_id)
             await msg.edit(embed=embed, view=final_view)
 
@@ -168,76 +135,36 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             traceback.print_exc()
             await interaction.followup.send("❌ An error occurred while submitting your confession.", ephemeral=True)
 
-    async def wait_for_media_channel(self, interaction, confession_id, media_view):
-        """Wait for media response in the confession channel with proper timeout handling"""
-        
+    async def wait_for_media(self, interaction, confession_id):
+        """Wait for media response with proper timeout handling"""
         def check(m):
-            # Check if message is from the user AND in the confession channel
-            return (m.author.id == self.user_id and 
-                   m.channel.id == CONFESSION_CHANNEL_ID and
-                   not m.content.startswith('/') and  # Ignore commands
-                   not m.content.startswith('!'))
-        
+            return m.author.id == self.user_id and m.channel.id == interaction.channel.id
+
         try:
-            # Wait for user response in the confession channel
-            while not media_view.media_received.is_set():
-                try:
-                    # Wait for either a message or timeout
-                    dm_msg = await asyncio.wait_for(
-                        self.bot.wait_for("message", check=check),
-                        timeout=1.0
-                    )
-                    
-                    # If we got a message, process it
-                    content_lower = dm_msg.content.lower().strip()
-                    
-                    if content_lower == 'skip':
-                        media_view.media_received.set()
-                        try:
-                            await dm_msg.delete()
-                        except:
-                            pass
-                        await interaction.followup.send("✅ Skipped media upload.", ephemeral=True)
-                        return None
-                    
-                    # Process the media
-                    result = await process_media(
-                        self.bot, dm_msg.content, dm_msg.attachments, MEDIA_CHANNEL_ID
-                    )
-                    
-                    # Try to delete the user's message after processing
-                    try:
-                        await dm_msg.delete()
-                    except:
-                        pass
-                    
-                    if result:
-                        await interaction.followup.send("✅ Media added to your confession!", ephemeral=True)
-                        media_view.media_received.set()
-                        return result
-                    else:
-                        await interaction.followup.send(
-                            "❌ Could not process the media. Please send a valid image URL or attachment, or type `skip` to continue without media.",
-                            ephemeral=True
-                        )
-                        
-                except asyncio.TimeoutError:
-                    # This is expected - just continue checking the view state
-                    continue
-                except Exception as e:
-                    print(f"Error processing message: {e}")
-                    continue
+            # First, let user know we're waiting
+            await interaction.followup.send("⏳ Waiting for media... You have 60 seconds.", ephemeral=True)
             
-            # Check if cancelled
-            if media_view.cancelled:
-                return None
+            msg_received = await self.bot.wait_for("message", timeout=60.0, check=check)
+            
+            # Clean up the message
+            try:
+                await msg_received.delete()
+            except:
+                pass
+
+            if msg_received.content.lower() != 'skip':
+                result = await process_media(
+                    self.bot, msg_received.content, msg_received.attachments, MEDIA_CHANNEL_ID
+                )
+                if result:
+                    await interaction.followup.send("✅ Media added to confession!", ephemeral=True)
+                return result
+            else:
+                await interaction.followup.send("✅ Skipped media upload.", ephemeral=True)
                 
         except asyncio.TimeoutError:
             await interaction.followup.send("⏰ Media upload timed out. Continuing without media.", ephemeral=True)
-        except Exception as e:
-            print(f"Error in wait_for_media_channel: {e}")
-            await interaction.followup.send("❌ An error occurred while processing media. Continuing without media.", ephemeral=True)
-        
+            
         return None
 
     async def log_confession(self, confession_id, image_url):
