@@ -1,5 +1,3 @@
-# pragma: no cover
-# pyright: basic
 from __future__ import annotations
 
 import discord
@@ -169,12 +167,6 @@ class AFK(commands.Cog):
         async with self._db_lock:
             self._db = await aiosqlite.connect(DB_PATH)
             
-            # Use PRAGMA optimizations that won't break compatibility
-            await self._db.execute("PRAGMA journal_mode = WAL")
-            await self._db.execute("PRAGMA synchronous = NORMAL")
-            await self._db.execute("PRAGMA cache_size = -2000")
-            await self._db.execute("PRAGMA temp_store = MEMORY")
-            
             # KEEP EXISTING TABLE STRUCTURE - do NOT modify
             await self._db.execute("""
                 CREATE TABLE IF NOT EXISTS afk (
@@ -282,7 +274,6 @@ class AFK(commands.Cog):
                 print(f"[AFK] Batch processor error: {e}")
                 await asyncio.sleep(1)
 
-    # Add this method after the _batch_processor method:
     async def force_checkpoint(self):
         """Force WAL checkpoint to write changes to main DB file for git sync."""
         if not self._db:
@@ -315,10 +306,6 @@ class AFK(commands.Cog):
                         await self._flush_batch(batch_inserts, batch_deletes)
                 
                 # Commit any pending transaction
-                await self._db.commit()
-                
-                # Force checkpoint
-                await self._db.execute("PRAGMA wal_checkpoint(FULL)")
                 await self._db.commit()
                 
                 print(f"[AFK] Checkpoint forced for git sync. Cache size: {len(self._afk_cache)}")
