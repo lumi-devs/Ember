@@ -22,7 +22,7 @@ def extract_url(text: str) -> Optional[str]:
     return match.group(0) if match else None
 
 def is_image_url(url: str) -> bool:
-    """Check if URL points to an image."""
+    """Check if URL points to an image (strict check for common image formats)."""
     if not url:
         return False
     
@@ -30,9 +30,44 @@ def is_image_url(url: str) -> bool:
     parsed = urlparse(url)
     path = parsed.path.lower()
     
-    # Check common image extensions
-    image_extensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']
-    return any(path.endswith(ext) for ext in image_extensions)
+    # Only accept common image extensions
+    image_extensions = [
+        '.png', '.jpg', '.jpeg', '.gif', 
+        '.webp', '.bmp', '.tiff', '.svg',
+        '.jfif', '.pjpeg', '.pjp'
+    ]
+    
+    # Check if path ends with image extension
+    for ext in image_extensions:
+        if path.endswith(ext):
+            return True
+    
+    # Check for Discord CDN URLs (cdn.discordapp.com/attachments/...)
+    if 'cdn.discordapp.com' in parsed.netloc and '/attachments/' in path:
+        # Discord attachment URLs - check if it looks like an image
+        last_segment = path.split('/')[-1]
+        
+        # Check common Discord image patterns
+        image_patterns = [
+            'png', 'jpg', 'jpeg', 'gif', 'webp',
+            'PNG', 'JPG', 'JPEG', 'GIF', 'WEBP'
+        ]
+        
+        for pattern in image_patterns:
+            if pattern in last_segment:
+                return True
+    
+    # Also check query parameters for image indicators
+    query = parsed.query.lower()
+    if 'format=' in query or 'type=' in query:
+        query_parts = query.split('&')
+        for part in query_parts:
+            if 'format=' in part or 'type=' in part:
+                value = part.split('=')[1] if '=' in part else ''
+                if any(img_type in value for img_type in ['jpg', 'jpeg', 'png', 'gif', 'webp']):
+                    return True
+    
+    return False
 
 async def backup_database():
     """Create a backup of the database."""
@@ -121,7 +156,7 @@ async def init_db():
         raise
 
 async def process_media(bot, content: str, attachments: List[discord.Attachment], media_channel_id: int) -> Optional[str]:
-    """Process and upload media to the media channel."""
+    """Process and upload media to the media channel. Downloads URLs and re-uploads as files."""
     try:
         media_channel = bot.get_channel(media_channel_id)
         if not media_channel:
@@ -130,7 +165,7 @@ async def process_media(bot, content: str, attachments: List[discord.Attachment]
         
         image_url = None
         
-        # Check attachments first (highest priority)
+        # Check attachments first (highest priority) - Discord uploads
         if attachments:
             for attachment in attachments:
                 if attachment.content_type and attachment.content_type.startswith('image/'):
@@ -139,6 +174,7 @@ async def process_media(bot, content: str, attachments: List[discord.Attachment]
                         file_bytes = await attachment.read()
                         file = discord.File(io.BytesIO(file_bytes), filename=attachment.filename)
                         
+                        # Upload as file to media channel
                         msg = await media_channel.send(file=file)
                         image_url = msg.attachments[0].url
                         print(f"Uploaded attachment: {attachment.filename} -> {image_url}")
@@ -147,39 +183,55 @@ async def process_media(bot, content: str, attachments: List[discord.Attachment]
                         print(f"Error uploading attachment {attachment.filename}: {e}")
                         continue
         
-        # If no attachments, check for URL in content
+        # If no attachments, check for direct image URL in content
         if not image_url and content:
             url = extract_url(content)
-            if url:
-                print(f"Extracted URL from content: {url}")
+            if url and is_image_url(url):
+                print(f"Downloading image from URL: {url}")
                 
-                # Check if it's an image URL
-                if is_image_url(url):
-                    # Send URL to media channel
-                    try:
-                        msg = await media_channel.send(url)
-                        # If Discord doesn't automatically embed, use the original URL
-                        image_url = url
-                        print(f"Posted image URL: {url}")
-                    except Exception as e:
-                        print(f"Error posting image URL: {e}")
-                
-                # Optional: Handle Tenor GIFs
-                elif 'tenor.com' in url:
-                    try:
-                        async with aiohttp.ClientSession() as session:
-                            async with session.get(url) as response:
-                                if response.status == 200:
-                                    html = await response.text()
-                                    # Try to extract GIF URL from Tenor page
-                                    gif_match = re.search(r'content="(https://[^"]+\.gif)"', html)
-                                    if gif_match:
-                                        gif_url = gif_match.group(1)
-                                        msg = await media_channel.send(gif_url)
-                                        image_url = gif_url
-                                        print(f"Processed Tenor GIF: {gif_url}")
-                    except Exception as e:
-                        print(f"Error processing Tenor URL: {e}")
+                try:
+                    # Download the image from URL
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(url) as response:
+                            if response.status == 200:
+                                # Get content type and file extension
+                                content_type = response.headers.get('Content-Type', '')
+                                if not content_type.startswith('image/'):
+                                    print(f"URL doesn't point to an image: {content_type}")
+                                    return None
+                                
+                                # Read the image data
+                                image_data = await response.read()
+                                
+                                # Determine filename
+                                parsed_url = urlparse(url)
+                                filename = os.path.basename(parsed_url.path)
+                                if not filename or '.' not in filename:
+                                    # Generate a filename based on content type
+                                    ext_map = {
+                                        'image/jpeg': '.jpg',
+                                        'image/jpg': '.jpg',
+                                        'image/png': '.png',
+                                        'image/gif': '.gif',
+                                        'image/webp': '.webp',
+                                        'image/bmp': '.bmp'
+                                    }
+                                    ext = ext_map.get(content_type, '.jpg')
+                                    filename = f"downloaded_image{ext}"
+                                
+                                # Create Discord file and upload
+                                file = discord.File(io.BytesIO(image_data), filename=filename)
+                                msg = await media_channel.send(file=file)
+                                image_url = msg.attachments[0].url
+                                print(f"Downloaded and uploaded URL image: {url} -> {image_url}")
+                            else:
+                                print(f"Failed to download image: HTTP {response.status}")
+                                return None
+                                
+                except Exception as e:
+                    print(f"Error downloading/uploading image from URL: {e}")
+                    import traceback
+                    traceback.print_exc()
         
         return image_url
         
@@ -188,6 +240,7 @@ async def process_media(bot, content: str, attachments: List[discord.Attachment]
         import traceback
         traceback.print_exc()
         return None
+    
 
 async def get_confession_by_id(confession_id: int):
     """Safely get confession by ID."""

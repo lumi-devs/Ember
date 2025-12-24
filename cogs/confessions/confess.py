@@ -167,10 +167,17 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                     print(f"Error deleting message: {e}")
                 
                 if image_url:
-                    await interaction.followup.send("✅ Media added to confession!", ephemeral=True)
+                    await interaction.followup.send("✅ Image downloaded and added to confession!", ephemeral=True)
                     return image_url
                 else:
-                    await interaction.followup.send("❌ Could not process media. Continuing without media.", ephemeral=True)
+                    await interaction.followup.send(
+                        "❌ Could not process media. Please use:\n"
+                        "• **Discord image upload** (drag & drop)\n"
+                        "• **Direct image URL** (must end with .png/.jpg/.gif/.webp)\n\n"
+                        "Images will be downloaded and re-uploaded to our media channel.\n"
+                        "Continuing without media.",
+                        ephemeral=True
+                    )
                     return None
             else:
                 # User typed 'skip' - delete the skip message

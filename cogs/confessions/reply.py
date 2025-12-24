@@ -31,7 +31,12 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
 
         # Send initial response
         await interaction.response.send_message(
-            "✅ Reply submitted! You have **30 seconds** to send an image/URL here or type `skip`.",
+            "✅ Reply submitted! You have **30 seconds** to send media.\n\n"
+            "**Accepted formats:**\n"
+            "• Discord image upload (drag & drop)\n"
+            "• Direct image URL (.png/.jpg/.gif/.webp)\n\n"
+            "Images will be downloaded and re-uploaded.\n"
+            "Send `skip` to continue without media.",
             ephemeral=True
         )
 
