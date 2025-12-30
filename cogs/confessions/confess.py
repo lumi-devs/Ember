@@ -4,8 +4,10 @@ from discord.ext import commands
 from datetime import datetime
 import asyncio
 import aiosqlite
+import aiohttp
+import io
 
-from cogs.confessions.helpers import DB_PATH, extract_url, init_db, process_media, is_user_banned, get_confession_by_id
+from cogs.confessions.helpers import DB_PATH, extract_url, init_db, is_user_banned, get_confession_by_id
 from cogs.confessions.reply import ReplyModal
 
 # ==============================
@@ -184,13 +186,12 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             msg_received = await self.bot.wait_for("message", timeout=60.0, check=check)
             
             # Check if user wants to skip
-            if msg_received.content.lower() != 'skip':
-                # Process media FIRST - upload to media channel
-                success, result = await self.process_media_with_fallback(
+            if msg_received.content.lower().strip() != 'skip':
+                # Process media by downloading and re-uploading
+                success, result = await self.download_and_reupload_media(
                     msg_received.content, 
-                    msg_received.attachments, 
-                    confession_id,
-                    confession_msg
+                    msg_received.attachments,
+                    confession_id
                 )
                 
                 # Only delete the message AFTER successful media processing
@@ -227,66 +228,144 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             await interaction.followup.send("❌ An error occurred while processing media.", ephemeral=True)
             return None
 
-    async def process_media_with_fallback(self, content, attachments, confession_id, confession_msg):
-        """Process media with fallback to fetching from media channel"""
-        # Try to process media normally first
-        image_url = await process_media(
-            self.bot, 
-            content, 
-            attachments, 
-            MEDIA_CHANNEL_ID
-        )
-        
-        if image_url:
-            return True, image_url
-        
-        # If normal processing fails, try to extract and fetch from media channel
+    async def download_and_reupload_media(self, content, attachments, confession_id):
+        """Download media and re-upload to media channel, then return new URL"""
         try:
-            # Extract URL from message content
-            url = extract_url(content) if content else None
+            print(f"[DEBUG] Starting media processing for confession #{confession_id}")
             
-            if not url and attachments:
-                # Use first attachment if no URL in content
-                url = attachments[0].url
+            # Step 1: Get the media URL
+            media_url = None
+            filename = None
             
-            if not url:
+            # Check attachments first (user uploaded file)
+            if attachments and len(attachments) > 0:
+                attachment = attachments[0]
+                media_url = attachment.url
+                filename = attachment.filename
+                print(f"[DEBUG] Found attachment: {filename}, URL: {media_url}")
+            # Check content for URL
+            elif content and content.strip():
+                media_url = extract_url(content)
+                if media_url:
+                    # Try to extract filename from URL
+                    filename = media_url.split('/')[-1].split('?')[0]
+                    # Add extension if missing
+                    if '.' not in filename:
+                        # Check if it's a Tenor/Giphy URL
+                        if 'tenor.com' in media_url or 'giphy.com' in media_url:
+                            filename = f"gif_{confession_id}.gif"
+                        else:
+                            filename = f"image_{confession_id}.jpg"
+                    print(f"[DEBUG] Found URL: {media_url}, filename: {filename}")
+            
+            if not media_url:
+                print("[DEBUG] No media URL found")
                 return False, "No media found in message"
             
-            # Send to media channel
+            # Step 2: Download the media
+            print(f"[DEBUG] Downloading media from: {media_url}")
+            async with aiohttp.ClientSession() as session:
+                try:
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
+                    async with session.get(media_url, headers=headers, timeout=30) as response:
+                        if response.status != 200:
+                            print(f"[DEBUG] Download failed with status: {response.status}")
+                            return False, f"Failed to download media: HTTP {response.status}"
+                        
+                        # Read the image data
+                        file_data = await response.read()
+                        print(f"[DEBUG] Downloaded {len(file_data)} bytes")
+                        
+                        # If no filename, try to guess from content-type
+                        if not filename:
+                            content_type = response.headers.get('Content-Type', '')
+                            print(f"[DEBUG] Content-Type: {content_type}")
+                            if 'image/jpeg' in content_type or 'image/jpg' in content_type:
+                                filename = f"image_{confession_id}.jpg"
+                            elif 'image/png' in content_type:
+                                filename = f"image_{confession_id}.png"
+                            elif 'image/gif' in content_type:
+                                filename = f"image_{confession_id}.gif"
+                            elif 'image/webp' in content_type:
+                                filename = f"image_{confession_id}.webp"
+                            else:
+                                # Default to jpg
+                                filename = f"image_{confession_id}.jpg"
+                
+                except aiohttp.ClientError as e:
+                    print(f"[DEBUG] Download error: {e}")
+                    return False, f"Failed to download media: {str(e)}"
+                except asyncio.TimeoutError:
+                    print("[DEBUG] Download timeout")
+                    return False, "Download timeout"
+                except Exception as e:
+                    print(f"[DEBUG] Error downloading: {e}")
+                    return False, f"Error downloading: {str(e)}"
+            
+            if not file_data or len(file_data) == 0:
+                print("[DEBUG] No file data received")
+                return False, "No media data received"
+            
+            # Step 3: Upload to media channel
             media_channel = self.bot.get_channel(MEDIA_CHANNEL_ID)
             if not media_channel:
+                print("[DEBUG] Media channel not found")
                 return False, "Media channel not found"
             
-            # Send the URL to media channel
-            media_msg = await media_channel.send(f"Media for confession #{confession_id}: {url}")
+            print(f"[DEBUG] Uploading to media channel: {MEDIA_CHANNEL_ID}")
+            # Create file object
+            file = discord.File(io.BytesIO(file_data), filename=filename)
             
-            # Wait a moment for Discord to process
-            await asyncio.sleep(2)
-            
-            # Try to fetch the message again to get proper embed
+            # Upload to media channel
             try:
-                media_msg = await media_channel.fetch_message(media_msg.id)
+                media_msg = await media_channel.send(
+                    f"**Media for confession #{confession_id}**",
+                    file=file
+                )
+                print(f"[DEBUG] Media uploaded, message ID: {media_msg.id}")
                 
-                # Check for embed
-                if media_msg.embeds:
-                    embed = media_msg.embeds[0]
-                    if embed.image:
-                        return True, embed.image.url
-                    elif embed.thumbnail:
-                        return True, embed.thumbnail.url
+                # Wait a moment for Discord to process
+                await asyncio.sleep(2)
                 
-                # Check for attachments
-                if media_msg.attachments:
-                    return True, media_msg.attachments[0].url
+                # Get the URL from the uploaded message
+                final_url = None
                 
-                # Fallback to content URL
-                return True, url
+                # Check attachments first (most reliable)
+                if media_msg.attachments and len(media_msg.attachments) > 0:
+                    final_url = media_msg.attachments[0].url
+                    print(f"[DEBUG] Got URL from attachment: {final_url}")
+                # Check embeds as fallback
+                elif media_msg.embeds and len(media_msg.embeds) > 0:
+                    for embed in media_msg.embeds:
+                        if embed.image:
+                            final_url = embed.image.url
+                            print(f"[DEBUG] Got URL from embed image: {final_url}")
+                            break
+                        elif embed.thumbnail:
+                            final_url = embed.thumbnail.url
+                            print(f"[DEBUG] Got URL from embed thumbnail: {final_url}")
+                            break
                 
-            except discord.NotFound:
-                return False, "Media message not found in media channel"
+                if not final_url:
+                    print("[DEBUG] Could not get URL from uploaded media")
+                    return False, "Could not get URL from uploaded media"
+                
+                print(f"[DEBUG] Success! Final URL: {final_url}")
+                return True, final_url
+                
+            except discord.HTTPException as e:
+                print(f"[DEBUG] Upload failed: {e}")
+                return False, f"Failed to upload to media channel: {str(e)}"
+            except Exception as e:
+                print(f"[DEBUG] Error during upload: {e}")
+                return False, f"Error during upload: {str(e)}"
             
         except Exception as e:
-            print(f"Error in media fallback processing: {e}")
+            print(f"[DEBUG] Error in download_and_reupload_media: {e}")
+            import traceback
+            traceback.print_exc()
             return False, f"Error: {str(e)}"
 
     async def add_fallback_buttons(self, confession_msg, confession_id, error_msg):

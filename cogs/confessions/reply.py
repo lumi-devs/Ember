@@ -5,7 +5,7 @@ from datetime import datetime
 import aiosqlite
 import aiohttp
 import io
-from cogs.confessions.helpers import process_media, DB_PATH, extract_url
+from cogs.confessions.helpers import DB_PATH, extract_url
 
 CONFESSION_CHANNEL_ID = 1399658407178272798
 LOG_CHANNEL_ID = 1453409054314467339
@@ -27,9 +27,11 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
         self.confession_message_id = confession_message_id
         self.confession_author_id = confession_author_id
         self.user_id = None
+        self.reply_text = None  # Store the reply text
 
     async def on_submit(self, interaction: discord.Interaction):
         self.user_id = interaction.user.id
+        self.reply_text = self.reply_input.value  # Store the reply text
 
         # Defer immediately to avoid timeout
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -65,11 +67,10 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             
             # Check if user wants to skip
             if msg_received.content.lower().strip() != 'skip':
-                # Process media by downloading and re-uploading
+                # Download and reupload media
                 success, result = await self.download_and_reupload_media(
                     msg_received.content, 
-                    msg_received.attachments,
-                    interaction
+                    msg_received.attachments
                 )
                 
                 # Only delete the message AFTER successful media processing
@@ -105,46 +106,66 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             return None
         except Exception as e:
             print(f"Error in wait_for_media: {e}")
+            import traceback
+            traceback.print_exc()
             await interaction.followup.send("❌ An error occurred while processing media.", ephemeral=True)
             return None
 
-    async def download_and_reupload_media(self, content, attachments, interaction):
+    async def download_and_reupload_media(self, content, attachments):
         """Download media and re-upload to media channel, then return new URL"""
         try:
+            print(f"[DEBUG] Starting media processing for confession #{self.confession_id}")
+            
             # Step 1: Get the media URL
             media_url = None
-            file_data = None
             filename = None
             
-            # Check attachments first
-            if attachments:
+            # Check attachments first (user uploaded file)
+            if attachments and len(attachments) > 0:
                 attachment = attachments[0]
                 media_url = attachment.url
                 filename = attachment.filename
+                print(f"[DEBUG] Found attachment: {filename}, URL: {media_url}")
             # Check content for URL
-            elif content:
+            elif content and content.strip():
                 media_url = extract_url(content)
                 if media_url:
                     # Try to extract filename from URL
                     filename = media_url.split('/')[-1].split('?')[0]
+                    # Add extension if missing
+                    if '.' not in filename:
+                        # Check if it's a Tenor/Giphy URL
+                        if 'tenor.com' in media_url or 'giphy.com' in media_url:
+                            filename = f"gif_{self.confession_id}.gif"
+                        else:
+                            filename = f"image_{self.confession_id}.jpg"
+                    print(f"[DEBUG] Found URL: {media_url}, filename: {filename}")
             
             if not media_url:
+                print("[DEBUG] No media URL found")
                 return False, "No media found in message"
             
             # Step 2: Download the media
+            print(f"[DEBUG] Downloading media from: {media_url}")
             async with aiohttp.ClientSession() as session:
                 try:
-                    async with session.get(media_url) as response:
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
+                    async with session.get(media_url, headers=headers, timeout=30) as response:
                         if response.status != 200:
+                            print(f"[DEBUG] Download failed with status: {response.status}")
                             return False, f"Failed to download media: HTTP {response.status}"
                         
                         # Read the image data
                         file_data = await response.read()
+                        print(f"[DEBUG] Downloaded {len(file_data)} bytes")
                         
                         # If no filename, try to guess from content-type
                         if not filename:
                             content_type = response.headers.get('Content-Type', '')
-                            if 'image/jpeg' in content_type:
+                            print(f"[DEBUG] Content-Type: {content_type}")
+                            if 'image/jpeg' in content_type or 'image/jpg' in content_type:
                                 filename = f"image_{self.confession_id}.jpg"
                             elif 'image/png' in content_type:
                                 filename = f"image_{self.confession_id}.png"
@@ -153,24 +174,30 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                             elif 'image/webp' in content_type:
                                 filename = f"image_{self.confession_id}.webp"
                             else:
-                                filename = f"media_{self.confession_id}.bin"
+                                # Default to jpg
+                                filename = f"image_{self.confession_id}.jpg"
                 
                 except aiohttp.ClientError as e:
+                    print(f"[DEBUG] Download error: {e}")
                     return False, f"Failed to download media: {str(e)}"
+                except asyncio.TimeoutError:
+                    print("[DEBUG] Download timeout")
+                    return False, "Download timeout"
                 except Exception as e:
+                    print(f"[DEBUG] Error downloading: {e}")
                     return False, f"Error downloading: {str(e)}"
             
-            if not file_data:
+            if not file_data or len(file_data) == 0:
+                print("[DEBUG] No file data received")
                 return False, "No media data received"
             
             # Step 3: Upload to media channel
             media_channel = self.bot.get_channel(MEDIA_CHANNEL_ID)
             if not media_channel:
+                print("[DEBUG] Media channel not found")
                 return False, "Media channel not found"
             
-            # Clean up any existing messages for this confession reply
-            await self.cleanup_existing_media(media_channel)
-            
+            print(f"[DEBUG] Uploading to media channel: {MEDIA_CHANNEL_ID}")
             # Create file object
             file = discord.File(io.BytesIO(file_data), filename=filename)
             
@@ -180,6 +207,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                     f"**Media for reply to confession #{self.confession_id}**",
                     file=file
                 )
+                print(f"[DEBUG] Media uploaded, message ID: {media_msg.id}")
                 
                 # Wait a moment for Discord to process
                 await asyncio.sleep(2)
@@ -188,56 +216,50 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                 final_url = None
                 
                 # Check attachments first (most reliable)
-                if media_msg.attachments:
+                if media_msg.attachments and len(media_msg.attachments) > 0:
                     final_url = media_msg.attachments[0].url
+                    print(f"[DEBUG] Got URL from attachment: {final_url}")
                 # Check embeds as fallback
-                elif media_msg.embeds:
+                elif media_msg.embeds and len(media_msg.embeds) > 0:
                     for embed in media_msg.embeds:
                         if embed.image:
                             final_url = embed.image.url
+                            print(f"[DEBUG] Got URL from embed image: {final_url}")
                             break
                         elif embed.thumbnail:
                             final_url = embed.thumbnail.url
+                            print(f"[DEBUG] Got URL from embed thumbnail: {final_url}")
                             break
                 
                 if not final_url:
+                    print("[DEBUG] Could not get URL from uploaded media")
                     return False, "Could not get URL from uploaded media"
                 
-                # Verify it's a valid image URL
-                if any(final_url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
-                    return True, final_url
-                else:
-                    # Even if extension doesn't match, if Discord accepted it as an image, use it
-                    return True, final_url
+                print(f"[DEBUG] Success! Final URL: {final_url}")
+                return True, final_url
                 
             except discord.HTTPException as e:
+                print(f"[DEBUG] Upload failed: {e}")
                 return False, f"Failed to upload to media channel: {str(e)}"
+            except Exception as e:
+                print(f"[DEBUG] Error during upload: {e}")
+                return False, f"Error during upload: {str(e)}"
             
         except Exception as e:
-            print(f"Error in download_and_reupload_media: {e}")
+            print(f"[DEBUG] Error in download_and_reupload_media: {e}")
             import traceback
             traceback.print_exc()
             return False, f"Error: {str(e)}"
-    
-    async def cleanup_existing_media(self, media_channel):
-        """Clean up any existing media messages for this confession reply"""
-        try:
-            # Search for existing media messages for this confession reply
-            async for message in media_channel.history(limit=50):
-                if f"reply to confession #{self.confession_id}" in message.content.lower():
-                    try:
-                        await message.delete()
-                    except:
-                        pass
-        except Exception as e:
-            print(f"Error cleaning up existing media: {e}")
 
     async def finalize_reply_directly(self, image_url, interaction):
         """Finalize reply after waiting for possible media."""
         try:
+            print(f"[DEBUG] Finalizing reply for confession #{self.confession_id}")
+            print(f"[DEBUG] Image URL: {image_url}")
+            
             channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
             if not channel:
-                print("Confession channel not found")
+                print("[DEBUG] Confession channel not found")
                 return await interaction.followup.send(
                     "❌ Confession channel not found.",
                     ephemeral=True
@@ -248,28 +270,31 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
 
             embed = discord.Embed(
                 title=f"↩️ Reply to Confession #{self.confession_id}",
-                description=self.reply_input.value,
+                description=self.reply_text,  # Use stored reply text
                 color=color,
                 timestamp=datetime.utcnow()
             )
 
             if image_url:
                 embed.set_image(url=image_url)
+                print(f"[DEBUG] Set image URL in embed: {image_url}")
 
             if is_owner_reply:
                 embed.set_footer(text="👑 OP")
 
             # Get confession message and thread
             try:
+                print(f"[DEBUG] Fetching confession message: {self.confession_message_id}")
                 confession_msg = await channel.fetch_message(self.confession_message_id)
+                print(f"[DEBUG] Found confession message")
             except discord.NotFound:
-                print(f"Confession message {self.confession_message_id} not found")
+                print(f"[DEBUG] Confession message {self.confession_message_id} not found")
                 return await interaction.followup.send(
                     "❌ Original confession not found.",
                     ephemeral=True
                 )
             except discord.Forbidden:
-                print(f"No permission to fetch message {self.confession_message_id}")
+                print(f"[DEBUG] No permission to fetch message {self.confession_message_id}")
                 return await interaction.followup.send(
                     "❌ No permission to access confession.",
                     ephemeral=True
@@ -279,34 +304,42 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             thread = confession_msg.thread
             if not thread:
                 try:
+                    print(f"[DEBUG] Creating thread for confession #{self.confession_id}")
                     thread = await confession_msg.create_thread(
                         name=f"Confession #{self.confession_id} Replies",
                         auto_archive_duration=60
                     )
+                    print(f"[DEBUG] Thread created: {thread.id}")
                 except discord.HTTPException as e:
-                    print(f"Error creating thread: {e}")
+                    print(f"[DEBUG] Error creating thread: {e}")
                     # Try with a simpler name if the first fails
                     try:
                         thread = await confession_msg.create_thread(
                             name=f"Replies #{self.confession_id}",
                             auto_archive_duration=60
                         )
-                    except:
+                        print(f"[DEBUG] Thread created with simple name")
+                    except Exception as e2:
+                        print(f"[DEBUG] Failed to create thread: {e2}")
                         return await interaction.followup.send(
                             "❌ Could not create discussion thread.",
                             ephemeral=True
                         )
 
             # Send reply to thread
+            print(f"[DEBUG] Sending reply to thread: {thread.id}")
             sent_msg = await thread.send(embed=embed)
+            print(f"[DEBUG] Reply sent, message ID: {sent_msg.id}")
 
             # Save reply to database
+            print(f"[DEBUG] Saving to database")
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute(
                     "INSERT INTO replies (confession_id, user_id, description, image_url) VALUES (?, ?, ?, ?)",
-                    (self.confession_id, self.user_id, self.reply_input.value, image_url)
+                    (self.confession_id, self.user_id, self.reply_text, image_url)
                 )
                 await db.commit()
+                print(f"[DEBUG] Database saved")
 
             # Logging
             await self.log_reply(image_url, color)
@@ -316,18 +349,20 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                 await self.notify_author(confession_msg)
 
             # Send completion message
+            print(f"[DEBUG] Sending completion message")
             await interaction.followup.send(
                 f"✅ Your reply has been posted!\n"
                 f"📝 View it here: {sent_msg.jump_url}",
                 ephemeral=True
             )
+            print(f"[DEBUG] Reply process completed successfully")
 
         except Exception as e:
-            print(f"Error finalizing reply: {e}")
+            print(f"[DEBUG] Error finalizing reply: {e}")
             import traceback
             traceback.print_exc()
             await interaction.followup.send(
-                "❌ An error occurred while posting your reply.",
+                f"❌ An error occurred while posting your reply: {str(e)}",
                 ephemeral=True
             )
 
@@ -340,7 +375,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
         try:
             log_embed = discord.Embed(
                 title=f"Reply to Confession #{self.confession_id}",
-                description=self.reply_input.value,
+                description=self.reply_text,
                 color=color,
                 timestamp=datetime.utcnow()
             )
@@ -352,7 +387,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                 
             await log_channel.send(embed=log_embed)
         except Exception as e:
-            print(f"Error logging reply: {e}")
+            print(f"[DEBUG] Error logging reply: {e}")
 
     async def notify_author(self, confession_msg):
         """Notify confession author about new reply"""
@@ -360,7 +395,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             confession_author = await self.bot.fetch_user(self.confession_author_id)
             notify_embed = discord.Embed(
                 title=f"💌 New Reply to Your Confession #{self.confession_id}",
-                description=f"Someone replied: \"{self.reply_input.value[:100]}{'...' if len(self.reply_input.value) > 100 else ''}\"",
+                description=f"Someone replied: \"{self.reply_text[:100]}{'...' if len(self.reply_text) > 100 else ''}\"",
                 color=discord.Color.blue(),
                 timestamp=datetime.utcnow()
             )
@@ -373,4 +408,4 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
         except discord.Forbidden:
             pass  # User has DMs disabled
         except Exception as e:
-            print(f"Error notifying confession author: {e}")
+            print(f"[DEBUG] Error notifying confession author: {e}")
