@@ -177,7 +177,7 @@ class TempVoice(commands.Cog):
         # Clean base name for comparison and use
         clean_base = base_name.strip()
         
-        # Determine VC type based on generator channel name
+        # Determine VC type based on generator channel name - this NEVER changes
         vc_type = "Other"
         if clean_base.lower() == "duo":
             vc_type = "Duo"
@@ -188,63 +188,106 @@ class TempVoice(commands.Cog):
         
         # Use a lock to prevent race conditions
         async with self._vc_creation_lock:
-            # Find the lowest unused number for this VC type in THIS CATEGORY
-            # First, get all existing channels of this type in Discord
-            existing_channels = []
-            for channel in category.voice_channels:
-                # Skip generator channels
-                if channel.id in JOIN_CHANNELS:
-                    continue
+            # STEP 1: Find the next available number for this specific VC type
+            async with aiosqlite.connect(DB_PATH) as db:
+                # Get ALL channel numbers for this specific type
+                async with db.execute(
+                    "SELECT channelNumber FROM voiceChannel WHERE guildID = ? AND vcType = ?",
+                    (guild.id, vc_type)
+                ) as c:
+                    rows = await c.fetchall()
                 
-                # Check database to see if this is our bot-created channel
-                async with aiosqlite.connect(DB_PATH) as db:
-                    async with db.execute(
-                        "SELECT vcType, channelNumber FROM voiceChannel WHERE voiceID = ? AND guildID = ?",
-                        (channel.id, guild.id)
-                    ) as c:
-                        data = await c.fetchone()
+                # Extract all used numbers for this type
+                used_numbers = {row[0] for row in rows}
                 
-                if data and data[0] == vc_type:
-                    # This is one of our bot-created channels of the same type
-                    existing_channels.append((channel, data[1]))
+                # Find the lowest available number starting from 1
+                channel_number = 1
+                while channel_number in used_numbers:
+                    channel_number += 1
             
-            # Sort by channel number
-            existing_channels.sort(key=lambda x: x[1])
-            
-            # Find the lowest available number
-            used_numbers = {num for _, num in existing_channels}
-            channel_number = 1
-            while channel_number in used_numbers:
-                channel_number += 1
-            
-            # Generate the channel name
+            # Generate initial channel name
             name = f"{clean_base} {channel_number}"
             
-            # Calculate position - much simpler approach
+            # STEP 2: Calculate position based on database ordering
+            # We want: Generators → Duo 1,2,3 → Trio 1,2,3 → Squad 1,2,3 → Other
+            async with aiosqlite.connect(DB_PATH) as db:
+                # Get all bot channels in this guild, sorted by type then number
+                async with db.execute(
+                    """SELECT voiceID, vcType, channelNumber 
+                    FROM voiceChannel 
+                    WHERE guildID = ? 
+                    ORDER BY 
+                        CASE vcType 
+                            WHEN 'Duo' THEN 1
+                            WHEN 'Trio' THEN 2
+                            WHEN 'Squad' THEN 3
+                            ELSE 4
+                        END,
+                        channelNumber""",
+                    (guild.id,)
+                ) as c:
+                    all_bot_channels = await c.fetchall()
+            
+            # Now figure out where our new channel should go
             position = None
             generator_vcs = [vc for vc in category.voice_channels if vc.id in JOIN_CHANNELS]
             
-            # First, find where the last channel of this type is
-            last_vc_of_type = None
-            for vc, num in existing_channels:
-                if num == channel_number - 1:
-                    last_vc_of_type = vc
-                    break
+            # Count how many bot channels exist in this category
+            bot_channels_in_category = []
+            for voice_id, vc_type_db, ch_number in all_bot_channels:
+                vc = guild.get_channel(voice_id)
+                if vc and vc.category and vc.category.id == category.id:
+                    bot_channels_in_category.append((vc, vc_type_db, ch_number))
             
-            if last_vc_of_type:
-                # Place after the last channel of this type
-                position = last_vc_of_type.position + 1
-            elif existing_channels:
-                # We're creating channel number 1, place before all existing channels of this type
-                position = existing_channels[0][0].position
-            elif generator_vcs:
-                # First channel of this type, place after generators
-                position = max(vc.position for vc in generator_vcs) + 1
+            if not bot_channels_in_category:
+                # First bot channel in this category
+                if generator_vcs:
+                    position = max(vc.position for vc in generator_vcs) + 1
+                else:
+                    position = 0
             else:
-                # No generators either, just place at position 0
-                position = 0
+                # Find where this channel should go in the sorted list
+                # Create a sorted list of what SHOULD exist
+                target_order = []
+                
+                # Add all existing bot channels in their proper order
+                for vc, vc_type_db, ch_number in bot_channels_in_category:
+                    target_order.append((vc_type_db, ch_number, vc))
+                
+                # Add our new channel to the list
+                target_order.append((vc_type, channel_number, None))
+                
+                # Sort the combined list
+                def sort_key(item):
+                    vc_type_key, ch_number, _ = item
+                    type_order = {"Duo": 1, "Trio": 2, "Squad": 3, "Other": 4}
+                    return (type_order.get(vc_type_key, 5), ch_number)
+                
+                target_order.sort(key=sort_key)
+                
+                # Find our new channel's index in the sorted list
+                new_index = -1
+                for i, (vc_type_key, ch_number, vc) in enumerate(target_order):
+                    if vc_type_key == vc_type and ch_number == channel_number:
+                        new_index = i
+                        break
+                
+                if new_index == 0:
+                    # Our channel should be first among bot channels
+                    if generator_vcs:
+                        position = max(vc.position for vc in generator_vcs) + 1
+                    else:
+                        position = 0
+                else:
+                    # Find the channel that should come before ours
+                    prev_vc_type, prev_ch_number, prev_vc = target_order[new_index - 1]
+                    if prev_vc:
+                        position = prev_vc.position + 1
+                    else:
+                        # This shouldn't happen, but just in case
+                        position = bot_channels_in_category[-1][0].position + 1
             
-            # Create VC at calculated position
+            # STEP 3: Create the actual channel
             vc = await guild.create_voice_channel(
                 name=name,
                 category=category,
@@ -259,7 +302,7 @@ class TempVoice(commands.Cog):
             except Exception:
                 pass
 
-            # Store in database with type and number
+            # STEP 4: Store in database with the correct type and number
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute(
                     """INSERT OR REPLACE INTO voiceChannel 
@@ -269,82 +312,70 @@ class TempVoice(commands.Cog):
                 )
                 await db.commit()
 
-            # Reorganize ALL our bot-created channels in proper order
+            # STEP 5: Reorganize to fix any positioning issues
             await self._reorganize_bot_channels(category)
             
             await self._send_panel(vc, member.id)
             print(f"[TempVoice] ✅ Created {name} (Type: {vc_type}, Number: {channel_number}) at position {position}")
 
     async def _reorganize_bot_channels(self, category):
-        """Reorganize bot-created channels in proper order:
-        1. Generator channels (from JOIN_CHANNELS)
-        2. Duo channels (in numerical order: Duo 1, Duo 2, Duo 3...)
-        3. Trio channels (in numerical order: Trio 1, Trio 2, Trio 3...)
-        4. Squad channels (in numerical order: Squad 1, Squad 2, Squad 3...)
-        5. Other bot-created channels
-        """
+        """Reorganize bot-created channels based ONLY on database entries"""
         try:
             guild = category.guild
             
-            # Get all bot-created channels in this category
-            bot_channels = []
-            for channel in category.voice_channels:
-                # Skip generator channels (we'll handle them separately)
-                if channel.id in JOIN_CHANNELS:
-                    continue
-                
-                # Check if this is a bot-created channel
-                async with aiosqlite.connect(DB_PATH) as db:
-                    async with db.execute(
-                        "SELECT vcType, channelNumber FROM voiceChannel WHERE voiceID = ?",
-                        (channel.id,)
-                    ) as c:
-                        data = await c.fetchone()
-                
-                if data:
-                    vc_type, channel_number = data
-                    bot_channels.append((channel, vc_type, channel_number))
+            # Get all bot channels from database for this guild, sorted properly
+            async with aiosqlite.connect(DB_PATH) as db:
+                async with db.execute(
+                    """SELECT voiceID, vcType, channelNumber 
+                    FROM voiceChannel 
+                    WHERE guildID = ? 
+                    ORDER BY 
+                        CASE vcType 
+                            WHEN 'Duo' THEN 1
+                            WHEN 'Trio' THEN 2
+                            WHEN 'Squad' THEN 3
+                            ELSE 4
+                        END,
+                        channelNumber""",
+                    (guild.id,)
+                ) as c:
+                    all_bot_channels = await c.fetchall()
             
-            # Sort bot channels by type and number
-            def sort_key(item):
-                channel, vc_type, channel_number = item
-                
-                # Type priority
-                type_order = {"Duo": 1, "Trio": 2, "Squad": 3, "Other": 4}
-                return (type_order.get(vc_type, 5), channel_number, channel.position)
+            # Filter to only channels that exist in this category
+            channels_to_position = []
+            for voice_id, vc_type, channel_number in all_bot_channels:
+                vc = guild.get_channel(voice_id)
+                if vc and vc.category and vc.category.id == category.id:
+                    channels_to_position.append(vc)
             
-            bot_channels.sort(key=sort_key)
+            # If no bot channels, nothing to do
+            if not channels_to_position:
+                return
             
-            # Get generator channels and sort them
+            # Get generator channels
             generator_vcs = [vc for vc in category.voice_channels if vc.id in JOIN_CHANNELS]
-            generator_vcs.sort(key=lambda x: x.position)
             
             # Calculate starting position
-            start_position = generator_vcs[0].position if generator_vcs else 0
+            start_position = 0
+            if generator_vcs:
+                # Sort generators by their current position
+                generator_vcs.sort(key=lambda x: x.position)
+                # Position bot channels after the last generator
+                start_position = generator_vcs[-1].position + 1
             
-            # First, position generator channels
-            for idx, vc in enumerate(generator_vcs):
+            # Reposition channels in the order they appear in the sorted database list
+            for idx, vc in enumerate(channels_to_position):
                 target_pos = start_position + idx
                 if vc.position != target_pos:
                     try:
                         await vc.edit(position=target_pos)
-                        await asyncio.sleep(0.05)
-                    except Exception:
-                        pass
-            
-            # Now position bot-created channels after generators
-            for idx, (channel, vc_type, channel_number) in enumerate(bot_channels):
-                target_pos = start_position + len(generator_vcs) + idx
-                if channel.position != target_pos:
-                    try:
-                        await channel.edit(position=target_pos)
-                        await asyncio.sleep(0.05)
+                        await asyncio.sleep(0.05)  # Small delay
                     except Exception as e:
-                        print(f"[TempVoice] Error repositioning {channel.name}: {e}")
-                        
+                        print(f"[TempVoice] Error repositioning {vc.name}: {e}")
+                            
         except Exception as e:
             print(f"[TempVoice] Error reorganizing bot channels: {e}")
-
+            
     # ---------------- CLEANUP ----------------
     async def _schedule_cleanup(self, ch):
         # Only cleanup channels we created
