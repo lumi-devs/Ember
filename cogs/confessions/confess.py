@@ -395,12 +395,13 @@ class PersistentConfessionView(ui.View):
         self.confession_id = confession_id
         
         # Add persistent buttons with custom IDs
+        if show_confess_button:
+            self.add_item(PersistentConfessButton())
         self.add_item(PersistentReplyButton(confession_id))
         self.add_item(PersistentReportButton(confession_id))
         
         # Add confess button only if specified (for latest confession)
-        if show_confess_button:
-            self.add_item(PersistentConfessButton())
+
 
 # ==============================
 # PERSISTENT BUTTONS
@@ -409,7 +410,7 @@ class PersistentReplyButton(ui.Button):
     def __init__(self, confession_id):
         super().__init__(
             label="Reply",
-            style=discord.ButtonStyle.primary,
+            style=discord.ButtonStyle.secondary,
             custom_id=f"confession_reply_{confession_id}"
         )
         self.confession_id = confession_id
@@ -486,7 +487,7 @@ class PersistentConfessButton(ui.Button):
     def __init__(self):
         super().__init__(
             label="Make a Confession",
-            style=discord.ButtonStyle.secondary,
+            style=discord.ButtonStyle.primary,
             custom_id="persistent_confess_button"
         )
 
