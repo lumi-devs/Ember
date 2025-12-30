@@ -34,8 +34,11 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
 
         # Send media prompt FIRST
         await interaction.followup.send(
-            "✅ Reply submitted! You have **30 seconds** to reply with an image URL or attachment. "
-            "Send `skip` to continue without media.",
+            "✅ Reply submitted! You have **60 seconds** to reply with an image URL or attachment.\n"
+            "Send `skip` to continue without media.\n\n"
+            "**Accepted formats:**\n"
+            "• Discord image upload (drag & drop)\n"
+            "• Direct image URL (.png/.jpg/.gif/.webp)",
             ephemeral=True
         )
 
@@ -56,10 +59,10 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             return m.author.id == self.user_id and m.channel.id == interaction.channel.id
 
         try:
-            msg_received = await self.bot.wait_for("message", timeout=30.0, check=check)
+            msg_received = await self.bot.wait_for("message", timeout=60.0, check=check)
             
             # Check if user wants to skip
-            if msg_received.content.lower() != 'skip':
+            if msg_received.content.lower().strip() != 'skip':
                 # Process media with fallback
                 success, result = await self.process_media_with_fallback(
                     msg_received.content, 
@@ -104,65 +107,91 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
 
     async def process_media_with_fallback(self, content, attachments):
         """Process media with fallback to fetching from media channel"""
-        # Try to process media normally first
-        image_url = await process_media(
-            self.bot, 
-            content, 
-            attachments, 
-            MEDIA_CHANNEL_ID
-        )
-        
-        if image_url:
-            return True, image_url
-        
-        # If normal processing fails, try to extract and fetch from media channel
         try:
-            # Extract URL from message content
-            url = extract_url(content) if content else None
-            
-            if not url and attachments:
-                # Use first attachment if no URL in content
+            # Step 1: Try to get URL from attachments first
+            url = None
+            if attachments:
                 url = attachments[0].url
+            
+            # Step 2: If no attachments, try to extract URL from content
+            if not url and content:
+                url = extract_url(content)
             
             if not url:
                 return False, "No media found in message"
             
-            # Send to media channel
+            # Step 3: Send to media channel
             media_channel = self.bot.get_channel(MEDIA_CHANNEL_ID)
             if not media_channel:
                 return False, "Media channel not found"
             
-            # Send the URL to media channel
-            media_msg = await media_channel.send(f"Media for reply to confession #{self.confession_id}: {url}")
+            # Clean up any existing messages for this confession reply
+            await self.cleanup_existing_media(media_channel)
             
-            # Wait a moment for Discord to process
-            await asyncio.sleep(2)
+            # Send the URL to media channel with a clear identifier
+            media_msg = await media_channel.send(
+                f"**Media for reply to confession #{self.confession_id}**\n"
+                f"URL: {url}"
+            )
             
-            # Try to fetch the message again to get proper embed
+            # Wait for Discord to process the embed
+            await asyncio.sleep(3)  # Increased wait time
+            
+            # Try to fetch the message again
             try:
                 media_msg = await media_channel.fetch_message(media_msg.id)
                 
-                # Check for embed
+                # Step 4: Get the final media URL from the forwarded message
+                final_url = None
+                
+                # Check for embed with image
                 if media_msg.embeds:
-                    embed = media_msg.embeds[0]
-                    if embed.image:
-                        return True, embed.image.url
-                    elif embed.thumbnail:
-                        return True, embed.thumbnail.url
+                    for embed in media_msg.embeds:
+                        if embed.image:
+                            final_url = embed.image.url
+                            break
+                        elif embed.thumbnail:
+                            final_url = embed.thumbnail.url
+                            break
                 
-                # Check for attachments
-                if media_msg.attachments:
-                    return True, media_msg.attachments[0].url
+                # Check for attachments in the forwarded message
+                if not final_url and media_msg.attachments:
+                    final_url = media_msg.attachments[0].url
                 
-                # Fallback to content URL
-                return True, url
+                # Fallback to original URL if nothing else works
+                if not final_url:
+                    final_url = url
+                
+                # Verify it's a valid image URL
+                if final_url and any(final_url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.mp4', '.mov']):
+                    return True, final_url
+                else:
+                    return False, f"Invalid media format. Got URL: {final_url}"
                 
             except discord.NotFound:
                 return False, "Media message not found in media channel"
+            except Exception as e:
+                print(f"Error fetching media message: {e}")
+                return False, f"Error processing media: {str(e)}"
             
         except Exception as e:
             print(f"Error in media fallback processing: {e}")
+            import traceback
+            traceback.print_exc()
             return False, f"Error: {str(e)}"
+    
+    async def cleanup_existing_media(self, media_channel):
+        """Clean up any existing media messages for this confession reply"""
+        try:
+            # Search for existing media messages for this confession reply
+            async for message in media_channel.history(limit=50):
+                if f"reply to confession #{self.confession_id}" in message.content.lower():
+                    try:
+                        await message.delete()
+                    except:
+                        pass
+        except Exception as e:
+            print(f"Error cleaning up existing media: {e}")
 
     async def finalize_reply_directly(self, image_url, interaction):
         """Finalize reply after waiting for possible media."""
@@ -217,13 +246,20 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                     )
                 except discord.HTTPException as e:
                     print(f"Error creating thread: {e}")
-                    return await interaction.followup.send(
-                        "❌ Could not create discussion thread.",
-                        ephemeral=True
-                    )
+                    # Try with a simpler name if the first fails
+                    try:
+                        thread = await confession_msg.create_thread(
+                            name=f"Replies #{self.confession_id}",
+                            auto_archive_duration=60
+                        )
+                    except:
+                        return await interaction.followup.send(
+                            "❌ Could not create discussion thread.",
+                            ephemeral=True
+                        )
 
             # Send reply to thread
-            await thread.send(embed=embed)
+            sent_msg = await thread.send(embed=embed)
 
             # Save reply to database
             async with aiosqlite.connect(DB_PATH) as db:
@@ -242,7 +278,8 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
 
             # Send completion message
             await interaction.followup.send(
-                "✅ Your reply has been posted!",
+                f"✅ Your reply has been posted!\n"
+                f"📝 View it here: {sent_msg.jump_url}",
                 ephemeral=True
             )
 

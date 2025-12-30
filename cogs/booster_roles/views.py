@@ -4,6 +4,7 @@ from discord import ui, Interaction, ButtonStyle, SelectOption, Color, Embed
 from typing import Optional, Dict, Any, Set, List
 from datetime import datetime, timezone, timedelta
 import re
+from discord.ext import commands
 import aiohttp
 
 # Updated imports for SQLite database
@@ -298,7 +299,7 @@ class RoleConflictView(ui.View):
             pass
         
         await inter.followup.send("✅ New role invitation declined.", ephemeral=True)
-        
+
 class IconSetupView(ui.View):
     """View for setting up role icons"""
     def __init__(self, parent_view):
