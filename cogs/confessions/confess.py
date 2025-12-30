@@ -34,6 +34,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
         super().__init__()
         self.bot = bot
         self.user_id = None
+        self.last_confession_button = None
 
     async def on_submit(self, interaction: discord.Interaction):
         self.user_id = interaction.user.id
@@ -50,6 +51,12 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             return await interaction.followup.send("❌ Confession channel not found.", ephemeral=True)
 
         try:
+            # Get previous confession ID to update its button
+            async with aiosqlite.connect(DB_PATH) as db:
+                cursor = await db.execute("SELECT MAX(id) FROM confessions")
+                result = await cursor.fetchone()
+                prev_confession_id = result[0] if result[0] else None
+
             # Insert confession entry with transaction
             async with aiosqlite.connect(DB_PATH) as db:
                 cursor = await db.execute(
@@ -68,7 +75,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             )
             embed.set_footer(text=f"Confession #{confession_id}")
 
-            # Send message
+            # Send message WITHOUT view initially
             msg = await channel.send(embed=embed)
 
             # Create thread for this confession with simple name
@@ -102,7 +109,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             )
 
             # Wait for optional media with timeout
-            image_url = await self.wait_for_media(interaction, confession_id)
+            image_url = await self.wait_for_media(interaction, confession_id, msg)
             
             # Update embed with image if available
             if image_url:
@@ -111,8 +118,12 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                     await db.execute("UPDATE confessions SET image_url=? WHERE id=?", (image_url, confession_id))
                     await db.commit()
 
-            # Create and attach persistent view
-            final_view = PersistentConfessionView(confession_id)
+            # Update previous confession's button if it exists
+            if prev_confession_id:
+                await self.remove_prev_confess_button(prev_confession_id)
+            
+            # Create and attach persistent view WITH confess button
+            final_view = PersistentConfessionView(confession_id, show_confess_button=True)
             await msg.edit(embed=embed, view=final_view)
 
             # Log confession
@@ -135,7 +146,33 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             traceback.print_exc()
             await interaction.followup.send("❌ An error occurred while submitting your confession.", ephemeral=True)
 
-    async def wait_for_media(self, interaction, confession_id):
+    async def remove_prev_confess_button(self, confession_id):
+        """Remove confess button from previous confession"""
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                cursor = await db.execute("SELECT message_id FROM confessions WHERE id=?", (confession_id,))
+                result = await cursor.fetchone()
+                if not result:
+                    return
+                
+                message_id = result[0]
+                channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
+                if not channel or not message_id:
+                    return
+                
+                try:
+                    msg = await channel.fetch_message(message_id)
+                    # Create new view without confess button
+                    new_view = PersistentConfessionView(confession_id, show_confess_button=False)
+                    await msg.edit(view=new_view)
+                except discord.NotFound:
+                    print(f"Previous confession message {message_id} not found")
+                except discord.HTTPException as e:
+                    print(f"Error updating previous confession: {e}")
+        except Exception as e:
+            print(f"Error removing previous confess button: {e}")
+
+    async def wait_for_media(self, interaction, confession_id, confession_msg):
         """Wait for media response with proper timeout handling"""
         def check(m):
             return m.author.id == self.user_id and m.channel.id == interaction.channel.id
@@ -149,11 +186,11 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             # Check if user wants to skip
             if msg_received.content.lower() != 'skip':
                 # Process media FIRST - upload to media channel
-                image_url = await process_media(
-                    self.bot, 
+                success, result = await self.process_media_with_fallback(
                     msg_received.content, 
                     msg_received.attachments, 
-                    MEDIA_CHANNEL_ID
+                    confession_id,
+                    confession_msg
                 )
                 
                 # Only delete the message AFTER successful media processing
@@ -166,18 +203,12 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 except Exception as e:
                     print(f"Error deleting message: {e}")
                 
-                if image_url:
-                    await interaction.followup.send("✅ Image downloaded and added to confession!", ephemeral=True)
-                    return image_url
+                if success:
+                    await interaction.followup.send("✅ Media added to confession!", ephemeral=True)
+                    return result  # Returns the media URL
                 else:
-                    await interaction.followup.send(
-                        "❌ Could not process media. Please use:\n"
-                        "• **Discord image upload** (drag & drop)\n"
-                        "• **Direct image URL** (must end with .png/.jpg/.gif/.webp)\n\n"
-                        "Images will be downloaded and re-uploaded to our media channel.\n"
-                        "Continuing without media.",
-                        ephemeral=True
-                    )
+                    # Add fallback buttons to confession
+                    await self.add_fallback_buttons(confession_msg, confession_id, result)
                     return None
             else:
                 # User typed 'skip' - delete the skip message
@@ -195,6 +226,77 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             print(f"Error in wait_for_media: {e}")
             await interaction.followup.send("❌ An error occurred while processing media.", ephemeral=True)
             return None
+
+    async def process_media_with_fallback(self, content, attachments, confession_id, confession_msg):
+        """Process media with fallback to fetching from media channel"""
+        # Try to process media normally first
+        image_url = await process_media(
+            self.bot, 
+            content, 
+            attachments, 
+            MEDIA_CHANNEL_ID
+        )
+        
+        if image_url:
+            return True, image_url
+        
+        # If normal processing fails, try to extract and fetch from media channel
+        try:
+            # Extract URL from message content
+            url = extract_url(content) if content else None
+            
+            if not url and attachments:
+                # Use first attachment if no URL in content
+                url = attachments[0].url
+            
+            if not url:
+                return False, "No media found in message"
+            
+            # Send to media channel
+            media_channel = self.bot.get_channel(MEDIA_CHANNEL_ID)
+            if not media_channel:
+                return False, "Media channel not found"
+            
+            # Send the URL to media channel
+            media_msg = await media_channel.send(f"Media for confession #{confession_id}: {url}")
+            
+            # Wait a moment for Discord to process
+            await asyncio.sleep(2)
+            
+            # Try to fetch the message again to get proper embed
+            try:
+                media_msg = await media_channel.fetch_message(media_msg.id)
+                
+                # Check for embed
+                if media_msg.embeds:
+                    embed = media_msg.embeds[0]
+                    if embed.image:
+                        return True, embed.image.url
+                    elif embed.thumbnail:
+                        return True, embed.thumbnail.url
+                
+                # Check for attachments
+                if media_msg.attachments:
+                    return True, media_msg.attachments[0].url
+                
+                # Fallback to content URL
+                return True, url
+                
+            except discord.NotFound:
+                return False, "Media message not found in media channel"
+            
+        except Exception as e:
+            print(f"Error in media fallback processing: {e}")
+            return False, f"Error: {str(e)}"
+
+    async def add_fallback_buttons(self, confession_msg, confession_id, error_msg):
+        """Add fallback buttons to confession when media processing fails"""
+        try:
+            # Create view with fallback buttons
+            fallback_view = FallbackMediaView(confession_id, error_msg)
+            await confession_msg.edit(view=fallback_view)
+        except Exception as e:
+            print(f"Error adding fallback buttons: {e}")
     
     async def log_confession(self, confession_id, image_url):
         """Log confession to log channel"""
@@ -231,16 +333,74 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             print(f"Error logging confession: {e}")
 
 # ==============================
+# FALLBACK MEDIA VIEW (When media processing fails)
+# ==============================
+class FallbackMediaView(ui.View):
+    def __init__(self, confession_id, error_msg):
+        super().__init__(timeout=None)
+        self.confession_id = confession_id
+        self.error_msg = error_msg
+        
+        # Add retry button
+        self.add_item(RetryMediaButton(confession_id, error_msg))
+        # Add manual upload button
+        self.add_item(ManualUploadButton(confession_id))
+
+class RetryMediaButton(ui.Button):
+    def __init__(self, confession_id, error_msg):
+        super().__init__(
+            label="Retry Media",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"retry_media_{confession_id}"
+        )
+        self.confession_id = confession_id
+        self.error_msg = error_msg
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            f"❌ Media processing failed: {self.error_msg}\n\n"
+            "Please try again with:\n"
+            "• **Direct image URL** (must end with .png/.jpg/.gif/.webp)\n"
+            "• **Discord attachment** (drag & drop)\n"
+            "• Use the 'Manual Upload' button below",
+            ephemeral=True
+        )
+
+class ManualUploadButton(ui.Button):
+    def __init__(self, confession_id):
+        super().__init__(
+            label="Manual Upload",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"manual_upload_{confession_id}"
+        )
+        self.confession_id = confession_id
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "📤 **Manual Media Upload Instructions:**\n\n"
+            "1. Go to our media channel: <#1424139009931743382>\n"
+            "2. Upload your image there\n"
+            "3. Copy the image URL\n"
+            "4. Click 'Retry Media' and paste the URL\n\n"
+            "The bot will fetch the image from our media channel.",
+            ephemeral=True
+        )
+
+# ==============================
 # PERSISTENT CONFESSION VIEW (Buttons)
 # ==============================
 class PersistentConfessionView(ui.View):
-    def __init__(self, confession_id):
+    def __init__(self, confession_id, show_confess_button=False):
         super().__init__(timeout=None)
         self.confession_id = confession_id
         
         # Add persistent buttons with custom IDs
         self.add_item(PersistentReplyButton(confession_id))
         self.add_item(PersistentReportButton(confession_id))
+        
+        # Add confess button only if specified (for latest confession)
+        if show_confess_button:
+            self.add_item(PersistentConfessButton())
 
 # ==============================
 # PERSISTENT BUTTONS
@@ -322,6 +482,34 @@ class PersistentReportButton(ui.Button):
             print(f"Error reporting confession: {e}")
             await interaction.response.send_message("❌ An error occurred while reporting.", ephemeral=True)
 
+class PersistentConfessButton(ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Make a Confession",
+            style=discord.ButtonStyle.secondary,
+            custom_id="persistent_confess_button"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        # Check if user has required role
+        if not any(role.id in ALLOWED_ROLE_IDS for role in interaction.user.roles):
+            return await interaction.response.send_message(
+                "❌ You do not have at least LVL 5 required to make confessions.", 
+                ephemeral=True
+            )
+        
+        # Check for ban
+        if await is_user_banned(interaction.user.id):
+            return await interaction.response.send_message(
+                "❌ You are banned from making confessions.", 
+                ephemeral=True
+            )
+        
+        # Open confession modal
+        bot = interaction.client
+        modal = ConfessionModal(bot)
+        await interaction.response.send_modal(modal)
+
 # ==============================
 # MAIN COG
 # ==============================
@@ -346,11 +534,18 @@ class Confessions(commands.Cog):
         await self.bot.wait_until_ready()
         try:
             async with aiosqlite.connect(DB_PATH) as db:
+                # Get the latest confession ID
+                cursor = await db.execute("SELECT MAX(id) FROM confessions")
+                result = await cursor.fetchone()
+                latest_confession_id = result[0] if result[0] else None
+                
+                # Load all confessions with views
                 async with db.execute("SELECT id, message_id FROM confessions WHERE message_id IS NOT NULL") as cursor:
                     async for confession_id, message_id in cursor:
-                        # Add persistent view for each confession
                         try:
-                            view = PersistentConfessionView(confession_id)
+                            # Only show confess button on the latest confession
+                            show_confess_button = (confession_id == latest_confession_id)
+                            view = PersistentConfessionView(confession_id, show_confess_button=show_confess_button)
                             self.bot.add_view(view)
                         except Exception as e:
                             print(f"Error loading view for confession {confession_id}: {e}")
