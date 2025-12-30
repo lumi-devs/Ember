@@ -3,7 +3,7 @@ from discord import ui
 import asyncio
 from datetime import datetime
 import aiosqlite
-from cogs.confessions.helpers import process_media, DB_PATH
+from cogs.confessions.helpers import process_media, DB_PATH, extract_url
 
 CONFESSION_CHANNEL_ID = 1399658407178272798
 LOG_CHANNEL_ID = 1453409054314467339
@@ -29,13 +29,12 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
     async def on_submit(self, interaction: discord.Interaction):
         self.user_id = interaction.user.id
 
-        # Send initial response
-        await interaction.response.send_message(
-            "✅ Reply submitted! You have **30 seconds** to send media.\n\n"
-            "**Accepted formats:**\n"
-            "• Discord image upload (drag & drop)\n"
-            "• Direct image URL (.png/.jpg/.gif/.webp)\n\n"
-            "Images will be downloaded and re-uploaded.\n"
+        # Defer immediately to avoid timeout
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        # Send media prompt FIRST
+        await interaction.followup.send(
+            "✅ Reply submitted! You have **30 seconds** to reply with an image URL or attachment. "
             "Send `skip` to continue without media.",
             ephemeral=True
         )
@@ -45,53 +44,136 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
         if cleaner_cog:
             await cleaner_cog.allow_user_once(self.user_id)
 
-        # Wait for media
+        # Wait for optional media with timeout
         image_url = await self.wait_for_media(interaction)
         
-        # Finalize reply
-        await self.finalize_reply_directly(image_url)
-
-        # Send completion message
-        await interaction.followup.send(
-            "✅ Your reply has been posted!",
-            ephemeral=True
-        )
+        # Finalize reply with or without media
+        await self.finalize_reply_directly(image_url, interaction)
 
     async def wait_for_media(self, interaction):
-        """Wait for media response"""
+        """Wait for media response with proper timeout handling"""
         def check(m):
             return m.author.id == self.user_id and m.channel.id == interaction.channel.id
 
         try:
             msg_received = await self.bot.wait_for("message", timeout=30.0, check=check)
-
+            
             # Check if user wants to skip
-            if msg_received.content.lower() != "skip":
-                # Process media FIRST
-                image_url = await process_media(
-                    self.bot, msg_received.content, msg_received.attachments, MEDIA_CHANNEL_ID
+            if msg_received.content.lower() != 'skip':
+                # Process media with fallback
+                success, result = await self.process_media_with_fallback(
+                    msg_received.content, 
+                    msg_received.attachments
                 )
-            else:
-                image_url = None
-
-            # Delete user's message AFTER processing
-            try:
-                await msg_received.delete()
-            except:
-                pass
                 
-            return image_url
-
+                # Only delete the message AFTER successful media processing
+                try:
+                    await msg_received.delete()
+                except discord.Forbidden:
+                    print(f"No permission to delete message from {msg_received.author}")
+                except discord.NotFound:
+                    print("Message already deleted")
+                except Exception as e:
+                    print(f"Error deleting message: {e}")
+                
+                if success:
+                    await interaction.followup.send("✅ Media added to reply!", ephemeral=True)
+                    return result  # Returns the media URL
+                else:
+                    await interaction.followup.send(
+                        f"❌ Media processing failed: {result}\nContinuing without media.",
+                        ephemeral=True
+                    )
+                    return None
+            else:
+                # User typed 'skip' - delete the skip message
+                try:
+                    await msg_received.delete()
+                except:
+                    pass
+                await interaction.followup.send("✅ Skipped media upload.", ephemeral=True)
+                return None
+                    
         except asyncio.TimeoutError:
+            await interaction.followup.send("⏰ Media upload timed out. Continuing without media.", ephemeral=True)
+            return None
+        except Exception as e:
+            print(f"Error in wait_for_media: {e}")
+            await interaction.followup.send("❌ An error occurred while processing media.", ephemeral=True)
             return None
 
-    async def finalize_reply_directly(self, image_url):
+    async def process_media_with_fallback(self, content, attachments):
+        """Process media with fallback to fetching from media channel"""
+        # Try to process media normally first
+        image_url = await process_media(
+            self.bot, 
+            content, 
+            attachments, 
+            MEDIA_CHANNEL_ID
+        )
+        
+        if image_url:
+            return True, image_url
+        
+        # If normal processing fails, try to extract and fetch from media channel
+        try:
+            # Extract URL from message content
+            url = extract_url(content) if content else None
+            
+            if not url and attachments:
+                # Use first attachment if no URL in content
+                url = attachments[0].url
+            
+            if not url:
+                return False, "No media found in message"
+            
+            # Send to media channel
+            media_channel = self.bot.get_channel(MEDIA_CHANNEL_ID)
+            if not media_channel:
+                return False, "Media channel not found"
+            
+            # Send the URL to media channel
+            media_msg = await media_channel.send(f"Media for reply to confession #{self.confession_id}: {url}")
+            
+            # Wait a moment for Discord to process
+            await asyncio.sleep(2)
+            
+            # Try to fetch the message again to get proper embed
+            try:
+                media_msg = await media_channel.fetch_message(media_msg.id)
+                
+                # Check for embed
+                if media_msg.embeds:
+                    embed = media_msg.embeds[0]
+                    if embed.image:
+                        return True, embed.image.url
+                    elif embed.thumbnail:
+                        return True, embed.thumbnail.url
+                
+                # Check for attachments
+                if media_msg.attachments:
+                    return True, media_msg.attachments[0].url
+                
+                # Fallback to content URL
+                return True, url
+                
+            except discord.NotFound:
+                return False, "Media message not found in media channel"
+            
+        except Exception as e:
+            print(f"Error in media fallback processing: {e}")
+            return False, f"Error: {str(e)}"
+
+    async def finalize_reply_directly(self, image_url, interaction):
         """Finalize reply after waiting for possible media."""
         try:
             channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
             if not channel:
                 print("Confession channel not found")
-                return
+                return await interaction.followup.send(
+                    "❌ Confession channel not found.",
+                    ephemeral=True
+                )
 
             is_owner_reply = self.user_id == self.confession_author_id
             color = discord.Color.gold() if is_owner_reply else discord.Color.green()
@@ -114,10 +196,16 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                 confession_msg = await channel.fetch_message(self.confession_message_id)
             except discord.NotFound:
                 print(f"Confession message {self.confession_message_id} not found")
-                return
+                return await interaction.followup.send(
+                    "❌ Original confession not found.",
+                    ephemeral=True
+                )
             except discord.Forbidden:
                 print(f"No permission to fetch message {self.confession_message_id}")
-                return
+                return await interaction.followup.send(
+                    "❌ No permission to access confession.",
+                    ephemeral=True
+                )
 
             # Get or create thread
             thread = confession_msg.thread
@@ -129,7 +217,10 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                     )
                 except discord.HTTPException as e:
                     print(f"Error creating thread: {e}")
-                    return
+                    return await interaction.followup.send(
+                        "❌ Could not create discussion thread.",
+                        ephemeral=True
+                    )
 
             # Send reply to thread
             await thread.send(embed=embed)
@@ -149,10 +240,20 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             if not is_owner_reply:
                 await self.notify_author(confession_msg)
 
+            # Send completion message
+            await interaction.followup.send(
+                "✅ Your reply has been posted!",
+                ephemeral=True
+            )
+
         except Exception as e:
             print(f"Error finalizing reply: {e}")
             import traceback
             traceback.print_exc()
+            await interaction.followup.send(
+                "❌ An error occurred while posting your reply.",
+                ephemeral=True
+            )
 
     async def log_reply(self, image_url, color):
         """Log reply to log channel"""
