@@ -170,14 +170,8 @@ class VoteTimeout(commands.Cog):
             target_permissions.manage_guild or      # Can manage server
             target_permissions.administrator):      # Has admin perms
             target_has_timeout_perms = True
-        
-        # Check role hierarchy - users can't vote against higher roles
-        # But also check if they have any moderation permissions
+
         if target_has_timeout_perms:
-            # If target has timeout/moderation permissions, only allow vote if:
-            # 1. User is guild owner, OR
-            # 2. User has higher role position AND also has timeout permissions
-            
             user_permissions = interaction.user.guild_permissions
             user_has_timeout_perms = (
                 user_permissions.moderate_members or
@@ -200,21 +194,13 @@ class VoteTimeout(commands.Cog):
                     return
                 
                 # If user has timeout perms, check role hierarchy
-                if interaction.user.top_role.position <= user.top_role.position:
+                if interaction.user.top_role.position < user.top_role.position:
                     await interaction.response.send_message(
                         "❌ You cannot start a vote against someone with higher or equal role position.",
                         ephemeral=True
                     )
                     return
         
-        # Regular role hierarchy check for non-moderator targets
-        elif interaction.user.top_role.position <= user.top_role.position:
-            if interaction.user != interaction.guild.owner:
-                await interaction.response.send_message(
-                    "❌ You cannot start a vote against someone with higher or equal role position.",
-                    ephemeral=True
-                )
-                return
         
         # Get VC members (excluding bots)
         vc_members = await self.get_vc_members(voice_channel)
