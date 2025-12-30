@@ -149,6 +149,7 @@ class RoleConflictView(ui.View):
         self.current_role = current_role
         self.current_owner = current_owner
         self.decision = None
+        self.bot = None  # We'll set this later
     
     @ui.button(label="🔄 Switch to New Role", style=ButtonStyle.success, emoji="🔄")
     async def switch_button(self, inter: Interaction, button: ui.Button):
@@ -166,16 +167,22 @@ class RoleConflictView(ui.View):
         
         # Remove current role and add new role
         try:
+            # Get the guild member object for the user
+            guild = inter.guild
+            member = guild.get_member(inter.user.id)
+            if not member:
+                member = await guild.fetch_member(inter.user.id)
+            
             # Remove current role
-            await inter.user.remove_roles(
+            await member.remove_roles(
                 self.current_role,
                 reason=f"Switched to {self.new_role.name} from {self.new_owner}"
             )
             
             # Add new role
-            await inter.user.add_roles(
+            await member.add_roles(
                 self.new_role,
-                reason=f"Switched from {self.current_role.name} by {inter.user}"
+                reason=f"Switched from {self.current_role.name} by {member}"
             )
             
             # Update database
@@ -197,7 +204,7 @@ class RoleConflictView(ui.View):
                 # Notify new owner
                 new_owner_embed = Embed(
                     title="✅ Role Switch Accepted",
-                    description=f"{inter.user.mention} has accepted your role and switched from {self.current_role.name}!",
+                    description=f"{member.mention} has accepted your role and switched from {self.current_role.name}!",
                     color=Color.green()
                 )
                 await self.new_owner.send(embed=new_owner_embed)
@@ -205,7 +212,7 @@ class RoleConflictView(ui.View):
                 # Notify old owner
                 old_owner_embed = Embed(
                     title="🎭 Role Switch Notification",
-                    description=f"{inter.user.mention} has switched from your role **{self.current_role.name}** to {self.new_role.name} by {self.new_owner.mention}",
+                    description=f"{member.mention} has switched from your role **{self.current_role.name}** to {self.new_role.name} by {self.new_owner.mention}",
                     color=Color.orange()
                 )
                 await self.current_owner.send(embed=old_owner_embed)
@@ -278,7 +285,6 @@ class RoleConflictView(ui.View):
             pass
         
         await inter.followup.send("✅ New role invitation declined.", ephemeral=True)
-
 
 class IconSetupView(ui.View):
     """View for setting up role icons"""
