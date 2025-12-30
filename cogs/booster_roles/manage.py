@@ -4,7 +4,6 @@ from discord import app_commands
 import asyncio
 from typing import Optional, List
 from datetime import datetime, timezone, timedelta
-import humanize
 
 # Import your database module
 from .database import Database, get_db
