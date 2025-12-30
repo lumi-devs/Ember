@@ -39,6 +39,7 @@ class BoosterRolesCog(commands.Cog):
             return
         
         # Restrict to specific channel if configured
+        """
         allowed_channel_id = int(os.environ.get("CUSTOM_ROLE_CHANNEL_ID", 0))
         if allowed_channel_id and interaction.channel.id != allowed_channel_id:
             error_channel = interaction.guild.get_channel(allowed_channel_id)
@@ -48,6 +49,7 @@ class BoosterRolesCog(commands.Cog):
                 ephemeral=True
             )
             return
+        """
 
         # Check booster role
         booster_role_id = int(os.environ.get("BOOSTER_ROLE_ID", 0))
