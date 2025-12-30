@@ -1,3 +1,4 @@
+from pathlib import Path
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -768,7 +769,3 @@ async def setup(bot):
     """Setup function to add cog to bot"""
     cog = BoosterRolesManage(bot)
     await bot.add_cog(cog)
-    
-    # Manually add the command group to the tree
-    # This ensures the group appears in the command tree
-    bot.tree.add_command(cog.broles)
