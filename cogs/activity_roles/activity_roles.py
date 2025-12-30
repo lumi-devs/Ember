@@ -209,14 +209,6 @@ class ActivityRoles(commands.Cog):
         
         await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name='forcecleanup', description='Force cleanup of all activity roles')
-    @commands.has_permissions(administrator=True)
-    async def force_cleanup(self, ctx: commands.Context):
-        """Force cleanup of all activity roles"""
-        await ctx.defer()
-        self.cleanup_done = False  # Reset to allow re-run
-        await self.cleanup_activity_roles()
-        await ctx.send("✅ Force cleanup completed!")
 
     @commands.hybrid_command(name='refreshroles', description='Refresh activity roles for a specific member')
     @commands.has_permissions(manage_roles=True)
