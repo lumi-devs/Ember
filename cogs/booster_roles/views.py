@@ -142,14 +142,15 @@ class RenounceConfirmationView(ui.View):
 class RoleConflictView(ui.View):
     """View for resolving role conflicts"""
     def __init__(self, new_role: discord.Role, new_owner: discord.Member, 
-                 current_role: discord.Role, current_owner: discord.Member):
+                 current_role: discord.Role, current_owner: discord.Member,
+                 bot: commands.Bot = None):  # Add bot parameter
         super().__init__(timeout=604800.0)  # 7 days
         self.new_role = new_role
         self.new_owner = new_owner
         self.current_role = current_role
         self.current_owner = current_owner
         self.decision = None
-        self.bot = None  # We'll set this later
+        self.bot = bot  # Store bot instance
     
     @ui.button(label="🔄 Switch to New Role", style=ButtonStyle.success, emoji="🔄")
     async def switch_button(self, inter: Interaction, button: ui.Button):
@@ -167,11 +168,19 @@ class RoleConflictView(ui.View):
         
         # Remove current role and add new role
         try:
-            # Get the guild member object for the user
-            guild = inter.guild
+            # Get the guild from the role (safer than inter.guild)
+            guild = self.new_role.guild or self.current_role.guild
+            
+            if not guild:
+                return await inter.followup.send("❌ Could not find guild.", ephemeral=True)
+            
+            # Get the member
             member = guild.get_member(inter.user.id)
             if not member:
-                member = await guild.fetch_member(inter.user.id)
+                try:
+                    member = await guild.fetch_member(inter.user.id)
+                except discord.NotFound:
+                    return await inter.followup.send("❌ Could not find member in guild.", ephemeral=True)
             
             # Remove current role
             await member.remove_roles(
@@ -221,6 +230,10 @@ class RoleConflictView(ui.View):
             
             await inter.followup.send("✅ Successfully switched roles!", ephemeral=True)
             
+        except discord.Forbidden:
+            await inter.followup.send("❌ Bot doesn't have permission to manage roles.", ephemeral=True)
+        except discord.HTTPException as e:
+            await inter.followup.send(f"❌ Discord API error: {e}", ephemeral=True)
         except Exception as e:
             await inter.followup.send(f"❌ Failed to switch roles: {e}", ephemeral=True)
     
@@ -285,7 +298,7 @@ class RoleConflictView(ui.View):
             pass
         
         await inter.followup.send("✅ New role invitation declined.", ephemeral=True)
-
+        
 class IconSetupView(ui.View):
     """View for setting up role icons"""
     def __init__(self, parent_view):
