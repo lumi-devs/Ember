@@ -74,8 +74,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                 except:
                     pass
                 await interaction.followup.send("✅ Skipped media upload.", ephemeral=True)
-                # Call finalize with no image
-                await self.finalize_reply_directly(None, interaction)
+                # Return None for no image
                 return None
             
             # Check if message has media
@@ -91,8 +90,6 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                     url_lower = url.lower()
                     image_extensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff']
                     if any(url_lower.endswith(ext) for ext in image_extensions):
-                        has_valid_url = True
-                    elif 'tenor.com' in url_lower or 'giphy.com' in url_lower or 'imgur.com' in url_lower:
                         has_valid_url = True
                     elif 'media.discordapp.net' in url_lower or 'cdn.discordapp.com' in url_lower:
                         has_valid_url = True
@@ -119,8 +116,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                 error_msg += "Continuing without media."
                 
                 await interaction.followup.send(error_msg, ephemeral=True)
-                # Call finalize with no image
-                await self.finalize_reply_directly(None, interaction)
+                # Return None for no image
                 return None
             
             # Process valid media
@@ -141,9 +137,8 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             
             if success:
                 await interaction.followup.send("✅ Media added to reply!", ephemeral=True)
-                # Call finalize with image URL
-                await self.finalize_reply_directly(result, interaction)
-                return result  # Returns the media URL
+                # Return the image URL
+                return result
             else:
                 # Media processing failed
                 error_msg = result if isinstance(result, str) else "Unknown error occurred"
@@ -151,22 +146,17 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                     f"❌ Failed to process media: {error_msg}\nContinuing without media.",
                     ephemeral=True
                 )
-                # Call finalize with no image
-                await self.finalize_reply_directly(None, interaction)
+                # Return None for no image
                 return None
                     
         except asyncio.TimeoutError:
             await interaction.followup.send("⏰ Media upload timed out. Continuing without media.", ephemeral=True)
-            # Call finalize with no image
-            await self.finalize_reply_directly(None, interaction)
             return None
         except Exception as e:
             print(f"Error in wait_for_media: {e}")
             import traceback
             traceback.print_exc()
             await interaction.followup.send("❌ An error occurred while processing media.", ephemeral=True)
-            # Call finalize with no image
-            await self.finalize_reply_directly(None, interaction)
             return None
 
     async def download_and_reupload_media(self, content, attachments):
