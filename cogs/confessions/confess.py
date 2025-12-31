@@ -186,32 +186,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             msg_received = await self.bot.wait_for("message", timeout=60.0, check=check)
             
             # Check if user wants to skip
-            if msg_received.content.lower().strip() != 'skip':
-                # Process media by downloading and re-uploading
-                success, result = await self.download_and_reupload_media(
-                    msg_received.content, 
-                    msg_received.attachments,
-                    confession_id
-                )
-                
-                # Only delete the message AFTER successful media processing
-                try:
-                    await msg_received.delete()
-                except discord.Forbidden:
-                    print(f"No permission to delete message from {msg_received.author}")
-                except discord.NotFound:
-                    print("Message already deleted")
-                except Exception as e:
-                    print(f"Error deleting message: {e}")
-                
-                if success:
-                    await interaction.followup.send("✅ Media added to confession!", ephemeral=True)
-                    return result  # Returns the media URL
-                else:
-                    # Add fallback buttons to confession
-                    await self.add_fallback_buttons(confession_msg, confession_id, result)
-                    return None
-            else:
+            if msg_received.content.lower().strip() == 'skip':
                 # User typed 'skip' - delete the skip message
                 try:
                     await msg_received.delete()
@@ -219,12 +194,74 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                     pass
                 await interaction.followup.send("✅ Skipped media upload.", ephemeral=True)
                 return None
+            
+            # Check if message has media (attachments or valid URL)
+            has_attachments = len(msg_received.attachments) > 0
+            has_url = bool(extract_url(msg_received.content)) if msg_received.content else False
+            
+            if not has_attachments and not has_url:
+                # Invalid input - send error and add fallback buttons
+                try:
+                    await msg_received.delete()
+                except:
+                    pass
+                
+                # Send ephemeral message
+                await interaction.followup.send(
+                    "❌ No valid media found in your message.\n\n"
+                    "**Valid options are:**\n"
+                    "• Send an image URL\n"
+                    "• Upload an image file\n"
+                    "• Type `skip` to continue without media\n\n"
+                    "Skipping media upload and adding fallback options to your confession.",
+                    ephemeral=True
+                )
+                
+                # Add fallback buttons to confession
+                await self.add_fallback_buttons(confession_msg, confession_id, 
+                                            "No valid media was provided. You can retry or upload manually.")
+                return None
+            
+            # Process valid media
+            success, result = await self.download_and_reupload_media(
+                msg_received.content, 
+                msg_received.attachments,
+                confession_id
+            )
+            
+            # Delete the message AFTER successful media processing
+            try:
+                await msg_received.delete()
+            except discord.Forbidden:
+                print(f"No permission to delete message from {msg_received.author}")
+            except discord.NotFound:
+                print("Message already deleted")
+            except Exception as e:
+                print(f"Error deleting message: {e}")
+            
+            if success:
+                await interaction.followup.send("✅ Media added to confession!", ephemeral=True)
+                return result  # Returns the media URL
+            else:
+                # Media processing failed
+                error_msg = result if isinstance(result, str) else "Unknown error occurred"
+                await interaction.followup.send(
+                    f"❌ Failed to process media: {error_msg}\n\n"
+                    "Adding fallback options to your confession.",
+                    ephemeral=True
+                )
+                
+                # Add fallback buttons to confession
+                await self.add_fallback_buttons(confession_msg, confession_id, error_msg)
+                return None
                     
         except asyncio.TimeoutError:
             await interaction.followup.send("⏰ Media upload timed out. Continuing without media.", ephemeral=True)
             return None
         except Exception as e:
             print(f"Error in wait_for_media: {e}")
+            import traceback
+            traceback.print_exc()
             await interaction.followup.send("❌ An error occurred while processing media.", ephemeral=True)
             return None
 
@@ -369,13 +406,46 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             return False, f"Error: {str(e)}"
 
     async def add_fallback_buttons(self, confession_msg, confession_id, error_msg):
-        """Add fallback buttons to confession when media processing fails"""
+        """Add fallback buttons to confession when media processing fails or no media provided"""
         try:
+            # Check if the message still exists
+            try:
+                await confession_msg.channel.fetch_message(confession_msg.id)
+            except discord.NotFound:
+                print(f"Confession message {confession_msg.id} not found")
+                return
+            
             # Create view with fallback buttons
             fallback_view = FallbackMediaView(confession_id, error_msg)
-            await confession_msg.edit(view=fallback_view)
+            
+            # Try to get current embed to preserve it
+            embed = confession_msg.embeds[0] if confession_msg.embeds else None
+            
+            # Edit the message with the new view
+            await confession_msg.edit(embed=embed, view=fallback_view)
+            
+            # Also add the persistent confession view components
+            final_view = PersistentConfessionView(confession_id, show_confess_button=False)
+            # We need to add the fallback buttons to the persistent view
+            for item in fallback_view.children:
+                final_view.add_item(item)
+            
+            await confession_msg.edit(view=final_view)
+            
+        except discord.HTTPException as e:
+            print(f"HTTP error adding fallback buttons: {e}")
+            # Try a simpler approach
+            try:
+                simple_view = ui.View(timeout=None)
+                simple_view.add_item(RetryMediaButton(confession_id, error_msg))
+                simple_view.add_item(ManualUploadButton(confession_id))
+                await confession_msg.edit(view=simple_view)
+            except Exception as e2:
+                print(f"Failed to add simple fallback buttons: {e2}")
         except Exception as e:
             print(f"Error adding fallback buttons: {e}")
+            import traceback
+            traceback.print_exc()
     
     async def log_confession(self, confession_id, image_url):
         """Log confession to log channel"""

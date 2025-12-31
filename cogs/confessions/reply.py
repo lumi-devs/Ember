@@ -66,39 +66,64 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             msg_received = await self.bot.wait_for("message", timeout=60.0, check=check)
             
             # Check if user wants to skip
-            if msg_received.content.lower().strip() != 'skip':
-                # Download and reupload media
-                success, result = await self.download_and_reupload_media(
-                    msg_received.content, 
-                    msg_received.attachments
-                )
-                
-                # Only delete the message AFTER successful media processing
-                try:
-                    await msg_received.delete()
-                except discord.Forbidden:
-                    print(f"No permission to delete message from {msg_received.author}")
-                except discord.NotFound:
-                    print("Message already deleted")
-                except Exception as e:
-                    print(f"Error deleting message: {e}")
-                
-                if success:
-                    await interaction.followup.send("✅ Media added to reply!", ephemeral=True)
-                    return result  # Returns the media URL
-                else:
-                    await interaction.followup.send(
-                        f"❌ Media processing failed: {result}\nContinuing without media.",
-                        ephemeral=True
-                    )
-                    return None
-            else:
+            if msg_received.content.lower().strip() == 'skip':
                 # User typed 'skip' - delete the skip message
                 try:
                     await msg_received.delete()
                 except:
                     pass
                 await interaction.followup.send("✅ Skipped media upload.", ephemeral=True)
+                return None
+            
+            # Check if message has media (attachments or valid URL)
+            has_attachments = len(msg_received.attachments) > 0
+            has_url = bool(extract_url(msg_received.content)) if msg_received.content else False
+            
+            if not has_attachments and not has_url:
+                # Invalid input - delete message and send error
+                try:
+                    await msg_received.delete()
+                except:
+                    pass
+                
+                # Send ephemeral message
+                await interaction.followup.send(
+                    "❌ No valid media found in your message.\n\n"
+                    "**Valid options are:**\n"
+                    "• Send an image URL\n"
+                    "• Upload an image file\n"
+                    "• Type `skip` to continue without media\n\n"
+                    "Continuing without media.",
+                    ephemeral=True
+                )
+                return None
+            
+            # Process valid media
+            success, result = await self.download_and_reupload_media(
+                msg_received.content, 
+                msg_received.attachments
+            )
+            
+            # Delete the message AFTER successful media processing
+            try:
+                await msg_received.delete()
+            except discord.Forbidden:
+                print(f"No permission to delete message from {msg_received.author}")
+            except discord.NotFound:
+                print("Message already deleted")
+            except Exception as e:
+                print(f"Error deleting message: {e}")
+            
+            if success:
+                await interaction.followup.send("✅ Media added to reply!", ephemeral=True)
+                return result  # Returns the media URL
+            else:
+                # Media processing failed
+                error_msg = result if isinstance(result, str) else "Unknown error occurred"
+                await interaction.followup.send(
+                    f"❌ Failed to process media: {error_msg}\nContinuing without media.",
+                    ephemeral=True
+                )
                 return None
                     
         except asyncio.TimeoutError:
