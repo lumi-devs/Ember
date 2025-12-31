@@ -186,40 +186,102 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             msg_received = await self.bot.wait_for("message", timeout=60.0, check=check)
             
             # Check if user wants to skip
-            if msg_received.content.lower().strip() == 'skip':
+            content_lower = msg_received.content.lower().strip()
+            if content_lower == 'skip':
                 # User typed 'skip' - delete the skip message
                 try:
                     await msg_received.delete()
                 except:
                     pass
                 await interaction.followup.send("✅ Skipped media upload.", ephemeral=True)
+                # Update previous confession's button if it exists
+                if hasattr(self, 'prev_confession_id') and self.prev_confession_id:
+                    await self.remove_prev_confess_button(self.prev_confession_id)
+                
+                # Create and attach persistent view WITH confess button
+                final_view = PersistentConfessionView(confession_id, show_confess_button=True)
+                await confession_msg.edit(view=final_view)
+                
+                # Log confession
+                await self.log_confession(confession_id, None)
+                
+                # Send final confirmation
+                thread = confession_msg.thread
+                if thread:
+                    thread_msg = f"A discussion thread has been created: {thread.mention}"
+                else:
+                    thread_msg = "Note: Could not create discussion thread."
+                
+                await interaction.followup.send(
+                    f"✅ Confession #{confession_id} is now public! {thread_msg}",
+                    ephemeral=True
+                )
                 return None
             
-            # Check if message has media (attachments or valid URL)
+            # Check if message has media
             has_attachments = len(msg_received.attachments) > 0
-            has_url = bool(extract_url(msg_received.content)) if msg_received.content else False
             
-            if not has_attachments and not has_url:
-                # Invalid input - send error and add fallback buttons
+            # Check for valid image URL (not just any URL)
+            has_valid_url = False
+            if msg_received.content and msg_received.content.strip():
+                # Extract URL first
+                url = extract_url(msg_received.content)
+                if url:
+                    # Check if it looks like an image URL
+                    url_lower = url.lower()
+                    image_extensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff']
+                    if any(url_lower.endswith(ext) for ext in image_extensions):
+                        has_valid_url = True
+                    elif 'tenor.com' in url_lower or 'giphy.com' in url_lower or 'imgur.com' in url_lower:
+                        has_valid_url = True
+                    elif 'media.discordapp.net' in url_lower or 'cdn.discordapp.com' in url_lower:
+                        has_valid_url = True
+            
+            if not has_attachments and not has_valid_url:
+                # Invalid input - delete message and send error
                 try:
                     await msg_received.delete()
                 except:
                     pass
                 
-                # Send ephemeral message
+                # Send detailed ephemeral message
+                error_msg = "❌ No valid media found in your message.\n\n"
+                
+                if msg_received.content and extract_url(msg_received.content):
+                    error_msg += "⚠️ The URL you provided doesn't appear to be an image link.\n"
+                    error_msg += "Please use direct image links (ending with .png/.jpg/.gif/.webp)\n\n"
+                else:
+                    error_msg += "**Valid options are:**\n"
+                    error_msg += "• Upload an image file (drag & drop)\n"
+                    error_msg += "• Send a direct image URL\n"
+                    error_msg += "• Type `skip` to continue without media\n\n"
+                
+                error_msg += "Continuing without media."
+                
+                await interaction.followup.send(error_msg, ephemeral=True)
+                
+                # Update previous confession's button if it exists
+                if hasattr(self, 'prev_confession_id') and self.prev_confession_id:
+                    await self.remove_prev_confess_button(self.prev_confession_id)
+                
+                # Create and attach persistent view WITH confess button
+                final_view = PersistentConfessionView(confession_id, show_confess_button=True)
+                await confession_msg.edit(view=final_view)
+                
+                # Log confession
+                await self.log_confession(confession_id, None)
+                
+                # Send final confirmation
+                thread = confession_msg.thread
+                if thread:
+                    thread_msg = f"A discussion thread has been created: {thread.mention}"
+                else:
+                    thread_msg = "Note: Could not create discussion thread."
+                
                 await interaction.followup.send(
-                    "❌ No valid media found in your message.\n\n"
-                    "**Valid options are:**\n"
-                    "• Send an image URL\n"
-                    "• Upload an image file\n"
-                    "• Type `skip` to continue without media\n\n"
-                    "Skipping media upload and adding fallback options to your confession.",
+                    f"✅ Confession #{confession_id} is now public! {thread_msg}",
                     ephemeral=True
                 )
-                
-                # Add fallback buttons to confession
-                await self.add_fallback_buttons(confession_msg, confession_id, 
-                                            "No valid media was provided. You can retry or upload manually.")
                 return None
             
             # Process valid media
@@ -240,29 +302,124 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 print(f"Error deleting message: {e}")
             
             if success:
+                # Update the embed with image
+                embed = confession_msg.embeds[0] if confession_msg.embeds else None
+                if embed:
+                    embed.set_image(url=result)
+                    async with aiosqlite.connect(DB_PATH) as db:
+                        await db.execute("UPDATE confessions SET image_url=? WHERE id=?", (result, confession_id))
+                        await db.commit()
+                
                 await interaction.followup.send("✅ Media added to confession!", ephemeral=True)
+                
+                # Update previous confession's button if it exists
+                if hasattr(self, 'prev_confession_id') and self.prev_confession_id:
+                    await self.remove_prev_confess_button(self.prev_confession_id)
+                
+                # Create and attach persistent view WITH confess button
+                final_view = PersistentConfessionView(confession_id, show_confess_button=True)
+                await confession_msg.edit(embed=embed, view=final_view)
+                
+                # Log confession
+                await self.log_confession(confession_id, result)
+                
+                # Send final confirmation
+                thread = confession_msg.thread
+                if thread:
+                    thread_msg = f"A discussion thread has been created: {thread.mention}"
+                else:
+                    thread_msg = "Note: Could not create discussion thread."
+                
+                await interaction.followup.send(
+                    f"✅ Confession #{confession_id} is now public! {thread_msg}",
+                    ephemeral=True
+                )
                 return result  # Returns the media URL
             else:
                 # Media processing failed
                 error_msg = result if isinstance(result, str) else "Unknown error occurred"
                 await interaction.followup.send(
-                    f"❌ Failed to process media: {error_msg}\n\n"
-                    "Adding fallback options to your confession.",
+                    f"❌ Failed to process media: {error_msg}\nContinuing without media.",
                     ephemeral=True
                 )
                 
                 # Add fallback buttons to confession
                 await self.add_fallback_buttons(confession_msg, confession_id, error_msg)
+                
+                # Update previous confession's button if it exists
+                if hasattr(self, 'prev_confession_id') and self.prev_confession_id:
+                    await self.remove_prev_confess_button(self.prev_confession_id)
+                
+                # Log confession
+                await self.log_confession(confession_id, None)
+                
+                # Send final confirmation
+                thread = confession_msg.thread
+                if thread:
+                    thread_msg = f"A discussion thread has been created: {thread.mention}"
+                else:
+                    thread_msg = "Note: Could not create discussion thread."
+                
+                await interaction.followup.send(
+                    f"✅ Confession #{confession_id} is now public! {thread_msg}",
+                    ephemeral=True
+                )
                 return None
                     
         except asyncio.TimeoutError:
             await interaction.followup.send("⏰ Media upload timed out. Continuing without media.", ephemeral=True)
+            
+            # Update previous confession's button if it exists
+            if hasattr(self, 'prev_confession_id') and self.prev_confession_id:
+                await self.remove_prev_confess_button(self.prev_confession_id)
+            
+            # Create and attach persistent view WITH confess button
+            final_view = PersistentConfessionView(confession_id, show_confess_button=True)
+            await confession_msg.edit(view=final_view)
+            
+            # Log confession
+            await self.log_confession(confession_id, None)
+            
+            # Send final confirmation
+            thread = confession_msg.thread
+            if thread:
+                thread_msg = f"A discussion thread has been created: {thread.mention}"
+            else:
+                thread_msg = "Note: Could not create discussion thread."
+            
+            await interaction.followup.send(
+                f"✅ Confession #{confession_id} is now public! {thread_msg}",
+                ephemeral=True
+            )
             return None
         except Exception as e:
             print(f"Error in wait_for_media: {e}")
             import traceback
             traceback.print_exc()
             await interaction.followup.send("❌ An error occurred while processing media.", ephemeral=True)
+            
+            # Update previous confession's button if it exists
+            if hasattr(self, 'prev_confession_id') and self.prev_confession_id:
+                await self.remove_prev_confess_button(self.prev_confession_id)
+            
+            # Create and attach persistent view WITH confess button
+            final_view = PersistentConfessionView(confession_id, show_confess_button=True)
+            await confession_msg.edit(view=final_view)
+            
+            # Log confession
+            await self.log_confession(confession_id, None)
+            
+            # Send final confirmation
+            thread = confession_msg.thread
+            if thread:
+                thread_msg = f"A discussion thread has been created: {thread.mention}"
+            else:
+                thread_msg = "Note: Could not create discussion thread."
+            
+            await interaction.followup.send(
+                f"✅ Confession #{confession_id} is now public! {thread_msg}",
+                ephemeral=True
+            )
             return None
 
     async def download_and_reupload_media(self, content, attachments, confession_id):

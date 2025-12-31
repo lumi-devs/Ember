@@ -66,36 +66,61 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             msg_received = await self.bot.wait_for("message", timeout=60.0, check=check)
             
             # Check if user wants to skip
-            if msg_received.content.lower().strip() == 'skip':
+            content_lower = msg_received.content.lower().strip()
+            if content_lower == 'skip':
                 # User typed 'skip' - delete the skip message
                 try:
                     await msg_received.delete()
                 except:
                     pass
                 await interaction.followup.send("✅ Skipped media upload.", ephemeral=True)
+                # Call finalize with no image
+                await self.finalize_reply_directly(None, interaction)
                 return None
             
-            # Check if message has media (attachments or valid URL)
+            # Check if message has media
             has_attachments = len(msg_received.attachments) > 0
-            has_url = bool(extract_url(msg_received.content)) if msg_received.content else False
             
-            if not has_attachments and not has_url:
+            # Check for valid image URL (not just any URL)
+            has_valid_url = False
+            if msg_received.content and msg_received.content.strip():
+                # Extract URL first
+                url = extract_url(msg_received.content)
+                if url:
+                    # Check if it looks like an image URL
+                    url_lower = url.lower()
+                    image_extensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff']
+                    if any(url_lower.endswith(ext) for ext in image_extensions):
+                        has_valid_url = True
+                    elif 'tenor.com' in url_lower or 'giphy.com' in url_lower or 'imgur.com' in url_lower:
+                        has_valid_url = True
+                    elif 'media.discordapp.net' in url_lower or 'cdn.discordapp.com' in url_lower:
+                        has_valid_url = True
+            
+            if not has_attachments and not has_valid_url:
                 # Invalid input - delete message and send error
                 try:
                     await msg_received.delete()
                 except:
                     pass
                 
-                # Send ephemeral message
-                await interaction.followup.send(
-                    "❌ No valid media found in your message.\n\n"
-                    "**Valid options are:**\n"
-                    "• Send an image URL\n"
-                    "• Upload an image file\n"
-                    "• Type `skip` to continue without media\n\n"
-                    "Continuing without media.",
-                    ephemeral=True
-                )
+                # Send detailed ephemeral message
+                error_msg = "❌ No valid media found in your message.\n\n"
+                
+                if msg_received.content and extract_url(msg_received.content):
+                    error_msg += "⚠️ The URL you provided doesn't appear to be an image link.\n"
+                    error_msg += "Please use direct image links (ending with .png/.jpg/.gif/.webp)\n\n"
+                else:
+                    error_msg += "**Valid options are:**\n"
+                    error_msg += "• Upload an image file (drag & drop)\n"
+                    error_msg += "• Send a direct image URL\n"
+                    error_msg += "• Type `skip` to continue without media\n\n"
+                
+                error_msg += "Continuing without media."
+                
+                await interaction.followup.send(error_msg, ephemeral=True)
+                # Call finalize with no image
+                await self.finalize_reply_directly(None, interaction)
                 return None
             
             # Process valid media
@@ -116,6 +141,8 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             
             if success:
                 await interaction.followup.send("✅ Media added to reply!", ephemeral=True)
+                # Call finalize with image URL
+                await self.finalize_reply_directly(result, interaction)
                 return result  # Returns the media URL
             else:
                 # Media processing failed
@@ -124,16 +151,22 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                     f"❌ Failed to process media: {error_msg}\nContinuing without media.",
                     ephemeral=True
                 )
+                # Call finalize with no image
+                await self.finalize_reply_directly(None, interaction)
                 return None
                     
         except asyncio.TimeoutError:
             await interaction.followup.send("⏰ Media upload timed out. Continuing without media.", ephemeral=True)
+            # Call finalize with no image
+            await self.finalize_reply_directly(None, interaction)
             return None
         except Exception as e:
             print(f"Error in wait_for_media: {e}")
             import traceback
             traceback.print_exc()
             await interaction.followup.send("❌ An error occurred while processing media.", ephemeral=True)
+            # Call finalize with no image
+            await self.finalize_reply_directly(None, interaction)
             return None
 
     async def download_and_reupload_media(self, content, attachments):
