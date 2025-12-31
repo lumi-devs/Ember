@@ -153,7 +153,7 @@ class RoleConflictView(ui.View):
         self.decision = None
         self.bot = bot  # Store bot instance
     
-    @ui.button(label="🔄 Switch to New Role", style=ButtonStyle.success, emoji="🔄")
+    @ui.button(label="🔄 Switch to New Role", style=ButtonStyle.secondary, emoji="🔄")
     async def switch_button(self, inter: Interaction, button: ui.Button):
         self.decision = "switch"
         self.stop()
@@ -238,7 +238,7 @@ class RoleConflictView(ui.View):
         except Exception as e:
             await inter.followup.send(f"❌ Failed to switch roles: {e}", ephemeral=True)
     
-    @ui.button(label="💎 Keep Current Role", style=ButtonStyle.primary, emoji="💎")
+    @ui.button(label="💎 Keep Current Role", style=ButtonStyle.secondary, emoji="💎")
     async def keep_button(self, inter: Interaction, button: ui.Button):
         self.decision = "keep"
         self.stop()
@@ -268,37 +268,7 @@ class RoleConflictView(ui.View):
             pass
         
         await inter.followup.send("✅ You've kept your current role. The new invitation has been declined.", ephemeral=True)
-    
-    @ui.button(label="❌ Decline New Role", style=ButtonStyle.danger, emoji="🚫")
-    async def decline_button(self, inter: Interaction, button: ui.Button):
-        self.decision = "decline"
-        self.stop()
-        
-        # Disable all buttons
-        for child in self.children:
-            child.disabled = True
-        
-        await inter.response.edit_message(
-            content="❌ **Declining new role...**",
-            view=self
-        )
-        
-        # Update database - remove the invitation
-        db = await get_db()
-        await db.remove_bestowed(self.new_owner.id, inter.user.id)
-        
-        # Notify the new owner
-        try:
-            notify_embed = Embed(
-                title="❌ Invitation Declined",
-                description=f"{inter.user.mention} has declined your role invitation.",
-                color=Color.red()
-            )
-            await self.new_owner.send(embed=notify_embed)
-        except:
-            pass
-        
-        await inter.followup.send("✅ New role invitation declined.", ephemeral=True)
+
 
 class IconSetupView(ui.View):
     """View for setting up role icons"""
