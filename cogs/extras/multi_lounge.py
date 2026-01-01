@@ -37,13 +37,13 @@ class DynamicLounges(commands.Cog):
         # Configuration - SET YOUR INITIAL CHANNEL ID HERE
         self.initial_channel_id = 1455864869030068285  # REPLACE THIS WITH YOUR LOUNGE3 CHANNEL ID
         
-        # Lounge name format
+        # Lounge name format (promotion emoji at the END)
         self.base_name = "┊ 🔊﹕₊˚⌇lounge"
         self.name_suffix = "  ꜝꜝ‹3"
         
         # System settings
         self.inactivity_timer = 300      # Base: 5 minutes for deletion
-        self.creation_delay = 60        # 1 minutes delay before creating new lounge
+        self.creation_delay = 60         # 1 minutes delay before creating new lounge
         self.max_lounges = 15            # Maximum number of lounges
         self.anti_spam_cooldown = 30     # User cooldown in seconds
         self.min_users_per_lounge = 2    # Minimum users needed PER LOUNGE to allow next creation
@@ -59,9 +59,9 @@ class DynamicLounges(commands.Cog):
         }
         self.default_capacity = 4  # For lounges beyond defined rules
         
-        # **ENHANCEMENT 1: PROMOTION SYSTEM**
+        # **ENHANCEMENT 1: PROMOTION SYSTEM** (emoji at END)
         self.promotion_rules = {
-            LoungeTier.NORMAL: {"min_users": 2, "capacity_boost": 0, "emoji": "🟢"},
+            LoungeTier.NORMAL: {"min_users": 2, "capacity_boost": 0, "emoji": ""},  # No emoji for normal
             LoungeTier.POPULAR: {"min_users": 5, "duration_minutes": 30, "capacity_boost": 2, "emoji": "⭐"},
             LoungeTier.PREMIUM: {"min_users": 8, "duration_minutes": 60, "capacity_boost": 4, "emoji": "💎"},
             LoungeTier.ELITE: {"min_users": 10, "duration_minutes": 120, "capacity_boost": 6, "emoji": "👑"},
@@ -138,13 +138,31 @@ class DynamicLounges(commands.Cog):
     
     def parse_lounge_number(self, channel_name: str) -> Optional[int]:
         """Extract lounge number from fancy name format"""
-        match = re.search(r'lounge\s*(\d+)', channel_name, re.IGNORECASE)
+        # Remove promotion emojis from the end
+        clean_name = channel_name
+        
+        # Remove promotion emojis if they exist at the end
+        for tier in [LoungeTier.POPULAR, LoungeTier.PREMIUM, LoungeTier.ELITE]:
+            emoji = self.promotion_rules[tier]["emoji"]
+            if clean_name.endswith(emoji):
+                clean_name = clean_name[:-len(emoji)].strip()
+        
+        # Now extract number
+        match = re.search(r'lounge\s*(\d+)', clean_name, re.IGNORECASE)
         return int(match.group(1)) if match else None
     
     def get_lounge_name(self, number: int, tier: LoungeTier = LoungeTier.NORMAL) -> str:
-        """Generate proper lounge name with format and tier emoji"""
-        emoji = self.promotion_rules[tier]["emoji"]
-        return f"{emoji} {self.base_name} {number}{self.name_suffix}"
+        """Generate proper lounge name with promotion emoji at the END"""
+        tier_emoji = self.promotion_rules[tier]["emoji"]
+        
+        # Format: Base Name Number Suffix [Promotion Emoji]
+        # Example: "┊ 🔊﹕₊˚⌇lounge 3 ꜝꜝ‹3" or "┊ 🔊﹕₊˚⌇lounge 4 ꜝꜝ‹3 ⭐"
+        base_name = f"{self.base_name} {number}{self.name_suffix}"
+        
+        if tier_emoji:
+            return f"{base_name} {tier_emoji}"
+        else:
+            return base_name
     
     def is_lounge_channel(self, channel: discord.VoiceChannel) -> bool:
         """Check if a channel is a lounge channel"""
@@ -166,6 +184,44 @@ class DynamicLounges(commands.Cog):
         # Sort by lounge number
         lounges.sort(key=lambda x: x[0])
         return [channel for _, channel in lounges]
+    
+    async def get_lounge_position_info(self, guild: discord.Guild) -> Tuple[int, discord.VoiceChannel]:
+        """Get the correct position to insert new lounge (RIGHT BELOW Lounge3)"""
+        # Find Lounge3
+        initial_channel = await self.get_initial_channel(guild)
+        if not initial_channel:
+            logger.error("Lounge3 not found!")
+            return 0, None
+        
+        # Get Lounge3's position
+        lounge3_position = initial_channel.position
+        
+        # Find the next channel after Lounge3
+        all_voice_channels = sorted(guild.voice_channels, key=lambda x: x.position)
+        
+        # Find index of Lounge3
+        lounge3_index = -1
+        for i, channel in enumerate(all_voice_channels):
+            if channel.id == initial_channel.id:
+                lounge3_index = i
+                break
+        
+        if lounge3_index == -1:
+            return lounge3_position + 1, initial_channel
+        
+        # Check if there's already a lounge after Lounge3
+        next_channel_index = lounge3_index + 1
+        
+        # Count how many lounges already exist after Lounge3
+        existing_lounges_after = 0
+        for i in range(next_channel_index, len(all_voice_channels)):
+            if self.is_lounge_channel(all_voice_channels[i]):
+                existing_lounges_after += 1
+        
+        # Position for new lounge: right after Lounge3 + number of existing lounges after
+        new_position = lounge3_position + 1 + existing_lounges_after
+        
+        return new_position, initial_channel
     
     async def should_create_new_lounge(self, guild: discord.Guild) -> bool:
         """Check if we should create a new lounge - ALL previous must have 2+ users"""
@@ -279,7 +335,7 @@ class DynamicLounges(commands.Cog):
                 except Exception as e:
                     logger.error(f"Failed to update capacity for {lounge.name}: {e}")
             
-            # Rename with new tier emoji
+            # Update name with promotion emoji at the END
             await self.rename_lounges_sequentially(lounge.guild)
             
             # Send promotion announcement
@@ -296,7 +352,7 @@ class DynamicLounges(commands.Cog):
                 logger.error(f"Failed to send promotion announcement: {e}")
     
     async def create_new_lounge(self, guild: discord.Guild):
-        """Create a new lounge channel below the last one"""
+        """Create a new lounge channel RIGHT BELOW Lounge3 (not at the end)"""
         async with self.creating_lock:
             # Check if we're already at max
             lounges = await self.get_all_lounges_sorted(guild)
@@ -321,25 +377,22 @@ class DynamicLounges(commands.Cog):
             base_capacity = self.get_base_capacity(new_number)
             
             try:
-                # Get category from existing lounge
-                category = lounges[0].category if lounges[0].category else None
+                # Get category from Lounge3
+                initial_channel = await self.get_initial_channel(guild)
+                if not initial_channel:
+                    logger.error("Lounge3 not found!")
+                    return None
                 
-                # Get position - place it below the last lounge by position
-                lounges_by_pos = sorted(
-                    [c for c in guild.voice_channels if self.is_lounge_channel(c)],
-                    key=lambda x: x.position
-                )
-                if lounges_by_pos:
-                    last_lounge = lounges_by_pos[-1]
-                    position = last_lounge.position + 1
-                else:
-                    position = 0
+                category = initial_channel.category if initial_channel.category else None
+                
+                # **FIXED: Get position RIGHT BELOW Lounge3**
+                new_position, lounge3 = await self.get_lounge_position_info(guild)
                 
                 # Create the new lounge
                 new_channel = await guild.create_voice_channel(
                     name=new_name,
                     category=category,
-                    position=position,
+                    position=new_position,  # Position it correctly
                     user_limit=base_capacity if base_capacity != float('inf') else 0
                 )
                 
@@ -351,9 +404,9 @@ class DynamicLounges(commands.Cog):
                 )
                 
                 self.stats["channels_created"] += 1
-                logger.info(f"Created new lounge: {new_name} with capacity {base_capacity}")
+                logger.info(f"Created new lounge: {new_name} with capacity {base_capacity} at position {new_position}")
                 
-                # Rename all lounges to ensure sequential numbering
+                # Update all lounge names with correct numbering
                 await self.rename_lounges_sequentially(guild)
                 
                 return new_channel
@@ -586,7 +639,7 @@ class DynamicLounges(commands.Cog):
                             try:
                                 await user.send(
                                     f"👋 You're being moved from {current_channel.name} to {next_lounge.name} "
-                                    f"to keep lounges active and social!"
+                                    f"to keep lounges active and social!\n"
                                     f"Try out <#1431227839050682579> if you want to have a duo lounge!"
                                 )
                             except:
@@ -721,7 +774,7 @@ class DynamicLounges(commands.Cog):
                 
                 # Get tier info
                 tier = LoungeTier.NORMAL
-                tier_emoji = self.promotion_rules[LoungeTier.NORMAL]["emoji"]
+                tier_emoji = ""  # No emoji for normal tier
                 lounge_data = self.lounge_data.get(lounge.id)
                 if lounge_data:
                     tier = lounge_data.tier
@@ -737,7 +790,7 @@ class DynamicLounges(commands.Cog):
                     status = "🚫"
                 
                 lounge_info.append(
-                    f"{status} {tier_emoji} **{lounge.name}:** {members}/{capacity_str} users"
+                    f"{status} **{lounge.name}:** {members}/{capacity_str} users"
                 )
         
         if lounge_info:
@@ -782,6 +835,7 @@ class DynamicLounges(commands.Cog):
             f"**Initial Channel ID:** {self.initial_channel_id}\n"
             f"**Max Lounges:** {self.max_lounges}\n"
             f"**Min Users Per Lounge:** {self.min_users_per_lounge}\n"
+            f"**Creation Delay:** {self.creation_delay} seconds\n"
             f"**Rule:** ALL lounges must have {self.min_users_per_lounge}+ users to create next"
         )
         
@@ -847,7 +901,7 @@ class DynamicLounges(commands.Cog):
             except Exception as e:
                 logger.error(f"Failed to update capacity: {e}")
         
-        # Rename with new tier
+        # Update name with promotion emoji at the END
         await self.rename_lounges_sequentially(ctx.guild)
         
         await ctx.send(f"✅ {target_lounge.name} manually promoted to **{next_tier.value.upper()}** tier!")

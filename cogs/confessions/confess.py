@@ -202,9 +202,6 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 final_view = PersistentConfessionView(confession_id, show_confess_button=True)
                 await confession_msg.edit(view=final_view)
                 
-                # Log confession
-                await self.log_confession(confession_id, None)
-                
                 # Send final confirmation
                 thread = confession_msg.thread
                 if thread:
@@ -231,8 +228,6 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                     url_lower = url.lower()
                     image_extensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff']
                     if any(url_lower.endswith(ext) for ext in image_extensions):
-                        has_valid_url = True
-                    elif 'tenor.com' in url_lower or 'giphy.com' in url_lower or 'imgur.com' in url_lower:
                         has_valid_url = True
                     elif 'media.discordapp.net' in url_lower or 'cdn.discordapp.com' in url_lower:
                         has_valid_url = True
@@ -268,8 +263,6 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 final_view = PersistentConfessionView(confession_id, show_confess_button=True)
                 await confession_msg.edit(view=final_view)
                 
-                # Log confession
-                await self.log_confession(confession_id, None)
                 
                 # Send final confirmation
                 thread = confession_msg.thread
@@ -320,9 +313,6 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 final_view = PersistentConfessionView(confession_id, show_confess_button=True)
                 await confession_msg.edit(embed=embed, view=final_view)
                 
-                # Log confession
-                await self.log_confession(confession_id, result)
-                
                 # Send final confirmation
                 thread = confession_msg.thread
                 if thread:
@@ -350,9 +340,6 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 if hasattr(self, 'prev_confession_id') and self.prev_confession_id:
                     await self.remove_prev_confess_button(self.prev_confession_id)
                 
-                # Log confession
-                await self.log_confession(confession_id, None)
-                
                 # Send final confirmation
                 thread = confession_msg.thread
                 if thread:
@@ -376,9 +363,6 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             # Create and attach persistent view WITH confess button
             final_view = PersistentConfessionView(confession_id, show_confess_button=True)
             await confession_msg.edit(view=final_view)
-            
-            # Log confession
-            await self.log_confession(confession_id, None)
             
             # Send final confirmation
             thread = confession_msg.thread
@@ -406,9 +390,6 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             final_view = PersistentConfessionView(confession_id, show_confess_button=True)
             await confession_msg.edit(view=final_view)
             
-            # Log confession
-            await self.log_confession(confession_id, None)
-            
             # Send final confirmation
             thread = confession_msg.thread
             if thread:
@@ -421,7 +402,6 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 ephemeral=True
             )
             return None
-
     async def download_and_reupload_media(self, content, attachments, confession_id):
         """Download media and re-upload to media channel, then return new URL"""
         try:
