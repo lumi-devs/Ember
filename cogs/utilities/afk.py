@@ -322,14 +322,6 @@ class AFK(commands.Cog):
                 except:
                     pass
                 return False
-            
-    async def _clear_afk_cooldown(self, user_id: int):
-        """Clear the AFK removal cooldown after a delay."""
-        await asyncio.sleep(5)  # Wait 5 seconds before allowing another AFK removal
-        if user_id in self._afk_removal_cooldown:
-            # Only clear if it's the old timestamp (to avoid clearing a new AFK set)
-            if time.time() - self._afk_removal_cooldown[user_id] >= 5:
-                del self._afk_removal_cooldown[user_id]
     
     async def _flush_batch(self, inserts: list, deletes: list):
         """Flush batch to database."""
@@ -394,7 +386,7 @@ class AFK(commands.Cog):
         entry = AFKEntry(user_id, reason, datetime.now(timezone.utc))
         self._afk_cache[user_id] = entry
         
-        # ✅ Reset removal cooldown when setting AFK
+        # Reset removal cooldown when setting AFK
         self._afk_removal_cooldown[user_id] = time.time()
         
         # Update guild cache
@@ -580,7 +572,7 @@ class AFK(commands.Cog):
         embed.add_field(name="Cache Hit Ratio", value=f"{ratio:.1f}%", inline=True)
         
         embed.set_footer(text=f"Guilds tracked: {len(self._guild_afk_cache)}")
-        await ctx.reply(embed=embed, mention_author=False)
+        await ctx.reply(embed=embed, mention_uthor=False)
     
     # ─── LISTENERS (COMPATIBLE) ────────────────────────────────────
 
@@ -616,16 +608,22 @@ class AFK(commands.Cog):
             
             # Only remove AFK if it's NOT a command
             if not is_command:
-                # ✅ CRITICAL FIX: Check if we're already processing AFK removal for this user
-                if message.author.id in self._afk_removal_cooldown:
-                    # Check if it's been at least 2 seconds since last removal attempt
-                    if time.time() - self._afk_removal_cooldown[message.author.id] < self._min_afk_duration:
-                        return  # Don't process AFK removal yet
-                
-                removed = await self.remove_afk(message.author.id)
-                
-                if removed:  # Only show welcome back if actually removed
-                    # ✅ Update removal cooldown immediately
+                # ✅ CRITICAL FIX: Remove from cache immediately to prevent duplicate messages
+                if message.author.id in self._afk_cache:
+                    # Store entry before removing (for the welcome back message)
+                    afk_entry = self._afk_cache[message.author.id]
+                    
+                    # Remove from cache IMMEDIATELY (prevents second message from triggering)
+                    del self._afk_cache[message.author.id]
+                    
+                    # Update guild cache immediately
+                    for guild_id in self._guild_afk_cache:
+                        self._guild_afk_cache[guild_id].discard(message.author.id)
+                    
+                    # Queue async DB removal (but cache is already cleared)
+                    await self._write_queue.put(('remove_afk', message.author.id))
+                    
+                    # Update cooldown
                     self._afk_removal_cooldown[message.author.id] = time.time()
                     
                     # Remove AFK from nickname
@@ -638,16 +636,11 @@ class AFK(commands.Cog):
                     # Send welcome back message
                     embed = discord.Embed(
                         title="👋 Welcome Back!",
-                        description=f"{message.author.mention}, AFK removed.\nYou had been AFK for **{entry.human_readable_duration}**.",
+                        description=f"{message.author.mention}, AFK removed.\nYou had been AFK for **{afk_entry.human_readable_duration}**.",
                         color=AFK_REMOVED_COLOR
                     )
                     msg = await message.channel.send(embed=embed)
                     asyncio.create_task(self._auto_delete_message(msg, 20))
-                    
-                    # ✅ CRITICAL: Set a flag to prevent immediate re-triggering
-                    # This ensures subsequent messages from the same user don't trigger AFK removal
-                    # for a short period while the async operations complete
-                    asyncio.create_task(self._clear_afk_cooldown(message.author.id))
         
         # Always process commands (in case not processed above)
         await self.bot.process_commands(message)
