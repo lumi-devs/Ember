@@ -43,7 +43,7 @@ class DynamicLounges(commands.Cog):
         
         # System settings
         self.inactivity_timer = 300      # Base: 5 minutes for deletion
-        self.creation_delay = 60         # 1 minutes delay before creating new lounge
+        self.creation_delay = 30         # 1 minutes delay before creating new lounge
         self.max_lounges = 15            # Maximum number of lounges
         self.anti_spam_cooldown = 30     # User cooldown in seconds
         self.min_users_per_lounge = 2    # Minimum users needed PER LOUNGE to allow next creation
