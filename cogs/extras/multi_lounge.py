@@ -32,6 +32,7 @@ class DynamicLounges(commands.Cog):
         self.bot = bot
         self.creating_lock = asyncio.Lock()
         self.renaming_lock = asyncio.Lock()
+        self.position_lock = asyncio.Lock()  # NEW: Lock for position management
         self.cooldowns: Dict[int, float] = {}  # user_id: timestamp
         
         # Configuration - SET YOUR INITIAL CHANNEL ID HERE
@@ -43,7 +44,7 @@ class DynamicLounges(commands.Cog):
         
         # System settings
         self.inactivity_timer = 300      # Base: 5 minutes for deletion
-        self.creation_delay = 30         # 1 minutes delay before creating new lounge
+        self.creation_delay = 30         # 30 seconds delay before creating new lounge
         self.max_lounges = 15            # Maximum number of lounges
         self.anti_spam_cooldown = 30     # User cooldown in seconds
         self.min_users_per_lounge = 2    # Minimum users needed PER LOUNGE to allow next creation
@@ -185,63 +186,32 @@ class DynamicLounges(commands.Cog):
         lounges.sort(key=lambda x: x[0])
         return [channel for _, channel in lounges]
     
-    async def get_lounge_position_info(self, guild: discord.Guild) -> Tuple[int, discord.VoiceChannel]:
-        """Get the correct position to insert new lounge (RIGHT BELOW Lounge3)"""
-        # Find Lounge3
-        initial_channel = await self.get_initial_channel(guild)
-        if not initial_channel:
-            logger.error("Lounge3 not found!")
-            return 0, None
-        
-        # Get Lounge3's position
-        lounge3_position = initial_channel.position
-        
-        # Find the next channel after Lounge3
-        all_voice_channels = sorted(guild.voice_channels, key=lambda x: x.position)
-        
-        # Find index of Lounge3
-        lounge3_index = -1
-        for i, channel in enumerate(all_voice_channels):
-            if channel.id == initial_channel.id:
-                lounge3_index = i
-                break
-        
-        if lounge3_index == -1:
-            return lounge3_position + 1, initial_channel
-        
-        # Check if there's already a lounge after Lounge3
-        next_channel_index = lounge3_index + 1
-        
-        # Count how many lounges already exist after Lounge3
-        existing_lounges_after = 0
-        for i in range(next_channel_index, len(all_voice_channels)):
-            if self.is_lounge_channel(all_voice_channels[i]):
-                existing_lounges_after += 1
-        
-        # Position for new lounge: right after Lounge3 + number of existing lounges after
-        new_position = lounge3_position + 1 + existing_lounges_after
-        
-        return new_position, initial_channel
-    
     async def should_create_new_lounge(self, guild: discord.Guild) -> bool:
         """Check if we should create a new lounge - ALL previous must have 2+ users"""
         lounges = await self.get_all_lounges_sorted(guild)
         
         # Don't create if at max
         if len(lounges) >= self.max_lounges:
+            logger.info(f"Max lounges reached ({self.max_lounges}), not creating new")
             return False
         
-        # If no lounges or only Lounge3 exists
+        # If no lounges exist (shouldn't happen with Lounge3)
         if len(lounges) == 0:
+            logger.warning("No lounges found in guild")
             return False
         
         # Check if ALL lounges have at least 2 users
         for lounge in lounges:
-            if len(lounge.members) < self.min_users_per_lounge:
-                logger.info(f"Not creating new lounge: {lounge.name} has only {len(lounge.members)} users")
+            member_count = len(lounge.members)
+            if member_count < self.min_users_per_lounge:
+                logger.info(f"❌ Not creating new lounge: {lounge.name} has only {member_count} users (needs {self.min_users_per_lounge})")
+                # Log all lounge statuses for debugging
+                statuses = [f"{l.name}: {len(l.members)} users" for l in lounges]
+                logger.info(f"Current lounge statuses: {', '.join(statuses)}")
                 return False
         
-        # All existing lounges have at least 2 users
+        # Log success
+        logger.info(f"✅ All lounges have {self.min_users_per_lounge}+ users, ready to create new lounge")
         return True
     
     async def rename_lounges_sequentially(self, guild: discord.Guild):
@@ -351,12 +321,62 @@ class DynamicLounges(commands.Cog):
             except Exception as e:
                 logger.error(f"Failed to send promotion announcement: {e}")
     
+    async def get_new_lounge_position(self, guild: discord.Guild) -> Tuple[int, Optional[discord.VoiceChannel]]:
+        """Calculate position for new lounge - should be AFTER the highest lounge number"""
+        async with self.position_lock:
+            lounges = await self.get_all_lounges_sorted(guild)
+            
+            if not lounges:
+                # If no lounges, position it after Lounge3
+                initial = await self.get_initial_channel(guild)
+                if initial:
+                    return initial.position + 1, initial
+                return 0, None
+            
+            # Find the highest numbered lounge
+            highest_lounge = lounges[-1]
+            
+            # Position it right after the highest lounge
+            # Get all channels in the category to calculate proper position
+            category = highest_lounge.category
+            if not category:
+                return highest_lounge.position + 1, highest_lounge
+            
+            # Get all voice channels in the category
+            voice_channels = sorted([ch for ch in category.channels if isinstance(ch, discord.VoiceChannel)], 
+                                   key=lambda x: x.position)
+            
+            # Find index of highest lounge
+            for i, ch in enumerate(voice_channels):
+                if ch.id == highest_lounge.id:
+                    # Position should be right after this lounge
+                    # But check if there's already another lounge after it
+                    if i + 1 < len(voice_channels):
+                        next_channel = voice_channels[i + 1]
+                        if self.is_lounge_channel(next_channel):
+                            # There's already a lounge after, this shouldn't happen with proper sorting
+                            # Move it to the end of all lounges
+                            for j in range(i + 1, len(voice_channels)):
+                                if not self.is_lounge_channel(voice_channels[j]):
+                                    return voice_channels[j].position, highest_lounge
+                            return voice_channels[-1].position + 1, highest_lounge
+                    
+                    return highest_lounge.position + 1, highest_lounge
+            
+            # Fallback
+            return highest_lounge.position + 1, highest_lounge
+    
     async def create_new_lounge(self, guild: discord.Guild):
-        """Create a new lounge channel RIGHT BELOW Lounge3 (not at the end)"""
+        """Create a new lounge channel RIGHT AFTER the highest lounge"""
         async with self.creating_lock:
-            # Check if we're already at max
+            # Double-check condition before creating
+            if not await self.should_create_new_lounge(guild):
+                logger.info("Creation condition not met after lock acquisition")
+                return None
+            
             lounges = await self.get_all_lounges_sorted(guild)
             if len(lounges) >= self.max_lounges:
+                logger.info(f"Already at max lounges ({self.max_lounges})")
                 return None
             
             if not lounges:
@@ -377,22 +397,20 @@ class DynamicLounges(commands.Cog):
             base_capacity = self.get_base_capacity(new_number)
             
             try:
-                # Get category from Lounge3
-                initial_channel = await self.get_initial_channel(guild)
-                if not initial_channel:
-                    logger.error("Lounge3 not found!")
-                    return None
+                # Get category from highest lounge
+                highest_lounge = lounges[-1]
+                category = highest_lounge.category if highest_lounge.category else None
                 
-                category = initial_channel.category if initial_channel.category else None
+                # Get the correct position
+                new_position, after_lounge = await self.get_new_lounge_position(guild)
                 
-                # **FIXED: Get position RIGHT BELOW Lounge3**
-                new_position, lounge3 = await self.get_lounge_position_info(guild)
+                logger.info(f"Creating lounge {new_number} at position {new_position} after {after_lounge.name if after_lounge else 'nothing'}")
                 
                 # Create the new lounge
                 new_channel = await guild.create_voice_channel(
                     name=new_name,
                     category=category,
-                    position=new_position,  # Position it correctly
+                    position=new_position,  # Correctly positioned
                     user_limit=base_capacity if base_capacity != float('inf') else 0
                 )
                 
@@ -404,15 +422,25 @@ class DynamicLounges(commands.Cog):
                 )
                 
                 self.stats["channels_created"] += 1
-                logger.info(f"Created new lounge: {new_name} with capacity {base_capacity} at position {new_position}")
+                logger.info(f"✅ Created new lounge: {new_name} with capacity {base_capacity} at position {new_position}")
                 
                 # Update all lounge names with correct numbering
                 await self.rename_lounges_sequentially(guild)
                 
+                # Verify position
+                await asyncio.sleep(0.5)  # Let Discord settle
+                actual_position = new_channel.position
+                if actual_position != new_position:
+                    logger.warning(f"Position mismatch: Expected {new_position}, got {actual_position}. Fixing...")
+                    try:
+                        await new_channel.edit(position=new_position)
+                    except Exception as e:
+                        logger.error(f"Failed to fix position: {e}")
+                
                 return new_channel
                 
             except Exception as e:
-                logger.error(f"Failed to create lounge: {e}")
+                logger.error(f"❌ Failed to create lounge: {e}")
                 return None
     
     async def schedule_lounge_deletion(self, channel: discord.VoiceChannel):
@@ -441,7 +469,7 @@ class DynamicLounges(commands.Cog):
                     try:
                         await channel.delete()
                         self.stats["channels_deleted"] += 1
-                        logger.info(f"Deleted empty lounge: {channel.name}")
+                        logger.info(f"🧹 Deleted empty lounge: {channel.name}")
                         
                         # Remove from lounge data
                         self.lounge_data.pop(channel.id, None)
@@ -479,9 +507,11 @@ class DynamicLounges(commands.Cog):
         
         self.last_check[channel_id] = current_time
         
-        # Check if ALL lounges have 2+ users
+        # **FIXED: Check if ALL lounges have 2+ users BEFORE creating**
         if await self.should_create_new_lounge(guild):
             await self.create_new_lounge(guild)
+        else:
+            logger.info("❌ Creation check failed after delay, not creating new lounge")
         
         self.pending_creations.pop(channel_id, None)
     
@@ -518,7 +548,7 @@ class DynamicLounges(commands.Cog):
         # Check for promotion
         await self.check_and_promote_lounge(channel)
         
-        # Check if we should create a new lounge
+        # **FIXED: Only trigger creation from the highest lounge when ALL lounges have 2+ users**
         lounges = await self.get_all_lounges_sorted(channel.guild)
         if not lounges:
             return
@@ -529,29 +559,39 @@ class DynamicLounges(commands.Cog):
             return
         
         # Check if this is the highest lounge
-        highest_number = 0
+        is_highest = False
         for lounge in lounges:
             num = self.parse_lounge_number(lounge.name)
-            if num and num > highest_number:
-                highest_number = num
+            if num and num > current_number:
+                is_highest = False
+                break
+        else:
+            is_highest = True
         
         # Only trigger from highest lounge
-        if current_number != highest_number:
+        if not is_highest:
             return
         
-        # Check if ALL lounges now have 2+ users
+        # **FIXED: Check if ALL lounges now have 2+ users**
         all_have_min_users = True
         for lounge in lounges:
             if len(lounge.members) < self.min_users_per_lounge:
                 all_have_min_users = False
+                logger.info(f"Cannot create new lounge: {lounge.name} has only {len(lounge.members)} users")
                 break
         
         if all_have_min_users:
             if channel.id not in self.pending_creations:
+                logger.info(f"✅ All lounges have {self.min_users_per_lounge}+ users, scheduling new lounge creation in {self.creation_delay}s")
                 task = asyncio.create_task(
                     self.check_and_create_lounge_delayed(channel.guild, channel.id)
                 )
                 self.pending_creations[channel.id] = task
+        else:
+            # Cancel any pending creations since condition isn't met
+            if channel.id in self.pending_creations:
+                self.pending_creations[channel.id].cancel()
+                self.pending_creations.pop(channel.id, None)
     
     async def handle_member_leave(self, member: discord.Member, channel: discord.VoiceChannel):
         """Handle member leaving a lounge"""
@@ -569,15 +609,16 @@ class DynamicLounges(commands.Cog):
             self.pending_creations[channel.id].cancel()
             self.pending_creations.pop(channel.id, None)
         
-        # Also cancel pending creations for any lounge
-        # Because if one lounge drops below 2 users, we can't create new one
+        # **FIXED: Also cancel ALL pending creations if ANY lounge now has <2 users**
         lounges = await self.get_all_lounges_sorted(channel.guild)
         for lounge in lounges:
             if len(lounge.members) < self.min_users_per_lounge:
-                # Cancel all pending creations if any lounge has <2 users
+                # Cancel ALL pending creations if any lounge has <2 users
                 for task_id in list(self.pending_creations.keys()):
-                    self.pending_creations[task_id].cancel()
-                    self.pending_creations.pop(task_id, None)
+                    task = self.pending_creations.pop(task_id, None)
+                    if task:
+                        task.cancel()
+                logger.info(f"Cancelled all pending creations: {lounge.name} now has {len(lounge.members)} users")
                 break
     
     async def handle_anti_hogging(self, guild: discord.Guild):
@@ -707,6 +748,12 @@ class DynamicLounges(commands.Cog):
                 
                 # Ensure sequential naming
                 await self.rename_lounges_sequentially(guild)
+                
+                # Log current lounge status
+                lounges = await self.get_all_lounges_sorted(guild)
+                if lounges:
+                    statuses = [f"{l.name}: {len(l.members)} users" for l in lounges]
+                    logger.info(f"🧹 Cleanup check - Lounges: {', '.join(statuses)}")
                 
             except Exception as e:
                 logger.error(f"Cleanup error in {guild.name}: {e}")
