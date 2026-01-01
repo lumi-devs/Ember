@@ -146,6 +146,10 @@ class AFK(commands.Cog):
         self._last_mentions: Dict[int, float] = {}  # Channel ID -> timestamp
         self._mention_cooldown = 5.0  # 5 seconds between mention messages per channel
         
+        # AFK removal cooldown - NEW: prevent rapid AFK toggling
+        self._afk_removal_cooldown: Dict[int, float] = {}
+        self._min_afk_duration = 2.0  # Minimum seconds before AFK can be removed
+        
         # Performance tracking
         self.stats = {
             'messages_processed': 0,
@@ -382,6 +386,9 @@ class AFK(commands.Cog):
         entry = AFKEntry(user_id, reason, datetime.now(timezone.utc))
         self._afk_cache[user_id] = entry
         
+        # Reset removal cooldown when setting AFK
+        self._afk_removal_cooldown[user_id] = time.time()
+        
         # Update guild cache
         for guild in self.bot.guilds:
             if guild.get_member(user_id):
@@ -392,8 +399,15 @@ class AFK(commands.Cog):
         # Queue for batch write
         await self._write_queue.put(('set_afk', (user_id, reason)))
     
-    async def remove_afk(self, user_id: int):
-        """Remove user from AFK."""
+    async def remove_afk(self, user_id: int) -> bool:
+        """Remove user from AFK with cooldown check."""
+        current_time = time.time()
+        last_set = self._afk_removal_cooldown.get(user_id, 0)
+        
+        # Check if AFK was set recently (prevent rapid removal)
+        if current_time - last_set < self._min_afk_duration:
+            return False  # Too soon to remove
+        
         if user_id in self._afk_cache:
             del self._afk_cache[user_id]
         
@@ -403,6 +417,8 @@ class AFK(commands.Cog):
         
         # Queue for batch delete
         await self._write_queue.put(('remove_afk', user_id))
+        self._afk_removal_cooldown[user_id] = current_time
+        return True
     
     async def get_all_afk(self):
         """Get all AFK users - COMPATIBLE with existing method."""
@@ -567,34 +583,51 @@ class AFK(commands.Cog):
         
         self.stats['messages_processed'] += 1
         
-        # Check if this is a command (check for bot prefix)
-        content = message.content.strip()
-        is_command = content.startswith(tuple(await self.bot.get_prefix(message)))
+        # Check if author is AFK
+        entry = await self.get_afk(message.author.id)
         
-        # Only check for AFK removal if this is NOT a command
-        # This prevents instant removal when using .afk command
-        if not is_command:
-            entry = await self.get_afk(message.author.id)
-            if entry:
-                await self.remove_afk(message.author.id)
+        if entry:
+            # Check if this is a command (AFK command should not trigger removal)
+            content = message.content.strip()
+            prefixes = await self.bot.get_prefix(message)
+            
+            is_command = False
+            for prefix in prefixes:
+                if content.startswith(prefix):
+                    is_command = True
+                    # Get the command name after prefix
+                    command_content = content[len(prefix):].strip()
+                    command_parts = command_content.split()
+                    if command_parts and command_parts[0].lower() in ['afk', 'afklist', 'afkstats']:
+                        # Specifically handle AFK commands
+                        if command_parts[0].lower() == 'afk':
+                            # AFK command should not trigger removal - let the command handler process it
+                            pass
+                        await self.bot.process_commands(message)
+                    break
+            
+            # Only remove AFK if it's NOT a command
+            if not is_command:
+                removed = await self.remove_afk(message.author.id)
                 
-                # Remove AFK from nickname
-                if message.guild and message.author.display_name.startswith(NICK_PREFIX):
-                    await self._safe_edit_nick(
-                        message.author,
-                        self._strip_afk_nick(message.author.display_name)
+                if removed:  # Only show welcome back if actually removed
+                    # Remove AFK from nickname
+                    if message.guild and message.author.display_name.startswith(NICK_PREFIX):
+                        await self._safe_edit_nick(
+                            message.author,
+                            self._strip_afk_nick(message.author.display_name)
+                        )
+                    
+                    # Send welcome back message
+                    embed = discord.Embed(
+                        title="👋 Welcome Back!",
+                        description=f"{message.author.mention}, AFK removed.\nYou had been AFK for **{entry.human_readable_duration}**.",
+                        color=AFK_REMOVED_COLOR
                     )
-                
-                # Send welcome back message
-                embed = discord.Embed(
-                    title="👋 Welcome Back!",
-                    description=f"{message.author.mention}, AFK removed.\nYou had been AFK for **{entry.human_readable_duration}**.",
-                    color=AFK_REMOVED_COLOR
-                )
-                msg = await message.channel.send(embed=embed)
-                asyncio.create_task(self._auto_delete_message(msg, 20))
+                    msg = await message.channel.send(embed=embed)
+                    asyncio.create_task(self._auto_delete_message(msg, 20))
         
-        # Process commands (always)
+        # Always process commands (in case not processed above)
         await self.bot.process_commands(message)
         
         # Check mentions for AFK users (even in commands)
@@ -606,7 +639,7 @@ class AFK(commands.Cog):
             if current_time - last_mention >= self._mention_cooldown:
                 for user in message.mentions:
                     entry = await self.get_afk(user.id)
-                    if entry:
+                    if entry and user.id != message.author.id:  # Don't show self-mentions
                         embed = discord.Embed(
                             title=f"{self._strip_afk_nick(user.display_name)} is AFK 💤",
                             description=f"**Reason:** {entry.reason}\n**AFK for:** {entry.human_readable_duration}",
