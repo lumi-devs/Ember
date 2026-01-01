@@ -302,83 +302,73 @@ class TempVoice(commands.Cog):
             print(f"[TempVoice] ✅ Created {name} (Type: {vc_type}, Number: {channel_number}, Position: {insert_position})")
 
     async def _reorganize_bot_channels_safe(self, category):
-        """Safe reorganization with error handling and rate limiting"""
         try:
             guild = category.guild
-            
-            # Get all bot channels from database for this guild
-            async with aiosqlite.connect(DB_PATH) as db:
-                async with db.execute(
-                    """SELECT voiceID, vcType, channelNumber 
-                    FROM voiceChannel 
-                    WHERE guildID = ?""",
-                    (guild.id,)
-                ) as c:
-                    all_bot_channels = await c.fetchall()
-            
-            # Filter to only channels that exist in this category
-            channels_in_category = []
-            for voice_id, vc_type, channel_number in all_bot_channels:
-                vc = guild.get_channel(voice_id)
-                if vc and vc.category and vc.category.id == category.id:
-                    channels_in_category.append({
-                        "channel": vc,
-                        "type": vc_type,
-                        "number": channel_number
-                    })
-            
-            # Sort by type and number
-            channels_in_category.sort(key=lambda x: (self.type_order.get(x["type"], 5), x["number"]))
-            
-            # Get generator channels
-            generator_vcs = [vc for vc in category.voice_channels if vc.id in JOIN_CHANNELS]
-            generator_vcs.sort(key=lambda x: x.position)
-            
-            # Calculate starting position (right after generator channels)
-            start_position = generator_vcs[-1].position + 1 if generator_vcs else 0
-            
-            # Position each channel in order
-            tasks = []
-            for idx, chan_info in enumerate(channels_in_category):
-                vc = chan_info["channel"]
-                target_position = start_position + idx
-                
-                # Only move if needed
-                if vc.position != target_position:
-                    # Move with a small delay between operations
-                    tasks.append(self._move_channel_with_delay(vc, target_position, idx * 0.1))
-            
-            # Execute moves with delays
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-                
-            print(f"[TempVoice] Reorganized {len(channels_in_category)} channels in {category.name}")
-            
-        except Exception as e:
-            print(f"[TempVoice] Error in safe reorganization: {e}")
 
-    async def _move_channel_with_delay(self, channel, target_position, delay):
-        """Move a channel to a new position with delay and error handling"""
-        try:
-            await asyncio.sleep(delay)
-            await channel.edit(position=target_position)
-            return True
-        except discord.errors.HTTPException as e:
-            if e.status == 429:  # Rate limited
-                retry_after = getattr(e, 'retry_after', 5)
-                print(f"[TempVoice] Rate limited moving {channel.name}, waiting {retry_after}s")
-                await asyncio.sleep(retry_after)
+            async with aiosqlite.connect(DB_PATH) as db:
+                async with db.execute("""
+                    SELECT voiceID, vcType
+                    FROM voiceChannel
+                    WHERE guildID = ?
+                """, (guild.id,)) as cursor:
+                    rows = await cursor.fetchall()
+
+            # Collect valid channels
+            channels = []
+            for vc_id, vc_type in rows:
+                ch = guild.get_channel(vc_id)
+                if ch and ch.category and ch.category.id == category.id:
+                    channels.append({
+                        "channel": ch,
+                        "type": vc_type
+                    })
+
+            # Define strict ordering
+            TYPE_ORDER = {"Duo": 1, "Trio": 2, "Squad": 3, "Other": 4}
+
+            # Sort by type only (NOT NAME)
+            channels.sort(key=lambda x: TYPE_ORDER.get(x["type"], 99))
+
+            # Generator channels (join-to-create)
+            generator_channels = [
+                vc for vc in category.voice_channels if vc.id in JOIN_CHANNELS
+            ]
+            generator_channels.sort(key=lambda c: c.position)
+
+            start_pos = generator_channels[-1].position + 1 if generator_channels else 0
+
+            # Reassign numbers cleanly
+            counters = {"Duo": 1, "Trio": 1, "Squad": 1, "Other": 1}
+
+            for idx, entry in enumerate(channels):
+                vc = entry["channel"]
+                vc_type = entry["type"]
+
+                number = counters[vc_type]
+                counters[vc_type] += 1
+
+                new_name = f"{vc_type} {number}"
+                new_position = start_pos + idx
+
                 try:
-                    await channel.edit(position=target_position)
-                    return True
-                except Exception as e2:
-                    print(f"[TempVoice] Failed to move {channel.name} after rate limit: {e2}")
-            else:
-                print(f"[TempVoice] Failed to move {channel.name}: {e}")
+                    await vc.edit(name=new_name, position=new_position)
+
+                    async with aiosqlite.connect(DB_PATH) as db:
+                        await db.execute("""
+                            UPDATE voiceChannel
+                            SET channelName = ?, channelNumber = ?
+                            WHERE voiceID = ?
+                        """, (new_name, number, vc.id))
+                        await db.commit()
+
+                except Exception as e:
+                    print(f"[TempVoice] Failed reorder {vc.name}: {e}")
+
+            print(f"[TempVoice] Reordered {len(channels)} channels cleanly")
+
         except Exception as e:
-            print(f"[TempVoice] Unexpected error moving {channel.name}: {e}")
-        return False
-            
+            print(f"[TempVoice] REORDER FAILED: {e}")
+        
     # ---------------- CLEANUP ----------------
     async def _schedule_cleanup(self, ch):
         # Only cleanup channels we created

@@ -5,8 +5,10 @@ import json
 import os
 import tempfile
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
+from collections import defaultdict
+from typing import Dict, List, Optional, Tuple
 
 class LoungeCog(commands.Cog):
     """Auto-creating voice lounges with tiered capacity, activity-based promotion, and specific naming"""
@@ -15,10 +17,21 @@ class LoungeCog(commands.Cog):
         self.bot = bot
         self.base_lounge_id = 1394677032922648747  # Your preconfigured Lounge 4
         self.lounge_category = None
-        self.lounges = {}  # lounge_id: LoungeData
-        self.next_lounge_number = 3  # Start from lounge 4
+        self.lounges: Dict[int, dict] = {}  # lounge_id: LoungeData
+        self.next_lounge_number = 3  # Start from lounge 3
         self.data_file = "lounges_data.json"
-        self.creation_cooldowns = {}  # Prevent spam creation
+        self.creation_cooldowns = {}
+        
+        # Debug & Stats
+        self.creation_log = []
+        self.stats = {
+            'total_created': 0,
+            'total_deleted': 0,
+            'promotions': defaultdict(int),
+            'last_creation': None,
+            'creation_attempts': 0,
+            'failed_creations': 0
+        }
         
         # Load saved data
         self.load_data()
@@ -41,8 +54,8 @@ class LoungeCog(commands.Cog):
             # Promotion requirements (minutes of activity)
             'promotion_thresholds': {
                 'active': 30,      # 30 minutes of continuous activity
-                'elite': 60,      # 2 hours for elite status
-                'premium': 120,    # 5 hours for premium
+                'elite': 60,       # 60 minutes for elite status
+                'premium': 120,    # 120 minutes for premium
             },
             
             # Promotion bonuses (capacity increase)
@@ -55,77 +68,53 @@ class LoungeCog(commands.Cog):
             
             # Name templates
             'name_templates': {
-                'normal': "┊ {emoji}﹕₊˚⌇lounge {number}  ꜝꜝ‹3",
-                'active': "┊ 🌟﹕₊˚⌇active lounge {number}  ꜝꜝ‹3",
-                'elite': "┊ 💎﹕₊˚⌇elite lounge {number}  ꜝꜝ‹3",
-                'premium': "┊ ✨﹕₊˚⌇premium lounge {number}  ꜝꜝ‹3",
+                'normal': "┊ {emoji}﹕₊˚⌇lounge {number}  ꜝꜝ‹{current}/{max}",
+                'active': "┊ 🌟﹕₊˚⌇active lounge {number}  ꜝꜝ‹{current}/{max}",
+                'elite': "┊ 💎﹕₊˚⌇elite lounge {number}  ꜝꜝ‹{current}/{max}",
+                'premium': "┊ ✨﹕₊˚⌇premium lounge {number}  ꜝꜝ‹{current}/{max}",
             }
         }
         
     def load_data(self):
-        """Load lounge data from JSON file using safe temp file method"""
+        """Load lounge data from JSON file"""
         try:
             if os.path.exists(self.data_file):
-                with tempfile.NamedTemporaryFile(mode='w', delete=False) as temp_file:
-                    temp_path = temp_file.name
-                    
-                try:
-                    shutil.copy2(self.data_file, temp_path)
-                    
-                    with open(temp_path, 'r') as f:
-                        data = json.load(f)
-                        self.next_lounge_number = data.get('next_lounge_number', 4)
-                        self.saved_promotions = data.get('lounge_promotions', {})
-                        
+                with open(self.data_file, 'r') as f:
+                    data = json.load(f)
+                    self.next_lounge_number = data.get('next_lounge_number', 4)
+                    self.saved_promotions = data.get('lounge_promotions', {})
+                    self.stats = data.get('stats', self.stats)
                     print(f"📂 Loaded saved data. Next lounge: {self.next_lounge_number}")
-                    
-                finally:
-                    if os.path.exists(temp_path):
-                        os.unlink(temp_path)
-                        
             else:
                 print("📂 No saved data found, starting fresh")
                 self.saved_promotions = {}
-        except json.JSONDecodeError:
-            print("❌ Corrupted JSON data, starting fresh")
-            self.next_lounge_number = 4
-            self.saved_promotions = {}
         except Exception as e:
             print(f"❌ Error loading data: {e}")
             self.next_lounge_number = 4
             self.saved_promotions = {}
             
     def save_data(self):
-        """Save lounge data to JSON file using atomic write"""
+        """Save lounge data to JSON file"""
         try:
             data = {
                 'next_lounge_number': self.next_lounge_number,
                 'lounge_promotions': {},
-                'last_saved': datetime.now().isoformat(),
-                'total_lounges_tracked': len(self.lounges)
+                'stats': self.stats,
+                'last_saved': datetime.now().isoformat()
             }
             
             for lounge_id, lounge_data in self.lounges.items():
-                if 'number' in lounge_data and 'status' in lounge_data:
+                if 'number' in lounge_data:
                     data['lounge_promotions'][str(lounge_data['number'])] = {
-                        'status': lounge_data['status'],
+                        'status': lounge_data.get('status', 'normal'),
                         'promotion_timer': lounge_data.get('promotion_timer', 0),
-                        'last_updated': lounge_data.get('last_updated', datetime.now().isoformat())
                     }
             
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.tmp', delete=False) as temp_file:
-                temp_path = temp_file.name
-                json.dump(data, temp_file, indent=2)
+            with open(self.data_file, 'w') as f:
+                json.dump(data, f, indent=2)
                 
-            shutil.move(temp_path, self.data_file)
-            
         except Exception as e:
             print(f"❌ Error saving data: {e}")
-            if 'temp_path' in locals() and os.path.exists(temp_path):
-                try:
-                    os.unlink(temp_path)
-                except:
-                    pass
                     
     @commands.Cog.listener()
     async def on_ready(self):
@@ -134,6 +123,7 @@ class LoungeCog(commands.Cog):
         
         self.active_check.start()
         self.cleanup_check.start()
+        self.status_update.start()
         
         base_channel = self.bot.get_channel(self.base_lounge_id)
         if base_channel and hasattr(base_channel, 'category'):
@@ -149,10 +139,15 @@ class LoungeCog(commands.Cog):
         if not self.lounge_category:
             return
             
+        # Reset tracking
+        self.lounges = {}
+        found_numbers = []
+        
         for channel in self.lounge_category.voice_channels:
             match = re.search(r'lounge\s+(\d+)', channel.name, re.IGNORECASE)
             if match:
                 lounge_num = int(match.group(1))
+                found_numbers.append(lounge_num)
                 
                 if lounge_num >= 3:
                     saved_status_data = self.saved_promotions.get(str(lounge_num), {})
@@ -160,23 +155,27 @@ class LoungeCog(commands.Cog):
                     self.lounges[channel.id] = {
                         'channel': channel,
                         'number': lounge_num,
-                        'created_at': datetime.now(),
-                        'last_activity': datetime.now() if channel.members else None,
+                        'created_at': datetime.now().isoformat(),
+                        'last_activity': datetime.now().isoformat() if channel.members else None,
                         'status': saved_status_data.get('status', 'normal'),
                         'promotion_timer': saved_status_data.get('promotion_timer', 0),
                         'member_count': len(channel.members),
-                        'last_updated': datetime.now().isoformat()
                     }
                     
                     await self.update_lounge_name(channel, self.lounges[channel.id])
                     
-                    if lounge_num >= self.next_lounge_number:
-                        self.next_lounge_number = lounge_num + 1
-                        
+        # Set next lounge number
+        if found_numbers:
+            max_number = max(found_numbers)
+            self.next_lounge_number = max_number + 1
+        else:
+            self.next_lounge_number = 3
+            
         print(f"📊 Initialized {len(self.lounges)} existing lounges")
         print(f"➡️ Next lounge number will be: {self.next_lounge_number}")
+        self.save_data()
         
-    def get_capacity_for_lounge(self, lounge_number: int, status: str = 'normal'):
+    def get_capacity_for_lounge(self, lounge_number: int, status: str = 'normal') -> Tuple[int, str]:
         """Get max capacity and emoji for a lounge number with promotion bonuses"""
         base_capacity = 99
         emoji = '🔊'
@@ -205,11 +204,11 @@ class LoungeCog(commands.Cog):
             
         return promoted_capacity, emoji
     
-    def get_name_template(self, status: str):
+    def get_name_template(self, status: str) -> str:
         """Get name template based on lounge status"""
         return self.config['name_templates'].get(status, self.config['name_templates']['normal'])
     
-    async def update_lounge_name(self, channel, lounge_data):
+    async def update_lounge_name(self, channel, lounge_data: dict):
         """Update lounge name with proper formatting"""
         lounge_number = lounge_data['number']
         status = lounge_data.get('status', 'normal')
@@ -224,14 +223,17 @@ class LoungeCog(commands.Cog):
             max=max_capacity
         )
         
+        # Ensure name doesn't exceed Discord limits
         if len(new_name) > 32:
-            new_name = new_name[:29] + "..."
-            
+            # Keep the important parts
+            new_name = f"┊ {emoji}﹕lounge {lounge_number} {current_users}/{max_capacity}"
+            if len(new_name) > 32:
+                new_name = new_name[:32]
+        
         if channel.name != new_name:
             try:
                 await channel.edit(name=new_name, user_limit=max_capacity)
                 lounge_data['last_updated'] = datetime.now().isoformat()
-                self.save_data()
             except discord.Forbidden:
                 print(f"⚠️ No permission to edit {channel.name}")
             except Exception as e:
@@ -269,25 +271,22 @@ class LoungeCog(commands.Cog):
                 self.lounges[lounge_id] = {
                     'channel': channel,
                     'number': lounge_num,
-                    'created_at': datetime.now(),
+                    'created_at': datetime.now().isoformat(),
                     'last_activity': datetime.now().isoformat(),
                     'status': saved_status_data.get('status', 'normal'),
                     'promotion_timer': saved_status_data.get('promotion_timer', 0),
                     'member_count': len(channel.members),
-                    'last_updated': datetime.now().isoformat()
                 }
                 
                 if lounge_num >= self.next_lounge_number:
                     self.next_lounge_number = lounge_num + 1
-                    self.save_data()
             else:
                 return
-                
-        self.lounges[lounge_id]['last_activity'] = datetime.now().isoformat()
-        self.lounges[lounge_id]['member_count'] = len(channel.members)
+        else:
+            self.lounges[lounge_id]['last_activity'] = datetime.now().isoformat()
+            self.lounges[lounge_id]['member_count'] = len(channel.members)
         
         await self.update_lounge_name(channel, self.lounges[lounge_id])
-        
         await self.check_lounge_creation()
         
     async def handle_voice_leave(self, member, channel):
@@ -300,96 +299,106 @@ class LoungeCog(commands.Cog):
             
             if len(channel.members) == 0:
                 self.lounges[lounge_id]['last_activity'] = None
-                
+    
     async def check_lounge_creation(self):
-        """✅ CORRECTED: Create next lounge when ALL existing lounges have 2+ users"""
+        """Check if we should create a new lounge with detailed logging"""
         if not self.lounge_category:
             return
             
+        self.stats['creation_attempts'] += 1
+        
         # Check cooldown
         now = datetime.now()
-        if 'last_creation' in self.creation_cooldowns:
-            last_creation = self.creation_cooldowns['last_creation']
+        last_creation = self.stats.get('last_creation')
+        if last_creation:
             if isinstance(last_creation, str):
                 last_creation = datetime.fromisoformat(last_creation)
-            cooldown_minutes = (now - last_creation).total_seconds() / 60
-            if cooldown_minutes < self.config['creation_cooldown_minutes']:
+            minutes_since = (now - last_creation).total_seconds() / 60
+            if minutes_since < self.config['creation_cooldown_minutes']:
+                log_msg = f"⏳ Creation cooldown: {minutes_since:.1f}/{self.config['creation_cooldown_minutes']} minutes"
+                self.creation_log.append(f"{now.strftime('%H:%M:%S')} - {log_msg}")
+                if len(self.creation_log) > 50:
+                    self.creation_log.pop(0)
                 return
         
-        # Get ALL existing lounges (numbers >= 3)
-        all_lounges = []
-        for lounge_id, data in self.lounges.items():
+        # Get all existing lounges (numbers >= 3)
+        existing_lounges = []
+        for data in self.lounges.values():
             if data['channel'] and data['number'] >= 3:
-                all_lounges.append((data['number'], data['channel']))
+                existing_lounges.append(data)
         
-        # Need at least lounge 3
-        if not all_lounges:
+        # Need at least one lounge
+        if not existing_lounges:
+            log_msg = "❌ No existing lounges found"
+            self.creation_log.append(f"{now.strftime('%H:%M:%S')} - {log_msg}")
             return
-            
+        
         # Sort by lounge number
-        all_lounges.sort(key=lambda x: x[0])
+        existing_lounges.sort(key=lambda x: x['number'])
         
-        # Check if ALL lounges have 2+ users
-        all_have_two_plus = True
-        for lounge_num, channel in all_lounges:
-            if len(channel.members) < self.config['creation_threshold']:
-                all_have_two_plus = False
-                break
+        # Check if ALL lounges have threshold users
+        missing_users = []
+        all_meet_threshold = True
         
-        # If ALL lounges have 2+ users, create next lounge
-        if all_have_two_plus:
-            highest_num = max([num for num, _ in all_lounges])
+        for lounge_data in existing_lounges:
+            channel = lounge_data['channel']
+            users = len(channel.members)
+            threshold = self.config['creation_threshold']
+            
+            if users < threshold:
+                all_meet_threshold = False
+                missing_users.append(f"Lounge {lounge_data['number']}: {users}/{threshold}")
+        
+        if all_meet_threshold:
+            # Find the highest lounge number
+            highest_num = max(lounge['number'] for lounge in existing_lounges)
             next_lounge_num = highest_num + 1
             
             # Check if already exists
             exists = any(data['number'] == next_lounge_num for data in self.lounges.values())
             if not exists:
-                self.creation_cooldowns['last_creation'] = datetime.now().isoformat()
+                self.stats['last_creation'] = now.isoformat()
+                self.stats['total_created'] += 1
+                
+                log_msg = f"✅ Creating Lounge {next_lounge_num}! All lounges have {self.config['creation_threshold']}+ users"
+                self.creation_log.append(f"{now.strftime('%H:%M:%S')} - {log_msg}")
+                
                 await self.create_new_lounge(next_lounge_num)
+            else:
+                log_msg = f"⚠️ Lounge {next_lounge_num} already exists, skipping"
+                self.creation_log.append(f"{now.strftime('%H:%M:%S')} - {log_msg}")
+        else:
+            log_msg = f"⏳ Waiting for: {', '.join(missing_users)}"
+            self.creation_log.append(f"{now.strftime('%H:%M:%S')} - {log_msg}")
+            
+        # Trim log
+        if len(self.creation_log) > 50:
+            self.creation_log = self.creation_log[-50:]
     
     async def create_new_lounge(self, lounge_number: int):
-        """Create a new lounge channel below the previous one"""
+        """Create a new lounge channel with proper positioning"""
         if not self.lounge_category:
-            return
-            
-        # Check if lounge already exists
-        existing = next((l_id for l_id, data in self.lounges.items() 
-                        if data['number'] == lounge_number), None)
-        if existing:
             return
             
         print(f"🚀 Creating lounge {lounge_number}...")
         
-        # Find position (below previous lounge)
-        position = None
+        # Find the highest existing lounge to position after it
+        existing_numbers = [data['number'] for data in self.lounges.values() if data['number'] < lounge_number]
         
-        # Find previous lounge number
-        prev_lounge_num = lounge_number - 1
-        prev_channel = None
-        
-        # Look for the actual previous lounge
-        for data in self.lounges.values():
-            if data['number'] == prev_lounge_num:
-                prev_channel = data['channel']
-                break
-                
-        if prev_channel:
-            position = prev_channel.position + 1
+        if not existing_numbers:
+            position = len([c for c in self.lounge_category.channels if isinstance(c, discord.VoiceChannel)])
         else:
-            # If previous doesn't exist, find highest existing lounge
-            existing_numbers = [data['number'] for data in self.lounges.values()]
-            if existing_numbers:
-                max_existing = max(existing_numbers)
-                for data in self.lounges.values():
-                    if data['number'] == max_existing:
-                        position = data['channel'].position + 1
-                        break
+            highest_existing = max(existing_numbers)
+            highest_channel = next((data['channel'] for data in self.lounges.values() 
+                                  if data['number'] == highest_existing), None)
+            if highest_channel:
+                position = highest_channel.position + 1
+            else:
+                position = len([c for c in self.lounge_category.channels if isinstance(c, discord.VoiceChannel)])
         
-        # Get capacity
+        # Get initial capacity and name
         max_capacity, emoji = self.get_capacity_for_lounge(lounge_number, 'normal')
-        
-        # Create initial name
-        initial_name = f"┊ {emoji}﹕₊˚⌇lounge {lounge_number}  ꜝꜝ‹3"
+        initial_name = f"┊ {emoji}﹕₊˚⌇lounge {lounge_number}  ꜝꜝ‹0/{max_capacity}"
         
         try:
             new_channel = await self.lounge_category.create_voice_channel(
@@ -407,20 +416,25 @@ class LoungeCog(commands.Cog):
                 'status': 'normal',
                 'promotion_timer': 0,
                 'member_count': 0,
-                'last_updated': datetime.now().isoformat()
             }
             
             if lounge_number >= self.next_lounge_number:
                 self.next_lounge_number = lounge_number + 1
-                self.save_data()
                 
+            self.save_data()
+            
             print(f"✅ Created lounge {lounge_number} at position {position}")
+            return True
             
         except discord.Forbidden:
             print(f"❌ No permission to create lounge {lounge_number}")
+            self.stats['failed_creations'] += 1
+            return False
         except Exception as e:
             print(f"❌ Error creating lounge {lounge_number}: {e}")
-            
+            self.stats['failed_creations'] += 1
+            return False
+    
     @tasks.loop(minutes=1)
     async def active_check(self):
         """Check for active lounges and update promotions"""
@@ -436,16 +450,21 @@ class LoungeCog(commands.Cog):
                 data['promotion_timer'] = data.get('promotion_timer', 0) + 1
                 old_status = data['status']
                 
+                # Check promotion thresholds
                 if data['promotion_timer'] >= self.config['promotion_thresholds']['premium']:
-                    data['status'] = 'premium'
+                    new_status = 'premium'
                 elif data['promotion_timer'] >= self.config['promotion_thresholds']['elite']:
-                    data['status'] = 'elite'
+                    new_status = 'elite'
                 elif data['promotion_timer'] >= self.config['promotion_thresholds']['active']:
-                    data['status'] = 'active'
-                    
-                if old_status != data['status']:
+                    new_status = 'active'
+                else:
+                    new_status = 'normal'
+                
+                if new_status != old_status:
+                    data['status'] = new_status
                     await self.update_lounge_name(channel, data)
-                    print(f"🏆 Lounge {data['number']} promoted to {data['status']}!")
+                    self.stats['promotions'][new_status] += 1
+                    print(f"🏆 Lounge {data['number']} promoted to {new_status}!")
             else:
                 if data.get('promotion_timer', 0) > 0:
                     data['promotion_timer'] = 0
@@ -465,9 +484,9 @@ class LoungeCog(commands.Cog):
                 lounges_to_delete.append(lounge_id)
                 continue
                 
-            if len(channel.members) == 0:
+            if len(channel.members) == 0 and data['number'] > 3:
                 last_activity = data.get('last_activity')
-                if last_activity and data['number'] > 3:
+                if last_activity:
                     try:
                         if isinstance(last_activity, str):
                             last_active = datetime.fromisoformat(last_activity)
@@ -482,6 +501,7 @@ class LoungeCog(commands.Cog):
                         pass
         
         # Delete empty lounges
+        deleted_count = 0
         for lounge_id in lounges_to_delete:
             data = self.lounges[lounge_id]
             channel = data['channel']
@@ -489,6 +509,7 @@ class LoungeCog(commands.Cog):
             if channel and data['number'] > 3:
                 try:
                     await channel.delete(reason="Auto-deleted empty lounge")
+                    deleted_count += 1
                     print(f"🗑️ Deleted empty lounge {data['number']}")
                 except:
                     pass
@@ -496,6 +517,19 @@ class LoungeCog(commands.Cog):
             if lounge_id in self.lounges:
                 del self.lounges[lounge_id]
                 
+        if deleted_count > 0:
+            self.stats['total_deleted'] += deleted_count
+            self.save_data()
+    
+    @tasks.loop(minutes=2)
+    async def status_update(self):
+        """Periodic status update and maintenance"""
+        # Update all lounge names
+        for lounge_id, data in list(self.lounges.items()):
+            if data['channel']:
+                await self.update_lounge_name(data['channel'], data)
+        
+        # Save data periodically
         self.save_data()
         
     @active_check.before_loop
@@ -506,28 +540,75 @@ class LoungeCog(commands.Cog):
     async def before_cleanup_check(self):
         await self.bot.wait_until_ready()
         
+    @status_update.before_loop
+    async def before_status_update(self):
+        await self.bot.wait_until_ready()
+    
+    @commands.command(name="loungeinfo")
+    async def lounge_info(self, ctx, lounge_number: int = None):
+        """Show detailed information about a specific lounge"""
+        if lounge_number:
+            lounge_data = next((data for data in self.lounges.values() 
+                               if data['number'] == lounge_number), None)
+            
+            if not lounge_data or not lounge_data['channel']:
+                await ctx.send(f"❌ Lounge {lounge_number} not found!")
+                return
+                
+            channel = lounge_data['channel']
+            users = len(channel.members)
+            max_capacity, emoji = self.get_capacity_for_lounge(lounge_number, lounge_data['status'])
+            
+            embed = discord.Embed(
+                title=f"🏢 Lounge {lounge_number} Details",
+                color=discord.Color.green() if users > 0 else discord.Color.red()
+            )
+            
+            embed.add_field(name="Status", value=lounge_data['status'].upper(), inline=True)
+            embed.add_field(name="Users", value=f"{users}/{max_capacity}", inline=True)
+            embed.add_field(name="Promotion Timer", value=f"{lounge_data.get('promotion_timer', 0)} minutes", inline=True)
+            
+            if lounge_data.get('last_activity'):
+                last_active = datetime.fromisoformat(lounge_data['last_activity'])
+                embed.add_field(name="Last Activity", value=last_active.strftime("%H:%M:%S"), inline=True)
+            
+            await ctx.send(embed=embed)
+        else:
+            await self.lounge_stats(ctx)
+        
     @commands.command(name="loungestats")
     async def lounge_stats(self, ctx):
-        """Show current lounge statistics"""
-        if not self.lounges:
-            await ctx.send("No lounges are currently active.")
-            return
-            
+        """Show current lounge statistics with live creation status"""
         embed = discord.Embed(
-            title="🏢 Lounge System Stats",
+            title="🏢 Lounge System - Live Stats",
             color=discord.Color.blue(),
             timestamp=datetime.now()
         )
         
+        # System Status
         active_lounges = [l for l in self.lounges.values() if l['channel'] and len(l['channel'].members) > 0]
-        total_users = sum(len(l['channel'].members) for l in active_lounges if l['channel'])
+        total_users = sum(len(l['channel'].members) for l in self.lounges.values() if l['channel'])
         
+        embed.add_field(name="📊 System Stats", value="", inline=False)
         embed.add_field(name="Total Lounges", value=str(len(self.lounges)), inline=True)
         embed.add_field(name="Active Lounges", value=str(len(active_lounges)), inline=True)
         embed.add_field(name="Total Users", value=str(total_users), inline=True)
         embed.add_field(name="Next Lounge #", value=str(self.next_lounge_number), inline=True)
+        embed.add_field(name="Creation Threshold", value=str(self.config['creation_threshold']), inline=True)
         
-        # Show all lounges status
+        # Creation Status
+        now = datetime.now()
+        last_creation = self.stats.get('last_creation')
+        if last_creation:
+            if isinstance(last_creation, str):
+                last_creation = datetime.fromisoformat(last_creation)
+            minutes_since = (now - last_creation).total_seconds() / 60
+            cooldown_left = max(0, self.config['creation_cooldown_minutes'] - minutes_since)
+            embed.add_field(name="⏰ Creation Status", value="", inline=False)
+            embed.add_field(name="Last Created", value=last_creation.strftime("%H:%M:%S"), inline=True)
+            embed.add_field(name="Cooldown Left", value=f"{cooldown_left:.1f}m", inline=True)
+        
+        # Lounge Status Breakdown
         lounge_info = []
         for lounge_num in sorted([data['number'] for data in self.lounges.values()]):
             lounge_data = next((l for l in self.lounges.values() if l['number'] == lounge_num), None)
@@ -535,36 +616,103 @@ class LoungeCog(commands.Cog):
                 users = len(lounge_data['channel'].members)
                 status = lounge_data['status']
                 max_cap, _ = self.get_capacity_for_lounge(lounge_num, status)
-                lounge_info.append(f"**Lounge {lounge_num}:** {users}/{max_cap} users ({status})")
+                threshold_met = "✅" if users >= self.config['creation_threshold'] else "❌"
+                lounge_info.append(f"{threshold_met} **Lounge {lounge_num}:** {users}/{max_cap} ({status})")
         
         if lounge_info:
             embed.add_field(
-                name="All Lounges",
-                value="\n".join(lounge_info),
+                name="🎯 Lounge Status (Threshold Check)",
+                value="\n".join(lounge_info[:15]),  # Limit to first 15
                 inline=False
             )
         
-        await ctx.send(embed=embed)
+        # Recent Logs
+        if self.creation_log:
+            recent_logs = "\n".join(self.creation_log[-5:])
+            embed.add_field(
+                name="📝 Recent Activity",
+                value=recent_logs,
+                inline=False
+            )
         
-    @commands.command(name="forcelounge")
+        # Promotion Stats
+        promo_text = []
+        for status, count in self.stats['promotions'].items():
+            promo_text.append(f"{status.title()}: {count}")
+        
+        if promo_text:
+            embed.add_field(
+                name="🏆 Promotions",
+                value=" | ".join(promo_text),
+                inline=False
+            )
+        
+        embed.set_footer(text=f"Total Created: {self.stats['total_created']} | Deleted: {self.stats['total_deleted']}")
+        
+        await ctx.send(embed=embed)
+    
+    @commands.command(name="loungewaiting")
+    async def lounge_waiting(self, ctx):
+        """Show which lounges are blocking new creation"""
+        if not self.lounges:
+            await ctx.send("No lounges found!")
+            return
+            
+        blocking = []
+        for data in self.lounges.values():
+            if data['channel'] and data['number'] >= 3:
+                users = len(data['channel'].members)
+                threshold = self.config['creation_threshold']
+                if users < threshold:
+                    blocking.append(f"**Lounge {data['number']}:** {users}/{threshold} users")
+        
+        if blocking:
+            embed = discord.Embed(
+                title="⏳ Lounges Blocking Creation",
+                description="These lounges need more users to trigger new lounge creation:\n\n" + "\n".join(blocking),
+                color=discord.Color.orange()
+            )
+            embed.add_field(
+                name="Requirements",
+                value=f"• All lounges need {self.config['creation_threshold']}+ users\n• No cooldown active\n• Next lounge will be #{self.next_lounge_number}",
+                inline=False
+            )
+        else:
+            embed = discord.Embed(
+                title="✅ All Conditions Met!",
+                description=f"All lounges have {self.config['creation_threshold']}+ users!\nNext lounge (#{self.next_lounge_number}) will be created soon.",
+                color=discord.Color.green()
+            )
+        
+        await ctx.send(embed=embed)
+    
+    @commands.command(name="forcecreate")
     @commands.has_permissions(administrator=True)
     async def force_create_lounge(self, ctx, number: int = None):
         """Force create a lounge (Admin only)"""
         if not number:
             number = self.next_lounge_number
             
-        if number < 4:
-            await ctx.send("❌ Can only create lounges 4 and above.")
+        if number < 3:
+            await ctx.send("❌ Can only create lounges 3 and above.")
             return
             
-        await self.create_new_lounge(number)
-        await ctx.send(f"✅ Force-created lounge {number}")
+        # Check if exists
+        if any(data['number'] == number for data in self.lounges.values()):
+            await ctx.send(f"❌ Lounge {number} already exists!")
+            return
+            
+        success = await self.create_new_lounge(number)
+        if success:
+            await ctx.send(f"✅ Force-created lounge {number}")
+        else:
+            await ctx.send(f"❌ Failed to create lounge {number}")
         
     @commands.command(name="resetlounges")
     @commands.has_permissions(administrator=True)
     async def reset_lounges(self, ctx):
-        """Reset all lounges except base lounge 3 (Admin only)"""
-        confirm = await ctx.send("⚠️ This will delete ALL lounges except Lounge 3. Type `CONFIRM` to proceed.")
+        """Reset all lounges except base lounges 1-3 (Admin only)"""
+        confirm = await ctx.send("⚠️ This will delete ALL lounges except Lounges 1-3. Type `CONFIRM` to proceed.")
         
         def check(m):
             return m.author == ctx.author and m.channel == ctx.channel and m.content == "CONFIRM"
@@ -586,9 +734,29 @@ class LoungeCog(commands.Cog):
                 del self.lounges[lounge_id]
                 
         self.next_lounge_number = 4
+        self.stats['total_deleted'] += deleted_count
         self.save_data()
         
         await ctx.send(f"✅ Reset complete. Deleted {deleted_count} lounges. Next lounge will be #4.")
+    
+    @commands.command(name="debuglogs")
+    @commands.has_permissions(administrator=True)
+    async def debug_logs(self, ctx, count: int = 10):
+        """Show debug logs (Admin only)"""
+        if not self.creation_log:
+            await ctx.send("No logs available.")
+            return
+            
+        logs_to_show = self.creation_log[-count:] if count <= 50 else self.creation_log[-50:]
+        
+        embed = discord.Embed(
+            title="🔧 Debug Logs",
+            description="\n".join(logs_to_show),
+            color=discord.Color.dark_gray()
+        )
+        embed.set_footer(text=f"Showing last {len(logs_to_show)} of {len(self.creation_log)} logs")
+        
+        await ctx.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(LoungeCog(bot))
