@@ -24,6 +24,7 @@ class TempVoice(commands.Cog):
         self.owner_leave_times = {}  # channel_id -> timestamp when owner left
         self._heartbeat.start()
         self._reorganize_queue = asyncio.Queue()  # For async reorganization
+        self.type_order = {"Duo": 1, "Trio": 2, "Squad": 3, "Other": 4}  # Type ordering
 
     async def cog_load(self):
         print("[TempVoice] Cog loaded with queue protection ✅")
@@ -209,97 +210,72 @@ class TempVoice(commands.Cog):
             # Clean up ghost entries FIRST
             await self._cleanup_ghost(guild)
             
-            # Find the next available number for this specific VC type
-            async with aiosqlite.connect(DB_PATH) as db:
-                # Get ALL channels of this type that still exist in Discord
-                async with db.execute(
-                    "SELECT voiceID, channelNumber FROM voiceChannel WHERE guildID = ? AND vcType = ?",
-                    (guild.id, vc_type)
-                ) as c:
-                    rows = await c.fetchall()
-                
-                # Only count channels that ACTUALLY EXIST in Discord AND are in this category
-                used_numbers = set()
-                for voice_id, channel_number in rows:
-                    vc = guild.get_channel(voice_id)
-                    if vc and vc.category and vc.category.id == category.id:
-                        used_numbers.add(channel_number)
-                
-                # Find the lowest available number starting from 1
-                channel_number = 1
-                while channel_number in used_numbers:
-                    channel_number += 1
-            
-            # Generate initial channel name
-            name = f"{clean_base} {channel_number}"
-            
-            # SIMPLIFIED POSITION CALCULATION
-            # 1. Get all bot channels in this category from database
+            # Get ALL bot channels in this category from database
             async with aiosqlite.connect(DB_PATH) as db:
                 async with db.execute(
                     """SELECT voiceID, vcType, channelNumber 
                     FROM voiceChannel 
-                    WHERE guildID = ? 
-                    ORDER BY 
-                        CASE vcType 
-                            WHEN 'Duo' THEN 1
-                            WHEN 'Trio' THEN 2
-                            WHEN 'Squad' THEN 3
-                            ELSE 4
-                        END,
-                        channelNumber""",
+                    WHERE guildID = ?""",
                     (guild.id,)
                 ) as c:
                     all_bot_channels = await c.fetchall()
             
-            # Filter to channels in this category
-            category_bot_channels = []
-            for voice_id, vc_type_db, ch_number in all_bot_channels:
+            # Filter to channels that ACTUALLY EXIST in this specific category
+            existing_channels_in_category = []
+            used_numbers_by_type = {"Duo": set(), "Trio": set(), "Squad": set(), "Other": set()}
+            
+            for voice_id, db_vc_type, channel_number in all_bot_channels:
                 vc = guild.get_channel(voice_id)
                 if vc and vc.category and vc.category.id == category.id:
-                    category_bot_channels.append((vc, vc_type_db, ch_number))
+                    existing_channels_in_category.append({
+                        "channel": vc,
+                        "type": db_vc_type,
+                        "number": channel_number
+                    })
+                    # Store used numbers by type
+                    used_numbers_by_type.setdefault(db_vc_type, set()).add(channel_number)
             
-            # Sort by type and number
-            def sort_key(item):
-                vc, vc_type_db, ch_number = item
-                type_order = {"Duo": 1, "Trio": 2, "Squad": 3, "Other": 4}
-                return (type_order.get(vc_type_db, 5), ch_number)
+            # Find the next available number for this specific VC type
+            channel_number = 1
+            while channel_number in used_numbers_by_type.get(vc_type, set()):
+                channel_number += 1
             
-            category_bot_channels.sort(key=sort_key)
+            # Generate initial channel name
+            name = f"{clean_base} {channel_number}"
             
-            # Find where to insert new channel
-            insert_index = 0
-            for i, (vc, vc_type_db, ch_number) in enumerate(category_bot_channels):
-                # Compare type and number
-                current_type_order = {"Duo": 1, "Trio": 2, "Squad": 3, "Other": 4}.get(vc_type_db, 5)
-                new_type_order = {"Duo": 1, "Trio": 2, "Squad": 3, "Other": 4}.get(vc_type, 5)
+            # Get generator channels in this category
+            generator_vcs = [vc for vc in category.voice_channels if vc.id in JOIN_CHANNELS]
+            generator_vcs.sort(key=lambda x: x.position)
+            
+            # Calculate position - start after generator channels
+            base_position = generator_vcs[-1].position + 1 if generator_vcs else 0
+            
+            # Find correct insertion position based on type order and existing channels
+            insert_position = base_position
+            existing_channels_in_category.sort(key=lambda x: (self.type_order.get(x["type"], 5), x["number"]))
+            
+            for idx, chan_info in enumerate(existing_channels_in_category):
+                # If we should insert before this channel
+                current_type_order = self.type_order.get(chan_info["type"], 5)
+                new_type_order = self.type_order.get(vc_type, 5)
                 
                 if new_type_order < current_type_order:
-                    insert_index = i
+                    insert_position = base_position + idx
                     break
-                elif new_type_order == current_type_order and channel_number < ch_number:
-                    insert_index = i
+                elif new_type_order == current_type_order and channel_number < chan_info["number"]:
+                    insert_position = base_position + idx
                     break
-                else:
-                    insert_index = i + 1
             
-            # Calculate position based on insert index
-            generator_vcs = [vc for vc in category.voice_channels if vc.id in JOIN_CHANNELS]
-            if generator_vcs:
-                generator_vcs.sort(key=lambda x: x.position)
-                start_pos = generator_vcs[-1].position + 1
+            # If we didn't break, insert at the end
             else:
-                start_pos = 0
+                insert_position = base_position + len(existing_channels_in_category)
             
-            # Position will be adjusted in reorganization, create at end for now
-            position = max([vc.position for vc in category.voice_channels] or [0]) + 1
-            
-            # Create VC
+            # Create VC with calculated position
             vc = await guild.create_voice_channel(
                 name=name,
                 category=category,
                 user_limit=limit or None,
-                position=position,
+                position=insert_position,
                 reason=f"Temp VC created by {member}"
             )
 
@@ -323,107 +299,85 @@ class TempVoice(commands.Cog):
             await self._queue_reorganize(category)
             
             await self._send_panel(vc, member.id)
-            print(f"[TempVoice] ✅ Created {name} (Type: {vc_type}, Number: {channel_number})")
+            print(f"[TempVoice] ✅ Created {name} (Type: {vc_type}, Number: {channel_number}, Position: {insert_position})")
 
     async def _reorganize_bot_channels_safe(self, category):
         """Safe reorganization with error handling and rate limiting"""
         try:
             guild = category.guild
             
-            # Get all bot channels from database for this guild, sorted properly
+            # Get all bot channels from database for this guild
             async with aiosqlite.connect(DB_PATH) as db:
                 async with db.execute(
                     """SELECT voiceID, vcType, channelNumber 
                     FROM voiceChannel 
-                    WHERE guildID = ? 
-                    ORDER BY 
-                        CASE vcType 
-                            WHEN 'Duo' THEN 1
-                            WHEN 'Trio' THEN 2
-                            WHEN 'Squad' THEN 3
-                            ELSE 4
-                        END,
-                        channelNumber""",
+                    WHERE guildID = ?""",
                     (guild.id,)
                 ) as c:
                     all_bot_channels = await c.fetchall()
             
             # Filter to only channels that exist in this category
-            channels_to_position = []
+            channels_in_category = []
             for voice_id, vc_type, channel_number in all_bot_channels:
                 vc = guild.get_channel(voice_id)
                 if vc and vc.category and vc.category.id == category.id:
-                    channels_to_position.append((vc, vc_type, channel_number))
-            
-            # If no bot channels, nothing to do
-            if not channels_to_position:
-                return
+                    channels_in_category.append({
+                        "channel": vc,
+                        "type": vc_type,
+                        "number": channel_number
+                    })
             
             # Sort by type and number
-            def sort_key(item):
-                vc, vc_type_db, ch_number = item
-                type_order = {"Duo": 1, "Trio": 2, "Squad": 3, "Other": 4}
-                return (type_order.get(vc_type_db, 5), ch_number)
-            
-            channels_to_position.sort(key=sort_key)
+            channels_in_category.sort(key=lambda x: (self.type_order.get(x["type"], 5), x["number"]))
             
             # Get generator channels
             generator_vcs = [vc for vc in category.voice_channels if vc.id in JOIN_CHANNELS]
+            generator_vcs.sort(key=lambda x: x.position)
             
-            # Calculate starting position
-            start_position = 0
-            if generator_vcs:
-                # Sort generators by their current position
-                generator_vcs.sort(key=lambda x: x.position)
-                # Position bot channels after the last generator
-                start_position = generator_vcs[-1].position + 1
+            # Calculate starting position (right after generator channels)
+            start_position = generator_vcs[-1].position + 1 if generator_vcs else 0
             
-            # Reposition channels in the correct order
-            for idx, (vc, _, _) in enumerate(channels_to_position):
-                target_pos = start_position + idx
-                current_pos = vc.position
+            # Position each channel in order
+            tasks = []
+            for idx, chan_info in enumerate(channels_in_category):
+                vc = chan_info["channel"]
+                target_position = start_position + idx
                 
                 # Only move if needed
-                if current_pos != target_pos:
-                    try:
-                        # Check if we're moving up or down
-                        if target_pos < current_pos:
-                            # Moving up - move immediately
-                            await vc.edit(position=target_pos)
-                        else:
-                            # Moving down - add buffer to avoid race conditions
-                            await vc.edit(position=target_pos + 0.1)
-                        
-                        # Small delay to respect Discord rate limits
-                        await asyncio.sleep(0.1)
-                        
-                        # Final adjustment if needed
-                        if vc.position != target_pos:
-                            await vc.edit(position=target_pos)
-                            await asyncio.sleep(0.05)
-                            
-                    except discord.errors.HTTPException as e:
-                        if e.status == 429:  # Rate limited
-                            retry_after = e.retry_after if hasattr(e, 'retry_after') else 5
-                            print(f"[TempVoice] Rate limited, waiting {retry_after}s")
-                            await asyncio.sleep(retry_after)
-                            # Retry once
-                            try:
-                                await vc.edit(position=target_pos)
-                            except:
-                                pass
-                        else:
-                            print(f"[TempVoice] Error repositioning {vc.name}: {e}")
-                    except Exception as e:
-                        print(f"[TempVoice] Error repositioning {vc.name}: {e}")
-                        
+                if vc.position != target_position:
+                    # Move with a small delay between operations
+                    tasks.append(self._move_channel_with_delay(vc, target_position, idx * 0.1))
+            
+            # Execute moves with delays
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+                
+            print(f"[TempVoice] Reorganized {len(channels_in_category)} channels in {category.name}")
+            
         except Exception as e:
             print(f"[TempVoice] Error in safe reorganization: {e}")
 
-    # Legacy method for compatibility
-    async def _reorganize_bot_channels(self, category):
-        """Wrapper for legacy calls"""
-        await self._queue_reorganize(category)
+    async def _move_channel_with_delay(self, channel, target_position, delay):
+        """Move a channel to a new position with delay and error handling"""
+        try:
+            await asyncio.sleep(delay)
+            await channel.edit(position=target_position)
+            return True
+        except discord.errors.HTTPException as e:
+            if e.status == 429:  # Rate limited
+                retry_after = getattr(e, 'retry_after', 5)
+                print(f"[TempVoice] Rate limited moving {channel.name}, waiting {retry_after}s")
+                await asyncio.sleep(retry_after)
+                try:
+                    await channel.edit(position=target_position)
+                    return True
+                except Exception as e2:
+                    print(f"[TempVoice] Failed to move {channel.name} after rate limit: {e2}")
+            else:
+                print(f"[TempVoice] Failed to move {channel.name}: {e}")
+        except Exception as e:
+            print(f"[TempVoice] Unexpected error moving {channel.name}: {e}")
+        return False
             
     # ---------------- CLEANUP ----------------
     async def _schedule_cleanup(self, ch):
@@ -448,6 +402,9 @@ class TempVoice(commands.Cog):
                     if not await c.fetchone():
                         return
             
+            # Get category before deletion for reorganization
+            category = ch.category
+            
             await ch.delete(reason="Empty temp VC cleanup")
             
             async with aiosqlite.connect(DB_PATH) as db:
@@ -459,9 +416,9 @@ class TempVoice(commands.Cog):
             # Remove from leave times tracking if it exists
             self.owner_leave_times.pop(ch.id, None)
             
-            # Queue reorganization
-            if ch.category:
-                await self._queue_reorganize(ch.category)
+            # Queue reorganization if category still exists
+            if category:
+                await self._queue_reorganize(category)
                 
         except Exception:
             print(f"[TempVoice] cleanup error:\n{traceback.format_exc()}")
