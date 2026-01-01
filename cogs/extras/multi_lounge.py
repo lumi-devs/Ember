@@ -1094,304 +1094,327 @@ class DynamicLounges(commands.Cog):
     
     # ========== COMMANDS ==========
     
-    @commands.command(name="lounge_stats", aliases=["ls"])
+    @commands.command(name="lounge_stats", aliases=["ls", "lounges"])
     @commands.has_permissions(administrator=True)
-    async def lounge_stats(self, ctx):
+    async def lounge_stats_cmd(self, ctx):
         """Show lounge statistics"""
-        lounges = await self.state.get_guild_lounges(ctx.guild.id)
-        stats = await self.state.get_stats(ctx.guild.id)
-        
-        embed = discord.Embed(
-            title="🎯 Persistent Lounge System Statistics",
-            color=discord.Color.blue(),
-            timestamp=discord.utils.utcnow()
-        )
-        
-        # Stats from database
-        embed.add_field(
-            name="📊 System Stats",
-            value=f"**Total Lounges:** {len(lounges)}\n"
-                  f"**Created:** {stats.get('channels_created', 0)}\n"
-                  f"**Deleted:** {stats.get('channels_deleted', 0)}\n"
-                  f"**Promotions:** {stats.get('promotions_given', 0)}\n"
-                  f"**Users Moved:** {stats.get('users_moved', 0)}\n"
-                  f"**Hogging Preventions:** {stats.get('hogging_prevented', 0)}\n"
-                  f"**Renames:** {stats.get('renames_performed', 0)}",
-            inline=False
-        )
-        
-        # Current lounges with tier status
-        lounge_info = []
-        current_time = time.time()
-        creation_ready = True
-        
-        for entry in sorted(lounges, key=lambda x: x.number):
-            channel = ctx.guild.get_channel(entry.channel_id)
-            if not channel:
-                continue
+        try:
+            logger.info(f"Command .ls called by {ctx.author}")
             
-            members = len(channel.members)
-            capacity = self.base_capacity_rules.get(entry.number, self.default_capacity)
-            if entry.tier != LoungeTier.NORMAL:
-                capacity += self.promotion_rules[entry.tier]["capacity_boost"]
+            lounges = await self.state.get_guild_lounges(ctx.guild.id)
+            stats = await self.state.get_stats(ctx.guild.id)
             
-            capacity_str = "∞" if capacity == float('inf') else str(capacity)
+            embed = discord.Embed(
+                title="🎯 Persistent Lounge System Statistics",
+                color=discord.Color.blue(),
+                timestamp=discord.utils.utcnow()
+            )
             
-            # Check deletion status
-            deletion_info = ""
-            if entry.deletion_scheduled and entry.deletion_scheduled > current_time:
-                time_left = entry.deletion_scheduled - current_time
-                minutes = int(time_left // 60)
-                seconds = int(time_left % 60)
-                deletion_info = f" ⏰ {minutes}:{seconds:02d}"
-            
-            # Generator or dynamic lounge
-            if entry.number == 3:
-                status = "🔧"
-                lounge_info.append(
-                    f"{status} **{channel.name}:** {members}/{capacity_str} users (Generator){deletion_info}"
-                )
-            else:
-                meets_requirement = members >= self.min_users_per_lounge
-                status = "✅" if meets_requirement else "❌"
-                
-                if not meets_requirement:
-                    creation_ready = False
-                
-                # Add promotion emoji if promoted
-                tier_emoji = self.promotion_rules[entry.tier]["emoji"]
-                promotion_display = f" {tier_emoji}" if tier_emoji else ""
-                
-                lounge_info.append(
-                    f"{status} **{channel.name}:** {members}/{capacity_str} users{promotion_display}{deletion_info}"
-                )
-        
-        if lounge_info:
-            status_text = "\n".join(lounge_info)
-            dynamic_lounges = [l for l in lounges if l.number >= 4]
-            
-            if dynamic_lounges:
-                if creation_ready:
-                    status_text += f"\n\n**✅ Creation ready:** All dynamic lounges have {self.min_users_per_lounge}+ users"
-                else:
-                    status_text += f"\n\n**⚠️ Creation blocked:** All dynamic lounges need {self.min_users_per_lounge}+ users"
-            else:
-                status_text += f"\n\n**⏳ Waiting:** Need users in Lounge 3 to create first dynamic lounge"
-            
+            # Stats from database
             embed.add_field(
-                name="🎭 Current Lounges",
-                value=status_text,
+                name="📊 System Stats",
+                value=f"**Total Lounges:** {len(lounges)}\n"
+                      f"**Created:** {stats.get('channels_created', 0)}\n"
+                      f"**Deleted:** {stats.get('channels_deleted', 0)}\n"
+                      f"**Promotions:** {stats.get('promotions_given', 0)}\n"
+                      f"**Users Moved:** {stats.get('users_moved', 0)}\n"
+                      f"**Hogging Preventions:** {stats.get('hogging_prevented', 0)}\n"
+                      f"**Renames:** {stats.get('renames_performed', 0)}",
                 inline=False
             )
-        
-        # Configuration
-        config_info = (
-            f"**Generator Channel:** Lounge 3\n"
-            f"**Max Lounges:** {self.max_lounges}\n"
-            f"**Min Users Per Lounge:** {self.min_users_per_lounge}\n"
-            f"**Inactivity Timer:** {self.inactivity_timer // 60} minutes\n"
-            f"**Creation Delay:** {self.creation_delay} seconds\n"
-            f"**Database Persistence:** ✅ Enabled\n"
-            f"**Atomic Operations:** ✅ Enabled"
-        )
-        
-        embed.add_field(
-            name="⚙️ Configuration",
-            value=config_info,
-            inline=False
-        )
-        
-        # Pending deletions
-        pending = await self.state.get_pending_deletions(ctx.guild.id)
-        if pending:
-            pending_info = []
-            for channel_id, scheduled_time in pending:
-                channel = ctx.guild.get_channel(channel_id)
-                if channel:
-                    time_left = scheduled_time - current_time
+            
+            # Current lounges with tier status
+            lounge_info = []
+            current_time = time.time()
+            creation_ready = True
+            
+            for entry in sorted(lounges, key=lambda x: x.number):
+                channel = ctx.guild.get_channel(entry.channel_id)
+                if not channel:
+                    continue
+                
+                members = len(channel.members)
+                capacity = self.base_capacity_rules.get(entry.number, self.default_capacity)
+                if entry.tier != LoungeTier.NORMAL:
+                    capacity += self.promotion_rules[entry.tier]["capacity_boost"]
+                
+                capacity_str = "∞" if capacity == float('inf') else str(capacity)
+                
+                # Check deletion status
+                deletion_info = ""
+                if entry.deletion_scheduled and entry.deletion_scheduled > current_time:
+                    time_left = entry.deletion_scheduled - current_time
                     minutes = int(time_left // 60)
                     seconds = int(time_left % 60)
-                    pending_info.append(f"• {channel.name}: {minutes}:{seconds:02d}")
+                    deletion_info = f" ⏰ {minutes}:{seconds:02d}"
+                
+                # Generator or dynamic lounge
+                if entry.number == 3:
+                    status = "🔧"
+                    lounge_info.append(
+                        f"{status} **{channel.name}:** {members}/{capacity_str} users (Generator){deletion_info}"
+                    )
+                else:
+                    meets_requirement = members >= self.min_users_per_lounge
+                    status = "✅" if meets_requirement else "❌"
+                    
+                    if not meets_requirement:
+                        creation_ready = False
+                    
+                    # Add promotion emoji if promoted
+                    tier_emoji = self.promotion_rules[entry.tier]["emoji"]
+                    promotion_display = f" {tier_emoji}" if tier_emoji else ""
+                    
+                    lounge_info.append(
+                        f"{status} **{channel.name}:** {members}/{capacity_str} users{promotion_display}{deletion_info}"
+                    )
             
-            if pending_info:
+            if lounge_info:
+                status_text = "\n".join(lounge_info)
+                dynamic_lounges = [l for l in lounges if l.number >= 4]
+                
+                if dynamic_lounges:
+                    if creation_ready:
+                        status_text += f"\n\n**✅ Creation ready:** All dynamic lounges have {self.min_users_per_lounge}+ users"
+                    else:
+                        status_text += f"\n\n**⚠️ Creation blocked:** All dynamic lounges need {self.min_users_per_lounge}+ users"
+                else:
+                    status_text += f"\n\n**⏳ Waiting:** Need users in Lounge 3 to create first dynamic lounge"
+                
                 embed.add_field(
-                    name="⏰ Pending Deletions",
-                    value="\n".join(pending_info),
+                    name="🎭 Current Lounges",
+                    value=status_text,
                     inline=False
                 )
-        
-        embed.set_footer(text=f"Guild ID: {ctx.guild.id}")
-        await ctx.send(embed=embed)
-    
-    @commands.command(name="lounge_promote", aliases=["lp"])
-    @commands.has_permissions(administrator=True)
-    async def lounge_promote(self, ctx, lounge_number: int):
-        """Manually promote a lounge to next tier"""
-        lounges = await self.state.get_guild_lounges(ctx.guild.id)
-        
-        target_lounge = None
-        for entry in lounges:
-            if entry.number == lounge_number:
-                target_lounge = entry
-                break
-        
-        if not target_lounge:
-            await ctx.send(f"❌ Lounge {lounge_number} not found!")
-            return
-        
-        channel = ctx.guild.get_channel(target_lounge.channel_id)
-        if not channel:
-            await ctx.send(f"❌ Channel for Lounge {lounge_number} not found!")
-            return
-        
-        # Get current tier
-        current_tier = target_lounge.tier
-        
-        # Find next tier
-        tiers = [LoungeTier.NORMAL, LoungeTier.POPULAR, LoungeTier.PREMIUM, LoungeTier.ELITE]
-        current_index = tiers.index(current_tier) if current_tier in tiers else 0
-        
-        if current_index >= len(tiers) - 1:
-            await ctx.send(f"❌ {channel.name} is already at the highest tier!")
-            return
-        
-        next_tier = tiers[current_index + 1]
-        
-        # Manually promote
-        await self.state.update_lounge(channel.id, tier=next_tier)
-        await self.state.update_stat(ctx.guild.id, "promotions_given")
-        
-        # Update capacity
-        base_capacity = self.base_capacity_rules.get(lounge_number, self.default_capacity)
-        if base_capacity != float('inf'):
-            boost = self.promotion_rules[next_tier]["capacity_boost"]
-            new_capacity = base_capacity + boost
             
-            try:
-                await channel.edit(user_limit=new_capacity)
-            except Exception as e:
-                logger.error(f"Failed to update capacity: {e}")
-        
-        # Rename with new emoji
-        await self._atomic_renumber_lounges(ctx.guild)
-        
-        await ctx.send(f"✅ {channel.name} manually promoted to **{next_tier.value.upper()}** tier!")
-    
-    @commands.command(name="lounge_reset", aliases=["lr"])
-    @commands.has_permissions(administrator=True)
-    async def lounge_reset(self, ctx):
-        """Reset the lounge system"""
-        confirm = await ctx.send(
-            "⚠️ **DANGER: This will delete ALL dynamic lounges (4+) and reset the system.**\n"
-            "Type `CONFIRM` to proceed."
-        )
-        
-        def check(m):
-            return m.author == ctx.author and m.channel == ctx.channel and m.content == "CONFIRM"
-        
-        try:
-            await self.bot.wait_for('message', timeout=30.0, check=check)
-        except asyncio.TimeoutError:
-            await confirm.edit(content="Reset cancelled.")
-            return
-        
-        # Delete all dynamic lounges
-        lounges = await self.state.get_guild_lounges(ctx.guild.id)
-        deleted = 0
-        
-        async with self._discord_ops_lock:
-            for entry in lounges:
-                if entry.number >= 4:  # Only delete dynamic lounges
-                    channel = ctx.guild.get_channel(entry.channel_id)
-                    if channel:
-                        try:
-                            await channel.delete()
-                            deleted += 1
-                            await asyncio.sleep(0.5)  # Rate limit protection
-                        except Exception as e:
-                            logger.error(f"Failed to delete {channel.name}: {e}")
-        
-        # Reset state for dynamic lounges
-        for entry in lounges:
-            if entry.number >= 4:
-                await self.state.remove_lounge(entry.channel_id)
-        
-        # Reset stats for this guild
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                "DELETE FROM lounge_stats WHERE guild_id = ?",
-                (ctx.guild.id,)
+            # Configuration
+            config_info = (
+                f"**Generator Channel:** Lounge 3\n"
+                f"**Max Lounges:** {self.max_lounges}\n"
+                f"**Min Users Per Lounge:** {self.min_users_per_lounge}\n"
+                f"**Inactivity Timer:** {self.inactivity_timer // 60} minutes\n"
+                f"**Creation Delay:** {self.creation_delay} seconds\n"
+                f"**Database Persistence:** ✅ Enabled\n"
+                f"**Atomic Operations:** ✅ Enabled"
             )
-            await db.commit()
-        
-        # Cancel any pending tasks
-        for task in list(self._deletion_tasks.values()):
-            task.cancel()
-        self._deletion_tasks.clear()
-        
-        for task in list(self._creation_tasks.values()):
-            task.cancel()
-        self._creation_tasks.clear()
-        
-        await ctx.send(f"✅ Reset complete. Deleted {deleted} dynamic lounges and cleared all data.")
-    
-    @commands.command(name="lounge_debug", aliases=["ld"])
-    @commands.has_permissions(administrator=True)
-    async def lounge_debug(self, ctx):
-        """Debug information for lounge system"""
-        lounges = await self.state.get_guild_lounges(ctx.guild.id)
-        
-        embed = discord.Embed(
-            title="🐛 Lounge System Debug",
-            color=discord.Color.orange(),
-            timestamp=discord.utils.utcnow()
-        )
-        
-        # Database info
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT COUNT(*) FROM lounges WHERE guild_id = ?", (ctx.guild.id,)) as cursor:
-                db_count = (await cursor.fetchone())[0]
             
-            async with db.execute("SELECT COUNT(*) FROM deletion_queue WHERE guild_id = ?", (ctx.guild.id,)) as cursor:
-                queue_count = (await cursor.fetchone())[0]
-        
-        embed.add_field(
-            name="Database",
-            value=f"**Entries:** {db_count}\n"
-                  f"**Cache:** {len(lounges)}\n"
-                  f"**Deletion Queue:** {queue_count}\n"
-                  f"**Active Tasks:** {len(self._deletion_tasks) + len(self._creation_tasks)}",
-            inline=False
-        )
-        
-        # Channel states
-        channel_states = []
-        for entry in sorted(lounges, key=lambda x: x.number):
-            channel = ctx.guild.get_channel(entry.channel_id)
-            if channel:
-                channel_states.append(
-                    f"{entry.number}: {'✅' if channel else '❌'} ({len(channel.members)} users)"
-                )
-            else:
-                channel_states.append(f"{entry.number}: ❌ (missing)")
-        
-        if channel_states:
             embed.add_field(
-                name="Channel States",
-                value="\n".join(channel_states),
+                name="⚙️ Configuration",
+                value=config_info,
                 inline=False
             )
-        
-        # Queue info
-        embed.add_field(
-            name="Queues",
-            value=f"**Creation Queue:** {self._creation_queue.qsize()}\n"
-                  f"**Pending Creations:** {len(self._creation_tasks)}\n"
-                  f"**Pending Deletions:** {len(self._deletion_tasks)}",
-            inline=False
-        )
-        
-        await ctx.send(embed=embed)
+            
+            # Pending deletions
+            pending = await self.state.get_pending_deletions(ctx.guild.id)
+            if pending:
+                pending_info = []
+                for channel_id, scheduled_time in pending:
+                    channel = ctx.guild.get_channel(channel_id)
+                    if channel:
+                        time_left = scheduled_time - current_time
+                        minutes = int(time_left // 60)
+                        seconds = int(time_left % 60)
+                        pending_info.append(f"• {channel.name}: {minutes}:{seconds:02d}")
+                
+                if pending_info:
+                    embed.add_field(
+                        name="⏰ Pending Deletions",
+                        value="\n".join(pending_info),
+                        inline=False
+                    )
+            
+            embed.set_footer(text=f"Guild ID: {ctx.guild.id}")
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Error in lounge_stats: {e}", exc_info=True)
+            await ctx.send(f"❌ Error showing lounge stats: {str(e)}")
+    
+    @commands.command(name="lounge_promote", aliases=["lp", "promotelounge"])
+    @commands.has_permissions(administrator=True)
+    async def lounge_promote_cmd(self, ctx, lounge_number: int):
+        """Manually promote a lounge to next tier"""
+        try:
+            lounges = await self.state.get_guild_lounges(ctx.guild.id)
+            
+            target_lounge = None
+            for entry in lounges:
+                if entry.number == lounge_number:
+                    target_lounge = entry
+                    break
+            
+            if not target_lounge:
+                await ctx.send(f"❌ Lounge {lounge_number} not found!")
+                return
+            
+            channel = ctx.guild.get_channel(target_lounge.channel_id)
+            if not channel:
+                await ctx.send(f"❌ Channel for Lounge {lounge_number} not found!")
+                return
+            
+            # Get current tier
+            current_tier = target_lounge.tier
+            
+            # Find next tier
+            tiers = [LoungeTier.NORMAL, LoungeTier.POPULAR, LoungeTier.PREMIUM, LoungeTier.ELITE]
+            current_index = tiers.index(current_tier) if current_tier in tiers else 0
+            
+            if current_index >= len(tiers) - 1:
+                await ctx.send(f"❌ {channel.name} is already at the highest tier!")
+                return
+            
+            next_tier = tiers[current_index + 1]
+            
+            # Manually promote
+            await self.state.update_lounge(channel.id, tier=next_tier)
+            await self.state.update_stat(ctx.guild.id, "promotions_given")
+            
+            # Update capacity
+            base_capacity = self.base_capacity_rules.get(lounge_number, self.default_capacity)
+            if base_capacity != float('inf'):
+                boost = self.promotion_rules[next_tier]["capacity_boost"]
+                new_capacity = base_capacity + boost
+                
+                try:
+                    await channel.edit(user_limit=new_capacity)
+                except Exception as e:
+                    logger.error(f"Failed to update capacity: {e}")
+            
+            # Rename with new emoji
+            await self._atomic_renumber_lounges(ctx.guild)
+            
+            await ctx.send(f"✅ {channel.name} manually promoted to **{next_tier.value.upper()}** tier!")
+            
+        except Exception as e:
+            logger.error(f"Error in lounge_promote: {e}", exc_info=True)
+            await ctx.send(f"❌ Error promoting lounge: {str(e)}")
+    
+    @commands.command(name="lounge_reset", aliases=["lr", "resetlounges"])
+    @commands.has_permissions(administrator=True)
+    async def lounge_reset_cmd(self, ctx):
+        """Reset the lounge system"""
+        try:
+            confirm = await ctx.send(
+                "⚠️ **DANGER: This will delete ALL dynamic lounges (4+) and reset the system.**\n"
+                "Type `CONFIRM` to proceed."
+            )
+            
+            def check(m):
+                return m.author == ctx.author and m.channel == ctx.channel and m.content == "CONFIRM"
+            
+            try:
+                await self.bot.wait_for('message', timeout=30.0, check=check)
+            except asyncio.TimeoutError:
+                await confirm.edit(content="Reset cancelled.")
+                return
+            
+            # Delete all dynamic lounges
+            lounges = await self.state.get_guild_lounges(ctx.guild.id)
+            deleted = 0
+            
+            async with self._discord_ops_lock:
+                for entry in lounges:
+                    if entry.number >= 4:  # Only delete dynamic lounges
+                        channel = ctx.guild.get_channel(entry.channel_id)
+                        if channel:
+                            try:
+                                await channel.delete()
+                                deleted += 1
+                                await asyncio.sleep(0.5)  # Rate limit protection
+                            except Exception as e:
+                                logger.error(f"Failed to delete {channel.name}: {e}")
+            
+            # Reset state for dynamic lounges
+            for entry in lounges:
+                if entry.number >= 4:
+                    await self.state.remove_lounge(entry.channel_id)
+            
+            # Reset stats for this guild
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute(
+                    "DELETE FROM lounge_stats WHERE guild_id = ?",
+                    (ctx.guild.id,)
+                )
+                await db.commit()
+            
+            # Cancel any pending tasks
+            for task in list(self._deletion_tasks.values()):
+                task.cancel()
+            self._deletion_tasks.clear()
+            
+            for task in list(self._creation_tasks.values()):
+                task.cancel()
+            self._creation_tasks.clear()
+            
+            await ctx.send(f"✅ Reset complete. Deleted {deleted} dynamic lounges and cleared all data.")
+            
+        except Exception as e:
+            logger.error(f"Error in lounge_reset: {e}", exc_info=True)
+            await ctx.send(f"❌ Error resetting lounges: {str(e)}")
+    
+    @commands.command(name="lounge_debug", aliases=["ld", "loungedebug"])
+    @commands.has_permissions(administrator=True)
+    async def lounge_debug_cmd(self, ctx):
+        """Debug information for lounge system"""
+        try:
+            lounges = await self.state.get_guild_lounges(ctx.guild.id)
+            
+            embed = discord.Embed(
+                title="🐛 Lounge System Debug",
+                color=discord.Color.orange(),
+                timestamp=discord.utils.utcnow()
+            )
+            
+            # Database info
+            async with aiosqlite.connect(DB_PATH) as db:
+                async with db.execute("SELECT COUNT(*) FROM lounges WHERE guild_id = ?", (ctx.guild.id,)) as cursor:
+                    db_count = (await cursor.fetchone())[0]
+                
+                async with db.execute("SELECT COUNT(*) FROM deletion_queue WHERE guild_id = ?", (ctx.guild.id,)) as cursor:
+                    queue_count = (await cursor.fetchone())[0]
+            
+            embed.add_field(
+                name="Database",
+                value=f"**Entries:** {db_count}\n"
+                      f"**Cache:** {len(lounges)}\n"
+                      f"**Deletion Queue:** {queue_count}\n"
+                      f"**Active Tasks:** {len(self._deletion_tasks) + len(self._creation_tasks)}",
+                inline=False
+            )
+            
+            # Channel states
+            channel_states = []
+            for entry in sorted(lounges, key=lambda x: x.number):
+                channel = ctx.guild.get_channel(entry.channel_id)
+                if channel:
+                    channel_states.append(
+                        f"{entry.number}: {'✅' if channel else '❌'} ({len(channel.members)} users)"
+                    )
+                else:
+                    channel_states.append(f"{entry.number}: ❌ (missing)")
+            
+            if channel_states:
+                embed.add_field(
+                    name="Channel States",
+                    value="\n".join(channel_states),
+                    inline=False
+                )
+            
+            # Queue info
+            embed.add_field(
+                name="Queues",
+                value=f"**Creation Queue:** {self._creation_queue.qsize()}\n"
+                      f"**Pending Creations:** {len(self._creation_tasks)}\n"
+                      f"**Pending Deletions:** {len(self._deletion_tasks)}",
+                inline=False
+            )
+            
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Error in lounge_debug: {e}", exc_info=True)
+            await ctx.send(f"❌ Error showing debug info: {str(e)}")
+
 
 async def setup(bot):
     cog = DynamicLounges(bot)
