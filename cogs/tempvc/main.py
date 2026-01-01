@@ -11,7 +11,7 @@ from .views import BasicControlsView
 
 
 class TempVoice(commands.Cog):
-    """Temp Voice with stability queue and organized channel ordering"""
+    """Temp Voice with stability queue and proper positioning"""
 
     def __init__(self, bot):
         self.bot = bot
@@ -23,32 +23,14 @@ class TempVoice(commands.Cog):
         self.cleanup_locks = {}     # guild.id -> asyncio.Lock()
         self.owner_leave_times = {}  # channel_id -> timestamp when owner left
         self._heartbeat.start()
-        self._reorganize_queue = asyncio.Queue()  # For async reorganization
         self.type_order = {"Duo": 1, "Trio": 2, "Squad": 3, "Other": 4}  # Type ordering
 
     async def cog_load(self):
         print("[TempVoice] Cog loaded with queue protection ✅")
         await self._init_db()
-        # Start reorganization worker
-        asyncio.create_task(self._reorganize_worker())
 
     def cog_unload(self):
         self._heartbeat.cancel()
-
-    # ---------------- REORGANIZATION WORKER ----------------
-    async def _reorganize_worker(self):
-        """Process reorganization requests one at a time"""
-        while True:
-            try:
-                category = await self._reorganize_queue.get()
-                await self._reorganize_bot_channels_safe(category)
-                await asyncio.sleep(0.5)  # Delay between reorganizations
-            except Exception as e:
-                print(f"[TempVoice] Reorganize worker error: {e}")
-
-    async def _queue_reorganize(self, category):
-        """Queue a category for reorganization"""
-        await self._reorganize_queue.put(category)
 
     # ---------------- HEARTBEAT ----------------
     @tasks.loop(minutes=10)
@@ -80,24 +62,21 @@ class TempVoice(commands.Cog):
     async def _init_db(self):
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("""
-                CREATE TABLE IF NOT EXISTS voiceChannel(
-                    guildID INTEGER,
-                    userID INTEGER,
-                    voiceID INTEGER UNIQUE,
-                    vcType TEXT NOT NULL,  -- 'Duo', 'Trio', 'Squad', or 'Other'
-                    channelNumber INTEGER NOT NULL,  -- The number for this type
-                    locked BOOLEAN DEFAULT FALSE,
-                    hidden BOOLEAN DEFAULT FALSE,
-                    channelName TEXT DEFAULT '',
-                    channelLimit INTEGER DEFAULT 0,
+                CREATE TABLE IF NOT EXISTS voiceChannel (
+                    guildID INTEGER NOT NULL,
+                    userID INTEGER NOT NULL,
+                    voiceID INTEGER PRIMARY KEY,
+                    vcType TEXT NOT NULL CHECK (vcType IN ('Duo','Trio','Squad','Other')),
+                    channelNumber INTEGER NOT NULL,
+                    channelName TEXT NOT NULL,
+                    channelLimit INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            # Create indexes for faster queries
             await db.execute("CREATE INDEX IF NOT EXISTS idx_guild_type ON voiceChannel(guildID, vcType)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_guild ON voiceChannel(guildID)")
             await db.commit()
-        print("[TempVoice] Database ready ✅")
+        print("[TempVoice] Database initialized & validated ✅")
 
     # ---------------- EVENTS ----------------
     @commands.Cog.listener()
@@ -240,7 +219,7 @@ class TempVoice(commands.Cog):
             while channel_number in used_numbers_by_type.get(vc_type, set()):
                 channel_number += 1
             
-            # Generate initial channel name
+            # Generate channel name with the ORIGINAL base name
             name = f"{clean_base} {channel_number}"
             
             # Get generator channels in this category
@@ -250,27 +229,46 @@ class TempVoice(commands.Cog):
             # Calculate position - start after generator channels
             base_position = generator_vcs[-1].position + 1 if generator_vcs else 0
             
-            # Find correct insertion position based on type order and existing channels
+            # Find where to insert based on type order and existing channels
             insert_position = base_position
-            existing_channels_in_category.sort(key=lambda x: (self.type_order.get(x["type"], 5), x["number"]))
             
-            for idx, chan_info in enumerate(existing_channels_in_category):
-                # If we should insert before this channel
+            # Sort existing channels by type order and then by number
+            sorted_existing = sorted(
+                existing_channels_in_category,
+                key=lambda x: (self.type_order.get(x["type"], 5), x["number"])
+            )
+            
+            # Find the right position to insert
+            for idx, chan_info in enumerate(sorted_existing):
                 current_type_order = self.type_order.get(chan_info["type"], 5)
                 new_type_order = self.type_order.get(vc_type, 5)
                 
+                # If our new channel type should come before this one
                 if new_type_order < current_type_order:
                     insert_position = base_position + idx
                     break
+                # Same type, insert by number order
                 elif new_type_order == current_type_order and channel_number < chan_info["number"]:
                     insert_position = base_position + idx
                     break
-            
-            # If we didn't break, insert at the end
             else:
-                insert_position = base_position + len(existing_channels_in_category)
+                # Insert at the end
+                insert_position = base_position + len(sorted_existing)
             
-            # Create VC with calculated position
+            # IMPORTANT: Get current channels in category to adjust positions
+            all_category_channels = [ch for ch in category.voice_channels if ch.id not in JOIN_CHANNELS]
+            all_category_channels.sort(key=lambda x: x.position)
+            
+            # If we're inserting in the middle, we need to shift existing channels
+            if 0 <= insert_position - base_position < len(all_category_channels):
+                # Move existing channels down to make room
+                for i in range(len(all_category_channels) - 1, insert_position - base_position - 1, -1):
+                    try:
+                        await all_category_channels[i].edit(position=base_position + i + 1)
+                    except Exception as e:
+                        print(f"[TempVoice] Failed to shift channel {all_category_channels[i].name}: {e}")
+            
+            # Create VC with correct position from the start
             vc = await guild.create_voice_channel(
                 name=name,
                 category=category,
@@ -279,7 +277,9 @@ class TempVoice(commands.Cog):
                 reason=f"Temp VC created by {member}"
             )
 
+            # Set permissions for owner
             await vc.set_permissions(member, manage_channels=True, connect=True, speak=True)
+            
             try:
                 await member.move_to(vc)
             except Exception:
@@ -295,80 +295,9 @@ class TempVoice(commands.Cog):
                 )
                 await db.commit()
 
-            # Queue reorganization (async, non-blocking)
-            await self._queue_reorganize(category)
-            
             await self._send_panel(vc, member.id)
             print(f"[TempVoice] ✅ Created {name} (Type: {vc_type}, Number: {channel_number}, Position: {insert_position})")
 
-    async def _reorganize_bot_channels_safe(self, category):
-        try:
-            guild = category.guild
-
-            async with aiosqlite.connect(DB_PATH) as db:
-                async with db.execute("""
-                    SELECT voiceID, vcType
-                    FROM voiceChannel
-                    WHERE guildID = ?
-                """, (guild.id,)) as cursor:
-                    rows = await cursor.fetchall()
-
-            # Collect valid channels
-            channels = []
-            for vc_id, vc_type in rows:
-                ch = guild.get_channel(vc_id)
-                if ch and ch.category and ch.category.id == category.id:
-                    channels.append({
-                        "channel": ch,
-                        "type": vc_type
-                    })
-
-            # Define strict ordering
-            TYPE_ORDER = {"Duo": 1, "Trio": 2, "Squad": 3, "Other": 4}
-
-            # Sort by type only (NOT NAME)
-            channels.sort(key=lambda x: TYPE_ORDER.get(x["type"], 99))
-
-            # Generator channels (join-to-create)
-            generator_channels = [
-                vc for vc in category.voice_channels if vc.id in JOIN_CHANNELS
-            ]
-            generator_channels.sort(key=lambda c: c.position)
-
-            start_pos = generator_channels[-1].position + 1 if generator_channels else 0
-
-            # Reassign numbers cleanly
-            counters = {"Duo": 1, "Trio": 1, "Squad": 1, "Other": 1}
-
-            for idx, entry in enumerate(channels):
-                vc = entry["channel"]
-                vc_type = entry["type"]
-
-                number = counters[vc_type]
-                counters[vc_type] += 1
-
-                new_name = f"{vc_type} {number}"
-                new_position = start_pos + idx
-
-                try:
-                    await vc.edit(name=new_name, position=new_position)
-
-                    async with aiosqlite.connect(DB_PATH) as db:
-                        await db.execute("""
-                            UPDATE voiceChannel
-                            SET channelName = ?, channelNumber = ?
-                            WHERE voiceID = ?
-                        """, (new_name, number, vc.id))
-                        await db.commit()
-
-                except Exception as e:
-                    print(f"[TempVoice] Failed reorder {vc.name}: {e}")
-
-            print(f"[TempVoice] Reordered {len(channels)} channels cleanly")
-
-        except Exception as e:
-            print(f"[TempVoice] REORDER FAILED: {e}")
-        
     # ---------------- CLEANUP ----------------
     async def _schedule_cleanup(self, ch):
         # Only cleanup channels we created
@@ -392,9 +321,6 @@ class TempVoice(commands.Cog):
                     if not await c.fetchone():
                         return
             
-            # Get category before deletion for reorganization
-            category = ch.category
-            
             await ch.delete(reason="Empty temp VC cleanup")
             
             async with aiosqlite.connect(DB_PATH) as db:
@@ -405,10 +331,6 @@ class TempVoice(commands.Cog):
             
             # Remove from leave times tracking if it exists
             self.owner_leave_times.pop(ch.id, None)
-            
-            # Queue reorganization if category still exists
-            if category:
-                await self._queue_reorganize(category)
                 
         except Exception:
             print(f"[TempVoice] cleanup error:\n{traceback.format_exc()}")

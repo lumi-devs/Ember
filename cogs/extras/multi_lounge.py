@@ -68,10 +68,10 @@ class LoungeCog(commands.Cog):
             
             # Name templates
             'name_templates': {
-                'normal': "┊ {emoji}﹕₊˚⌇lounge {number}  ꜝꜝ‹{current}/{max}",
-                'active': "┊ 🌟﹕₊˚⌇active lounge {number}  ꜝꜝ‹{current}/{max}",
-                'elite': "┊ 💎﹕₊˚⌇elite lounge {number}  ꜝꜝ‹{current}/{max}",
-                'premium': "┊ ✨﹕₊˚⌇premium lounge {number}  ꜝꜝ‹{current}/{max}",
+                'normal': "┊ {emoji}﹕₊˚⌇lounge {number}  ꜝꜝ‹3",
+                'active': "┊ 🌟﹕₊˚⌇active lounge {number}  ꜝꜝ‹3",
+                'elite': "┊ 💎﹕₊˚⌇elite lounge {number}  ꜝꜝ‹3",
+                'premium': "┊ ✨﹕₊˚⌇premium lounge {number}  ꜝꜝ‹3",
             }
         }
         
@@ -398,7 +398,7 @@ class LoungeCog(commands.Cog):
         
         # Get initial capacity and name
         max_capacity, emoji = self.get_capacity_for_lounge(lounge_number, 'normal')
-        initial_name = f"┊ {emoji}﹕₊˚⌇lounge {lounge_number}  ꜝꜝ‹0/{max_capacity}"
+        initial_name = f"┊ {emoji}﹕₊˚⌇lounge {lounge_number}  ꜝꜝ‹3"
         
         try:
             new_channel = await self.lounge_category.create_voice_channel(
