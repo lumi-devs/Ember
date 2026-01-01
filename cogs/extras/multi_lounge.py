@@ -4,6 +4,8 @@ import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, List
 import time
+import json
+import os
 
 class LoungeCog(commands.Cog):
     """On-demand lounge system with one spare lounge always available"""
@@ -25,6 +27,10 @@ class LoungeCog(commands.Cog):
         # Settings
         self.inactivity_timeout = 300  # 5 minutes in seconds
         self.check_interval = 30  # Check every 30 seconds
+        
+        # Persistence
+        self.data_file = "data/lounges_data.json"
+        os.makedirs("data", exist_ok=True)
         
         print("🚀 Lounge Cog initialized - On-Demand System")
     
@@ -49,8 +55,80 @@ class LoungeCog(commands.Cog):
             print("❌ Lounge 2 has no category!")
             return
         
+        # Load saved data
+        await self.load_data()
+        
         # Start the maintenance loop
         self.maintenance_loop.start()
+    
+    async def load_data(self):
+        """Load saved lounge data from JSON file"""
+        try:
+            if os.path.exists(self.data_file):
+                with open(self.data_file, 'r') as f:
+                    data = json.load(f)
+                    
+                self.next_lounge_number = data.get('next_lounge_number', 3)
+                self.empty_lounges = data.get('empty_lounges', [])
+                self.last_activity = data.get('last_activity', {})
+                
+                # Reconstruct our_lounges by finding existing channels
+                saved_lounges = data.get('our_lounges', {})
+                for lounge_num_str, lounge_data in saved_lounges.items():
+                    lounge_num = int(lounge_num_str)
+                    
+                    # Try to find the channel by ID if saved
+                    if 'channel_id' in lounge_data:
+                        channel = self.bot.get_channel(lounge_data['channel_id'])
+                        if channel and channel.name.startswith(f"┊ 🔊﹕₊˚⌇lounge {lounge_num}"):
+                            # Convert string dates back to datetime
+                            empty_since = None
+                            if lounge_data.get('empty_since'):
+                                empty_since = datetime.fromisoformat(lounge_data['empty_since'])
+                            
+                            created_at = None
+                            if lounge_data.get('created_at'):
+                                created_at = datetime.fromisoformat(lounge_data['created_at'])
+                            
+                            self.our_lounges[lounge_num] = {
+                                'channel': channel,
+                                'empty_since': empty_since,
+                                'created_at': created_at
+                            }
+                            print(f"📂 Restored Lounge {lounge_num}")
+                    
+                print(f"📂 Loaded data: {len(self.our_lounges)} lounges, next: {self.next_lounge_number}")
+                
+        except Exception as e:
+            print(f"❌ Error loading data: {e}")
+    
+    async def save_data(self):
+        """Save current lounge data to JSON file"""
+        try:
+            # Prepare data for saving
+            data = {
+                'next_lounge_number': self.next_lounge_number,
+                'empty_lounges': self.empty_lounges,
+                'last_activity': self.last_activity,
+                'our_lounges': {},
+                'saved_at': datetime.now().isoformat()
+            }
+            
+            for lounge_num, lounge_data in self.our_lounges.items():
+                if lounge_data['channel']:
+                    data['our_lounges'][str(lounge_num)] = {
+                        'channel_id': lounge_data['channel'].id,
+                        'empty_since': lounge_data['empty_since'].isoformat() if lounge_data['empty_since'] else None,
+                        'created_at': lounge_data['created_at'].isoformat() if lounge_data.get('created_at') else None
+                    }
+            
+            with open(self.data_file, 'w') as f:
+                json.dump(data, f, indent=2, default=str)
+            
+            # print(f"💾 Saved data: {len(self.our_lounges)} lounges")
+            
+        except Exception as e:
+            print(f"❌ Error saving data: {e}")
     
     @tasks.loop(seconds=30)
     async def maintenance_loop(self):
@@ -58,7 +136,7 @@ class LoungeCog(commands.Cog):
         if not self.lounge_2 or not self.lounge_category:
             return
         
-        print(f"\n🔄 Maintenance check...")
+        # print(f"\n🔄 Maintenance check...")
         
         # Update activity tracking for Lounge 2
         lounge_2_users = len(self.lounge_2.members)
@@ -77,16 +155,16 @@ class LoungeCog(commands.Cog):
                     # Lounge has users - update activity
                     self.last_activity[lounge_num] = time.time()
                     self.our_lounges[lounge_num]['empty_since'] = None
-                    print(f"   Lounge {lounge_num}: {users} users (active)")
+                    # print(f"   Lounge {lounge_num}: {users} users (active)")
                 else:
                     # Lounge is empty
                     if self.our_lounges[lounge_num]['empty_since'] is None:
                         # Just became empty
                         self.our_lounges[lounge_num]['empty_since'] = datetime.now()
-                        print(f"   Lounge {lounge_num}: Empty (just now)")
+                        # print(f"   Lounge {lounge_num}: Empty (just now)")
                     
                     current_empty_lounges.append(lounge_num)
-                    print(f"   Lounge {lounge_num}: Empty (for {(datetime.now() - self.our_lounges[lounge_num]['empty_since']).total_seconds():.0f}s)")
+                    # print(f"   Lounge {lounge_num}: Empty (for {(datetime.now() - self.our_lounges[lounge_num]['empty_since']).total_seconds():.0f}s)")
         
         self.empty_lounges = current_empty_lounges
         
@@ -96,6 +174,7 @@ class LoungeCog(commands.Cog):
             if 3 not in self.our_lounges:
                 print(f"🎯 Creating Lounge 3 (Lounge 2 has {lounge_2_users}/2+ users)")
                 await self.create_new_lounge(3)
+                await self.save_data()
             else:
                 # Ensure Lounge 3 is active
                 lounge_3 = self.our_lounges[3]['channel']
@@ -104,6 +183,7 @@ class LoungeCog(commands.Cog):
                     if 4 not in self.our_lounges:
                         print(f"🎯 Creating Lounge 4 (Both lounges have 2+ users)")
                         await self.create_new_lounge(4)
+                        await self.save_data()
         
         # Count non-empty lounges (excluding Lounge 2)
         non_empty_lounges = []
@@ -111,20 +191,28 @@ class LoungeCog(commands.Cog):
             if self.our_lounges[lounge_num]['channel'] and len(self.our_lounges[lounge_num]['channel'].members) > 0:
                 non_empty_lounges.append(lounge_num)
         
-        print(f"📊 Stats: {len(non_empty_lounges)} active lounges, {len(self.empty_lounges)} empty lounges")
+        # print(f"📊 Stats: {len(non_empty_lounges)} active lounges, {len(self.empty_lounges)} empty lounges")
         
         # Manage empty lounges - we want exactly ONE spare (empty) lounge
         if len(self.empty_lounges) > 1:
             # More than one empty lounge - delete the oldest ones
-            print(f"🗑️  Too many empty lounges ({len(self.empty_lounges)}), cleaning up...")
+            # print(f"🗑️  Too many empty lounges ({len(self.empty_lounges)}), cleaning up...")
             await self.cleanup_extra_empty_lounges()
+            await self.save_data()
         elif len(self.empty_lounges) == 0 and len(self.our_lounges) > 0:
             # No empty lounges - create a spare if needed
-            print("🆕 No spare lounge, creating one...")
+            # print("🆕 No spare lounge, creating one...")
             await self.create_spare_lounge()
+            await self.save_data()
         
         # Check for inactive lounges to delete (except we always keep at least one spare)
-        await self.check_inactive_lounges()
+        deleted = await self.check_inactive_lounges()
+        if deleted:
+            await self.save_data()
+        
+        # Auto-save every 5 minutes
+        if time.time() % 30 < 30:  # Roughly every 5 minutes
+            await self.save_data()
     
     async def cleanup_extra_empty_lounges(self):
         """Delete extra empty lounges, keeping only one spare"""
@@ -140,7 +228,7 @@ class LoungeCog(commands.Cog):
         for lounge_num in lounges_to_delete:
             if lounge_num in self.our_lounges and lounge_num >= 3:  # Don't delete below lounge 3
                 await self.delete_lounge(lounge_num, "Extra empty lounge")
-                print(f"   Deleted Lounge {lounge_num} (extra empty)")
+                # print(f"   Deleted Lounge {lounge_num} (extra empty)")
     
     async def create_spare_lounge(self):
         """Create a spare lounge if we have none"""
@@ -150,12 +238,13 @@ class LoungeCog(commands.Cog):
         else:
             next_num = max(self.our_lounges.keys()) + 1
         
-        print(f"   Creating spare lounge {next_num}")
+        # print(f"   Creating spare lounge {next_num}")
         await self.create_new_lounge(next_num)
     
     async def check_inactive_lounges(self):
         """Delete lounges that have been inactive for too long"""
         current_time = datetime.now()
+        deleted_any = False
         
         for lounge_num in list(self.our_lounges.keys()):
             if lounge_num in self.our_lounges and self.our_lounges[lounge_num]['empty_since']:
@@ -168,19 +257,57 @@ class LoungeCog(commands.Cog):
                     lounge_num in self.empty_lounges and 
                     len(self.empty_lounges) > 1):  # Only delete if we have more than one empty
                     
-                    print(f"🗑️  Deleting Lounge {lounge_num} (inactive for {empty_duration:.0f}s)")
+                    # print(f"🗑️  Deleting Lounge {lounge_num} (inactive for {empty_duration:.0f}s)")
                     await self.delete_lounge(lounge_num, "Inactive for too long")
+                    deleted_any = True
+        
+        return deleted_any
     
     async def create_new_lounge(self, lounge_number: int):
-        """Create a new lounge channel"""
+        """Create a new lounge channel in the correct position"""
         try:
             # Create the name with proper format
             channel_name = f"┊ 🔊﹕₊˚⌇lounge {lounge_number} ꜝꜝ‹3"
             
-            # Create at the end of voice channels
+            # Get all voice channels in the category
             voice_channels = [c for c in self.lounge_category.channels 
                             if isinstance(c, discord.VoiceChannel)]
-            position = len(voice_channels)
+            
+            # Determine position based on lounge number
+            position = None
+            
+            if lounge_number == 3:
+                # Find Lounge 2's position and place Lounge 3 right after it
+                lounge_2_position = self.lounge_2.position if self.lounge_2 else None
+                if lounge_2_position is not None:
+                    # Place Lounge 3 directly below Lounge 2
+                    position = lounge_2_position + 1
+                else:
+                    # Fallback: place at the end of voice channels
+                    position = len(voice_channels)
+                    
+            elif lounge_number == 4:
+                # Find Lounge 3's position
+                if 3 in self.our_lounges and self.our_lounges[3]['channel']:
+                    lounge_3 = self.our_lounges[3]['channel']
+                    position = lounge_3.position + 1
+                else:
+                    # If Lounge 3 doesn't exist yet, place at the end
+                    position = len(voice_channels)
+                    
+            else:  # lounge_number >= 5
+                # Find the highest existing lounge we've created
+                existing_numbers = [num for num in self.our_lounges.keys() if num < lounge_number]
+                
+                if existing_numbers:
+                    highest_existing = max(existing_numbers)
+                    if highest_existing in self.our_lounges and self.our_lounges[highest_existing]['channel']:
+                        highest_channel = self.our_lounges[highest_existing]['channel']
+                        position = highest_channel.position + 1
+                    else:
+                        position = len(voice_channels)
+                else:
+                    position = len(voice_channels)
             
             # Create the channel
             new_channel = await self.lounge_category.create_voice_channel(
@@ -202,7 +329,7 @@ class LoungeCog(commands.Cog):
             if lounge_number not in self.empty_lounges:
                 self.empty_lounges.append(lounge_number)
             
-            print(f"✅ Created Lounge {lounge_number}")
+            print(f"✅ Created Lounge {lounge_number} at position {position}")
             
             # Update next lounge number if needed
             if lounge_number >= self.next_lounge_number:
@@ -234,6 +361,11 @@ class LoungeCog(commands.Cog):
             print(f"❌ Failed to delete Lounge {lounge_number}: {e}")
         
         return False
+    
+    async def cog_unload(self):
+        """Save data when cog is unloaded"""
+        print("💾 Saving data before unload...")
+        await self.save_data()
     
     @maintenance_loop.before_loop
     async def before_maintenance_loop(self):
@@ -318,6 +450,9 @@ class LoungeCog(commands.Cog):
             inline=False
         )
         
+        # Persistence status
+        embed.set_footer(text="✅ Data persists through restarts")
+        
         await ctx.send(embed=embed)
     
     @commands.command(name="forcecreate")
@@ -336,6 +471,7 @@ class LoungeCog(commands.Cog):
         success = await self.create_new_lounge(number)
         
         if success:
+            await self.save_data()
             await ctx.send(f"✅ Created Lounge {number}!")
         else:
             await ctx.send(f"❌ Failed to create Lounge {number}")
@@ -353,6 +489,7 @@ class LoungeCog(commands.Cog):
         success = await self.delete_lounge(number, "Admin command")
         
         if success:
+            await self.save_data()
             await ctx.send(f"✅ Deleted Lounge {number}!")
         else:
             await ctx.send(f"❌ Failed to delete Lounge {number} (might not exist)")
@@ -425,7 +562,35 @@ class LoungeCog(commands.Cog):
             inline=False
         )
         
+        # Persistence info
+        try:
+            if os.path.exists(self.data_file):
+                file_size = os.path.getsize(self.data_file)
+                embed.add_field(
+                    name="💾 Persistence",
+                    value=f"**Data file:** {self.data_file}\n**File size:** {file_size} bytes",
+                    inline=False
+                )
+        except:
+            pass
+        
         await ctx.send(embed=embed)
+    
+    @commands.command(name="savedata")
+    @commands.has_permissions(administrator=True)
+    async def save_data_cmd(self, ctx):
+        """Manually save lounge data (Admin only)"""
+        await ctx.send("💾 Saving lounge data...")
+        await self.save_data()
+        await ctx.send("✅ Data saved successfully!")
+    
+    @commands.command(name="loaddata")
+    @commands.has_permissions(administrator=True)
+    async def load_data_cmd(self, ctx):
+        """Manually load lounge data (Admin only)"""
+        await ctx.send("📂 Loading lounge data...")
+        await self.load_data()
+        await ctx.send("✅ Data loaded successfully!")
 
 async def setup(bot):
     await bot.add_cog(LoungeCog(bot))

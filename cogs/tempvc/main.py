@@ -8,7 +8,7 @@ import traceback
 from collections import deque
 from .config import JOIN_CHANNELS, DB_PATH
 from .views import BasicControlsView
-
+import re
 
 class TempVoice(commands.Cog):
     """Temp Voice with stability queue and proper positioning"""
@@ -177,11 +177,14 @@ class TempVoice(commands.Cog):
         
         # Determine VC type based on generator channel name
         vc_type = "Other"
-        if clean_base.lower() == "duo":
+        clean_base = clean_base.strip()
+
+        # Using regex with word boundaries
+        if re.search(r'\bduo\b', clean_base, re.IGNORECASE):
             vc_type = "Duo"
-        elif clean_base.lower() == "trio":
+        elif re.search(r'\btrio\b', clean_base, re.IGNORECASE):
             vc_type = "Trio"
-        elif clean_base.lower() == "squad":
+        elif re.search(r'\bsquad\b', clean_base, re.IGNORECASE):
             vc_type = "Squad"
         
         # Use a lock to prevent race conditions
