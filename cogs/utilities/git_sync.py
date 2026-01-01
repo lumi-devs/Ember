@@ -86,7 +86,7 @@ class GitHubSync(commands.Cog):
                         content_bytes,
                         existing.sha
                     )
-                    logging.info(f"  ✅ Updated: {rel_path}")
+                    #logging.info(f"  ✅ Updated: {rel_path}")
                 except Exception:
                     # Create new file
                     self.repo.create_file(
