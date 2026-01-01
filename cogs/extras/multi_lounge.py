@@ -1,13 +1,13 @@
 import discord
 from discord.ext import commands, tasks
 import asyncio
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set
 import time
 import re
 import logging
-from datetime import datetime, timedelta
 from dataclasses import dataclass
 from enum import Enum
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
@@ -18,81 +18,219 @@ class LoungeTier(Enum):
     ELITE = "elite"
 
 @dataclass
-class LoungeData:
+class LoungeEntry:
+    """Atomic lounge entry with all state"""
     channel_id: int
-    created_at: float
-    peak_users: int = 0
-    total_hours: float = 0.0
-    promotion_score: int = 0
-    last_active: float = 0.0
+    guild_id: int
+    number: int
     tier: LoungeTier = LoungeTier.NORMAL
+    deletion_task: Optional[asyncio.Task] = None
+    deletion_scheduled: Optional[float] = None
+    created_at: float = 0.0
+    last_active: float = 0.0
+    peak_users: int = 0
+    metadata: Dict = None
+
+class AtomicLoungeManager:
+    """Atomic state manager for lounges"""
+    
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self._lounges: Dict[int, LoungeEntry] = {}  # channel_id -> LoungeEntry
+        self._guild_lounges: Dict[int, List[int]] = defaultdict(list)  # guild_id -> sorted channel_ids
+        self._pending_creations: Dict[int, asyncio.Task] = {}
+        self._user_alone_timers: Dict[int, Dict[int, float]] = defaultdict(dict)
+        
+    async def add_lounge(self, guild_id: int, channel_id: int, number: int) -> LoungeEntry:
+        """Atomically add a new lounge"""
+        async with self._lock:
+            entry = LoungeEntry(
+                channel_id=channel_id,
+                guild_id=guild_id,
+                number=number,
+                created_at=time.time(),
+                last_active=time.time(),
+                metadata={}
+            )
+            self._lounges[channel_id] = entry
+            
+            # Insert in sorted position
+            if channel_id not in self._guild_lounges[guild_id]:
+                self._guild_lounges[guild_id].append(channel_id)
+                self._guild_lounges[guild_id].sort(
+                    key=lambda cid: self._lounges[cid].number
+                )
+            
+            return entry
+    
+    async def remove_lounge(self, channel_id: int) -> Optional[LoungeEntry]:
+        """Atomically remove a lounge"""
+        async with self._lock:
+            entry = self._lounges.pop(channel_id, None)
+            if entry:
+                # Cancel any deletion task
+                if entry.deletion_task:
+                    entry.deletion_task.cancel()
+                
+                # Remove from guild list
+                if channel_id in self._guild_lounges[entry.guild_id]:
+                    self._guild_lounges[entry.guild_id].remove(channel_id)
+                
+                # Clean up user timers for this channel
+                guild_timers = self._user_alone_timers[entry.guild_id]
+                users_to_remove = []
+                for user_id, (timer_channel_id, _) in guild_timers.items():
+                    if timer_channel_id == channel_id:
+                        users_to_remove.append(user_id)
+                for user_id in users_to_remove:
+                    del guild_timers[user_id]
+            
+            return entry
+    
+    async def get_lounge(self, channel_id: int) -> Optional[LoungeEntry]:
+        """Get lounge entry"""
+        async with self._lock:
+            return self._lounges.get(channel_id)
+    
+    async def get_guild_lounges(self, guild_id: int) -> List[LoungeEntry]:
+        """Get all lounges for a guild in order"""
+        async with self._lock:
+            channel_ids = self._guild_lounges.get(guild_id, [])
+            return [self._lounges[cid] for cid in channel_ids if cid in self._lounges]
+    
+    async def update_lounge(self, channel_id: int, **kwargs) -> bool:
+        """Atomically update lounge properties"""
+        async with self._lock:
+            if channel_id not in self._lounges:
+                return False
+            
+            entry = self._lounges[channel_id]
+            for key, value in kwargs.items():
+                if hasattr(entry, key):
+                    setattr(entry, key, value)
+            
+            return True
+    
+    async def schedule_deletion(self, channel_id: int, deletion_time: float) -> bool:
+        """Atomically schedule a lounge for deletion"""
+        async with self._lock:
+            if channel_id not in self._lounges:
+                return False
+            
+            entry = self._lounges[channel_id]
+            
+            # Cancel existing task
+            if entry.deletion_task:
+                entry.deletion_task.cancel()
+            
+            entry.deletion_scheduled = time.time() + deletion_time
+            return True
+    
+    async def cancel_deletion(self, channel_id: int) -> bool:
+        """Atomically cancel scheduled deletion"""
+        async with self._lock:
+            if channel_id not in self._lounges:
+                return False
+            
+            entry = self._lounges[channel_id]
+            if entry.deletion_task:
+                entry.deletion_task.cancel()
+                entry.deletion_task = None
+            
+            entry.deletion_scheduled = None
+            return True
+    
+    async def set_deletion_task(self, channel_id: int, task: asyncio.Task) -> bool:
+        """Set the deletion task for a lounge"""
+        async with self._lock:
+            if channel_id not in self._lounges:
+                return False
+            
+            entry = self._lounges[channel_id]
+            entry.deletion_task = task
+            return True
+    
+    async def get_pending_creations(self, guild_id: int) -> List[int]:
+        """Get channels with pending creations"""
+        async with self._lock:
+            return [cid for cid, task in self._pending_creations.items() 
+                   if cid in self._lounges and self._lounges[cid].guild_id == guild_id]
+    
+    async def add_pending_creation(self, channel_id: int, task: asyncio.Task):
+        """Add a pending creation task"""
+        async with self._lock:
+            self._pending_creations[channel_id] = task
+    
+    async def remove_pending_creation(self, channel_id: int):
+        """Remove a pending creation task"""
+        async with self._lock:
+            task = self._pending_creations.pop(channel_id, None)
+            if task:
+                task.cancel()
+    
+    async def set_user_alone_timer(self, guild_id: int, user_id: int, channel_id: int):
+        """Set a timer for a user being alone"""
+        async with self._lock:
+            self._user_alone_timers[guild_id][user_id] = (channel_id, time.time())
+    
+    async def remove_user_alone_timer(self, guild_id: int, user_id: int):
+        """Remove a user's alone timer"""
+        async with self._lock:
+            self._user_alone_timers[guild_id].pop(user_id, None)
+    
+    async def get_user_alone_timers(self, guild_id: int) -> Dict[int, Tuple[int, float]]:
+        """Get all alone timers for a guild"""
+        async with self._lock:
+            return dict(self._user_alone_timers[guild_id])
 
 class DynamicLounges(commands.Cog):
+    """Atomic and robust lounge system"""
+    
     def __init__(self, bot):
         self.bot = bot
-        self.creating_lock = asyncio.Lock()
-        self.renaming_lock = asyncio.Lock()
-        self.position_lock = asyncio.Lock()  # NEW: Lock for position management
-        self.cooldowns: Dict[int, float] = {}  # user_id: timestamp
+        self.state = AtomicLoungeManager()
         
-        # Configuration - SET YOUR INITIAL CHANNEL ID HERE
-        self.initial_channel_id = 1455864869030068285  # REPLACE THIS WITH YOUR LOUNGE3 CHANNEL ID
-        
-        # Lounge name format (promotion emoji at the END)
+        # Configuration
+        self.initial_channel_id = 1455864869030068285  # Lounge 3 generator
         self.base_name = "┊ 🔊﹕₊˚⌇lounge"
         self.name_suffix = "  ꜝꜝ‹3"
         
-        # System settings
-        self.inactivity_timer = 300      # Base: 5 minutes for deletion
-        self.creation_delay = 30         # 30 seconds delay before creating new lounge
-        self.max_lounges = 15            # Maximum number of lounges
-        self.anti_spam_cooldown = 30     # User cooldown in seconds
-        self.min_users_per_lounge = 2    # Minimum users needed PER LOUNGE to allow next creation
+        # Atomic operation locks (for Discord API calls)
+        self._discord_ops_lock = asyncio.Lock()  # For Discord API calls
+        self._creation_queue = asyncio.Queue()   # Serialize creations
         
-        # Channel capacity rules
+        # Settings
+        self.inactivity_timer = 300      # 5 minutes for deletion
+        self.creation_delay = 30         # 30 seconds delay
+        self.max_lounges = 15
+        self.min_users_per_lounge = 2
+        
+        # Capacity rules
         self.base_capacity_rules = {
-            3: float('inf'),  # Lounge3 has infinite capacity
-            4: 8,             # Lounge4 has capacity 8
-            5: 8,             # Lounge5 has capacity 8
-            6: 6,             # Lounge6 has capacity 6
-            7: 6,             # Lounge7 has capacity 6
-            8: 4,             # Lounge8 has capacity 4
+            3: float('inf'),
+            4: 8, 5: 8,
+            6: 6, 7: 6,
+            8: 4,
         }
-        self.default_capacity = 4  # For lounges beyond defined rules
+        self.default_capacity = 4
         
-        # **ENHANCEMENT 1: PROMOTION SYSTEM** (emoji at END)
+        # Promotion system
         self.promotion_rules = {
-            LoungeTier.NORMAL: {"min_users": 2, "capacity_boost": 0, "emoji": ""},  # No emoji for normal
+            LoungeTier.NORMAL: {"min_users": 2, "capacity_boost": 0, "emoji": ""},
             LoungeTier.POPULAR: {"min_users": 5, "duration_minutes": 30, "capacity_boost": 2, "emoji": "⭐"},
             LoungeTier.PREMIUM: {"min_users": 8, "duration_minutes": 60, "capacity_boost": 4, "emoji": "💎"},
             LoungeTier.ELITE: {"min_users": 10, "duration_minutes": 120, "capacity_boost": 6, "emoji": "👑"},
         }
         
-        # **ENHANCEMENT 2: SMART CLEANUP**
-        self.smart_cleanup_levels = {
-            0: 600,   # First empty lounge: 10 minutes
-            1: 300,   # Second empty lounge: 5 minutes
-            2: 120,   # Third empty lounge: 2 minutes
-            3: 60,    # Fourth+ empty lounge: 1 minute
-        }
-        
-        # **ENHANCEMENT 3: ANTI-HOGGING SYSTEM**
+        # Anti-hogging
         self.anti_hogging_rules = {
-            "alone_timeout": 600,      # 10 minutes alone in lounge
-            "low_activity_timeout": 1200,  # 20 minutes with 1 user
-            "move_to_next": True,      # Move user to next available lounge
-            "notify_user": True,       # Notify user before moving
+            "alone_timeout": 600,
+            "low_activity_timeout": 1200,
+            "move_to_next": True,
+            "notify_user": True,
         }
         
-        # Tracking
-        self.empty_channels: Dict[int, asyncio.Task] = {}
-        self.pending_creations: Dict[int, asyncio.Task] = {}
-        self.last_check: Dict[int, float] = {}
-        self.lounge_data: Dict[int, LoungeData] = {}  # channel_id -> LoungeData
-        self.user_alone_timers: Dict[int, Dict[int, float]] = {}  # guild_id -> {user_id: start_time}
-        self.empty_lounge_count: Dict[int, int] = {}  # guild_id -> count of consecutive empty lounges
-        
-        # Statistics
+        # Statistics (protected by atomic operations)
         self.stats = {
             "channels_created": 0,
             "channels_deleted": 0,
@@ -103,339 +241,154 @@ class DynamicLounges(commands.Cog):
         }
         
         # Start tasks
+        self._start_tasks()
+    
+    def _start_tasks(self):
+        """Start all background tasks"""
+        self.creation_worker_task = asyncio.create_task(self._creation_worker())
+        self.cleanup_task = self._create_cleanup_task()
+        self.promotion_check_task = self._create_promotion_check_task()
+        self.anti_hogging_task = self._create_anti_hogging_task()
+        
         self.cleanup_task.start()
         self.promotion_check_task.start()
         self.anti_hogging_task.start()
     
     def cog_unload(self):
+        """Cleanup on cog unload"""
         self.cleanup_task.cancel()
         self.promotion_check_task.cancel()
         self.anti_hogging_task.cancel()
-        for task in self.empty_channels.values():
-            task.cancel()
-        for task in self.pending_creations.values():
-            task.cancel()
+        self.creation_worker_task.cancel()
     
-    def get_base_capacity(self, lounge_number: int) -> int:
-        """Get base capacity based on lounge number"""
-        return self.base_capacity_rules.get(lounge_number, self.default_capacity)
+    # ========== ATOMIC WORKERS ==========
     
-    def get_actual_capacity(self, lounge: discord.VoiceChannel) -> int:
-        """Get actual capacity with promotion boosts"""
-        lounge_number = self.parse_lounge_number(lounge.name)
-        if not lounge_number:
-            return 0
-        
-        base_capacity = self.get_base_capacity(lounge_number)
-        
-        # Apply promotion boost if any
-        lounge_info = self.lounge_data.get(lounge.id)
-        if lounge_info and lounge_info.tier != LoungeTier.NORMAL:
-            boost = self.promotion_rules[lounge_info.tier]["capacity_boost"]
-            if base_capacity != float('inf'):
-                return base_capacity + boost
-        
-        return base_capacity
-    
-    def parse_lounge_number(self, channel_name: str) -> Optional[int]:
-        """Extract lounge number from fancy name format"""
-        # Remove promotion emojis from the end
-        clean_name = channel_name
-        
-        # Remove promotion emojis if they exist at the end
-        for tier in [LoungeTier.POPULAR, LoungeTier.PREMIUM, LoungeTier.ELITE]:
-            emoji = self.promotion_rules[tier]["emoji"]
-            if clean_name.endswith(emoji):
-                clean_name = clean_name[:-len(emoji)].strip()
-        
-        # Now extract number
-        match = re.search(r'lounge\s*(\d+)', clean_name, re.IGNORECASE)
-        return int(match.group(1)) if match else None
-    
-    def get_lounge_name(self, number: int, tier: LoungeTier = LoungeTier.NORMAL) -> str:
-        """Generate proper lounge name with promotion emoji at the END"""
-        tier_emoji = self.promotion_rules[tier]["emoji"]
-        
-        # Format: Base Name Number Suffix [Promotion Emoji]
-        # Example: "┊ 🔊﹕₊˚⌇lounge 3 ꜝꜝ‹3" or "┊ 🔊﹕₊˚⌇lounge 4 ꜝꜝ‹3 ⭐"
-        base_name = f"{self.base_name} {number}{self.name_suffix}"
-        
-        if tier_emoji:
-            return f"{base_name} {tier_emoji}"
-        else:
-            return base_name
-    
-    def is_lounge_channel(self, channel: discord.VoiceChannel) -> bool:
-        """Check if a channel is a lounge channel"""
-        return self.parse_lounge_number(channel.name) is not None and self.parse_lounge_number(channel.name) >= 3
-    
-    async def get_initial_channel(self, guild: discord.Guild) -> Optional[discord.VoiceChannel]:
-        """Get the initial lounge channel by ID"""
-        return guild.get_channel(self.initial_channel_id)
-    
-    async def get_all_lounges_sorted(self, guild: discord.Guild) -> List[discord.VoiceChannel]:
-        """Get all lounge channels sorted by lounge number"""
-        lounges = []
-        for channel in guild.voice_channels:
-            if self.is_lounge_channel(channel):
-                num = self.parse_lounge_number(channel.name)
-                if num is not None:
-                    lounges.append((num, channel))
-        
-        # Sort by lounge number
-        lounges.sort(key=lambda x: x[0])
-        return [channel for _, channel in lounges]
-    
-    async def should_create_new_lounge(self, guild: discord.Guild) -> bool:
-        """Check if we should create a new lounge - ALL previous must have 2+ users"""
-        lounges = await self.get_all_lounges_sorted(guild)
-        
-        # Don't create if at max
-        if len(lounges) >= self.max_lounges:
-            logger.info(f"Max lounges reached ({self.max_lounges}), not creating new")
-            return False
-        
-        # If no lounges exist (shouldn't happen with Lounge3)
-        if len(lounges) == 0:
-            logger.warning("No lounges found in guild")
-            return False
-        
-        # Check if ALL lounges have at least 2 users
-        for lounge in lounges:
-            member_count = len(lounge.members)
-            if member_count < self.min_users_per_lounge:
-                logger.info(f"❌ Not creating new lounge: {lounge.name} has only {member_count} users (needs {self.min_users_per_lounge})")
-                # Log all lounge statuses for debugging
-                statuses = [f"{l.name}: {len(l.members)} users" for l in lounges]
-                logger.info(f"Current lounge statuses: {', '.join(statuses)}")
-                return False
-        
-        # Log success
-        logger.info(f"✅ All lounges have {self.min_users_per_lounge}+ users, ready to create new lounge")
-        return True
-    
-    async def rename_lounges_sequentially(self, guild: discord.Guild):
-        """Rename all lounges to have sequential numbers without gaps"""
-        async with self.renaming_lock:
-            lounges = await self.get_all_lounges_sorted(guild)
-            
-            # Skip if no lounges
-            if not lounges:
-                return
-            
-            # Start from Lounge3
-            target_number = 3
-            
-            for lounge in lounges:
-                # Get current tier
-                tier = LoungeTier.NORMAL
-                lounge_info = self.lounge_data.get(lounge.id)
-                if lounge_info:
-                    tier = lounge_info.tier
-                
-                expected_name = self.get_lounge_name(target_number, tier)
-                
-                if lounge.name != expected_name:
-                    try:
-                        await lounge.edit(name=expected_name)
-                        self.stats["renames_performed"] += 1
-                        logger.info(f"Renamed {lounge.name} to {expected_name}")
-                    except Exception as e:
-                        logger.error(f"Failed to rename {lounge.name}: {e}")
-                
-                target_number += 1
-    
-    async def check_and_promote_lounge(self, lounge: discord.VoiceChannel):
-        """Check if a lounge should be promoted to higher tier"""
-        lounge_info = self.lounge_data.get(lounge.id)
-        if not lounge_info:
-            # Initialize lounge data
-            lounge_info = LoungeData(
-                channel_id=lounge.id,
-                created_at=time.time(),
-                last_active=time.time(),
-            )
-            self.lounge_data[lounge.id] = lounge_info
-        
-        current_users = len(lounge.members)
-        
-        # Update peak users
-        if current_users > lounge_info.peak_users:
-            lounge_info.peak_users = current_users
-        
-        # Update activity
-        if current_users > 0:
-            lounge_info.last_active = time.time()
-        
-        # Check for promotion
-        current_tier = lounge_info.tier
-        next_tier = None
-        
-        # Check each tier in order
-        tiers = [LoungeTier.POPULAR, LoungeTier.PREMIUM, LoungeTier.ELITE]
-        for tier in tiers:
-            rules = self.promotion_rules[tier]
-            if (current_users >= rules["min_users"] and 
-                tier.value > current_tier.value):
-                
-                # Check duration requirement
-                if "duration_minutes" in rules:
-                    active_duration = (time.time() - lounge_info.last_active) / 60
-                    if active_duration >= rules["duration_minutes"]:
-                        next_tier = tier
-                        break
-                else:
-                    next_tier = tier
-                    break
-        
-        # Apply promotion if eligible
-        if next_tier and next_tier != current_tier:
-            lounge_info.tier = next_tier
-            self.stats["promotions_given"] += 1
-            
-            # Update capacity based on promotion
-            base_capacity = self.get_base_capacity(self.parse_lounge_number(lounge.name) or 3)
-            if base_capacity != float('inf'):
-                boost = self.promotion_rules[next_tier]["capacity_boost"]
-                new_capacity = base_capacity + boost
-                
-                try:
-                    await lounge.edit(user_limit=new_capacity)
-                    logger.info(f"Promoted {lounge.name} to {next_tier.value} with capacity {new_capacity}")
-                except Exception as e:
-                    logger.error(f"Failed to update capacity for {lounge.name}: {e}")
-            
-            # Update name with promotion emoji at the END
-            await self.rename_lounges_sequentially(lounge.guild)
-            
-            # Send promotion announcement
+    async def _creation_worker(self):
+        """Single worker for lounge creation (prevents race conditions)"""
+        while True:
             try:
-                # Find a text channel to announce in
-                for channel in lounge.guild.text_channels:
-                    if "general" in channel.name.lower() or "chat" in channel.name.lower():
-                        await channel.send(
-                            f"🎉 **Lounge Promotion!** {lounge.mention} has been promoted to "
-                            f"**{next_tier.value.upper()}** status for being consistently active!"
-                        )
-                        break
+                (guild_id, trigger_channel_id) = await self._creation_queue.get()
+                await self._process_creation_request(guild_id, trigger_channel_id)
+                await asyncio.sleep(1)  # Rate limiting
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                logger.error(f"Failed to send promotion announcement: {e}")
+                logger.error(f"Creation worker error: {e}")
     
-    async def get_new_lounge_position(self, guild: discord.Guild) -> Tuple[int, Optional[discord.VoiceChannel]]:
-        """Calculate position for new lounge - should be AFTER the highest lounge number"""
-        async with self.position_lock:
-            lounges = await self.get_all_lounges_sorted(guild)
-            
-            if not lounges:
-                # If no lounges, position it after Lounge3
-                initial = await self.get_initial_channel(guild)
-                if initial:
-                    return initial.position + 1, initial
-                return 0, None
-            
-            # Find the highest numbered lounge
-            highest_lounge = lounges[-1]
-            
-            # Position it right after the highest lounge
-            # Get all channels in the category to calculate proper position
-            category = highest_lounge.category
-            if not category:
-                return highest_lounge.position + 1, highest_lounge
-            
-            # Get all voice channels in the category
-            voice_channels = sorted([ch for ch in category.channels if isinstance(ch, discord.VoiceChannel)], 
-                                   key=lambda x: x.position)
-            
-            # Find index of highest lounge
-            for i, ch in enumerate(voice_channels):
-                if ch.id == highest_lounge.id:
-                    # Position should be right after this lounge
-                    # But check if there's already another lounge after it
-                    if i + 1 < len(voice_channels):
-                        next_channel = voice_channels[i + 1]
-                        if self.is_lounge_channel(next_channel):
-                            # There's already a lounge after, this shouldn't happen with proper sorting
-                            # Move it to the end of all lounges
-                            for j in range(i + 1, len(voice_channels)):
-                                if not self.is_lounge_channel(voice_channels[j]):
-                                    return voice_channels[j].position, highest_lounge
-                            return voice_channels[-1].position + 1, highest_lounge
-                    
-                    return highest_lounge.position + 1, highest_lounge
-            
-            # Fallback
-            return highest_lounge.position + 1, highest_lounge
+    def _create_cleanup_task(self):
+        """Create cleanup task"""
+        @tasks.loop(minutes=5)
+        async def task():
+            for guild in self.bot.guilds:
+                try:
+                    await self._atomic_cleanup(guild)
+                except Exception as e:
+                    logger.error(f"Cleanup error in {guild.name}: {e}")
+        return task
     
-    async def create_new_lounge(self, guild: discord.Guild):
-        """Create a new lounge channel RIGHT AFTER the highest lounge"""
-        async with self.creating_lock:
-            # Double-check condition before creating
-            if not await self.should_create_new_lounge(guild):
-                logger.info("Creation condition not met after lock acquisition")
-                return None
-            
-            lounges = await self.get_all_lounges_sorted(guild)
-            if len(lounges) >= self.max_lounges:
-                logger.info(f"Already at max lounges ({self.max_lounges})")
-                return None
-            
-            if not lounges:
-                logger.error("No lounges found to base new lounge on")
-                return None
-            
-            # Find the highest lounge number
-            highest_number = 2  # Start from 2 since Lounge3 is number 3
-            for lounge in lounges:
-                num = self.parse_lounge_number(lounge.name)
-                if num and num > highest_number:
-                    highest_number = num
-            
-            new_number = highest_number + 1
-            new_name = self.get_lounge_name(new_number, LoungeTier.NORMAL)
-            
-            # Determine base capacity for new lounge
-            base_capacity = self.get_base_capacity(new_number)
-            
+    def _create_promotion_check_task(self):
+        """Create promotion check task"""
+        @tasks.loop(minutes=2)
+        async def task():
+            for guild in self.bot.guilds:
+                try:
+                    await self._atomic_promotion_check(guild)
+                except Exception as e:
+                    logger.error(f"Promotion check error in {guild.name}: {e}")
+        return task
+    
+    def _create_anti_hogging_task(self):
+        """Create anti-hogging task"""
+        @tasks.loop(minutes=1)
+        async def task():
+            for guild in self.bot.guilds:
+                try:
+                    await self._atomic_anti_hogging(guild)
+                except Exception as e:
+                    logger.error(f"Anti-hogging error in {guild.name}: {e}")
+        return task
+    
+    # ========== ATOMIC OPERATIONS ==========
+    
+    async def _process_creation_request(self, guild_id: int, trigger_channel_id: int):
+        """Process a creation request atomically"""
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return
+        
+        # Get fresh Discord state
+        trigger_channel = guild.get_channel(trigger_channel_id)
+        if not trigger_channel:
+            return
+        
+        # Check conditions with fresh state
+        if not await self._check_creation_conditions(guild, trigger_channel):
+            return
+        
+        # Create the lounge
+        await self._atomic_create_lounge(guild)
+    
+    async def _atomic_create_lounge(self, guild: discord.Guild) -> Optional[discord.VoiceChannel]:
+        """Atomically create a new lounge"""
+        async with self._discord_ops_lock:  # Lock Discord API calls
             try:
-                # Get category from highest lounge
-                highest_lounge = lounges[-1]
-                category = highest_lounge.category if highest_lounge.category else None
+                # Get current state
+                lounges = await self.state.get_guild_lounges(guild.id)
                 
-                # Get the correct position
-                new_position, after_lounge = await self.get_new_lounge_position(guild)
+                # Check max lounges
+                if len(lounges) >= self.max_lounges - 1:  # -1 for Lounge 3
+                    logger.info(f"Max lounges reached for {guild.name}")
+                    return None
                 
-                logger.info(f"Creating lounge {new_number} at position {new_position} after {after_lounge.name if after_lounge else 'nothing'}")
+                # Calculate next number
+                existing_numbers = {l.number for l in lounges}
+                next_number = 4  # Start from 4
+                while next_number in existing_numbers:
+                    next_number += 1
                 
-                # Create the new lounge
+                # Get Lounge 3 for positioning
+                lounge3 = guild.get_channel(self.initial_channel_id)
+                if not lounge3:
+                    logger.error("Lounge 3 not found!")
+                    return None
+                
+                # Calculate position (after the last lounge)
+                last_lounge = None
+                if lounges:
+                    # Get the actual Discord channel for the highest number
+                    highest_num = max(l.number for l in lounges)
+                    for l in lounges:
+                        if l.number == highest_num:
+                            last_channel = guild.get_channel(l.channel_id)
+                            if last_channel:
+                                last_lounge = last_channel
+                                break
+                
+                position = lounge3.position + 1
+                if last_lounge:
+                    position = last_lounge.position + 1
+                
+                # Create the channel
+                name = self._get_lounge_name(next_number, LoungeTier.NORMAL)
+                capacity = self.base_capacity_rules.get(next_number, self.default_capacity)
+                
                 new_channel = await guild.create_voice_channel(
-                    name=new_name,
-                    category=category,
-                    position=new_position,  # Correctly positioned
-                    user_limit=base_capacity if base_capacity != float('inf') else 0
+                    name=name,
+                    category=lounge3.category,
+                    position=position,
+                    user_limit=capacity if capacity != float('inf') else 0
                 )
                 
-                # Initialize lounge data
-                self.lounge_data[new_channel.id] = LoungeData(
-                    channel_id=new_channel.id,
-                    created_at=time.time(),
-                    last_active=time.time(),
-                )
+                # Update atomic state
+                await self.state.add_lounge(guild.id, new_channel.id, next_number)
                 
+                # Update stats
                 self.stats["channels_created"] += 1
-                logger.info(f"✅ Created new lounge: {new_name} with capacity {base_capacity} at position {new_position}")
                 
-                # Update all lounge names with correct numbering
-                await self.rename_lounges_sequentially(guild)
+                logger.info(f"✅ Created {name} at position {position}")
                 
-                # Verify position
-                await asyncio.sleep(0.5)  # Let Discord settle
-                actual_position = new_channel.position
-                if actual_position != new_position:
-                    logger.warning(f"Position mismatch: Expected {new_position}, got {actual_position}. Fixing...")
-                    try:
-                        await new_channel.edit(position=new_position)
-                    except Exception as e:
-                        logger.error(f"Failed to fix position: {e}")
+                # Rename all lounges to ensure sequential numbering
+                await self._atomic_renumber_lounges(guild)
                 
                 return new_channel
                 
@@ -443,360 +396,363 @@ class DynamicLounges(commands.Cog):
                 logger.error(f"❌ Failed to create lounge: {e}")
                 return None
     
-    async def schedule_lounge_deletion(self, channel: discord.VoiceChannel):
-        """Schedule a lounge for deletion with SMART CLEANUP timing"""
-        if channel.id in self.empty_channels:
-            self.empty_channels[channel.id].cancel()
-        
-        # **ENHANCEMENT 2: Smart cleanup timing**
-        guild_id = channel.guild.id
-        empty_count = self.empty_lounge_count.get(guild_id, 0)
-        
-        # Get deletion time based on how many consecutive empty lounges
-        deletion_time = self.smart_cleanup_levels.get(
-            min(empty_count, len(self.smart_cleanup_levels) - 1),
-            self.inactivity_timer
-        )
-        
-        logger.info(f"Scheduling deletion for {channel.name} in {deletion_time}s (empty count: {empty_count})")
-        
-        async def delete_if_empty():
+    async def _atomic_renumber_lounges(self, guild: discord.Guild):
+        """Atomically renumber all lounges"""
+        async with self._discord_ops_lock:
             try:
-                await asyncio.sleep(deletion_time)
+                lounges = await self.state.get_guild_lounges(guild.id)
                 
-                # Check if still empty
-                if len(channel.members) == 0:
-                    try:
-                        await channel.delete()
-                        self.stats["channels_deleted"] += 1
-                        logger.info(f"🧹 Deleted empty lounge: {channel.name}")
-                        
-                        # Remove from lounge data
-                        self.lounge_data.pop(channel.id, None)
-                        
-                        # Update empty count
-                        self.empty_lounge_count[guild_id] = max(
-                            0, self.empty_lounge_count.get(guild_id, 0) - 1
-                        )
-                        
-                        # Rename remaining lounges
-                        await self.rename_lounges_sequentially(channel.guild)
-                        
-                    except Exception as e:
-                        logger.error(f"Failed to delete {channel.name}: {e}")
+                # Sort by current number
+                lounges.sort(key=lambda x: x.number)
+                
+                # Renumber starting from 3
+                target_number = 3
+                for lounge_entry in lounges:
+                    channel = guild.get_channel(lounge_entry.channel_id)
+                    if not channel:
+                        continue
+                    
+                    # Update entry number
+                    await self.state.update_lounge(
+                        lounge_entry.channel_id,
+                        number=target_number
+                    )
+                    
+                    # Rename if needed
+                    expected_name = self._get_lounge_name(target_number, lounge_entry.tier)
+                    if channel.name != expected_name:
+                        try:
+                            await channel.edit(name=expected_name)
+                            self.stats["renames_performed"] += 1
+                        except Exception as e:
+                            logger.error(f"Failed to rename {channel.name}: {e}")
+                    
+                    target_number += 1
+                    
+            except Exception as e:
+                logger.error(f"Renumbering error: {e}")
+    
+    async def _atomic_schedule_deletion(self, channel: discord.VoiceChannel):
+        """Atomically schedule a lounge for deletion"""
+        # Never delete Lounge 3
+        if channel.id == self.initial_channel_id:
+            return
+        
+        # Check if already has users
+        if len(channel.members) > 0:
+            return
+        
+        # Schedule deletion
+        await self.state.schedule_deletion(channel.id, self.inactivity_timer)
+        
+        # Create deletion task
+        async def deletion_task():
+            try:
+                await asyncio.sleep(self.inactivity_timer)
+                
+                # Re-check conditions
+                channel_refreshed = channel.guild.get_channel(channel.id)
+                if not channel_refreshed or len(channel_refreshed.members) > 0:
+                    await self.state.cancel_deletion(channel.id)
+                    return
+                
+                # Delete the channel
+                async with self._discord_ops_lock:
+                    await channel_refreshed.delete()
+                    self.stats["channels_deleted"] += 1
+                    logger.info(f"🧹 Deleted {channel_refreshed.name}")
+                
+                # Remove from state
+                await self.state.remove_lounge(channel.id)
+                
+                # Renumber remaining lounges
+                await self._atomic_renumber_lounges(channel.guild)
                 
             except asyncio.CancelledError:
-                pass
-            finally:
-                self.empty_channels.pop(channel.id, None)
+                logger.info(f"Deletion cancelled for {channel.name}")
+            except Exception as e:
+                logger.error(f"Deletion task error: {e}")
         
-        task = asyncio.create_task(delete_if_empty())
-        self.empty_channels[channel.id] = task
-        
-        # Update empty lounge count
-        self.empty_lounge_count[guild_id] = empty_count + 1
+        task = asyncio.create_task(deletion_task())
+        await self.state.set_deletion_task(channel.id, task)
     
-    async def check_and_create_lounge_delayed(self, guild: discord.Guild, channel_id: int):
-        """Check for lounge creation after delay with anti-spam"""
-        await asyncio.sleep(self.creation_delay)
-        
-        # Check if we still need to create
-        current_time = time.time()
-        if current_time - self.last_check.get(channel_id, 0) < 5:
-            return
-        
-        self.last_check[channel_id] = current_time
-        
-        # **FIXED: Check if ALL lounges have 2+ users BEFORE creating**
-        if await self.should_create_new_lounge(guild):
-            await self.create_new_lounge(guild)
-        else:
-            logger.info("❌ Creation check failed after delay, not creating new lounge")
-        
-        self.pending_creations.pop(channel_id, None)
+    async def _atomic_cancel_deletion(self, channel: discord.VoiceChannel):
+        """Atomically cancel scheduled deletion"""
+        await self.state.cancel_deletion(channel.id)
     
-    async def handle_member_join(self, member: discord.Member, channel: discord.VoiceChannel):
-        """Handle member joining a lounge"""
-        # Cancel deletion if scheduled
-        if channel.id in self.empty_channels:
-            self.empty_channels[channel.id].cancel()
-            self.empty_channels.pop(channel.id, None)
+    async def _atomic_cleanup(self, guild: discord.Guild):
+        """Atomic cleanup operation"""
+        # Clean up orphaned state entries
+        lounges = await self.state.get_guild_lounges(guild.id)
+        
+        for lounge_entry in list(lounges):
+            channel = guild.get_channel(lounge_entry.channel_id)
+            if not channel:
+                # Channel doesn't exist, remove from state
+                await self.state.remove_lounge(lounge_entry.channel_id)
+                logger.info(f"Cleaned up orphaned lounge entry: {lounge_entry.number}")
+    
+    async def _atomic_promotion_check(self, guild: discord.Guild):
+        """Atomic promotion check"""
+        lounges = await self.state.get_guild_lounges(guild.id)
+        
+        for lounge_entry in lounges:
+            channel = guild.get_channel(lounge_entry.channel_id)
+            if not channel or len(channel.members) == 0:
+                continue
             
-            # Reset empty count for this guild
-            guild_id = channel.guild.id
-            if self.empty_lounge_count.get(guild_id, 0) > 0:
-                self.empty_lounge_count[guild_id] = 0
-        
-        # Check for anti-hogging - reset alone timer
-        if len(channel.members) == 1:
-            # This user is now alone, start timer
-            guild_id = channel.guild.id
-            if guild_id not in self.user_alone_timers:
-                self.user_alone_timers[guild_id] = {}
-            self.user_alone_timers[guild_id][member.id] = time.time()
-        else:
-            # Multiple users, clear alone timers for this channel
-            guild_id = channel.guild.id
-            if guild_id in self.user_alone_timers:
-                # Remove timers for users who are no longer alone
-                for user_id in list(self.user_alone_timers[guild_id].keys()):
-                    user = channel.guild.get_member(user_id)
-                    if user and user.voice and user.voice.channel and user.voice.channel.id == channel.id:
-                        if len(user.voice.channel.members) > 1:
-                            self.user_alone_timers[guild_id].pop(user_id, None)
-        
-        # Check for promotion
-        await self.check_and_promote_lounge(channel)
-        
-        # **FIXED: Only trigger creation from the highest lounge when ALL lounges have 2+ users**
-        lounges = await self.get_all_lounges_sorted(channel.guild)
-        if not lounges:
-            return
-        
-        # Get current lounge number
-        current_number = self.parse_lounge_number(channel.name)
-        if not current_number:
-            return
-        
-        # Check if this is the highest lounge
-        is_highest = False
-        for lounge in lounges:
-            num = self.parse_lounge_number(lounge.name)
-            if num and num > current_number:
-                is_highest = False
-                break
-        else:
-            is_highest = True
-        
-        # Only trigger from highest lounge
-        if not is_highest:
-            return
-        
-        # **FIXED: Check if ALL lounges now have 2+ users**
-        all_have_min_users = True
-        for lounge in lounges:
-            if len(lounge.members) < self.min_users_per_lounge:
-                all_have_min_users = False
-                logger.info(f"Cannot create new lounge: {lounge.name} has only {len(lounge.members)} users")
-                break
-        
-        if all_have_min_users:
-            if channel.id not in self.pending_creations:
-                logger.info(f"✅ All lounges have {self.min_users_per_lounge}+ users, scheduling new lounge creation in {self.creation_delay}s")
-                task = asyncio.create_task(
-                    self.check_and_create_lounge_delayed(channel.guild, channel.id)
-                )
-                self.pending_creations[channel.id] = task
-        else:
-            # Cancel any pending creations since condition isn't met
-            if channel.id in self.pending_creations:
-                self.pending_creations[channel.id].cancel()
-                self.pending_creations.pop(channel.id, None)
+            # Check for promotion
+            await self._check_and_promote_lounge(channel, lounge_entry)
     
-    async def handle_member_leave(self, member: discord.Member, channel: discord.VoiceChannel):
-        """Handle member leaving a lounge"""
-        # Update anti-hogging timers
-        guild_id = channel.guild.id
-        if guild_id in self.user_alone_timers:
-            self.user_alone_timers[guild_id].pop(member.id, None)
-        
-        # Schedule deletion if empty (with smart timing)
-        if len(channel.members) == 0:
-            await self.schedule_lounge_deletion(channel)
-        
-        # Cancel any pending creation for this channel
-        if channel.id in self.pending_creations:
-            self.pending_creations[channel.id].cancel()
-            self.pending_creations.pop(channel.id, None)
-        
-        # **FIXED: Also cancel ALL pending creations if ANY lounge now has <2 users**
-        lounges = await self.get_all_lounges_sorted(channel.guild)
-        for lounge in lounges:
-            if len(lounge.members) < self.min_users_per_lounge:
-                # Cancel ALL pending creations if any lounge has <2 users
-                for task_id in list(self.pending_creations.keys()):
-                    task = self.pending_creations.pop(task_id, None)
-                    if task:
-                        task.cancel()
-                logger.info(f"Cancelled all pending creations: {lounge.name} now has {len(lounge.members)} users")
-                break
-    
-    async def handle_anti_hogging(self, guild: discord.Guild):
-        """Handle anti-hogging: Move users who are alone for too long"""
+    async def _atomic_anti_hogging(self, guild: discord.Guild):
+        """Atomic anti-hogging check"""
         if not self.anti_hogging_rules["move_to_next"]:
             return
         
-        guild_id = guild.id
-        if guild_id not in self.user_alone_timers:
-            return
-        
+        timers = await self.state.get_user_alone_timers(guild.id)
         current_time = time.time()
-        users_to_move = []
+        moves_to_make = []
         
-        # Check each user's alone time
-        for user_id, start_time in list(self.user_alone_timers[guild_id].items()):
+        # Check each timer
+        for user_id, (channel_id, start_time) in list(timers.items()):
             alone_duration = current_time - start_time
             
             user = guild.get_member(user_id)
             if not user or not user.voice or not user.voice.channel:
-                self.user_alone_timers[guild_id].pop(user_id, None)
+                await self.state.remove_user_alone_timer(guild.id, user_id)
                 continue
             
             channel = user.voice.channel
-            if not self.is_lounge_channel(channel):
+            if channel.id != channel_id:
+                await self.state.remove_user_alone_timer(guild.id, user_id)
                 continue
             
             # Check if user is alone
             if len(channel.members) == 1:
                 if alone_duration >= self.anti_hogging_rules["alone_timeout"]:
-                    users_to_move.append(user)
-            # Check if lounge has low activity (1 user for too long)
-            elif len(channel.members) == 1 and alone_duration >= self.anti_hogging_rules["low_activity_timeout"]:
-                users_to_move.append(user)
+                    moves_to_make.append((user, channel))
         
-        # Move users
-        for user in users_to_move:
-            try:
-                current_channel = user.voice.channel
+        # Move users (outside atomic lock for Discord API)
+        for user, current_channel in moves_to_make:
+            await self._move_user_to_next_lounge(guild, user, current_channel)
+    
+    # ========== HELPER METHODS ==========
+    
+    def _get_lounge_name(self, number: int, tier: LoungeTier) -> str:
+        """Generate lounge name"""
+        tier_emoji = self.promotion_rules[tier]["emoji"]
+        base_name = f"{self.base_name} {number}{self.name_suffix}"
+        return f"{base_name} {tier_emoji}".strip()
+    
+    def _parse_lounge_number(self, name: str) -> Optional[int]:
+        """Parse lounge number from name"""
+        clean_name = name
+        
+        # Remove promotion emojis
+        for tier in [LoungeTier.POPULAR, LoungeTier.PREMIUM, LoungeTier.ELITE]:
+            emoji = self.promotion_rules[tier]["emoji"]
+            if clean_name.endswith(emoji):
+                clean_name = clean_name[:-len(emoji)].strip()
+        
+        # Extract number
+        match = re.search(r'lounge\s*(\d+)', clean_name, re.IGNORECASE)
+        return int(match.group(1)) if match else None
+    
+    async def _check_creation_conditions(self, guild: discord.Guild, trigger_channel: discord.VoiceChannel) -> bool:
+        """Check if we should create a new lounge"""
+        lounges = await self.state.get_guild_lounges(guild.id)
+        
+        # Filter dynamic lounges (4+)
+        dynamic_lounges = [l for l in lounges if l.number >= 4]
+        
+        # Check max lounges
+        if len(lounges) >= self.max_lounges - 1:  # -1 for Lounge 3
+            return False
+        
+        # If no dynamic lounges, check if someone is in Lounge 3
+        if len(dynamic_lounges) == 0:
+            lounge3 = guild.get_channel(self.initial_channel_id)
+            return lounge3 and len(lounge3.members) > 0
+        
+        # Check if all dynamic lounges have enough users
+        for lounge_entry in dynamic_lounges:
+            channel = guild.get_channel(lounge_entry.channel_id)
+            if not channel or len(channel.members) < self.min_users_per_lounge:
+                return False
+        
+        return True
+    
+    async def _check_and_promote_lounge(self, channel: discord.VoiceChannel, lounge_entry: LoungeEntry):
+        """Check and promote a lounge"""
+        current_users = len(channel.members)
+        
+        # Update peak users
+        if current_users > lounge_entry.peak_users:
+            await self.state.update_lounge(
+                channel.id,
+                peak_users=current_users,
+                last_active=time.time()
+            )
+        
+        # Check promotion rules
+        current_tier = lounge_entry.tier
+        next_tier = None
+        
+        tiers = [LoungeTier.POPULAR, LoungeTier.PREMIUM, LoungeTier.ELITE]
+        for tier in tiers:
+            rules = self.promotion_rules[tier]
+            if (current_users >= rules["min_users"] and 
+                tier.value > current_tier.value):
                 
-                # Find next available lounge
-                lounges = await self.get_all_lounges_sorted(guild)
-                current_index = -1
-                
-                for i, lounge in enumerate(lounges):
-                    if lounge.id == current_channel.id:
-                        current_index = i
+                if "duration_minutes" in rules:
+                    active_duration = (time.time() - lounge_entry.last_active) / 60
+                    if active_duration >= rules["duration_minutes"]:
+                        next_tier = tier
                         break
+                else:
+                    next_tier = tier
+                    break
+        
+        # Apply promotion
+        if next_tier and next_tier != current_tier:
+            await self.state.update_lounge(
+                channel.id,
+                tier=next_tier
+            )
+            
+            self.stats["promotions_given"] += 1
+            
+            # Update capacity
+            base_capacity = self.base_capacity_rules.get(lounge_entry.number, self.default_capacity)
+            if base_capacity != float('inf'):
+                boost = self.promotion_rules[next_tier]["capacity_boost"]
+                new_capacity = base_capacity + boost
                 
-                if current_index >= 0 and current_index + 1 < len(lounges):
-                    next_lounge = lounges[current_index + 1]
-                    
-                    # Check if next lounge has space
-                    capacity = self.get_actual_capacity(next_lounge)
-                    if capacity == float('inf') or len(next_lounge.members) < capacity:
-                        
-                        # Notify user if enabled
+                try:
+                    await channel.edit(user_limit=new_capacity)
+                except Exception as e:
+                    logger.error(f"Failed to update capacity: {e}")
+            
+            # Rename with new emoji
+            await self._atomic_renumber_lounges(channel.guild)
+    
+    async def _move_user_to_next_lounge(self, guild: discord.Guild, user: discord.Member, current_channel: discord.VoiceChannel):
+        """Move a user to the next available lounge"""
+        lounges = await self.state.get_guild_lounges(guild.id)
+        
+        # Find current lounge index
+        current_index = -1
+        for i, entry in enumerate(lounges):
+            if entry.channel_id == current_channel.id:
+                current_index = i
+                break
+        
+        if current_index >= 0 and current_index + 1 < len(lounges):
+            next_entry = lounges[current_index + 1]
+            next_channel = guild.get_channel(next_entry.channel_id)
+            
+            if next_channel:
+                # Check capacity
+                capacity = self.base_capacity_rules.get(next_entry.number, self.default_capacity)
+                if next_entry.tier != LoungeTier.NORMAL:
+                    capacity += self.promotion_rules[next_entry.tier]["capacity_boost"]
+                
+                if capacity == float('inf') or len(next_channel.members) < capacity:
+                    try:
+                        # Notify user
                         if self.anti_hogging_rules["notify_user"]:
                             try:
                                 await user.send(
-                                    f"👋 You're being moved from {current_channel.name} to {next_lounge.name} "
-                                    f"to keep lounges active and social!\n"
-                                    f"Try out <#1431227839050682579> if you want to have a duo lounge!"
+                                    f"👋 You're being moved from {current_channel.name} to {next_channel.name} "
+                                    f"to keep lounges active and social!"
                                 )
                             except:
-                                pass  # Can't DM user, that's okay
+                                pass
                         
                         # Move user
-                        await user.move_to(next_lounge)
+                        await user.move_to(next_channel)
                         self.stats["hogging_prevented"] += 1
                         self.stats["users_moved"] += 1
                         
-                        logger.info(f"Moved user {user.name} from {current_channel.name} to {next_lounge.name}")
+                        logger.info(f"Moved {user.name} to {next_channel.name}")
                         
-                        # Reset their alone timer
-                        if guild_id in self.user_alone_timers:
-                            self.user_alone_timers[guild_id].pop(user.id, None)
-                
-            except Exception as e:
-                logger.error(f"Failed to move user {user.name} for anti-hogging: {e}")
+                        # Remove timer
+                        await self.state.remove_user_alone_timer(guild.id, user.id)
+                        
+                    except Exception as e:
+                        logger.error(f"Failed to move user: {e}")
+    
+    # ========== EVENT HANDLERS ==========
     
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        """Monitor voice state changes"""
-        
-        # Ignore bot activity
+        """Handle voice state updates atomically"""
         if member.bot:
             return
         
-        # Anti-spam cooldown
-        current_time = time.time()
-        if current_time - self.cooldowns.get(member.id, 0) < self.anti_spam_cooldown:
-            return
-        self.cooldowns[member.id] = current_time
-        
-        # Member joined a lounge channel
-        if after.channel and self.is_lounge_channel(after.channel):
-            await self.handle_member_join(member, after.channel)
-        
-        # Member left a lounge channel
-        if before.channel and self.is_lounge_channel(before.channel):
-            await self.handle_member_leave(member, before.channel)
-        
-        # Member moved between lounge channels
-        if (before.channel and after.channel and 
-            self.is_lounge_channel(before.channel) and
-            self.is_lounge_channel(after.channel) and
-            before.channel != after.channel):
+        # Handle joins
+        if after.channel:
+            # Check if joined Lounge 3 (generator)
+            if after.channel.id == self.initial_channel_id:
+                # Queue creation request
+                await self._creation_queue.put((after.channel.guild.id, after.channel.id))
             
-            await self.handle_member_leave(member, before.channel)
-            await self.handle_member_join(member, after.channel)
-    
-    @tasks.loop(minutes=5)
-    async def cleanup_task(self):
-        """Periodic cleanup and optimization"""
-        for guild in self.bot.guilds:
-            try:
-                # Clean up any orphaned tasks
-                current_channels = [c.id for c in await self.get_all_lounges_sorted(guild)]
+            # Check if joined a dynamic lounge
+            elif self._parse_lounge_number(after.channel.name) is not None:
+                # Cancel any scheduled deletion
+                await self._atomic_cancel_deletion(after.channel)
                 
-                # Cancel deletion tasks for non-existent channels
-                for channel_id in list(self.empty_channels.keys()):
-                    if channel_id not in current_channels:
-                        task = self.empty_channels.pop(channel_id, None)
-                        if task:
-                            task.cancel()
+                # Update activity
+                lounge_entry = await self.state.get_lounge(after.channel.id)
+                if lounge_entry:
+                    await self.state.update_lounge(
+                        after.channel.id,
+                        last_active=time.time()
+                    )
                 
-                # Ensure sequential naming
-                await self.rename_lounges_sequentially(guild)
+                # Set alone timer if user is alone
+                if len(after.channel.members) == 1:
+                    await self.state.set_user_alone_timer(
+                        after.channel.guild.id,
+                        member.id,
+                        after.channel.id
+                    )
+                else:
+                    # Clear timer if multiple users
+                    await self.state.remove_user_alone_timer(after.channel.guild.id, member.id)
                 
-                # Log current lounge status
-                lounges = await self.get_all_lounges_sorted(guild)
+                # Queue creation check if this is the highest lounge
+                lounges = await self.state.get_guild_lounges(after.channel.guild.id)
                 if lounges:
-                    statuses = [f"{l.name}: {len(l.members)} users" for l in lounges]
-                    logger.info(f"🧹 Cleanup check - Lounges: {', '.join(statuses)}")
+                    highest_lounge = lounges[-1]
+                    if highest_lounge.channel_id == after.channel.id:
+                        await self._creation_queue.put((after.channel.guild.id, after.channel.id))
+        
+        # Handle leaves
+        if before.channel and before.channel.id != self.initial_channel_id:
+            lounge_number = self._parse_lounge_number(before.channel.name)
+            if lounge_number is not None and lounge_number >= 4:
+                # Remove alone timer
+                await self.state.remove_user_alone_timer(before.channel.guild.id, member.id)
                 
-            except Exception as e:
-                logger.error(f"Cleanup error in {guild.name}: {e}")
+                # If lounge is now empty, schedule deletion
+                if len(before.channel.members) == 0:
+                    await self._atomic_schedule_deletion(before.channel)
     
-    @tasks.loop(minutes=2)
-    async def promotion_check_task(self):
-        """Check lounges for promotion eligibility"""
-        for guild in self.bot.guilds:
-            try:
-                lounges = await self.get_all_lounges_sorted(guild)
-                for lounge in lounges:
-                    if len(lounge.members) > 0:  # Only check active lounges
-                        await self.check_and_promote_lounge(lounge)
-            except Exception as e:
-                logger.error(f"Promotion check error in {guild.name}: {e}")
-    
-    @tasks.loop(minutes=1)
-    async def anti_hogging_task(self):
-        """Check for and handle users hogging lounges"""
-        for guild in self.bot.guilds:
-            try:
-                await self.handle_anti_hogging(guild)
-            except Exception as e:
-                logger.error(f"Anti-hogging error in {guild.name}: {e}")
-    
-    @cleanup_task.before_loop
-    @promotion_check_task.before_loop
-    @anti_hogging_task.before_loop
-    async def before_tasks(self):
-        await self.bot.wait_until_ready()
+    # ========== COMMANDS ==========
     
     @commands.command(name="lounge_stats", aliases=["ls"])
     @commands.has_permissions(administrator=True)
     async def lounge_stats(self, ctx):
-        """Show enhanced lounge system statistics"""
-        lounges = await self.get_all_lounges_sorted(ctx.guild)
+        """Show lounge statistics"""
+        lounges = await self.state.get_guild_lounges(ctx.guild.id)
         
         embed = discord.Embed(
-            title="🎯 Enhanced Lounge System Statistics",
+            title="🎯 Atomic Lounge System Statistics",
             color=discord.Color.blue()
         )
         
-        # System stats
+        # Stats
         embed.add_field(
             name="📊 System Stats",
             value=f"**Total Lounges:** {len(lounges)}\n"
@@ -808,44 +764,59 @@ class DynamicLounges(commands.Cog):
             inline=False
         )
         
-        # Current lounges with tier status
+        # Current lounges
         lounge_info = []
-        creation_blocked = False
+        current_time = time.time()
         
-        for lounge in lounges:
-            lounge_number = self.parse_lounge_number(lounge.name)
-            if lounge_number:
-                actual_capacity = self.get_actual_capacity(lounge)
-                capacity_str = "∞" if actual_capacity == float('inf') else str(actual_capacity)
-                members = len(lounge.members)
-                
-                # Get tier info
-                tier = LoungeTier.NORMAL
-                tier_emoji = ""  # No emoji for normal tier
-                lounge_data = self.lounge_data.get(lounge.id)
-                if lounge_data:
-                    tier = lounge_data.tier
-                    tier_emoji = self.promotion_rules[tier]["emoji"]
-                
-                # Check if this lounge meets requirements
+        for entry in lounges:
+            channel = ctx.guild.get_channel(entry.channel_id)
+            if not channel:
+                continue
+            
+            members = len(channel.members)
+            capacity = self.base_capacity_rules.get(entry.number, self.default_capacity)
+            if entry.tier != LoungeTier.NORMAL:
+                capacity += self.promotion_rules[entry.tier]["capacity_boost"]
+            
+            capacity_str = "∞" if capacity == float('inf') else str(capacity)
+            
+            # Check deletion status
+            deletion_info = ""
+            if entry.deletion_scheduled and entry.deletion_scheduled > current_time:
+                time_left = entry.deletion_scheduled - current_time
+                minutes = int(time_left // 60)
+                seconds = int(time_left % 60)
+                deletion_info = f" 🧹 Deletes in {minutes}:{seconds:02d}"
+            
+            # Generator or dynamic lounge
+            if entry.number == 3:
+                status = "🔧"
+                lounge_info.append(
+                    f"{status} **{channel.name}:** {members}/{capacity_str} users (Generator){deletion_info}"
+                )
+            else:
                 meets_requirement = members >= self.min_users_per_lounge
                 status = "✅" if meets_requirement else "❌"
                 
-                # First lounge that doesn't meet requirement blocks creation
-                if not meets_requirement and not creation_blocked:
-                    creation_blocked = True
-                    status = "🚫"
-                
                 lounge_info.append(
-                    f"{status} **{lounge.name}:** {members}/{capacity_str} users"
+                    f"{status} **{channel.name}:** {members}/{capacity_str} users{deletion_info}"
                 )
         
         if lounge_info:
+            dynamic_lounges = [l for l in lounges if l.number >= 4]
+            all_have_users = all(
+                len(ctx.guild.get_channel(l.channel_id).members) >= self.min_users_per_lounge
+                for l in dynamic_lounges
+                if ctx.guild.get_channel(l.channel_id)
+            )
+            
             status_text = "\n".join(lounge_info)
-            if creation_blocked:
-                status_text += "\n\n**⚠️ Creation blocked:** All lounges need 2+ users"
+            if dynamic_lounges and not all_have_users:
+                status_text += f"\n\n**⚠️ Creation blocked:** All dynamic lounges need {self.min_users_per_lounge}+ users"
+            elif dynamic_lounges:
+                status_text += f"\n\n**✅ Creation ready:** All dynamic lounges have {self.min_users_per_lounge}+ users"
             else:
-                status_text += "\n\n**✅ Creation ready:** All lounges have 2+ users"
+                status_text += f"\n\n**⏳ Waiting:** Need users in Lounge 3 to create first dynamic lounge"
             
             embed.add_field(
                 name="🎭 Current Lounges",
@@ -853,112 +824,30 @@ class DynamicLounges(commands.Cog):
                 inline=False
             )
         
-        # Enhanced Features Status
-        features = (
-            f"**🎖️ Promotion System:** Active\n"
-            f"   - Popular (⭐): 5+ users for 30min (+2 capacity)\n"
-            f"   - Premium (💎): 8+ users for 60min (+4 capacity)\n"
-            f"   - Elite (👑): 10+ users for 120min (+6 capacity)\n\n"
-            
-            f"**🧹 Smart Cleanup:** Active\n"
-            f"   - 1st empty: 10 minutes\n"
-            f"   - 2nd empty: 5 minutes\n"
-            f"   - 3rd empty: 2 minutes\n"
-            f"   - 4th+ empty: 1 minute\n\n"
-            
-            f"**🚫 Anti-Hogging:** Active\n"
-            f"   - Alone for 10min → Move to next lounge\n"
-            f"   - Low activity for 15min → Move users\n"
-        )
-        
-        embed.add_field(
-            name="⚡ Enhanced Features",
-            value=features,
-            inline=False
-        )
-        
-        # Basic Configuration
+        # Configuration
         config_info = (
-            f"**Initial Channel ID:** {self.initial_channel_id}\n"
+            f"**Generator Channel:** Lounge 3\n"
             f"**Max Lounges:** {self.max_lounges}\n"
             f"**Min Users Per Lounge:** {self.min_users_per_lounge}\n"
+            f"**Inactivity Timer:** 5 minutes\n"
             f"**Creation Delay:** {self.creation_delay} seconds\n"
-            f"**Rule:** ALL lounges must have {self.min_users_per_lounge}+ users to create next"
+            f"**Atomic Operations:** ✅ Enabled"
         )
         
         embed.add_field(
-            name="⚙️ Basic Configuration",
+            name="⚙️ Configuration",
             value=config_info,
             inline=False
         )
         
         await ctx.send(embed=embed)
     
-    @commands.command(name="lounge_promote", aliases=["lp"])
-    @commands.has_permissions(administrator=True)
-    async def lounge_promote(self, ctx, lounge_number: int):
-        """Manually promote a lounge to next tier"""
-        lounges = await self.get_all_lounges_sorted(ctx.guild)
-        
-        target_lounge = None
-        for lounge in lounges:
-            num = self.parse_lounge_number(lounge.name)
-            if num == lounge_number:
-                target_lounge = lounge
-                break
-        
-        if not target_lounge:
-            await ctx.send(f"❌ Lounge {lounge_number} not found!")
-            return
-        
-        # Get current tier
-        lounge_data = self.lounge_data.get(target_lounge.id)
-        current_tier = lounge_data.tier if lounge_data else LoungeTier.NORMAL
-        
-        # Find next tier
-        tiers = [LoungeTier.NORMAL, LoungeTier.POPULAR, LoungeTier.PREMIUM, LoungeTier.ELITE]
-        current_index = tiers.index(current_tier)
-        
-        if current_index >= len(tiers) - 1:
-            await ctx.send(f"❌ {target_lounge.name} is already at the highest tier!")
-            return
-        
-        next_tier = tiers[current_index + 1]
-        
-        # Manually promote
-        if not lounge_data:
-            lounge_data = LoungeData(
-                channel_id=target_lounge.id,
-                created_at=time.time(),
-                last_active=time.time(),
-                tier=next_tier
-            )
-            self.lounge_data[target_lounge.id] = lounge_data
-        else:
-            lounge_data.tier = next_tier
-        
-        # Update capacity
-        base_capacity = self.get_base_capacity(lounge_number)
-        if base_capacity != float('inf'):
-            boost = self.promotion_rules[next_tier]["capacity_boost"]
-            new_capacity = base_capacity + boost
-            
-            try:
-                await target_lounge.edit(user_limit=new_capacity)
-            except Exception as e:
-                logger.error(f"Failed to update capacity: {e}")
-        
-        # Update name with promotion emoji at the END
-        await self.rename_lounges_sequentially(ctx.guild)
-        
-        await ctx.send(f"✅ {target_lounge.name} manually promoted to **{next_tier.value.upper()}** tier!")
-    
     @commands.command(name="lounge_reset", aliases=["lr"])
     @commands.has_permissions(administrator=True)
     async def lounge_reset(self, ctx):
-        """Reset lounge system (delete all except Lounge3)"""
+        """Reset the lounge system"""
         confirm = await ctx.send(
-            "⚠️ This will delete ALL lounge channels except Lounge3 and reset all data. "
+            "⚠️ This will delete ALL dynamic lounges (4+) and reset the system.\n"
             "Type `CONFIRM` to proceed."
         )
         
@@ -971,41 +860,31 @@ class DynamicLounges(commands.Cog):
             await confirm.edit(content="Reset cancelled.")
             return
         
-        # Get initial channel
-        initial_channel = await self.get_initial_channel(ctx.guild)
-        if not initial_channel:
-            await ctx.send("❌ Initial channel not found!")
-            return
-        
-        # Delete all lounges except Lounge3
-        lounges = await self.get_all_lounges_sorted(ctx.guild)
-        
+        # Delete all dynamic lounges
+        lounges = await self.state.get_guild_lounges(ctx.guild.id)
         deleted = 0
-        for lounge in lounges:
-            if lounge.id != initial_channel.id:
-                try:
-                    await lounge.delete()
-                    deleted += 1
-                    await asyncio.sleep(0.5)  # Rate limit protection
-                except Exception as e:
-                    logger.error(f"Failed to delete {lounge.name}: {e}")
         
-        # Reset all data
-        self.lounge_data = {}
-        self.user_alone_timers = {}
-        self.empty_lounge_count = {}
+        async with self._discord_ops_lock:
+            for entry in lounges:
+                if entry.number >= 4:  # Only delete dynamic lounges
+                    channel = ctx.guild.get_channel(entry.channel_id)
+                    if channel:
+                        try:
+                            await channel.delete()
+                            deleted += 1
+                            await asyncio.sleep(0.5)
+                        except Exception as e:
+                            logger.error(f"Failed to delete {channel.name}: {e}")
+        
+        # Reset state
+        for entry in lounges:
+            if entry.number >= 4:
+                await self.state.remove_lounge(entry.channel_id)
         
         # Reset stats
-        self.stats = {
-            "channels_created": 0,
-            "channels_deleted": deleted,
-            "renames_performed": 0,
-            "promotions_given": 0,
-            "users_moved": 0,
-            "hogging_prevented": 0,
-        }
+        self.stats["channels_deleted"] += deleted
         
-        await ctx.send(f"✅ Reset complete. Deleted {deleted} lounges and cleared all data.")
+        await ctx.send(f"✅ Reset complete. Deleted {deleted} dynamic lounges.")
 
 async def setup(bot):
     await bot.add_cog(DynamicLounges(bot))
