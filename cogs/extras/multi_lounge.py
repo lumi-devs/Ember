@@ -4,6 +4,8 @@ import re
 import asyncio
 import traceback
 import time
+import json
+import os
 from datetime import datetime
 from typing import Dict, List, Tuple
 
@@ -26,8 +28,15 @@ class SmartLoungeCog(commands.Cog):
         self.last_creation_time = 0
         self.creation_cooldown = 10  # seconds between creations
         
-        # Statistics tracking
-        self.stats = {
+        # JSON file for persistence
+        self.data_file = "data/lounge_data.json"
+        
+        # Initialize or load statistics
+        self.stats = self.load_stats()
+
+    def load_stats(self):
+        """Load statistics from JSON file or create default."""
+        default_stats = {
             'total_creations': 0,
             'total_deletions': 0,
             'last_creation_time': None,
@@ -39,10 +48,64 @@ class SmartLoungeCog(commands.Cog):
             'avg_users_per_lounge': 0.0,
             'busy_percentage': 0.0
         }
+        
+        try:
+            if os.path.exists(self.data_file):
+                with open(self.data_file, 'r') as f:
+                    loaded = json.load(f)
+                    
+                    # Convert string timestamps back to datetime objects
+                    for time_key in ['last_creation_time', 'last_deletion_time', 'peak_users_time']:
+                        if loaded.get(time_key):
+                            loaded[time_key] = datetime.fromisoformat(loaded[time_key])
+                    
+                    return loaded
+            else:
+                return default_stats
+        except Exception as e:
+            print(f"⚠️ Error loading stats from JSON: {e}")
+            return default_stats
+
+    def save_stats(self):
+        """Save statistics to JSON file."""
+        try:
+            # Create a copy to avoid modifying the original
+            stats_to_save = self.stats.copy()
+            
+            # Convert datetime objects to ISO format strings
+            for time_key in ['last_creation_time', 'last_deletion_time', 'peak_users_time']:
+                if stats_to_save.get(time_key) and isinstance(stats_to_save[time_key], datetime):
+                    stats_to_save[time_key] = stats_to_save[time_key].isoformat()
+            
+            with open(self.data_file, 'w') as f:
+                json.dump(stats_to_save, f, indent=2)
+            return True
+        except Exception as e:
+            print(f"❌ Error saving stats to JSON: {e}")
+            return False
+
+    def save_stats_async(self):
+        """Save stats asynchronously to prevent blocking."""
+        try:
+            stats_to_save = self.stats.copy()
+            
+            for time_key in ['last_creation_time', 'last_deletion_time', 'peak_users_time']:
+                if stats_to_save.get(time_key) and isinstance(stats_to_save[time_key], datetime):
+                    stats_to_save[time_key] = stats_to_save[time_key].isoformat()
+            
+            # Use a temporary file to prevent corruption
+            temp_file = self.data_file + ".tmp"
+            with open(temp_file, 'w') as f:
+                json.dump(stats_to_save, f, indent=2)
+            
+            # Atomic rename
+            os.replace(temp_file, self.data_file)
+        except Exception as e:
+            print(f"❌ Async save error: {e}")
 
     @commands.Cog.listener()
     async def on_ready(self):
-        print(f"✅ Smart Lounge System Ready (2-min heartbeat).")
+        print(f"✅ Smart Lounge System Ready (2-min heartbeat). Data saved to: {self.data_file}")
         if not self.manage_lounges_loop.is_running():
             self.manage_lounges_loop.start()
 
@@ -50,7 +113,9 @@ class SmartLoungeCog(commands.Cog):
         """Clean up when cog is unloaded."""
         if self.manage_lounges_loop.is_running():
             self.manage_lounges_loop.cancel()
-        print("🛑 Smart Lounge System stopped.")
+        # Save stats on unload
+        self.save_stats()
+        print(f"🛑 Smart Lounge System stopped. Stats saved.")
 
     def get_lounge_number(self, channel_name):
         match = self.name_pattern.search(channel_name)
@@ -112,6 +177,13 @@ class SmartLoungeCog(commands.Cog):
                 self.stats['errors'] = self.stats['errors'][-10:]
             print(f"❌ Smart Lounge loop error: {e}")
             traceback.print_exc()
+        finally:
+            # Always try to save stats after each loop execution
+            try:
+                # Save stats asynchronously to prevent blocking
+                await asyncio.to_thread(self.save_stats_async)
+            except Exception as e:
+                print(f"⚠️ Could not save stats: {e}")
 
     async def _manage_lounges(self):
         """Core lounge management logic."""
@@ -297,6 +369,7 @@ class SmartLoungeCog(commands.Cog):
                 f"**Busy Threshold:** {self.busy_threshold} users\n"
                 f"**Loop Interval:** 2 minutes\n"
                 f"**Creation Cooldown:** {self.creation_cooldown}s\n"
+                f"**Data File:** `{self.data_file}`\n"
             ),
             inline=False
         )
@@ -339,6 +412,7 @@ class SmartLoungeCog(commands.Cog):
                 f"**Net Growth:** {self.stats['total_creations'] - self.stats['total_deletions']}\n"
                 f"**Peak Users:** {self.stats['peak_users']}\n"
                 f"**Avg Users/Lounge:** {self.stats['avg_users_per_lounge']:.2f}\n"
+                f"**Data Persisted:** ✅ Yes\n"
             ),
             inline=True
         )
@@ -355,6 +429,7 @@ class SmartLoungeCog(commands.Cog):
                 f"**Last Deletion:** {last_deletion.strftime('%Y-%m-%d %H:%M:%S') if last_deletion else 'Never'}\n"
                 f"**Peak Time:** {peak_time.strftime('%Y-%m-%d %H:%M:%S') if peak_time else 'Never'}\n"
                 f"**Loop Next Run:** <t:{int((datetime.now().timestamp() + 120))}:R>\n"
+                f"**Last Save:** Now\n"
             ),
             inline=False
         )
@@ -380,6 +455,8 @@ class SmartLoungeCog(commands.Cog):
             issues.append("Loop not running")
         if not category:
             issues.append("Category not found")
+        if not os.path.exists(self.data_file):
+            issues.append("Data file missing")
             
         if issues:
             health_status = "⚠️ WARNING"
@@ -391,7 +468,7 @@ class SmartLoungeCog(commands.Cog):
             )
         
         embed.color = health_color
-        embed.set_footer(text=f"Requested by {ctx.author} | System: {health_status}")
+        embed.set_footer(text=f"Requested by {ctx.author} | System: {health_status} | Data: {self.data_file}")
         
         await ctx.send(embed=embed)
         
@@ -425,4 +502,4 @@ class SmartLoungeCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(SmartLoungeCog(bot))
-    print("✅ Smart Lounge Cog loaded with stats command.")
+    print("✅ Smart Lounge Cog loaded with JSON persistence.")
