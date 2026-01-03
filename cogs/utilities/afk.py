@@ -572,7 +572,7 @@ class AFK(commands.Cog):
         embed.add_field(name="Cache Hit Ratio", value=f"{ratio:.1f}%", inline=True)
         
         embed.set_footer(text=f"Guilds tracked: {len(self._guild_afk_cache)}")
-        await ctx.reply(embed=embed, mention_author=False)
+        await ctx.reply(embed=embed, mention_uthor=False)
     
     # ─── LISTENERS (COMPATIBLE) ────────────────────────────────────
 
@@ -608,24 +608,42 @@ class AFK(commands.Cog):
             
             # Only remove AFK if it's NOT a command
             if not is_command:
-                removed = await self.remove_afk(message.author.id)
+                # ✅ CRITICAL FIX: Check cache AGAIN after command detection
+                # This ensures we don't process if another message already removed AFK
+                if message.author.id not in self._afk_cache:
+                    return  # Already removed by a previous message
                 
-                if removed:  # Only show welcome back if actually removed
-                    # Remove AFK from nickname
-                    if message.guild and message.author.display_name.startswith(NICK_PREFIX):
-                        await self._safe_edit_nick(
-                            message.author,
-                            self._strip_afk_nick(message.author.display_name)
-                        )
-                    
-                    # Send welcome back message
-                    embed = discord.Embed(
-                        title="👋 Welcome Back!",
-                        description=f"{message.author.mention}, AFK removed.\nYou had been AFK for **{entry.human_readable_duration}**.",
-                        color=AFK_REMOVED_COLOR
+                # Store entry before removing (for the welcome back message)
+                afk_entry = entry
+                
+                # Remove from cache IMMEDIATELY (prevents second message from triggering)
+                del self._afk_cache[message.author.id]
+                
+                # Update guild cache immediately
+                for guild_id in self._guild_afk_cache:
+                    self._guild_afk_cache[guild_id].discard(message.author.id)
+                
+                # Queue async DB removal (but cache is already cleared)
+                await self._write_queue.put(('remove_afk', message.author.id))
+                
+                # Update cooldown
+                self._afk_removal_cooldown[message.author.id] = time.time()
+                
+                # Remove AFK from nickname
+                if message.guild and message.author.display_name.startswith(NICK_PREFIX):
+                    await self._safe_edit_nick(
+                        message.author,
+                        self._strip_afk_nick(message.author.display_name)
                     )
-                    msg = await message.channel.send(embed=embed)
-                    asyncio.create_task(self._auto_delete_message(msg, 20))
+                
+                # Send welcome back message
+                embed = discord.Embed(
+                    title="👋 Welcome Back!",
+                    description=f"{message.author.mention}, AFK removed.\nYou had been AFK for **{afk_entry.human_readable_duration}**.",
+                    color=AFK_REMOVED_COLOR
+                )
+                msg = await message.channel.send(embed=embed)
+                asyncio.create_task(self._auto_delete_message(msg, 20))
         
         # Always process commands (in case not processed above)
         await self.bot.process_commands(message)
