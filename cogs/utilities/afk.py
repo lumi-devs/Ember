@@ -6,7 +6,7 @@ import aiosqlite
 import asyncio
 from datetime import datetime, timezone
 import time
-from typing import Optional, Dict, Tuple, Set, Deque, Any, List
+from typing import Optional, Dict, Tuple, Set, Deque, Any
 from collections import deque
 import hashlib
 import json
@@ -162,7 +162,7 @@ class AFK(commands.Cog):
         self._write_queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
         self._batch_processor_task: Optional[asyncio.Task] = None
         
-        asyncio.create_task(self._init_database())
+        self.bot.loop.create_task(self._init_database())
     
     async def _init_database(self):
         """Initialize database with COMPATIBLE structure."""
@@ -223,8 +223,8 @@ class AFK(commands.Cog):
     
     async def _batch_processor(self):
         """Process write operations in batches."""
-        batch_inserts: List[Tuple[str, str, str]] = []
-        batch_deletes: List[str] = []
+        batch_inserts: list[Tuple[str, str, str]] = []
+        batch_deletes: list[str] = []
         
         last_flush = time.time()
         flush_interval = 5.0
@@ -288,8 +288,8 @@ class AFK(commands.Cog):
                 # First flush any pending writes
                 if self._write_queue.qsize() > 0:
                     # Process pending writes
-                    batch_inserts: List[Tuple[str, str, str]] = []
-                    batch_deletes: List[str] = []
+                    batch_inserts = []
+                    batch_deletes = []
                     
                     # Get all pending operations
                     while not self._write_queue.empty():
@@ -323,7 +323,7 @@ class AFK(commands.Cog):
                     pass
                 return False
     
-    async def _flush_batch(self, inserts: List[Tuple[str, str, str]], deletes: List[str]):
+    async def _flush_batch(self, inserts: list, deletes: list):
         """Flush batch to database."""
         if not inserts and not deletes:
             return
@@ -420,7 +420,7 @@ class AFK(commands.Cog):
         self._afk_removal_cooldown[user_id] = current_time
         return True
     
-    async def get_all_afk(self) -> List[Tuple[str, str, str]]:
+    async def get_all_afk(self):
         """Get all AFK users - COMPATIBLE with existing method."""
         # Return from cache first
         if self._afk_cache:
@@ -587,47 +587,48 @@ class AFK(commands.Cog):
         entry = await self.get_afk(message.author.id)
         
         if entry:
-            # Use get_context to properly detect if it's a command
-            ctx = await self.bot.get_context(message)
+            # Check if this is a command (AFK command should not trigger removal)
+            content = message.content.strip()
+            prefixes = await self.bot.get_prefix(message)
             
-            # Only remove AFK if it's NOT an afk command
-            if not ctx.valid or ctx.command.name not in ['afk', 'afklist', 'afkstats']:
-                # ✅ CRITICAL FIX: Check cache AGAIN after command detection
-                # This ensures we don't process if another message already removed AFK
-                if message.author.id not in self._afk_cache:
-                    return  # Already removed by a previous message
+            is_command = False
+            for prefix in prefixes:
+                if content.startswith(prefix):
+                    is_command = True
+                    # Get the command name after prefix
+                    command_content = content[len(prefix):].strip()
+                    command_parts = command_content.split()
+                    if command_parts and command_parts[0].lower() in ['afk', 'afklist', 'afkstats']:
+                        # Specifically handle AFK commands
+                        if command_parts[0].lower() == 'afk':
+                            # AFK command should not trigger removal - let the command handler process it
+                            pass
+                        await self.bot.process_commands(message)
+                    break
+            
+            # Only remove AFK if it's NOT a command
+            if not is_command:
+                removed = await self.remove_afk(message.author.id)
                 
-                # Store entry before removing (for the welcome back message)
-                afk_entry = entry
-                
-                # Remove from cache IMMEDIATELY (prevents second message from triggering)
-                del self._afk_cache[message.author.id]
-                
-                # Update guild cache immediately
-                for guild_id in self._guild_afk_cache:
-                    self._guild_afk_cache[guild_id].discard(message.author.id)
-                
-                # Queue async DB removal (but cache is already cleared)
-                await self._write_queue.put(('remove_afk', message.author.id))
-                
-                # Update cooldown
-                self._afk_removal_cooldown[message.author.id] = time.time()
-                
-                # Remove AFK from nickname
-                if message.guild and message.author.display_name.startswith(NICK_PREFIX):
-                    await self._safe_edit_nick(
-                        message.author,
-                        self._strip_afk_nick(message.author.display_name)
+                if removed:  # Only show welcome back if actually removed
+                    # Remove AFK from nickname
+                    if message.guild and message.author.display_name.startswith(NICK_PREFIX):
+                        await self._safe_edit_nick(
+                            message.author,
+                            self._strip_afk_nick(message.author.display_name)
+                        )
+                    
+                    # Send welcome back message
+                    embed = discord.Embed(
+                        title="👋 Welcome Back!",
+                        description=f"{message.author.mention}, AFK removed.\nYou had been AFK for **{entry.human_readable_duration}**.",
+                        color=AFK_REMOVED_COLOR
                     )
-                
-                # Send welcome back message
-                embed = discord.Embed(
-                    title="👋 Welcome Back!",
-                    description=f"{message.author.mention}, AFK removed.\nYou had been AFK for **{afk_entry.human_readable_duration}**.",
-                    color=AFK_REMOVED_COLOR
-                )
-                msg = await message.channel.send(embed=embed)
-                asyncio.create_task(self._auto_delete_message(msg, 20))
+                    msg = await message.channel.send(embed=embed)
+                    asyncio.create_task(self._auto_delete_message(msg, 20))
+        
+        # Always process commands (in case not processed above)
+        await self.bot.process_commands(message)
         
         # Check mentions for AFK users (even in commands)
         if message.mentions:
