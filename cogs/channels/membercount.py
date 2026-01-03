@@ -163,32 +163,34 @@ class MemberCount(commands.Cog):
         except Exception as e:
             print(f"[MemberCount] Critical error updating counts: {e}")
             return False
+        
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        """Handle member join."""
-        # Only process if this is the target guild
-        if not self._is_target_guild(member.guild):
-            return
-            
-        # Skip bots to reduce unnecessary updates
-        if member.bot:
-            return
-            
-        print(f"[MemberCount] Member joined: {member.display_name}")
-        await asyncio.sleep(3)  # Wait for member count to update
-        await self.request_update(member.guild)
+            """Handle member join."""
+            # Debug print to confirm event is firing
+            print(f"[MemberCount] EVENT FIRED: Join - {member.name}")
+
+            if not self._is_target_guild(member.guild):
+                return
+                
+            # REMOVED: if member.bot: return
+            # Why? If a bot joins, your "All Members" count still changes! 
+            # You want to trigger an update so "All Members" goes up, even if "Humans" stays same.
+                
+            await asyncio.sleep(3)  # Wait for cache update
+            await self.request_update(member.guild)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
-        """Handle member leave."""
-        # Only process if this is the target guild
-        if not self._is_target_guild(member.guild):
-            return
-            
-        print(f"[MemberCount] Member left: {member.display_name}")
-        await asyncio.sleep(3)  # Wait for member count to update
-        await self.request_update(member.guild)
+            """Handle member leave."""
+            print(f"[MemberCount] EVENT FIRED: Leave - {member.name}")
+
+            if not self._is_target_guild(member.guild):
+                return
+                
+            await asyncio.sleep(3)
+            await self.request_update(member.guild)
 
     @commands.Cog.listener()
     async def on_ready(self):

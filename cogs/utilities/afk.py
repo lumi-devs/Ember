@@ -6,7 +6,7 @@ import aiosqlite
 import asyncio
 from datetime import datetime, timezone
 import time
-from typing import Optional, Dict, Tuple, Set, Deque, Any
+from typing import Optional, Dict, Tuple, Set, Deque, Any, List
 from collections import deque
 import hashlib
 import json
@@ -162,7 +162,7 @@ class AFK(commands.Cog):
         self._write_queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
         self._batch_processor_task: Optional[asyncio.Task] = None
         
-        self.bot.loop.create_task(self._init_database())
+        asyncio.create_task(self._init_database())
     
     async def _init_database(self):
         """Initialize database with COMPATIBLE structure."""
@@ -223,8 +223,8 @@ class AFK(commands.Cog):
     
     async def _batch_processor(self):
         """Process write operations in batches."""
-        batch_inserts: list[Tuple[str, str, str]] = []
-        batch_deletes: list[str] = []
+        batch_inserts: List[Tuple[str, str, str]] = []
+        batch_deletes: List[str] = []
         
         last_flush = time.time()
         flush_interval = 5.0
@@ -288,8 +288,8 @@ class AFK(commands.Cog):
                 # First flush any pending writes
                 if self._write_queue.qsize() > 0:
                     # Process pending writes
-                    batch_inserts = []
-                    batch_deletes = []
+                    batch_inserts: List[Tuple[str, str, str]] = []
+                    batch_deletes: List[str] = []
                     
                     # Get all pending operations
                     while not self._write_queue.empty():
@@ -323,7 +323,7 @@ class AFK(commands.Cog):
                     pass
                 return False
     
-    async def _flush_batch(self, inserts: list, deletes: list):
+    async def _flush_batch(self, inserts: List[Tuple[str, str, str]], deletes: List[str]):
         """Flush batch to database."""
         if not inserts and not deletes:
             return
@@ -420,7 +420,7 @@ class AFK(commands.Cog):
         self._afk_removal_cooldown[user_id] = current_time
         return True
     
-    async def get_all_afk(self):
+    async def get_all_afk(self) -> List[Tuple[str, str, str]]:
         """Get all AFK users - COMPATIBLE with existing method."""
         # Return from cache first
         if self._afk_cache:
@@ -572,7 +572,7 @@ class AFK(commands.Cog):
         embed.add_field(name="Cache Hit Ratio", value=f"{ratio:.1f}%", inline=True)
         
         embed.set_footer(text=f"Guilds tracked: {len(self._guild_afk_cache)}")
-        await ctx.reply(embed=embed, mention_uthor=False)
+        await ctx.reply(embed=embed, mention_author=False)
     
     # ─── LISTENERS (COMPATIBLE) ────────────────────────────────────
 
@@ -587,27 +587,11 @@ class AFK(commands.Cog):
         entry = await self.get_afk(message.author.id)
         
         if entry:
-            # Check if this is a command (AFK command should not trigger removal)
-            content = message.content.strip()
-            prefixes = await self.bot.get_prefix(message)
+            # Use get_context to properly detect if it's a command
+            ctx = await self.bot.get_context(message)
             
-            is_command = False
-            for prefix in prefixes:
-                if content.startswith(prefix):
-                    is_command = True
-                    # Get the command name after prefix
-                    command_content = content[len(prefix):].strip()
-                    command_parts = command_content.split()
-                    if command_parts and command_parts[0].lower() in ['afk', 'afklist', 'afkstats']:
-                        # Specifically handle AFK commands
-                        if command_parts[0].lower() == 'afk':
-                            # AFK command should not trigger removal - let the command handler process it
-                            pass
-                        await self.bot.process_commands(message)
-                    break
-            
-            # Only remove AFK if it's NOT a command
-            if not is_command:
+            # Only remove AFK if it's NOT an afk command
+            if not ctx.valid or ctx.command.name not in ['afk', 'afklist', 'afkstats']:
                 # ✅ CRITICAL FIX: Check cache AGAIN after command detection
                 # This ensures we don't process if another message already removed AFK
                 if message.author.id not in self._afk_cache:
@@ -644,9 +628,6 @@ class AFK(commands.Cog):
                 )
                 msg = await message.channel.send(embed=embed)
                 asyncio.create_task(self._auto_delete_message(msg, 20))
-        
-        # Always process commands (in case not processed above)
-        await self.bot.process_commands(message)
         
         # Check mentions for AFK users (even in commands)
         if message.mentions:

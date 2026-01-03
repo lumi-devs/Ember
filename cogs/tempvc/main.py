@@ -171,15 +171,10 @@ class TempVoice(commands.Cog):
         
         # Get base name and limit for this generator type
         base_name, limit = JOIN_CHANNELS.get(join_channel.id, ("VC ", 0))
-        
-        # Clean base name for comparison and use
         clean_base = base_name.strip()
         
-        # Determine VC type based on generator channel name
+        # Determine VC type
         vc_type = "Other"
-        clean_base = clean_base.strip()
-
-        # Using regex with word boundaries
         if re.search(r'\bduo\b', clean_base, re.IGNORECASE):
             vc_type = "Duo"
         elif re.search(r'\btrio\b', clean_base, re.IGNORECASE):
@@ -187,108 +182,98 @@ class TempVoice(commands.Cog):
         elif re.search(r'\bsquad\b', clean_base, re.IGNORECASE):
             vc_type = "Squad"
         
-        # Use a lock to prevent race conditions
         async with self._vc_creation_lock:
-            # Clean up ghost entries FIRST
+            # 1. Database Cleanup & Fetching
             await self._cleanup_ghost(guild)
             
-            # Get ALL bot channels in this category from database
             async with aiosqlite.connect(DB_PATH) as db:
                 async with db.execute(
-                    """SELECT voiceID, vcType, channelNumber 
-                    FROM voiceChannel 
-                    WHERE guildID = ?""",
+                    "SELECT voiceID, vcType, channelNumber FROM voiceChannel WHERE guildID = ?",
                     (guild.id,)
                 ) as c:
-                    all_bot_channels = await c.fetchall()
+                    all_db_channels = await c.fetchall()
             
-            # Filter to channels that ACTUALLY EXIST in this specific category
-            existing_channels_in_category = []
-            used_numbers_by_type = {"Duo": set(), "Trio": set(), "Squad": set(), "Other": set()}
+            # Map DB channels for quick lookup: {voice_id: (type, number)}
+            db_channel_map = {row[0]: (row[1], row[2]) for row in all_db_channels}
             
-            for voice_id, db_vc_type, channel_number in all_bot_channels:
-                vc = guild.get_channel(voice_id)
-                if vc and vc.category and vc.category.id == category.id:
-                    existing_channels_in_category.append({
-                        "channel": vc,
-                        "type": db_vc_type,
-                        "number": channel_number
-                    })
-                    # Store used numbers by type
-                    used_numbers_by_type.setdefault(db_vc_type, set()).add(channel_number)
+            # 2. Number Generation (Fill Gaps)
+            used_numbers = {
+                row[2] for row in all_db_channels 
+                if row[1] == vc_type and guild.get_channel(row[0]) and guild.get_channel(row[0]).category_id == category.id
+            }
             
-            # Find the next available number for this specific VC type
             channel_number = 1
-            while channel_number in used_numbers_by_type.get(vc_type, set()):
+            while channel_number in used_numbers:
                 channel_number += 1
             
-            # Generate channel name with the ORIGINAL base name
             name = f"{clean_base} {channel_number}"
             
-            # Get generator channels in this category
+            # 3. Positioning Logic
+            # We iterate through the ACTUAL channels in the category to find the correct slot.
+            
+            # Sort current channels by position to be sure
+            current_channels = sorted(category.voice_channels, key=lambda c: c.position)
+            
+            # Define sort key for NEW channel: (Rank, Number)
+            new_type_rank = self.type_order.get(vc_type, 4)
+            new_key = (new_type_rank, channel_number)
+            
+            # Default to end of list
+            insert_position = len(current_channels) 
+            
+            # Find the "Generator" section to ensure we start AFTER them
             generator_vcs = [vc for vc in category.voice_channels if vc.id in JOIN_CHANNELS]
-            generator_vcs.sort(key=lambda x: x.position)
+            min_position = 0
+            if generator_vcs:
+                generator_vcs.sort(key=lambda x: x.position)
+                min_position = generator_vcs[-1].position + 1
             
-            # Calculate position - start after generator channels
-            base_position = generator_vcs[-1].position + 1 if generator_vcs else 0
-            
-            # Find where to insert based on type order and existing channels
-            insert_position = base_position
-            
-            # Sort existing channels by type order and then by number
-            sorted_existing = sorted(
-                existing_channels_in_category,
-                key=lambda x: (self.type_order.get(x["type"], 5), x["number"])
-            )
-            
-            # Find the right position to insert
-            for idx, chan_info in enumerate(sorted_existing):
-                current_type_order = self.type_order.get(chan_info["type"], 5)
-                new_type_order = self.type_order.get(vc_type, 5)
+            # If default (end), ensure it's at least after generators
+            if insert_position < min_position:
+                insert_position = min_position
+
+            for channel in current_channels:
+                # Skip generators
+                if channel.id in JOIN_CHANNELS:
+                    continue
                 
-                # If our new channel type should come before this one
-                if new_type_order < current_type_order:
-                    insert_position = base_position + idx
+                # We only care about channels physically below the generators
+                if channel.position < min_position:
+                    continue
+
+                if channel.id in db_channel_map:
+                    # It's a managed channel
+                    existing_type, existing_num = db_channel_map[channel.id]
+                    existing_rank = self.type_order.get(existing_type, 4)
+                    existing_key = (existing_rank, existing_num)
+                    
+                    # If the New Channel belongs BEFORE this Existing Channel
+                    # (e.g., New is Duo 2, Existing is Duo 3 OR Trio 1)
+                    if new_key < existing_key:
+                        insert_position = channel.position
+                        break
+                else:
+                    # It's an unmanaged/static channel (e.g. "General", "Music")
+                    # Managed channels usually go ABOVE unmanaged ones.
+                    insert_position = channel.position
                     break
-                # Same type, insert by number order
-                elif new_type_order == current_type_order and channel_number < chan_info["number"]:
-                    insert_position = base_position + idx
-                    break
-            else:
-                # Insert at the end
-                insert_position = base_position + len(sorted_existing)
             
-            # IMPORTANT: Get current channels in category to adjust positions
-            all_category_channels = [ch for ch in category.voice_channels if ch.id not in JOIN_CHANNELS]
-            all_category_channels.sort(key=lambda x: x.position)
-            
-            # If we're inserting in the middle, we need to shift existing channels
-            if 0 <= insert_position - base_position < len(all_category_channels):
-                # Move existing channels down to make room
-                for i in range(len(all_category_channels) - 1, insert_position - base_position - 1, -1):
-                    try:
-                        await all_category_channels[i].edit(position=base_position + i + 1)
-                    except Exception as e:
-                        print(f"[TempVoice] Failed to shift channel {all_category_channels[i].name}: {e}")
-            
-            # Create VC with correct position from the start
+            # 4. Create Channel
             vc = await guild.create_voice_channel(
                 name=name,
                 category=category,
                 user_limit=limit or None,
-                position=insert_position,
+                position=insert_position, # Discord auto-shifts channels >= this position
                 reason=f"Temp VC created by {member}"
             )
 
-            # Set permissions for owner
             await vc.set_permissions(member, manage_channels=True, connect=True, speak=True)
-            
             try:
                 await member.move_to(vc)
             except Exception:
                 pass
 
-            # Store in database
+            # 5. Save to DB
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute(
                     """INSERT OR REPLACE INTO voiceChannel 
