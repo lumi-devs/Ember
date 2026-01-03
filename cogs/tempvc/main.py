@@ -166,126 +166,123 @@ class TempVoice(commands.Cog):
             print(f"[TempVoice] creation error:\n{traceback.format_exc()}")
 
     async def _create_vc(self, member, join_channel):
-        guild = member.guild
-        category = join_channel.category
-        
-        # Get base name and limit for this generator type
-        base_name, limit = JOIN_CHANNELS.get(join_channel.id, ("VC ", 0))
-        clean_base = base_name.strip()
-        
-        # Determine VC type
-        vc_type = "Other"
-        if re.search(r'\bduo\b', clean_base, re.IGNORECASE):
-            vc_type = "Duo"
-        elif re.search(r'\btrio\b', clean_base, re.IGNORECASE):
-            vc_type = "Trio"
-        elif re.search(r'\bsquad\b', clean_base, re.IGNORECASE):
-            vc_type = "Squad"
-        
-        async with self._vc_creation_lock:
-            # 1. Database Cleanup & Fetching
-            await self._cleanup_ghost(guild)
+            guild = member.guild
+            category = join_channel.category
             
-            async with aiosqlite.connect(DB_PATH) as db:
-                async with db.execute(
-                    "SELECT voiceID, vcType, channelNumber FROM voiceChannel WHERE guildID = ?",
-                    (guild.id,)
-                ) as c:
-                    all_db_channels = await c.fetchall()
+            base_name, limit = JOIN_CHANNELS.get(join_channel.id, ("VC ", 0))
+            clean_base = base_name.strip()
             
-            # Map DB channels for quick lookup: {voice_id: (type, number)}
-            db_channel_map = {row[0]: (row[1], row[2]) for row in all_db_channels}
+            # Determine VC type
+            vc_type = "Other"
+            if re.search(r'\bduo\b', clean_base, re.IGNORECASE):
+                vc_type = "Duo"
+            elif re.search(r'\btrio\b', clean_base, re.IGNORECASE):
+                vc_type = "Trio"
+            elif re.search(r'\bsquad\b', clean_base, re.IGNORECASE):
+                vc_type = "Squad"
             
-            # 2. Number Generation (Fill Gaps)
-            used_numbers = {
-                row[2] for row in all_db_channels 
-                if row[1] == vc_type and guild.get_channel(row[0]) and guild.get_channel(row[0]).category_id == category.id
-            }
-            
-            channel_number = 1
-            while channel_number in used_numbers:
-                channel_number += 1
-            
-            name = f"{clean_base} {channel_number}"
-            
-            # 3. Positioning Logic
-            # We iterate through the ACTUAL channels in the category to find the correct slot.
-            
-            # Sort current channels by position to be sure
-            current_channels = sorted(category.voice_channels, key=lambda c: c.position)
-            
-            # Define sort key for NEW channel: (Rank, Number)
-            new_type_rank = self.type_order.get(vc_type, 4)
-            new_key = (new_type_rank, channel_number)
-            
-            # Default to end of list
-            insert_position = len(current_channels) 
-            
-            # Find the "Generator" section to ensure we start AFTER them
-            generator_vcs = [vc for vc in category.voice_channels if vc.id in JOIN_CHANNELS]
-            min_position = 0
-            if generator_vcs:
-                generator_vcs.sort(key=lambda x: x.position)
-                min_position = generator_vcs[-1].position + 1
-            
-            # If default (end), ensure it's at least after generators
-            if insert_position < min_position:
-                insert_position = min_position
-
-            for channel in current_channels:
-                # Skip generators
-                if channel.id in JOIN_CHANNELS:
-                    continue
+            async with self._vc_creation_lock:
+                # 1. Cleanup & Fetch DB Channels
+                await self._cleanup_ghost(guild)
                 
-                # We only care about channels physically below the generators
-                if channel.position < min_position:
-                    continue
-
-                if channel.id in db_channel_map:
-                    # It's a managed channel
-                    existing_type, existing_num = db_channel_map[channel.id]
-                    existing_rank = self.type_order.get(existing_type, 4)
-                    existing_key = (existing_rank, existing_num)
-                    
-                    # If the New Channel belongs BEFORE this Existing Channel
-                    # (e.g., New is Duo 2, Existing is Duo 3 OR Trio 1)
-                    if new_key < existing_key:
-                        insert_position = channel.position
+                async with aiosqlite.connect(DB_PATH) as db:
+                    async with db.execute(
+                        "SELECT voiceID, vcType, channelNumber FROM voiceChannel WHERE guildID = ?",
+                        (guild.id,)
+                    ) as c:
+                        all_db_channels = await c.fetchall()
+                
+                db_channel_map = {row[0]: (row[1], row[2]) for row in all_db_channels}
+                
+                # 2. Number Generation
+                used_numbers = {
+                    row[2] for row in all_db_channels 
+                    if row[1] == vc_type and guild.get_channel(row[0]) and guild.get_channel(row[0]).category_id == category.id
+                }
+                
+                channel_number = 1
+                while channel_number in used_numbers:
+                    channel_number += 1
+                
+                name = f"{clean_base} {channel_number}"
+                
+                # 3. Positioning Logic (Fixed)
+                # Fetch channels fresh from guild to ensure cache is updated
+                category_channels = sorted(category.voice_channels, key=lambda c: c.position)
+                
+                # Define current channel rank: (Rank Score, Number)
+                # Duo=1, Trio=2, Squad=3, Other=4
+                current_rank_score = self.type_order.get(vc_type, 4)
+                current_sort_key = (current_rank_score, channel_number)
+                
+                # Find the "Generator" zone. We must insert AFTER the generators.
+                # We assume generators are at the top. We find the index of the last generator.
+                insert_index = 0
+                for i, ch in enumerate(category_channels):
+                    if ch.id in JOIN_CHANNELS:
+                        insert_index = i + 1  # Start looking after this generator
+                
+                # Iterate through the channels BELOW the generators to find our slot
+                # We look for the first channel that has a "higher" sort key than us.
+                # We will steal its position, pushing it down.
+                target_channel = None
+                
+                for ch in category_channels[insert_index:]:
+                    if ch.id in db_channel_map:
+                        # It's a managed channel, compare ranks
+                        other_type, other_num = db_channel_map[ch.id]
+                        other_rank_score = self.type_order.get(other_type, 4)
+                        other_sort_key = (other_rank_score, other_num)
+                        
+                        # If (Duo, 1) < (Duo, 2), we insert HERE.
+                        if current_sort_key < other_sort_key:
+                            target_channel = ch
+                            break
+                    else:
+                        # It's an unmanaged channel (static channel like "Gaming")
+                        # We assume Temp VCs should float ABOVE static channels (below generators)
+                        # So if we hit a static channel, we insert here.
+                        target_channel = ch
                         break
+                
+                # Determine final Discord position
+                if target_channel:
+                    final_position = target_channel.position
                 else:
-                    # It's an unmanaged/static channel (e.g. "General", "Music")
-                    # Managed channels usually go ABOVE unmanaged ones.
-                    insert_position = channel.position
-                    break
-            
-            # 4. Create Channel
-            vc = await guild.create_voice_channel(
-                name=name,
-                category=category,
-                user_limit=limit or None,
-                position=insert_position, # Discord auto-shifts channels >= this position
-                reason=f"Temp VC created by {member}"
-            )
+                    # If no target found, append to the very end
+                    if category_channels:
+                        final_position = category_channels[-1].position + 1
+                    else:
+                        final_position = 0
 
-            await vc.set_permissions(member, manage_channels=True, connect=True, speak=True)
-            try:
-                await member.move_to(vc)
-            except Exception:
-                pass
-
-            # 5. Save to DB
-            async with aiosqlite.connect(DB_PATH) as db:
-                await db.execute(
-                    """INSERT OR REPLACE INTO voiceChannel 
-                    (guildID, userID, voiceID, vcType, channelNumber, channelName, channelLimit) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (guild.id, member.id, vc.id, vc_type, channel_number, name, limit)
+                # 4. Create Channel
+                vc = await guild.create_voice_channel(
+                    name=name,
+                    category=category,
+                    user_limit=limit or None,
+                    position=final_position,
+                    reason=f"Temp VC created by {member}"
                 )
-                await db.commit()
 
-            await self._send_panel(vc, member.id)
-            print(f"[TempVoice] ✅ Created {name} (Type: {vc_type}, Number: {channel_number}, Position: {insert_position})")
+                await vc.set_permissions(member, manage_channels=True, connect=True, speak=True)
+                try:
+                    await member.move_to(vc)
+                except Exception:
+                    pass
 
+                # 5. Save to DB
+                async with aiosqlite.connect(DB_PATH) as db:
+                    await db.execute(
+                        """INSERT OR REPLACE INTO voiceChannel 
+                        (guildID, userID, voiceID, vcType, channelNumber, channelName, channelLimit) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (guild.id, member.id, vc.id, vc_type, channel_number, name, limit)
+                    )
+                    await db.commit()
+
+                await self._send_panel(vc, member.id)
+                print(f"[TempVoice] ✅ Created {name} (Pos: {final_position})")
+                
     # ---------------- CLEANUP ----------------
     async def _schedule_cleanup(self, ch):
         # Only cleanup channels we created
