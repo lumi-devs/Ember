@@ -23,6 +23,7 @@ class TempVoice(commands.Cog):
         self.cleanup_locks = {}     # guild.id -> asyncio.Lock()
         self.owner_leave_times = {}  # channel_id -> timestamp when owner left
         self._heartbeat.start()
+        self._vc_cache = {}
         self.type_order = {"Duo": 1, "Trio": 2, "Squad": 3, "Other": 4}  # Type ordering
 
     async def cog_load(self):
@@ -172,7 +173,7 @@ class TempVoice(commands.Cog):
             base_name, limit = JOIN_CHANNELS.get(join_channel.id, ("VC ", 0))
             clean_base = base_name.strip()
             
-            # Determine VC type
+            # 1. Determine VC type
             vc_type = "Other"
             if re.search(r'\bduo\b', clean_base, re.IGNORECASE): vc_type = "Duo"
             elif re.search(r'\btrio\b', clean_base, re.IGNORECASE): vc_type = "Trio"
@@ -181,82 +182,66 @@ class TempVoice(commands.Cog):
             async with self._vc_creation_lock:
                 await self._cleanup_ghost(guild)
                 
-                # 1. Fetch DB Channels to map positions
-                async with aiosqlite.connect(DB_PATH) as db:
-                    async with db.execute(
-                        "SELECT voiceID, vcType, channelNumber FROM voiceChannel WHERE guildID = ?",
-                        (guild.id,)
-                    ) as c:
-                        all_db_channels = await c.fetchall()
+                # 2. Use Cache instead of DB if possible
+                # Format: {channel_id: (type, number)}
+                if not hasattr(self, '_vc_cache'): self._vc_cache = {}
                 
-                db_map = {row[0]: (row[1], row[2]) for row in all_db_channels}
-                
-                # 2. Number Generation
+                # 3. Number Generation (Using Cache)
                 used_numbers = {
-                    row[2] for row in all_db_channels 
-                    if row[1] == vc_type and guild.get_channel(row[0]) and guild.get_channel(row[0]).category_id == category.id
+                    data[1] for cid, data in self._vc_cache.items()
+                    if data[0] == vc_type and (ch := guild.get_channel(cid)) and ch.category_id == category.id
                 }
+                
                 channel_number = 1
                 while channel_number in used_numbers:
                     channel_number += 1
                 
                 name = f"{clean_base} {channel_number}"
 
-                # 3. Create the Channel
-                # Initially created at the end of the category
+                # 4. Create Channel
                 vc = await guild.create_voice_channel(
                     name=name,
                     category=category,
                     user_limit=limit or None,
-                    reason=f"Temp VC created by {member}"
+                    reason=f"Temp VC: {member}"
                 )
 
-                # 4. REORGANIZING LOGIC
-                # We fetch all channels in the category to perform a full sort
+                # Update Cache immediately
+                self._vc_cache[vc.id] = (vc_type, channel_number)
+
+                # 5. BULK POSITIONING (Anti-Rate Limit)
                 all_vcs = sorted(category.voice_channels, key=lambda x: x.position)
                 
-                # Separate them into three "Buckets"
                 generators = [ch for ch in all_vcs if ch.id in JOIN_CHANNELS]
-                # Any VC that isn't a generator and isn't in our DB (except the one we just made)
-                static_vcs = [ch for ch in all_vcs if ch.id not in JOIN_CHANNELS and ch.id not in db_map and ch.id != vc.id]
-                # VCs that are managed by the bot
-                managed_vcs = [ch for ch in all_vcs if ch.id in db_map or ch.id == vc.id]
+                # Use cache for managed check
+                managed_vcs = [ch for ch in all_vcs if ch.id in self._vc_cache]
+                static_vcs = [ch for ch in all_vcs if ch.id not in JOIN_CHANNELS and ch.id not in self._vc_cache]
 
                 def get_sort_key(ch):
-                    if ch.id == vc.id:
-                        m_type, m_num = vc_type, channel_number
-                    else:
-                        m_type, m_num = db_map[ch.id]
-                    # self.type_order should be {'Duo': 1, 'Trio': 2, 'Squad': 3, 'Other': 4}
-                    rank = self.type_order.get(m_type, 4)
-                    return (rank, m_num)
+                    m_type, m_num = self._vc_cache.get(ch.id, ("Other", 99))
+                    return (self.type_order.get(m_type, 4), m_num)
 
-                # Sort the managed block by Type then Number
                 managed_vcs.sort(key=get_sort_key)
-
-                # Re-assemble the list: [Gens] -> [Sorted Managed] -> [Statics]
-                final_ordered_list = generators + managed_vcs + static_vcs
+                final_order = generators + managed_vcs + static_vcs
                 
-                # Create position mappings
-                # The API expects a list of {id: position} or a bulk move
+                # The Magic Fix: Bulk edit positions in ONE call
+                # Map: {channel_id: new_position}
+                position_payload = {ch.id: index for index, ch in enumerate(final_order)}
+                
                 try:
-                    # We move the channels to their new positions index-by-index
-                    for index, ch in enumerate(final_ordered_list):
-                        if ch.position != index:
-                            await ch.edit(position=index)
+                    # This edits all channels at once
+                    await guild.edit(voice_channel_positions=position_payload)
                 except Exception as e:
-                    print(f"[TempVoice] Positioning failed: {e}")
+                    print(f"[TempVoice] Bulk position failed: {e}")
 
-                # 5. DB INSERT (Fixes the 10-column/7-value mismatch)
+                # 6. Setup & Persistent Save
                 await vc.set_permissions(member, manage_channels=True, connect=True, speak=True)
-                
                 try:
                     await member.move_to(vc)
                 except:
                     pass
 
                 async with aiosqlite.connect(DB_PATH) as db:
-                    # Naming columns explicitly is the ONLY way to prevent the "10 columns but 7 values" error
                     await db.execute(
                         """INSERT OR REPLACE INTO voiceChannel 
                         (guildID, userID, voiceID, vcType, channelNumber, channelName, channelLimit) 
