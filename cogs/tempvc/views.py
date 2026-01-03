@@ -1,6 +1,6 @@
 import discord
 from discord.ui import Button, View, UserSelect
-from .modals import RenameModal, TransferModal
+from .modals import RenameModal, TransferModal, LimitModal
 from .config import JOIN_CHANNELS, DB_PATH
 import aiosqlite
 import time
@@ -48,12 +48,17 @@ class ControlPanel(View):
 class BasicControlsView(ControlPanel):
     def __init__(self, cog, channel_id: int, owner_id: int):
         super().__init__(cog, channel_id, owner_id)
+        # Row 1: Name, Members, Privacy
         self.add_item(NameButton())
-        self.add_item(PrivacyButton())
         self.add_item(MembersButton())
-        self.add_item(RegionButton())
+        self.add_item(PrivacyButton())
+        
+        # Row 2: Limit, Transfer, Claim
+        self.add_item(LimitButton())
         self.add_item(TransferButton())
         self.add_item(ClaimButton())
+        
+        # Row 3: Delete (alone)
         self.add_item(DeleteButton())
 
 
@@ -210,7 +215,7 @@ class UnhideButton(Button):
 # --------------------- Members Management ---------------------
 class MembersButton(Button):
     def __init__(self):
-        super().__init__(label="👥 Members", style=discord.ButtonStyle.secondary, custom_id="members", row=1)
+        super().__init__(label="👥 Members", style=discord.ButtonStyle.secondary, custom_id="members", row=0)
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -505,63 +510,25 @@ class UserSelectAction(UserSelect):
             await interaction.followup.send("❌ Failed to perform action!", ephemeral=True)
 
 
-# --------------------- Region / Transfer / Claim / Delete ---------------------
-class RegionButton(Button):
+# --------------------- Limit Button ---------------------
+class LimitButton(Button):
     def __init__(self):
-        super().__init__(label="🌐 Region", style=discord.ButtonStyle.secondary, custom_id="region", row=1)
+        super().__init__(label="👥 Limit", style=discord.ButtonStyle.secondary, custom_id="limit", row=1)
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
-        await interaction.response.defer(ephemeral=True)
         channel = interaction.guild.get_channel(view.channel_id)
         if not channel:
-            await interaction.followup.send("❌ Channel not found!", ephemeral=True)
+            await interaction.response.send_message("❌ Channel not found!", ephemeral=True)
             return
-        await interaction.followup.send(view=RegionView(view.cog, view.channel_id, view.owner_id, channel), ephemeral=True)
+        modal = LimitModal(view.cog, channel)
+        await interaction.response.send_modal(modal)
 
 
-class RegionView(ControlPanel):
-    def __init__(self, cog, channel_id: int, owner_id: int, channel: discord.abc.GuildChannel):
-        super().__init__(cog, channel_id, owner_id)
-        self.channel = channel
-        regions = [
-        ("🇺🇸 US West", "us-west"), 
-        ("🇺🇸 US East", "us-east"), 
-        ("🇺🇸 US Central", "us-central"),
-        ("🇺🇸 US South", "us-south"),
-        ("🇸🇬 Singapore", "singapore"), 
-        ("🇮🇳 India", "india"), 
-        ("🇧🇷 Brazil", "brazil"),
-        ("🇦🇺 Sydney", "sydney"), 
-        ("🇪🇺 Rotterdam", "rotterdam"),
-        ("🇯🇵 Japan", "japan"), 
-        ("🇰🇷 South Korea", "south-korea"), 
-        ("🇿🇦 South Africa", "southafrica"),
-        ("🇭🇰 Hong Kong", "hongkong"),
-        ]
-        for i, (label, region) in enumerate(regions):
-            self.add_item(RegionSelectButton(label, region, i // 3))
-
-
-class RegionSelectButton(Button):
-    def __init__(self, label: str, region: str, row: int):
-        super().__init__(label=label, style=discord.ButtonStyle.secondary, custom_id=f"region_{region}", row=row)
-        self.region = region
-
-    async def callback(self, interaction: discord.Interaction):
-        view: RegionView = self.view
-        await interaction.response.defer(ephemeral=True)
-        try:
-            await view.channel.edit(rtc_region=self.region)
-            await interaction.followup.send(f"🌐 Voice region set to {self.label}!", ephemeral=True)
-        except Exception as e:
-            print(f"Region change error: {e}")
-            await interaction.followup.send("❌ Failed to change voice region! This region might not be available.", ephemeral=True)
-
-
+# --------------------- Transfer / Claim / Delete ---------------------
 class TransferButton(Button):
     def __init__(self):
-        super().__init__(label="🔄 Transfer", style=discord.ButtonStyle.secondary, custom_id="transfer", row=2)
+        super().__init__(label="🔄 Transfer", style=discord.ButtonStyle.secondary, custom_id="transfer", row=1)
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -575,7 +542,7 @@ class ClaimButton(Button):
             label="🎯 Claim",
             style=discord.ButtonStyle.secondary,
             custom_id="claim",
-            row=2
+            row=1
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -616,21 +583,35 @@ class ClaimButton(Button):
                         ephemeral=True
                     )
 
-                # --- Case 2: Check 10-second rule using the tracking from TempVoice cog
-                cog = view.cog
-                leave_time = cog.owner_leave_times.get(channel.id, 0)
-                current_time = time.time()
-                time_since_leave = current_time - leave_time
+                # --- Case 2: Check if channel has any owner at all (FIRST COME, FIRST SERVE LOGIC)
+                # We just need to know if there's NO owner present, not wait for 10 seconds
                 
-                if time_since_leave < 10:
-                    remaining = 10 - time_since_leave
+                # Get all current members who are not the original owner
+                current_members = [m for m in channel.members if m.id != owner_id]
+                
+                if not current_members:
                     return await interaction.followup.send(
-                        f"⏳ The owner left {time_since_leave:.1f} seconds ago.\n"
-                        f"Please wait {remaining:.1f} more seconds before claiming this channel.",
+                        "❌ No one is in the VC to claim it!",
                         ephemeral=True
                     )
-
-                # --- Case 3: Owner has been gone for at least 10 seconds, proceed with claim
+                
+                # Check if someone else is already trying to claim (in progress)
+                cog = view.cog
+                current_time = time.time()
+                claim_lock_key = f"claim_{channel.id}"
+                
+                # Simple rate limiting: 2 seconds between claim attempts
+                last_claim_attempt = cog.creation_cooldowns.get(claim_lock_key, 0)
+                if current_time - last_claim_attempt < 2:
+                    return await interaction.followup.send(
+                        "⏳ Someone else is attempting to claim this channel. Please wait...",
+                        ephemeral=True
+                    )
+                
+                # Set claim lock
+                cog.creation_cooldowns[claim_lock_key] = current_time
+                
+                # FIRST COME, FIRST SERVE: Update ownership immediately
                 await db.execute(
                     "UPDATE voiceChannel SET userID = ? WHERE voiceID = ?",
                     (interaction.user.id, channel.id)
@@ -651,48 +632,87 @@ class ClaimButton(Button):
                     
                     # Send notification
                     embed = discord.Embed(
-                        title="🎯 VC Ownership Transferred",
+                        title="🎯 VC Ownership Claimed",
                         description=f"{interaction.user.mention} has claimed ownership of this voice channel!\n"
-                                  f"The original owner was absent for more than 10 seconds.",
+                                  f"First come, first served!",
                         color=discord.Color.green()
                     )
                     await channel.send(embed=embed)
                     
                     await interaction.followup.send(
-                        f"✅ You have successfully claimed ownership of {channel.mention}!",
+                        f"✅ You have successfully claimed ownership of {channel.mention}!\n"
+                        f"First come, first served!",
                         ephemeral=True
                     )
                 except Exception as e:
                     print(f"Error during claim transfer: {e}")
+                    # Rollback on error
+                    await db.execute(
+                        "UPDATE voiceChannel SET userID = ? WHERE voiceID = ?",
+                        (owner_id, channel.id)
+                    )
+                    await db.commit()
                     await interaction.followup.send(
                         f"❌ Failed to complete claim. Please try again.",
                         ephemeral=True
                     )
+                finally:
+                    # Clear claim lock
+                    cog.creation_cooldowns.pop(claim_lock_key, None)
                 return
 
-            # --- Case 4: No owner entry, create new
+            # --- Case 3: No owner entry in DB, create new (first come, first serve)
             limit = channel.user_limit
-            await db.execute(
-                "INSERT INTO voiceChannel (userID, voiceID, channelName, channelLimit, guildID) VALUES (?, ?, ?, ?, ?)",
-                (interaction.user.id, channel.id, channel.name, limit, interaction.guild.id)
-            )
-            await db.commit()
             
-            # Give owner manage permissions
-            await channel.set_permissions(interaction.user, manage_channels=True)
+            # Check if someone else is already trying to claim
+            cog = view.cog
+            current_time = time.time()
+            claim_lock_key = f"claim_{channel.id}"
             
-            # Send notification
-            embed = discord.Embed(
-                title="🎯 VC Ownership Claimed",
-                description=f"{interaction.user.mention} has claimed ownership of this voice channel!",
-                color=discord.Color.blue()
-            )
-            await channel.send(embed=embed)
-
-        await interaction.followup.send(
-            f"✅ You have successfully claimed {channel.mention}!",
-            ephemeral=True
-        )
+            last_claim_attempt = cog.creation_cooldowns.get(claim_lock_key, 0)
+            if current_time - last_claim_attempt < 2:
+                return await interaction.followup.send(
+                    "⏳ Someone else is attempting to claim this channel. Please wait...",
+                    ephemeral=True
+                )
+            
+            # Set claim lock
+            cog.creation_cooldowns[claim_lock_key] = current_time
+            
+            try:
+                # Insert new owner
+                await db.execute(
+                    "INSERT INTO voiceChannel (userID, voiceID, channelName, channelLimit, guildID, vcType, channelNumber) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (interaction.user.id, channel.id, channel.name, limit, interaction.guild.id, "Other", 1)
+                )
+                await db.commit()
+                
+                # Give owner manage permissions
+                await channel.set_permissions(interaction.user, manage_channels=True)
+                
+                # Send notification
+                embed = discord.Embed(
+                    title="🎯 VC Ownership Claimed",
+                    description=f"{interaction.user.mention} has claimed ownership of this voice channel!\n"
+                              f"First come, first served!",
+                    color=discord.Color.blue()
+                )
+                await channel.send(embed=embed)
+                
+                await interaction.followup.send(
+                    f"✅ You have successfully claimed {channel.mention}!\n"
+                    f"First come, first served!",
+                    ephemeral=True
+                )
+            except Exception as e:
+                print(f"Error during claim creation: {e}")
+                await interaction.followup.send(
+                    f"❌ Failed to claim channel. Please try again.",
+                    ephemeral=True
+                )
+            finally:
+                # Clear claim lock
+                cog.creation_cooldowns.pop(claim_lock_key, None)
 
 
 class DeleteButton(Button):
