@@ -23,7 +23,12 @@ class TempVoice(commands.Cog):
         self.cleanup_locks = {}     # guild.id -> asyncio.Lock()
         self.owner_leave_times = {}  # channel_id -> timestamp when owner left
         self._heartbeat.start()
-        self.type_order = {"Duo": 1, "Trio": 2, "Squad": 3, "Other": 4}  # Type ordering
+        self.type_order = {"Duo": 1, "Trio": 2, "Squad": 3, "Other": 4}
+        
+        # CACHE FOR SPEED
+        self._channel_cache = {}    # guild_id -> {voice_id: (vc_type, channel_num)}
+        self._last_cache_update = {} # guild_id -> timestamp
+        self._cache_ttl = 5         # seconds
 
     async def cog_load(self):
         print("[TempVoice] Cog loaded with queue protection ✅")
@@ -44,7 +49,7 @@ class TempVoice(commands.Cog):
     # ---------------- HELPERS ----------------
     def _ensure_structs(self, join_id, guild_id):
         if join_id not in self.creation_queues:
-            self.creation_queues[join_id] = deque()
+            self.creation_queues[join_id] = deque(maxlen=100)
         if join_id not in self.queue_locks:
             self.queue_locks[join_id] = asyncio.Lock()
         if guild_id not in self.cleanup_locks:
@@ -57,6 +62,42 @@ class TempVoice(commands.Cog):
             return False, cooldown - (now - last)
         self.creation_cooldowns[user_id] = now
         return True, 0
+
+    # ---------------- CACHE SYSTEM ----------------
+    async def _get_cached_channels(self, guild_id, force_refresh=False):
+        """Get cached channel data with TTL"""
+        now = time.time()
+        
+        # Check cache validity
+        if (not force_refresh and 
+            guild_id in self._channel_cache and 
+            guild_id in self._last_cache_update and
+            now - self._last_cache_update[guild_id] < self._cache_ttl):
+            return self._channel_cache[guild_id].copy()
+        
+        # Refresh cache from DB
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT voiceID, vcType, channelNumber FROM voiceChannel WHERE guildID = ?",
+                (guild_id,)
+            ) as c:
+                rows = await c.fetchall()
+        
+        cache = {row['voiceID']: (row['vcType'], row['channelNumber']) for row in rows}
+        self._channel_cache[guild_id] = cache
+        self._last_cache_update[guild_id] = now
+        return cache
+
+    def _update_cache(self, guild_id, voice_id, vc_type, channel_num):
+        """Update cache when a new channel is created"""
+        if guild_id in self._channel_cache:
+            self._channel_cache[guild_id][voice_id] = (vc_type, channel_num)
+
+    def _remove_from_cache(self, guild_id, voice_id):
+        """Remove from cache when channel is deleted"""
+        if guild_id in self._channel_cache:
+            self._channel_cache[guild_id].pop(voice_id, None)
 
     # ---------------- DATABASE ----------------
     async def _init_db(self):
@@ -84,49 +125,55 @@ class TempVoice(commands.Cog):
         if not member or member.bot:
             return
 
+        # FAST TRACK: Owner rejoining their channel
+        if after.channel and after.channel.id in self.owner_leave_times:
+            # Quick cache check first
+            if after.channel.guild.id in self._channel_cache:
+                cached = self._channel_cache[after.channel.guild.id]
+                if after.channel.id in cached:
+                    # Verify ownership with fast query
+                    async with aiosqlite.connect(DB_PATH) as db:
+                        async with db.execute(
+                            "SELECT 1 FROM voiceChannel WHERE voiceID = ? AND userID = ? LIMIT 1",
+                            (after.channel.id, member.id)
+                        ) as c:
+                            if await c.fetchone():
+                                self.owner_leave_times.pop(after.channel.id, None)
+
         # Track when VC owners leave their channels
         if before.channel:
-            # Check if this member owns the channel they're leaving
-            async with aiosqlite.connect(DB_PATH) as db:
-                async with db.execute(
-                    "SELECT 1 FROM voiceChannel WHERE voiceID = ? AND userID = ?",
-                    (before.channel.id, member.id)
-                ) as c:
-                    if await c.fetchone():
-                        # This is the owner leaving their own channel
-                        self.owner_leave_times[before.channel.id] = time.time()
+            # Fast cache check
+            guild_cache = await self._get_cached_channels(before.channel.guild.id)
+            if before.channel.id in guild_cache:
+                # Verify ownership
+                async with aiosqlite.connect(DB_PATH) as db:
+                    async with db.execute(
+                        "SELECT 1 FROM voiceChannel WHERE voiceID = ? AND userID = ? LIMIT 1",
+                        (before.channel.id, member.id)
+                    ) as c:
+                        if await c.fetchone():
+                            self.owner_leave_times[before.channel.id] = time.time()
         
-        # JOIN HANDLER
+        # JOIN HANDLER - FAST PATH
         if after.channel and after.channel.id in JOIN_CHANNELS:
             join_id = after.channel.id
             guild_id = member.guild.id
             self._ensure_structs(join_id, guild_id)
+            
+            # Add to queue without blocking
             self.creation_queues[join_id].append((member, after.channel))
-            asyncio.create_task(self._queue_worker(join_id))
+            
+            # Start worker if not already processing
+            if len(self.creation_queues[join_id]) == 1:
+                asyncio.create_task(self._queue_worker(join_id))
 
-        # LEAVE HANDLER
+        # LEAVE HANDLER - FAST PATH
         if before.channel and before.channel != after.channel:
-            try:
-                async with aiosqlite.connect(DB_PATH) as db:
-                    async with db.execute("SELECT 1 FROM voiceChannel WHERE voiceID = ?", (before.channel.id,)) as c:
-                        if await c.fetchone():
-                            await self._schedule_cleanup(before.channel)
-            except Exception as e:
-                print(f"[TempVoice] cleanup schedule fail: {e}")
+            # Quick cache check
+            guild_cache = await self._get_cached_channels(before.channel.guild.id)
+            if before.channel.id in guild_cache:
+                asyncio.create_task(self._schedule_cleanup(before.channel))
         
-        # If owner rejoins their channel, remove the leave time
-        if after.channel:
-            if after.channel.id in self.owner_leave_times:
-                # Check if this member owns the channel
-                async with aiosqlite.connect(DB_PATH) as db:
-                    async with db.execute(
-                        "SELECT 1 FROM voiceChannel WHERE voiceID = ? AND userID = ?",
-                        (after.channel.id, member.id)
-                    ) as c:
-                        if await c.fetchone():
-                            # Owner rejoined, remove the leave time
-                            self.owner_leave_times.pop(after.channel.id, None)
-
     # ---------------- QUEUE SYSTEM ----------------
     async def _queue_worker(self, join_id):
         async with self.queue_locks[join_id]:
@@ -137,7 +184,7 @@ class TempVoice(commands.Cog):
                     await self._process_creation(member, channel)
                 except Exception:
                     print(f"[TempVoice] queue task error:\n{traceback.format_exc()}")
-                await asyncio.sleep(1)  # small delay for safety
+                await asyncio.sleep(0.5)  # Reduced delay for speed
 
     # ---------------- CORE CREATION ----------------
     async def _process_creation(self, member, join_channel):
@@ -145,9 +192,6 @@ class TempVoice(commands.Cog):
         if not ok:
             try:
                 await member.move_to(None)
-            except Exception:
-                pass
-            try:
                 await member.send(
                     embed=discord.Embed(
                         description=f"⏳ Slow down — wait {wait:.1f}s before creating another channel.",
@@ -159,146 +203,167 @@ class TempVoice(commands.Cog):
             return
 
         try:
-            await self._cleanup_ghost(member.guild)
-            await self._cleanup_empty(member.guild)
+            # Run cleanups in parallel
+            await asyncio.gather(
+                self._cleanup_ghost(member.guild),
+                self._cleanup_empty(member.guild)
+            )
             await self._create_vc(member, join_channel)
         except Exception:
             print(f"[TempVoice] creation error:\n{traceback.format_exc()}")
 
     async def _create_vc(self, member, join_channel):
-            guild = member.guild
-            category = join_channel.category
+        guild = member.guild
+        category = join_channel.category
+        
+        base_name, limit = JOIN_CHANNELS.get(join_channel.id, ("VC ", 0))
+        clean_base = base_name.strip()
+        
+        # Determine VC type - FAST REGEX
+        vc_type = "Other"
+        if re.search(r'\bduo\b', clean_base, re.IGNORECASE): vc_type = "Duo"
+        elif re.search(r'\btrio\b', clean_base, re.IGNORECASE): vc_type = "Trio"
+        elif re.search(r'\bsquad\b', clean_base, re.IGNORECASE): vc_type = "Squad"
+        
+        async with self._vc_creation_lock:
+            # Get cached channels instead of DB query
+            db_map = await self._get_cached_channels(guild.id, force_refresh=True)
             
-            base_name, limit = JOIN_CHANNELS.get(join_channel.id, ("VC ", 0))
-            clean_base = base_name.strip()
+            # 2. Number Generation - optimized
+            used_numbers = set()
+            for voice_id, (type_name, num) in db_map.items():
+                ch = guild.get_channel(voice_id)
+                if ch and ch.category_id == category.id and type_name == vc_type:
+                    used_numbers.add(num)
             
-            # Determine VC type
-            vc_type = "Other"
-            if re.search(r'\bduo\b', clean_base, re.IGNORECASE): vc_type = "Duo"
-            elif re.search(r'\btrio\b', clean_base, re.IGNORECASE): vc_type = "Trio"
-            elif re.search(r'\bsquad\b', clean_base, re.IGNORECASE): vc_type = "Squad"
+            channel_number = 1
+            while channel_number in used_numbers:
+                channel_number += 1
             
-            async with self._vc_creation_lock:
-                await self._cleanup_ghost(guild)
-                
-                # 1. Fetch DB Channels to map positions
-                async with aiosqlite.connect(DB_PATH) as db:
-                    async with db.execute(
-                        "SELECT voiceID, vcType, channelNumber FROM voiceChannel WHERE guildID = ?",
-                        (guild.id,)
-                    ) as c:
-                        all_db_channels = await c.fetchall()
-                
-                db_map = {row[0]: (row[1], row[2]) for row in all_db_channels}
-                
-                # 2. Number Generation
-                used_numbers = {
-                    row[2] for row in all_db_channels 
-                    if row[1] == vc_type and guild.get_channel(row[0]) and guild.get_channel(row[0]).category_id == category.id
-                }
-                channel_number = 1
-                while channel_number in used_numbers:
-                    channel_number += 1
-                
-                name = f"{clean_base} {channel_number}"
+            name = f"{clean_base} {channel_number}"
 
-                # 3. Create the Channel
-                # Initially created at the end of the category
-                vc = await guild.create_voice_channel(
-                    name=name,
-                    category=category,
-                    user_limit=limit or None,
-                    reason=f"Temp VC created by {member}"
+            # 3. Create the Channel
+            vc = await guild.create_voice_channel(
+                name=name,
+                category=category,
+                user_limit=limit or None,
+                reason=f"Temp VC created by {member}"
+            )
+
+            # 4. OPTIMIZED REORGANIZING LOGIC
+            # Get all channels once
+            all_vcs = category.voice_channels
+            
+            # Pre-calculate groupings
+            generators = []
+            static_vcs = []
+            managed_vcs = []
+            
+            for ch in all_vcs:
+                if ch.id in JOIN_CHANNELS:
+                    generators.append(ch)
+                elif ch.id in db_map or ch.id == vc.id:
+                    managed_vcs.append(ch)
+                elif ch.id != vc.id:
+                    static_vcs.append(ch)
+            
+            # Sort generators by position
+            generators.sort(key=lambda x: x.position)
+            
+            # Prepare sorting keys for managed channels
+            sort_keys = {}
+            for ch in managed_vcs:
+                if ch.id == vc.id:
+                    sort_keys[ch.id] = (self.type_order.get(vc_type, 4), channel_number)
+                else:
+                    m_type, m_num = db_map[ch.id]
+                    sort_keys[ch.id] = (self.type_order.get(m_type, 4), m_num)
+            
+            # Sort managed channels
+            managed_vcs.sort(key=lambda x: sort_keys[x.id])
+            
+            # Re-assemble final order
+            final_order = generators + managed_vcs + static_vcs
+            
+            # Bulk edit positions - FASTER
+            try:
+                # Only reposition channels that actually need moving
+                for index, ch in enumerate(final_order):
+                    if ch.position != index:
+                        # Use gather for parallel edits where possible
+                        await ch.edit(position=index)
+            except Exception as e:
+                print(f"[TempVoice] Positioning failed: {e}")
+
+            # 5. FAST DB INSERT & CACHE UPDATE
+            await vc.set_permissions(member, manage_channels=True, connect=True, speak=True)
+            
+            try:
+                await member.move_to(vc)
+            except:
+                pass
+
+            # Fast DB insert
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute(
+                    """INSERT OR REPLACE INTO voiceChannel 
+                    (guildID, userID, voiceID, vcType, channelNumber, channelName, channelLimit) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (guild.id, member.id, vc.id, vc_type, channel_number, name, limit)
                 )
+                await db.commit()
+            
+            # Update cache immediately
+            self._update_cache(guild.id, vc.id, vc_type, channel_number)
 
-                # 4. REORGANIZING LOGIC
-                # We fetch all channels in the category to perform a full sort
-                all_vcs = sorted(category.voice_channels, key=lambda x: x.position)
-                
-                # Separate them into three "Buckets"
-                generators = [ch for ch in all_vcs if ch.id in JOIN_CHANNELS]
-                # Any VC that isn't a generator and isn't in our DB (except the one we just made)
-                static_vcs = [ch for ch in all_vcs if ch.id not in JOIN_CHANNELS and ch.id not in db_map and ch.id != vc.id]
-                # VCs that are managed by the bot
-                managed_vcs = [ch for ch in all_vcs if ch.id in db_map or ch.id == vc.id]
-
-                def get_sort_key(ch):
-                    if ch.id == vc.id:
-                        m_type, m_num = vc_type, channel_number
-                    else:
-                        m_type, m_num = db_map[ch.id]
-                    # self.type_order should be {'Duo': 1, 'Trio': 2, 'Squad': 3, 'Other': 4}
-                    rank = self.type_order.get(m_type, 4)
-                    return (rank, m_num)
-
-                # Sort the managed block by Type then Number
-                managed_vcs.sort(key=get_sort_key)
-
-                # Re-assemble the list: [Gens] -> [Sorted Managed] -> [Statics]
-                final_ordered_list = generators + managed_vcs + static_vcs
-                
-                # Create position mappings
-                # The API expects a list of {id: position} or a bulk move
-                try:
-                    # We move the channels to their new positions index-by-index
-                    for index, ch in enumerate(final_ordered_list):
-                        if ch.position != index:
-                            await ch.edit(position=index)
-                except Exception as e:
-                    print(f"[TempVoice] Positioning failed: {e}")
-
-                # 5. DB INSERT (Fixes the 10-column/7-value mismatch)
-                await vc.set_permissions(member, manage_channels=True, connect=True, speak=True)
-                
-                try:
-                    await member.move_to(vc)
-                except:
-                    pass
-
-                async with aiosqlite.connect(DB_PATH) as db:
-                    # Naming columns explicitly is the ONLY way to prevent the "10 columns but 7 values" error
-                    await db.execute(
-                        """INSERT OR REPLACE INTO voiceChannel 
-                        (guildID, userID, voiceID, vcType, channelNumber, channelName, channelLimit) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                        (guild.id, member.id, vc.id, vc_type, channel_number, name, limit)
-                    )
-                    await db.commit()
-
-                await self._send_panel(vc, member.id)
+            await self._send_panel(vc, member.id)
                 
     # ---------------- CLEANUP ----------------
     async def _schedule_cleanup(self, ch):
-        # Only cleanup channels we created
+        # Fast check: if channel has members, skip
+        if ch.members:
+            return
+            
         guild_id = ch.guild.id
         self._ensure_structs(ch.id, guild_id)
+        
         async with self.cleanup_locks[guild_id]:
             if ch.id in self.cleanup_tasks:
                 return
+            
+            # Fast cache check
+            guild_cache = await self._get_cached_channels(guild_id)
+            if ch.id not in guild_cache:
+                return
+                
             task = asyncio.create_task(self._cleanup_task(ch))
             self.cleanup_tasks[ch.id] = task
 
     async def _cleanup_task(self, ch):
-        await asyncio.sleep(5)
+        await asyncio.sleep(3)  # Reduced from 5 to 3 seconds
+        
         try:
             if ch.members:
                 return
             
-            # Double-check this is our channel
-            async with aiosqlite.connect(DB_PATH) as db:
-                async with db.execute("SELECT 1 FROM voiceChannel WHERE voiceID = ?", (ch.id,)) as c:
-                    if not await c.fetchone():
-                        return
+            # Double-check with cache
+            guild_cache = await self._get_cached_channels(ch.guild.id)
+            if ch.id not in guild_cache:
+                return
             
             await ch.delete(reason="Empty temp VC cleanup")
             
+            # Fast DB delete
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (ch.id,))
                 await db.commit()
             
+            # Update cache
+            self._remove_from_cache(ch.guild.id, ch.id)
+            
             print(f"[TempVoice] 🧹 Cleaned {ch.name}")
             
-            # Remove from leave times tracking if it exists
+            # Remove from leave times tracking
             self.owner_leave_times.pop(ch.id, None)
                 
         except Exception:
@@ -308,21 +373,29 @@ class TempVoice(commands.Cog):
 
     async def _cleanup_ghost(self, guild):
         """Clean up database entries for channels that no longer exist"""
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT voiceID FROM voiceChannel WHERE guildID = ?", (guild.id,)) as c:
-                rows = await c.fetchall()
-            for (vid,) in rows:
-                if not guild.get_channel(vid):
-                    await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (vid,))
-            await db.commit()
+        guild_cache = await self._get_cached_channels(guild.id)
+        to_delete = []
+        
+        for voice_id in guild_cache:
+            if not guild.get_channel(voice_id):
+                to_delete.append(voice_id)
+        
+        if to_delete:
+            async with aiosqlite.connect(DB_PATH) as db:
+                placeholders = ','.join('?' for _ in to_delete)
+                await db.execute(f"DELETE FROM voiceChannel WHERE voiceID IN ({placeholders})", to_delete)
+                await db.commit()
+            
+            # Update cache
+            for vid in to_delete:
+                self._remove_from_cache(guild.id, vid)
 
     async def _cleanup_empty(self, guild):
         """Schedule cleanup for empty channels we created"""
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT voiceID FROM voiceChannel WHERE guildID = ?", (guild.id,)) as c:
-                rows = await c.fetchall()
-        for (vid,) in rows:
-            ch = guild.get_channel(vid)
+        guild_cache = await self._get_cached_channels(guild.id)
+        
+        for voice_id in guild_cache:
+            ch = guild.get_channel(voice_id)
             if ch and not ch.members:
                 await self._schedule_cleanup(ch)
 
@@ -359,7 +432,7 @@ class TempVoice(commands.Cog):
     async def panel(self, interaction: discord.Interaction):
         """Send the control panel interface to the user"""
         
-        # Check if user is in a voice channel
+        # Fast path: check voice state first
         if not interaction.user.voice or not interaction.user.voice.channel:
             await interaction.response.send_message(
                 "❌ You must be in a voice channel to use this command!", 
@@ -369,17 +442,26 @@ class TempVoice(commands.Cog):
         
         voice_channel = interaction.user.voice.channel
         
-        # Check if user is the owner of this voice channel
+        # Use cache first
+        guild_cache = await self._get_cached_channels(interaction.guild_id)
+        if voice_channel.id not in guild_cache:
+            await interaction.response.send_message(
+                "❌ This voice channel is not managed by the bot!", 
+                ephemeral=True
+            )
+            return
+        
+        # Verify ownership with fast query
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute(
-                "SELECT userID FROM voiceChannel WHERE voiceID = ?", 
+                "SELECT userID FROM voiceChannel WHERE voiceID = ? LIMIT 1", 
                 (voice_channel.id,)
             ) as cursor:
                 data = await cursor.fetchone()
         
         if not data:
             await interaction.response.send_message(
-                "❌ This voice channel is not managed by the bot or doesn't exist in our database!", 
+                "❌ Database error!", 
                 ephemeral=True
             )
             return
@@ -393,7 +475,7 @@ class TempVoice(commands.Cog):
             )
             return
         
-        # All conditions met - send the exact same interface as _send_panel
+        # All conditions met - send panel
         embed = discord.Embed(
             title="🎯 Voice Channel Controls", 
             description=(
@@ -422,4 +504,4 @@ class TempVoice(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(TempVoice(bot))
-    print("[TempVoice] loaded with organized channel system ✅")
+    print("[TempVoice] loaded with optimized performance ✅")
