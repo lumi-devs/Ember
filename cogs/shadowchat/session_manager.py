@@ -171,13 +171,10 @@ class SessionManager:
             self.user_to_session[user2.id] = session_id
             
             # Send welcome messages
+
             await self._send_welcome_messages(session, user1, user2)
-            
-            # Send DMs to users
-            await self._send_match_dms(session, user1, user2)
-            
-            # Log session creation
             await self._log_session_creation(session, user1, user2)
+            await self._send_match_dms(session, user1, user2)
             
             print(f"[Shadow Chat] ✓ Created session {session_id} for {user1.display_name} and {user2.display_name}")
             return session
