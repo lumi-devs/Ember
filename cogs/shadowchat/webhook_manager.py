@@ -66,6 +66,7 @@ class WebhookManager:
             "***WEBHOOK_REMOVED***",
             "***WEBHOOK_REMOVED***",
             "***WEBHOOK_REMOVED***",
+            "***WEBHOOK_REMOVED***"
 
         ]
         
