@@ -80,15 +80,24 @@ class LogManagerCog(commands.Cog):
                 timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 
                 # Write to log file with newline
-                with open(self.cog.log_file, 'a', encoding='utf-8') as f:
-                    f.write(f"{timestamp} | PRINT | {line}\n")
+                try:
+                    with open(self.cog.log_file, 'a', encoding='utf-8') as f:
+                        f.write(f"{timestamp} | PRINT | {line}\n")
+                except Exception:
+                    pass # Fail silently on file errors to prevent loops
                 
                 # Trim log file if needed
                 self.cog.trim_log_file()
                 
                 # Write to original stream with newline
-                self.original_stream.write(f"{line}\n")
-                self.original_stream.flush()
+                # FIX: Wrap this in try/except to handle disconnected terminals
+                try:
+                    self.original_stream.write(f"{line}\n")
+                    self.original_stream.flush()
+                except OSError:
+                    # Terminal is disconnected/closed (Errno 5). 
+                    # We ignore this because we already logged to the file.
+                    pass
             
             def flush(self):
                 # Flush any remaining buffer
