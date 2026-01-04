@@ -38,7 +38,7 @@ class GitHubSync(commands.Cog):
         try:
             self.github = await asyncio.to_thread(lambda: Github(GITHUB_TOKEN))
             self.repo = await asyncio.to_thread(lambda: self.github.get_repo(GITHUB_REPO))
-            logging.info("✅ GitHub connection initialized")
+            print("✅ GitHub connection initialized")
         except Exception as e:
             logging.error(f"❌ Failed to initialize GitHub: {e}")
             self.repo = None
@@ -63,7 +63,7 @@ class GitHubSync(commands.Cog):
         if not all_files:
             return
             
-        logging.info(f"⬆ Uploading {len(all_files)} files to GitHub...")
+        print(f"⬆ Uploading {len(all_files)} files to GitHub...")
         
         for file_path in all_files:
             try:
@@ -94,12 +94,12 @@ class GitHubSync(commands.Cog):
                         f"Add {rel_path}",
                         content_bytes
                     )
-                    logging.info(f"  ✅ Created: {rel_path}")
+                    print(f"  ✅ Created: {rel_path}")
                     
             except Exception as e:
-                logging.error(f"  ❌ Failed {file_path}: {e}")
+                print(f"  ❌ Failed {file_path}: {e}")
         
-        logging.info("✅ All files uploaded!")
+        print("✅ All files uploaded!")
 
     async def upload_all_files(self):
         """Async wrapper for upload_all_files_sync."""

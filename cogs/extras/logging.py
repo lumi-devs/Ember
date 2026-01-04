@@ -32,6 +32,8 @@ class LogManagerCog(commands.Cog):
     
     def setup_logging(self):
         """Set up logging to capture all bot output."""
+        logging.raiseExceptions = False  # <--- ADD THIS LINE
+        
         # Create a custom handler that writes to our log file
         self.file_handler = logging.FileHandler(self.log_file, encoding='utf-8')
         self.file_handler.setLevel(logging.INFO)
