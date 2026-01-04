@@ -6,12 +6,23 @@ import traceback
 import time
 import json
 import os
+import logging
+from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from typing import Dict, List, Tuple
 
 class SmartLoungeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        
+        # --- LOGGING SETUP (Fixes Errno 5) ---
+        self.logger = logging.getLogger('SmartLounge')
+        self.logger.setLevel(logging.INFO)
+        # Create a file handler that rotates logs (max 5MB, keeps 2 backups)
+        handler = RotatingFileHandler('lounge.log', maxBytes=5*1024*1024, backupCount=2, encoding='utf-8')
+        handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        if not self.logger.handlers:
+            self.logger.addHandler(handler)
         
         # --- CONFIGURATION ---
         self.base_lounge_id = 1394677032922648747  # Lounge 2 (Permanent Base)
@@ -63,7 +74,7 @@ class SmartLoungeCog(commands.Cog):
             else:
                 return default_stats
         except Exception as e:
-            print(f"⚠️ Error loading stats from JSON: {e}")
+            self.logger.error(f"⚠️ Error loading stats from JSON: {e}")
             return default_stats
 
     def save_stats(self):
@@ -81,7 +92,7 @@ class SmartLoungeCog(commands.Cog):
                 json.dump(stats_to_save, f, indent=2)
             return True
         except Exception as e:
-            print(f"❌ Error saving stats to JSON: {e}")
+            self.logger.error(f"❌ Error saving stats to JSON: {e}")
             return False
 
     def save_stats_async(self):
@@ -101,11 +112,11 @@ class SmartLoungeCog(commands.Cog):
             # Atomic rename
             os.replace(temp_file, self.data_file)
         except Exception as e:
-            print(f"❌ Async save error: {e}")
+            self.logger.error(f"❌ Async save error: {e}")
 
     @commands.Cog.listener()
     async def on_ready(self):
-        print(f"✅ Smart Lounge System Ready (2-min heartbeat). Data saved to: {self.data_file}")
+        self.logger.info(f"✅ Smart Lounge System Ready (2-min heartbeat). Data saved to: {self.data_file}")
         if not self.manage_lounges_loop.is_running():
             self.manage_lounges_loop.start()
 
@@ -115,7 +126,7 @@ class SmartLoungeCog(commands.Cog):
             self.manage_lounges_loop.cancel()
         # Save stats on unload
         self.save_stats()
-        print(f"🛑 Smart Lounge System stopped. Stats saved.")
+        self.logger.info(f"🛑 Smart Lounge System stopped. Stats saved.")
 
     def get_lounge_number(self, channel_name):
         match = self.name_pattern.search(channel_name)
@@ -175,15 +186,16 @@ class SmartLoungeCog(commands.Cog):
             self.stats['errors'].append(error_msg[:200])  # Keep only first 200 chars
             if len(self.stats['errors']) > 10:  # Keep only last 10 errors
                 self.stats['errors'] = self.stats['errors'][-10:]
-            print(f"❌ Smart Lounge loop error: {e}")
-            traceback.print_exc()
+            
+            # Use logger instead of print to avoid IO Error
+            self.logger.error(f"❌ Smart Lounge loop error: {e}", exc_info=True)
         finally:
             # Always try to save stats after each loop execution
             try:
                 # Save stats asynchronously to prevent blocking
                 await asyncio.to_thread(self.save_stats_async)
             except Exception as e:
-                print(f"⚠️ Could not save stats: {e}")
+                self.logger.warning(f"⚠️ Could not save stats: {e}")
 
     async def _manage_lounges(self):
         """Core lounge management logic."""
@@ -232,7 +244,7 @@ class SmartLoungeCog(commands.Cog):
                 highest_channel = lounges[-1]['channel']
                 next_num = highest_num + 1
                 
-                print(f"📈 All lounges busy. Creating Lounge {next_num}...")
+                self.logger.info(f"📈 All lounges busy. Creating Lounge {next_num}...")
                 
                 # Create directly below the highest channel
                 success = await self.create_lounge(category, next_num, highest_channel.position + 1)
@@ -272,7 +284,7 @@ class SmartLoungeCog(commands.Cog):
                 spares_to_delete.sort(key=lambda x: x['num'], reverse=True)
 
                 for item in spares_to_delete:
-                    print(f"📉 Excess Spares: Deleting Lounge {item['num']} (Keeping Lounge {spare_to_keep['num']})")
+                    self.logger.info(f"📉 Excess Spares: Deleting Lounge {item['num']} (Keeping Lounge {spare_to_keep['num']})")
                     success = await self.delete_lounge_safe(item['channel'])
                     if success:
                         self.stats['total_deletions'] += 1
@@ -288,15 +300,14 @@ class SmartLoungeCog(commands.Cog):
                 position=position,
                 reason=f"Lounge Logic: Created Lounge {number}"
             )
-            print(f"✅ Created Lounge {number}")
+            self.logger.info(f"✅ Created Lounge {number}")
             return True
         except discord.Forbidden:
-            print(f"❌ Permission denied to create Lounge {number}")
+            self.logger.warning(f"❌ Permission denied to create Lounge {number}")
         except discord.HTTPException as e:
-            print(f"❌ HTTP error creating Lounge {number}: {e}")
+            self.logger.error(f"❌ HTTP error creating Lounge {number}: {e}")
         except Exception as e:
-            print(f"❌ Error creating lounge {number}: {e}")
-            traceback.print_exc()
+            self.logger.error(f"❌ Error creating lounge {number}: {e}", exc_info=True)
         return False
 
     async def delete_lounge_safe(self, channel):
@@ -309,19 +320,18 @@ class SmartLoungeCog(commands.Cog):
             # Final "Last Second" check to make sure no one just joined
             if len(channel.members) == 0:
                 await channel.delete(reason="Lounge Logic: Excess Empty Room")
-                print(f"✅ Deleted Lounge {self.get_lounge_number(channel.name)}")
+                self.logger.info(f"✅ Deleted Lounge {self.get_lounge_number(channel.name)}")
                 return True
             else:
-                print(f"⚠️ Lounge {self.get_lounge_number(channel.name)} has users, skipping deletion")
+                self.logger.info(f"⚠️ Lounge {self.get_lounge_number(channel.name)} has users, skipping deletion")
                 return False
         except discord.NotFound:
             return False  # Already deleted
         except discord.Forbidden:
-            print(f"❌ Permission denied to delete Lounge {self.get_lounge_number(channel.name)}")
+            self.logger.warning(f"❌ Permission denied to delete Lounge {self.get_lounge_number(channel.name)}")
             return False
         except Exception as e:
-            print(f"❌ Error deleting channel: {e}")
-            traceback.print_exc()
+            self.logger.error(f"❌ Error deleting channel: {e}", exc_info=True)
             return False
 
     @manage_lounges_loop.before_loop
@@ -332,7 +342,7 @@ class SmartLoungeCog(commands.Cog):
     @commands.has_permissions(manage_channels=True)
     async def lounge_stats(self, ctx: commands.Context):
         """
-        📊 Shows EVERY FUCKIN STAT regarding the Smart Lounge system.
+        📊 Shows EVERY STAT regarding the Smart Lounge system.
         Only usable by moderators.
         """
         # Get current state
@@ -355,7 +365,7 @@ class SmartLoungeCog(commands.Cog):
         # Create detailed embed
         embed = discord.Embed(
             title="📊 SMART LOUNGE SYSTEM STATISTICS",
-            description="EVERY FUCKIN STAT YOU COULD WANT",
+            description="Lounge Management Metrics",
             color=discord.Color.purple(),
             timestamp=datetime.now()
         )
@@ -498,7 +508,8 @@ class SmartLoungeCog(commands.Cog):
             await ctx.send("❌ I need `Embed Links` permission to show stats!")
         else:
             await ctx.send(f"❌ Error: {str(error)}")
-            traceback.print_exc()
+            # For command errors, print to log
+            self.logger.error(f"Command Error: {error}", exc_info=True)
 
 async def setup(bot):
     await bot.add_cog(SmartLoungeCog(bot))
