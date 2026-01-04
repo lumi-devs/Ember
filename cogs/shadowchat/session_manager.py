@@ -8,6 +8,8 @@ import datetime
 from typing import Optional, Tuple, List
 import discord
 
+from .permissions import RateLimiter
+
 from . import constants
 from .models import Database, ShadowSession
 from .utils import generate_session_id, format_thread_name, get_thread_by_id, generate_user_code
@@ -30,6 +32,8 @@ class SessionManager:
         
         # Task for periodic session cleanup
         self.cleanup_task: Optional[asyncio.Task] = None
+        self.session_end_limiter = RateLimiter(max_actions=3, per_seconds=60)
+        self.session_skip_limiter = RateLimiter(max_actions=2, per_seconds=30)
     
     async def initialize(self):
         """Load active sessions from database and start cleanup task."""
@@ -361,8 +365,13 @@ class SessionManager:
 
     async def skip_session(self, session_id: str, user_id: int) -> Tuple[bool, str]:
         """
-        Skip current partner - re-add clicking user to queue, end session for both.
+        Skip current partner with rate limiting.
         """
+        # Check rate limit for skipping
+        if await self.session_skip_limiter.is_rate_limited(user_id):
+            remaining = await self.session_skip_limiter.get_time_remaining(user_id)
+            return False, f"Please wait {remaining}s before skipping again."
+        
         session = await self.get_session(session_id)
         if not session:
             return False, "Session not found."
@@ -580,13 +589,20 @@ class SessionManager:
         except Exception as e:
             print(f"[Shadow Chat] Reveal notification error: {e}")
     
-    async def end_session(self, session_id: str, reason: str = "Session ended"):
+    async def end_session(self, session_id: str, reason: str = "Session ended") -> bool:
         """
-        End a session and clean up resources.
+        End a session and clean up resources with rate limiting.
         """
         session = await self.get_session(session_id)
         if not session:
             return False
+        
+        # Check rate limit for ending sessions (per user)
+        user_ids = [session.user1_id, session.user2_id]
+        for user_id in user_ids:
+            if await self.session_end_limiter.is_rate_limited(user_id):
+                # Log but continue (since this might be called by timeout)
+                print(f"[Shadow Chat] User {user_id} rate limited for session end")
         
         # Mark as inactive in database
         await self.db.end_session(session_id)

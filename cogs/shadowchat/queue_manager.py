@@ -11,7 +11,7 @@ import discord
 from . import constants
 from .models import Database, QueueEntry, ShadowSession
 from .utils import generate_session_id, format_thread_name
-from .permissions import AccessController
+from .permissions import AccessController, RateLimiter
 
 class QueueManager:
     """Manages the user queue and matchmaking with atomic operations."""
@@ -36,6 +36,9 @@ class QueueManager:
         # Session duration tracking for wait time estimation
         self.session_durations: List[int] = []
         self.avg_session_duration = 15  # Default 15 minutes
+
+        self.queue_join_limiter = RateLimiter(max_actions=3, per_seconds=60)
+        self.queue_leave_limiter = RateLimiter(max_actions=5, per_seconds=30)
     
     def _get_user_lock(self, user_id: int) -> asyncio.Lock:
         """Get or create a user-specific lock to prevent duplicate operations."""
@@ -75,6 +78,11 @@ class QueueManager:
         """
         async with self._get_user_lock(user.id):
             try:
+                # Check rate limit for joining queue
+                if await self.queue_join_limiter.is_rate_limited(user.id):
+                    remaining = await self.queue_join_limiter.get_time_remaining(user.id)
+                    return False, f"Please wait {remaining}s before joining the queue again.", 0, False
+                
                 # Check if user is banned
                 if await self.is_user_banned(user.id):
                     return False, "You are banned from using Shadow Chat.", 0, False
@@ -237,6 +245,8 @@ class QueueManager:
             
     async def remove_from_queue(self, user_id: int) -> bool:
         """Remove user from queue."""
+        if await self.queue_leave_limiter.is_rate_limited(user_id):
+            return False
         async with self.queue_lock:
             try:
                 cursor = await self.db.conn.execute("""
