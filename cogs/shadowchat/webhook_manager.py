@@ -27,21 +27,23 @@ class ManagedWebhook:
         self.assigned_avatar_key: Optional[str] = None
         
     async def reset_to_anonymous(self, avatar_bytes: Optional[bytes] = None):
-        """Reset webhook to anonymous state."""
-        try:
-            await self.webhook.edit(
-                name="Shadow",
-                avatar=avatar_bytes,
-                reason="Reset to anonymous for new session"
-            )
-            self.is_anonymous = True
+        # Only edit if it's not already anonymous
+        if not self.is_anonymous or self.current_avatar_bytes != avatar_bytes:
+            try:
+                await self.webhook.edit(
+                    name="Shadow",
+                    avatar=avatar_bytes,
+                    reason="Reset to anonymous for new session"
+                )
+                self.is_anonymous = True
+                self.revealed_user = None
+                self.current_avatar_bytes = avatar_bytes
+            except Exception as e:
+                print(f"[Webhook Manager] Failed to reset: {e}")
+                raise
+        else:
+            # Already anonymous, just clear the state without an API call
             self.revealed_user = None
-            self.current_avatar_bytes = avatar_bytes
-            #print(f"[Webhook Manager] Reset webhook {self.url[:50]}... to anonymous")
-        except Exception as e:
-            print(f"[Webhook Manager] Failed to reset webhook {self.url[:50]}...: {e}")
-            # If webhook is dead, mark it as unusable
-            raise
 
 class WebhookManager:
     """Manages webhooks using provided static URLs."""
@@ -367,36 +369,23 @@ class WebhookManager:
                 return False
     
     async def end_session(self, session_id: str):
-        """
-        Clean up session and reset webhooks for reuse.
-        """
         async with self._lock:
             if session_id not in self.session_webhooks:
                 return
             
             webhook1, webhook2 = self.session_webhooks[session_id]
             
-            # Reset both webhooks to anonymous
-            avatar1_bytes = self._get_random_avatar_bytes()
-            avatar2_bytes = self._get_random_avatar_bytes()
-            
-            await webhook1.reset_to_anonymous(avatar1_bytes)
-            await webhook2.reset_to_anonymous(avatar2_bytes)
-            
-            # Clear session assignment
+            # REMOVED: await webhook1.reset_to_anonymous(...) 
+            # Just clear the ID and return to pool
             webhook1.assigned_session_id = None
             webhook2.assigned_session_id = None
             
-            # Return webhooks to available pool
             if webhook1 not in self.available_webhooks:
                 self.available_webhooks.append(webhook1)
             if webhook2 not in self.available_webhooks:
                 self.available_webhooks.append(webhook2)
             
-            # Remove session mapping
             del self.session_webhooks[session_id]
-            
-            print(f"[Webhook Manager] Session {session_id} ended, webhooks reset and returned to pool")
     
     async def close(self):
         """Clean up resources."""

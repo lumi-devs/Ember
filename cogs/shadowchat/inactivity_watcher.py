@@ -74,6 +74,7 @@ class InactivityWatcher:
         tasks = []
         for session in sessions:
             tasks.append(self._process_single_session(session, now))
+            await asyncio.sleep(0.5)
         
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
