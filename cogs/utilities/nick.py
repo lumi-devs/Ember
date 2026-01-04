@@ -26,6 +26,10 @@ class NicknameChanger(commands.Cog):
                 return True
         return False
 
+    def has_admin_permissions(self, member):
+        """Check if a member has administrator permissions."""
+        return member.guild_permissions.administrator
+
     def get_hierarchy_level(self, member):
         """Get the hierarchy level of a member based on the 3 special roles."""
         role_ids = [role.id for role in member.roles]
@@ -54,7 +58,14 @@ class NicknameChanger(commands.Cog):
         executor_level = self.get_hierarchy_level(executor)
         target_level = self.get_hierarchy_level(target)
         
-        # If executor doesn't have any of the 3 special roles, deny
+        # If executor has administrator permission, allow (bypass all other checks)
+        if self.has_admin_permissions(executor):
+            # Still check if target has admin perms
+            if self.has_admin_permissions(target):
+                return False, "❌ You can't change the nickname of another **administrator**."
+            return True, ""
+        
+        # If executor doesn't have any of the 3 special roles AND not admin, deny
         if executor_level == 0:
             return False, "🚫 You don't have permission to use this command."
         
@@ -83,7 +94,7 @@ class NicknameChanger(commands.Cog):
         can_change, reason = self.can_change_nickname(ctx.author, member)
         if not can_change:
             embed = discord.Embed(description=reason, color=discord.Color.red())
-            return await ctx.reply(embed=embed, mention_author=False)  # Reply to command
+            return await ctx.reply(embed=embed, mention_author=False)
         
         # Check bot's ability to change the nickname
         if member.top_role.position >= ctx.guild.me.top_role.position:
@@ -91,7 +102,7 @@ class NicknameChanger(commands.Cog):
                 description="❌ I can't change the nickname of someone **equal to or higher** than my role.",
                 color=discord.Color.red()
             )
-            return await ctx.reply(embed=embed, mention_author=False)  # Reply to command
+            return await ctx.reply(embed=embed, mention_author=False)
         
         try:
             old_nick = member.nick or member.name
@@ -114,25 +125,30 @@ class NicknameChanger(commands.Cog):
             executor_level = self.get_hierarchy_level(ctx.author)
             role_names = {3: "Moderator", 2: "Helper", 1: "Chat Manager", 0: "Member"}
             
+            # Check if executor has admin permissions
+            executor_title = role_names[executor_level]
+            if self.has_admin_permissions(ctx.author):
+                executor_title = "Administrator"
+            
             embed.set_footer(
-                text=f"Changed by {ctx.author} ({role_names[executor_level]})", 
+                text=f"Changed by {ctx.author} ({executor_title})", 
                 icon_url=ctx.author.avatar.url if ctx.author.avatar else None
             )
-            await ctx.reply(embed=embed, mention_author=False)  # Reply to command
+            await ctx.reply(embed=embed, mention_author=False)
             
         except discord.Forbidden:
             embed = discord.Embed(
                 description="❌ I don't have permission to change that user's nickname.",
                 color=discord.Color.red()
             )
-            await ctx.reply(embed=embed, mention_author=False)  # Reply to command
+            await ctx.reply(embed=embed, mention_author=False)
             
         except discord.HTTPException:
             embed = discord.Embed(
                 description="⚠️ Something went wrong while trying to change the nickname.",
                 color=discord.Color.red()
             )
-            await ctx.reply(embed=embed, mention_author=False)  # Reply to command
+            await ctx.reply(embed=embed, mention_author=False)
 
     @change_nickname.error
     async def nick_error(self, ctx, error):
@@ -141,21 +157,21 @@ class NicknameChanger(commands.Cog):
                 description="❗ Usage:\n`.nick @user` → Reset nickname\n`.nick @user new_nick` → Change nickname",
                 color=discord.Color.orange()
             )
-            await ctx.reply(embed=embed, mention_author=False)  # Reply to command
+            await ctx.reply(embed=embed, mention_author=False)
             
         elif isinstance(error, commands.BadArgument):
             embed = discord.Embed(
                 description="❗ Couldn't find that user. Make sure you **mention them properly**.",
                 color=discord.Color.orange()
             )
-            await ctx.reply(embed=embed, mention_author=False)  # Reply to command
+            await ctx.reply(embed=embed, mention_author=False)
             
         else:
             embed = discord.Embed(
                 description="⚠️ An unexpected error occurred.",
                 color=discord.Color.red()
             )
-            await ctx.reply(embed=embed, mention_author=False)  # Reply to command
+            await ctx.reply(embed=embed, mention_author=False)
 
 async def setup(bot):
     await bot.add_cog(NicknameChanger(bot))
