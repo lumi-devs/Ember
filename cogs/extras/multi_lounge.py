@@ -198,98 +198,106 @@ class SmartLoungeCog(commands.Cog):
                 self.logger.warning(f"⚠️ Could not save stats: {e}")
 
     async def _manage_lounges(self):
-        """Core lounge management logic."""
-        self.stats['loop_executions'] += 1
-        
-        category, lounges = await self.get_lounge_state()
-        if not category or not lounges:
-            return
+            """Core lounge management logic."""
+            self.stats['loop_executions'] += 1
+            
+            category, lounges = await self.get_lounge_state()
+            if not category or not lounges:
+                return
 
-        # Update statistics
-        total_users = sum(l['count'] for l in lounges)
-        total_lounges = len(lounges)
-        
-        self.stats['avg_users_per_lounge'] = total_users / total_lounges if total_lounges > 0 else 0
-        
-        busy_lounges = sum(1 for l in lounges if l['count'] >= self.busy_threshold)
-        self.stats['busy_percentage'] = (busy_lounges / total_lounges * 100) if total_lounges > 0 else 0
-        
-        # Track peak users
-        if total_users > self.stats['peak_users']:
-            self.stats['peak_users'] = total_users
-            self.stats['peak_users_time'] = datetime.now()
+            # Update statistics
+            total_users = sum(l['count'] for l in lounges)
+            total_lounges = len(lounges)
+            
+            self.stats['avg_users_per_lounge'] = total_users / total_lounges if total_lounges > 0 else 0
+            
+            busy_lounges = sum(1 for l in lounges if l['count'] >= self.busy_threshold)
+            self.stats['busy_percentage'] = (busy_lounges / total_lounges * 100) if total_lounges > 0 else 0
+            
+            # Track peak users
+            if total_users > self.stats['peak_users']:
+                self.stats['peak_users'] = total_users
+                self.stats['peak_users_time'] = datetime.now()
 
-        # --- PHASE 1: CREATION (The "Fill the Holes" Logic) ---
-        
-        # Check: Are ALL lounges currently busy?
-        all_lounges_busy = all(l['count'] >= self.busy_threshold for l in lounges)
-        
-        # Check cooldown
-        current_time = time.time()
-        can_create = (current_time - self.last_creation_time) >= self.creation_cooldown
+            # --- PHASE 1: CREATION (The "Fill the Holes" Logic) ---
+            
+            # Check: Are ALL lounges currently busy?
+            all_lounges_busy = all(l['count'] >= self.busy_threshold for l in lounges)
+            
+            # Check cooldown
+            current_time = time.time()
+            can_create = (current_time - self.last_creation_time) >= self.creation_cooldown
 
-        if all_lounges_busy and can_create:
-            async with self.creation_lock:
-                # Double-check condition inside lock
-                category, lounges = await self.get_lounge_state()
-                if not lounges:
-                    return
+            if all_lounges_busy and can_create:
+                async with self.creation_lock:
+                    # Double-check condition inside lock
+                    category, lounges = await self.get_lounge_state()
+                    if not lounges:
+                        return
+                        
+                    all_lounges_busy = all(l['count'] >= self.busy_threshold for l in lounges)
+                    if not all_lounges_busy:
+                        return
                     
-                all_lounges_busy = all(l['count'] >= self.busy_threshold for l in lounges)
-                if not all_lounges_busy:
-                    return
-                
-                # All rooms are full. We need more space.
-                highest_num = lounges[-1]['num']
-                highest_channel = lounges[-1]['channel']
-                next_num = highest_num + 1
-                
-                self.logger.info(f"📈 All lounges busy. Creating Lounge {next_num}...")
-                
-                # Create directly below the highest channel
-                success = await self.create_lounge(category, next_num, highest_channel.position + 1)
-                if success:
-                    self.stats['total_creations'] += 1
-                    self.stats['last_creation_time'] = datetime.now()
-                    self.last_creation_time = current_time
-                return  # We created one, wait for next loop.
-
-        # --- PHASE 2: DELETION (The "Keep Lowest Spare" Logic) ---
-        
-        # Identify "Custom Spares" (Lounge 3+ that are completely empty)
-        custom_spares = [l for l in lounges if l['count'] == 0 and l['num'] > 2]
-
-        # We allow exactly 1 custom spare to exist (Lounge 3).
-        # If we have > 1, we must delete the extras.
-        if len(custom_spares) > 1:
-            async with self.deletion_lock:
-                # Re-check inside lock
-                category, lounges = await self.get_lounge_state()
-                if not lounges:
-                    return
+                    # All rooms are full. We need more space.
+                    highest_num = lounges[-1]['num']
+                    highest_channel_id = lounges[-1]['id'] # Get the ID
+                    next_num = highest_num + 1
                     
-                custom_spares = [l for l in lounges if l['count'] == 0 and l['num'] > 2]
-                if len(custom_spares) <= 1:
-                    return
-                
-                # Sort spares by number: [3, 4, 5]
-                custom_spares.sort(key=lambda x: x['num'])
-
-                # Logic: KEEP the lowest number (Index 0). DELETE the rest (Index 1+).
-                spare_to_keep = custom_spares[0]
-                spares_to_delete = custom_spares[1:] 
-                
-                # Sort deletion list from Highest -> Lowest (5, then 4)
-                # This prevents the discord list from jumping around weirdly.
-                spares_to_delete.sort(key=lambda x: x['num'], reverse=True)
-
-                for item in spares_to_delete:
-                    self.logger.info(f"📉 Excess Spares: Deleting Lounge {item['num']} (Keeping Lounge {spare_to_keep['num']})")
-                    success = await self.delete_lounge_safe(item['channel'])
+                    self.logger.info(f"📈 All lounges busy. Creating Lounge {next_num}...")
+                    
+                    # --- FIX: FORCE FETCH POSITION ---
+                    # We fetch the channel fresh from API to get the absolute real-time position
+                    try:
+                        fresh_highest_channel = await self.bot.fetch_channel(highest_channel_id)
+                        target_position = fresh_highest_channel.position + 1
+                    except:
+                        # Fallback to cached position if fetch fails
+                        target_position = lounges[-1]['channel'].position + 1
+                    
+                    # Create directly below the highest channel using the FRESH position
+                    success = await self.create_lounge(category, next_num, target_position)
                     if success:
-                        self.stats['total_deletions'] += 1
-                        self.stats['last_deletion_time'] = datetime.now()
-                    await asyncio.sleep(1)  # Safety delay
+                        self.stats['total_creations'] += 1
+                        self.stats['last_creation_time'] = datetime.now()
+                        self.last_creation_time = current_time
+                    return  # We created one, wait for next loop.
+
+            # --- PHASE 2: DELETION (The "Keep Lowest Spare" Logic) ---
+            
+            # Identify "Custom Spares" (Lounge 3+ that are completely empty)
+            custom_spares = [l for l in lounges if l['count'] == 0 and l['num'] > 2]
+
+            # We allow exactly 1 custom spare to exist (Lounge 3).
+            # If we have > 1, we must delete the extras.
+            if len(custom_spares) > 1:
+                async with self.deletion_lock:
+                    # Re-check inside lock
+                    category, lounges = await self.get_lounge_state()
+                    if not lounges:
+                        return
+                        
+                    custom_spares = [l for l in lounges if l['count'] == 0 and l['num'] > 2]
+                    if len(custom_spares) <= 1:
+                        return
+                    
+                    # Sort spares by number: [3, 4, 5]
+                    custom_spares.sort(key=lambda x: x['num'])
+
+                    # Logic: KEEP the lowest number (Index 0). DELETE the rest (Index 1+).
+                    spare_to_keep = custom_spares[0]
+                    spares_to_delete = custom_spares[1:] 
+                    
+                    # Sort deletion list from Highest -> Lowest (5, then 4)
+                    spares_to_delete.sort(key=lambda x: x['num'], reverse=True)
+
+                    for item in spares_to_delete:
+                        self.logger.info(f"📉 Excess Spares: Deleting Lounge {item['num']} (Keeping Lounge {spare_to_keep['num']})")
+                        success = await self.delete_lounge_safe(item['channel'])
+                        if success:
+                            self.stats['total_deletions'] += 1
+                            self.stats['last_deletion_time'] = datetime.now()
+                        await asyncio.sleep(1)  # Safety delay
 
     async def create_lounge(self, category, number, position):
         """Create a new lounge channel."""
