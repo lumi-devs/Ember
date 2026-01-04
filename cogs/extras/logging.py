@@ -124,9 +124,7 @@ class LogManagerCog(commands.Cog):
                     f.writelines(trimmed_lines)
                 
                 # Log the trimming action
-                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                with open(self.log_file, 'a', encoding='utf-8') as f:
-                    #f.write(f"{timestamp} | INFO | LogManager | Trimmed log file to last {self.max_lines} lines\n")
+
         
         except Exception as e:
             self.original_print(f"[Log Manager] Error trimming log: {e}")
@@ -313,9 +311,9 @@ class LogManagerCog(commands.Cog):
                     # Clear and add header
                     with open(self.cog.log_file, 'w', encoding='utf-8') as f:
                         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                        #f.write(f"{timestamp} | INFO | LogManager | Log file cleared by {interaction.user}\n")
-                        #f.write(f"{timestamp} | INFO | LogManager | Bot: {self.cog.bot.user.name} ({self.cog.bot.user.id})\n")
-                        #f.write("="*80 + "\n")
+                        f.write(f"{timestamp} | INFO | LogManager | Log file cleared by {interaction.user}\n")
+                        f.write(f"{timestamp} | INFO | LogManager | Bot: {self.cog.bot.user.name} ({self.cog.bot.user.id})\n")
+                        f.write("="*80 + "\n")
                     
                     # Disable buttons
                     for child in self.children:
