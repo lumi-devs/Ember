@@ -11,7 +11,6 @@ from .session_manager import SessionManager
 from .webhook_manager import WebhookManager
 from .utils import get_thread_by_id, create_reveal_embed, create_confirmation_buttons
 from . import constants
-from .permissions import RateLimiter
 
 class IdentityManager:
     """Manages identity reveal requests and confirmations."""
@@ -21,23 +20,41 @@ class IdentityManager:
         self.db = db
         self.session_manager = session_manager
         self.webhook_manager = webhook_manager
-        self.session_lock = asyncio.Lock()
-        # Add rate limiter for reveal requests
-        self.reveal_limiter = RateLimiter(max_actions=2, per_seconds=30)
+        self.session_lock=asyncio.Lock()
     
     async def request_reveal(self, user_id: int, session_id: str) -> Tuple[bool, Optional[str]]:
         """
         User requests to reveal their identity. Handles both initial request and confirmation.
         Returns: (success, message)
         """
-        # Check rate limit
-        if await self.reveal_limiter.is_rate_limited(user_id):
-            remaining = await self.reveal_limiter.get_time_remaining(user_id)
-            return False, f"Please wait {remaining}s before requesting reveal again."
-        
         session = await self.session_manager.get_session(session_id)
         if not session:
             return False, "Session not found."
+        async with self.session_lock:
+            if session.identities_revealed:
+                return False, "Identities are already revealed."
+            
+            # Determine current consent status
+            is_user1 = (user_id == session.user1_id)
+            current_consent = session.user1_consent if is_user1 else session.user2_consent
+            
+            if current_consent:
+                return False, "You've already requested/confirmed reveal."
+            
+            # Update Database and Cache
+            await self.db.update_reveal_consent(session_id, user_id, True)
+            if is_user1:
+                session.user1_consent = True
+            else:
+                session.user2_consent = True
+            
+            # Check Mutual Consent
+            if session.user1_consent and session.user2_consent:
+                return await self._perform_reveal(session)
+            else:
+                # Send request to partner asynchronously (fire and forget logic for speed, or await if critical)
+                asyncio.create_task(self._send_reveal_request(session, user_id))
+                return True, "Reveal request sent. Waiting for partner consent."
 
     # Alias confirm_reveal to request_reveal as logic is identical (idempotent)
     async def confirm_reveal(self, user_id: int, session_id: str) -> Tuple[bool, Optional[str]]:

@@ -8,8 +8,6 @@ import datetime
 from typing import Optional, Tuple, List
 import discord
 
-from .permissions import RateLimiter
-
 from . import constants
 from .models import Database, ShadowSession
 from .utils import generate_session_id, format_thread_name, get_thread_by_id, generate_user_code
@@ -32,8 +30,6 @@ class SessionManager:
         
         # Task for periodic session cleanup
         self.cleanup_task: Optional[asyncio.Task] = None
-        self.session_end_limiter = RateLimiter(max_actions=3, per_seconds=60)
-        self.session_skip_limiter = RateLimiter(max_actions=2, per_seconds=30)
     
     async def initialize(self):
         """Load active sessions from database and start cleanup task."""
@@ -143,11 +139,12 @@ class SessionManager:
                 return None
             
             # Create webhooks
-            webhook1, webhook1_name = await self.webhook_manager.create_webhook(thread1, user2)
-            webhook2, webhook2_name = await self.webhook_manager.create_webhook(thread2, user1)
+            webhook1_url, webhook2_url = await self.webhook_manager.assign_webhooks_for_session(session_id)
             
-            if not webhook1 or not webhook2:
-                print(f"[Shadow Chat] Failed to create webhooks for session {session_id}")
+            if not webhook1_url or not webhook2_url:
+                print(f"[Shadow Chat] Failed to assign webhooks for session {session_id}")
+                # Clean up threads
+                await self.thread_manager.cleanup_threads(session.thread1_id, session.thread2_id)
                 return None
             
             # Create session object
@@ -157,10 +154,10 @@ class SessionManager:
                 user2_id=user2.id,
                 thread1_id=thread1.id,
                 thread2_id=thread2.id,
-                webhook1_url=webhook1.url,
-                webhook2_url=webhook2.url,
-                webhook1_name=webhook1_name,
-                webhook2_name=webhook2_name,
+                webhook1_url=webhook1_url,  # Store the provided URL
+                webhook2_url=webhook2_url,  # Store the provided URL
+                webhook1_name="Shadow",
+                webhook2_name="Shadow",
                 created_at=discord.utils.utcnow(),
                 last_activity=discord.utils.utcnow(),
                 is_active=True
@@ -175,10 +172,13 @@ class SessionManager:
             self.user_to_session[user2.id] = session_id
             
             # Send welcome messages
-
             await self._send_welcome_messages(session, user1, user2)
-            await self._log_session_creation(session, user1, user2)
+            
+            # Send DMs to users
             await self._send_match_dms(session, user1, user2)
+            
+            # Log session creation
+            await self._log_session_creation(session, user1, user2)
             
             print(f"[Shadow Chat] ✓ Created session {session_id} for {user1.display_name} and {user2.display_name}")
             return session
@@ -365,13 +365,8 @@ class SessionManager:
 
     async def skip_session(self, session_id: str, user_id: int) -> Tuple[bool, str]:
         """
-        Skip current partner with rate limiting.
+        Skip current partner - re-add clicking user to queue, end session for both.
         """
-        # Check rate limit for skipping
-        if await self.session_skip_limiter.is_rate_limited(user_id):
-            remaining = await self.session_skip_limiter.get_time_remaining(user_id)
-            return False, f"Please wait {remaining}s before skipping again."
-        
         session = await self.get_session(session_id)
         if not session:
             return False, "Session not found."
@@ -505,21 +500,14 @@ class SessionManager:
         print(f"  User 1: {user1.display_name} ({user1.id})")
         print(f"  User 2: {user2.display_name} ({user2.id})")
         
-        # SWAP THE IDENTITIES:
-        # Webhook 1 (in User 1's thread) should show User 2's identity
-        # Webhook 2 (in User 2's thread) should show User 1's identity
-        
-        success1 = await self.webhook_manager.update_webhook_identity(
-            session.webhook1_url,  # Webhook URL for user1's thread
-            user2  # Show user2's identity in user1's thread
+        # Use webhook manager to reveal identities
+        success = await self.webhook_manager.reveal_identities(
+            session.session_id,
+            user1,
+            user2
         )
         
-        success2 = await self.webhook_manager.update_webhook_identity(
-            session.webhook2_url,  # Webhook URL for user2's thread
-            user1  # Show user1's identity in user2's thread
-        )
-        
-        if success1 and success2:
+        if success:
             # Mark as revealed in database
             await self.db.set_identities_revealed(session.session_id)
             session.identities_revealed = True
@@ -527,11 +515,9 @@ class SessionManager:
             # Send notification to both threads
             await self._send_reveal_notification(session, user1, user2)
             
-            print(f"[Shadow Chat] Identities swapped successfully!")
-            print(f"  Webhook 1 now shows: {user2.display_name}")
-            print(f"  Webhook 2 now shows: {user1.display_name}")
+            print(f"[Shadow Chat] Identities revealed successfully!")
         else:
-            print(f"[Shadow Chat] Failed to update webhooks")
+            print(f"[Shadow Chat] Failed to reveal identities")
     
     async def _notify_reveal_request(self, session: ShadowSession, requesting_user_id: int):
         """Notify partner about reveal request."""
@@ -591,7 +577,7 @@ class SessionManager:
     
     async def end_session(self, session_id: str, reason: str = "Session ended") -> bool:
         """
-        End a session and clean up resources with rate limiting.
+        End a session and clean up resources.
         """
         session = await self.get_session(session_id)
         if not session:
@@ -616,9 +602,14 @@ class SessionManager:
         if session.user2_id in self.user_to_session:
             del self.user_to_session[session.user2_id]
         
-        # Delete threads
-        thread1 = await get_thread_by_id(self.bot.get_guild(constants.GUILD_ID), session.thread1_id)
-        thread2 = await get_thread_by_id(self.bot.get_guild(constants.GUILD_ID), session.thread2_id)
+        # Get threads for sending final message
+        guild = self.bot.get_guild(constants.GUILD_ID)
+        thread1 = None
+        thread2 = None
+        
+        if guild:
+            thread1 = await get_thread_by_id(guild, session.thread1_id)
+            thread2 = await get_thread_by_id(guild, session.thread2_id)
         
         # Send ending message to both threads
         ending_embed = discord.Embed(
@@ -628,36 +619,25 @@ class SessionManager:
         )
         ending_embed.set_thumbnail(url=constants.END_SESSION_THUMBNAIL)
         
+        send_tasks = []
         if thread1:
             try:
-                await thread1.send(embed=ending_embed)
+                send_tasks.append(thread1.send(embed=ending_embed))
             except:
                 pass
         
         if thread2:
             try:
-                await thread2.send(embed=ending_embed)
+                send_tasks.append(thread2.send(embed=ending_embed))
             except:
                 pass
         
-        # Wait a moment, then delete threads
-        await asyncio.sleep(10)
+        # Send ending messages in parallel
+        if send_tasks:
+            await asyncio.gather(*send_tasks, return_exceptions=True)
         
-        if thread1:
-            try:
-                await thread1.delete(reason=reason)
-            except Exception as e:
-                print(f"[Shadow Chat] Thread1 deletion error: {e}")
-        
-        if thread2:
-            try:
-                await thread2.delete(reason=reason)
-            except Exception as e:
-                print(f"[Shadow Chat] Thread2 deletion error: {e}")
-        
-        # Delete webhooks
-        await self.webhook_manager.delete_webhook(session.webhook1_url)
-        await self.webhook_manager.delete_webhook(session.webhook2_url)
+        # RESET WEBHOOKS FOR REUSE (don't delete them!)
+        await self.webhook_manager.end_session(session_id)
         
         # Delete message mappings
         await self.db.delete_session_mappings(session_id)
@@ -665,6 +645,26 @@ class SessionManager:
         # Remove from cache
         if session_id in self.session_cache:
             del self.session_cache[session_id]
+        
+        # Wait a moment, then delete threads
+        await asyncio.sleep(10)
+        
+        delete_tasks = []
+        if thread1:
+            try:
+                delete_tasks.append(thread1.delete(reason=reason))
+            except Exception as e:
+                print(f"[Shadow Chat] Thread1 deletion error: {e}")
+        
+        if thread2:
+            try:
+                delete_tasks.append(thread2.delete(reason=reason))
+            except Exception as e:
+                print(f"[Shadow Chat] Thread2 deletion error: {e}")
+        
+        # Delete threads in parallel
+        if delete_tasks:
+            await asyncio.gather(*delete_tasks, return_exceptions=True)
         
         # Log session end
         await self._log_session_end(session, reason)

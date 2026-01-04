@@ -11,7 +11,6 @@ from .session_manager import SessionManager
 from .webhook_manager import WebhookManager
 from .constants import GUILD_ID 
 from .utils import get_thread_by_id  # Import this utility
-from .permissions import RateLimiter
 
 class RelayHandler:
     """Handles message relaying between threads."""
@@ -21,7 +20,6 @@ class RelayHandler:
         self.db = db
         self.session_manager = session_manager
         self.webhook_manager = webhook_manager
-        self.message_relay_limiter = RateLimiter(max_actions=10, per_seconds=5)
         
         # Words to censor (case-insensitive)
         self.censored_words = {
@@ -104,12 +102,7 @@ class RelayHandler:
     async def handle_message(self, message: discord.Message) -> Tuple[bool, Optional[str]]:
         """Handle and relay a message from a session thread."""
         try:
-            # Check message rate limit
-            if await self.message_relay_limiter.is_rate_limited(message.author.id):
-                remaining = await self.message_relay_limiter.get_time_remaining(message.author.id)
-                return False, f"Please wait {remaining}s before sending another message."
-            
-            # Get session by thread ID
+            # Get session for this thread
             session = await self.session_manager.get_session_by_thread(message.channel.id)
             if not session:
                 return False, "Not in an active session."

@@ -31,7 +31,6 @@ MOD_CHANNEL_ID = 1456635931707703521  # Mod-only channel for commands
 # ==================== SESSION CONFIG ====================
 MAX_ACTIVE_SESSIONS = 5    # Maximum concurrent sessions in the guild
 SESSION_TIMEOUT_MINUTES = 5  # Auto-terminate after X minutes of inactivity
-MAX_SESSION_HOURS = 4      # Maximum duration of a session in hours
 QUEUE_CHECK_INTERVAL = 30  # Seconds between queue processing checks
 
 # ==================== THREAD CONFIG ====================

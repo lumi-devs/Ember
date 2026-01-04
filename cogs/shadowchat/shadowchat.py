@@ -25,7 +25,6 @@ from .identity_manager import IdentityManager
 from .inactivity_watcher import InactivityWatcher
 from .permissions import AccessController, is_moderator
 from .utils import create_queue_button, create_queue_embed, get_thread_by_id
-from .permissions import RateLimiter
 
 # ==================== MAIN COG ====================
 
@@ -44,8 +43,6 @@ class ShadowChat(commands.Cog):
         self.inactivity_watcher: Optional[InactivityWatcher] = None
         self.access_controller: Optional[AccessController] = None
         self.report_log_limit = 10
-        self.ui_button_limiter = RateLimiter(max_actions=5, per_seconds=10)
-        self.command_limiter = RateLimiter(max_actions=10, per_seconds=30)
         
         # For tracking setup state
         self.is_setup = False
@@ -1525,16 +1522,6 @@ class ShadowChat(commands.Cog):
     
     async def handle_join_queue(self, interaction: discord.Interaction):
         """Handle join queue button click with race condition protection."""
-        if await self.ui_button_limiter.is_rate_limited(interaction.user.id):
-            try:
-                await interaction.response.send_message(
-                    f"⏳ Please wait before clicking again.",
-                    ephemeral=True,
-                    delete_after=2
-                )
-            except:
-                pass
-            return
         # Generate a unique key for this interaction to prevent duplicates
         interaction_key = f"{interaction.id}_{interaction.user.id}"
         
@@ -1591,7 +1578,7 @@ class ShadowChat(commands.Cog):
                 embed.add_field(
                     name="Current Session",
                     value=f"• Use `/end` to end your current session\n"
-                          f"• Use `/skip` to skip the current match\n",
+                          f"• Use `/reveal` to request identity reveal",
                     inline=False
                 )
                 

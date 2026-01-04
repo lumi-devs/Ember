@@ -1,6 +1,6 @@
 """
 SHADOW CHAT - PERMISSIONS & SAFETY
-User validation, rate limiting, and access control with configurable limits.
+User validation, rate limiting, and access control.
 """
 
 import datetime
@@ -11,33 +11,14 @@ import discord
 from . import constants
 from .models import Database
 
-# ==================== CONFIGURABLE RATE LIMITS ====================
-
-# Rate limit configuration - easily adjustable here
-RATE_LIMIT_CONFIG = {
-    'join_queue': {
-        'max_actions': 5,  # Max 5 join attempts
-        'per_seconds': 60   # per 60 seconds
-    },
-    'send_messages': {
-        'max_actions': 15,  # Max 15 messages
-        'per_seconds': 5    # per 5 seconds
-    },
-    'reveal_identity': {
-        'max_actions': 3,   # Max 3 reveal attempts
-        'per_seconds': 30   # per 30 seconds
-    }
-}
-
 # ==================== RATE LIMITING ====================
 
 class RateLimiter:
-    """Simple rate limiter for user actions with configurable limits."""
+    """Simple rate limiter for user actions."""
     
-    def __init__(self, max_actions: int, per_seconds: int, name: str = "generic"):
+    def __init__(self, max_actions: int, per_seconds: int):
         self.max_actions = max_actions
         self.per_seconds = per_seconds
-        self.name = name
         self.user_actions: Dict[int, list] = {}
         self.lock = asyncio.Lock()
     
@@ -73,63 +54,24 @@ class RateLimiter:
                 return 0
             
             now = discord.utils.utcnow()
-            
-            # Clean old entries first
-            self.user_actions[user_id] = [
-                ts for ts in self.user_actions[user_id]
-                if (now - ts).seconds < self.per_seconds
-            ]
-            
-            if not self.user_actions[user_id]:
-                return 0
-            
-            # Find oldest timestamp within window
             oldest = min(self.user_actions[user_id])
             elapsed = (now - oldest).seconds
             
             return max(0, self.per_seconds - elapsed)
-    
-    def get_limit_info(self) -> str:
-        """Get rate limit information for display."""
-        return f"{self.max_actions} per {self.per_seconds}s"
 
 # ==================== ACCESS CONTROLLER ====================
 
 class AccessController:
-    """Centralized access control for Shadow Chat with configurable limits."""
+    """Centralized access control for Shadow Chat."""
     
     def __init__(self, db: Database):
         self.db = db
-        
-        # Initialize rate limiters with configurable values
-        self.join_limiter = RateLimiter(
-            max_actions=RATE_LIMIT_CONFIG['join_queue']['max_actions'],
-            per_seconds=RATE_LIMIT_CONFIG['join_queue']['per_seconds'],
-            name="join_queue"
-        )
-        
-        self.message_limiter = RateLimiter(
-            max_actions=RATE_LIMIT_CONFIG['send_messages']['max_actions'],
-            per_seconds=RATE_LIMIT_CONFIG['send_messages']['per_seconds'],
-            name="send_messages"
-        )
-        
-        self.reveal_limiter = RateLimiter(
-            max_actions=RATE_LIMIT_CONFIG['reveal_identity']['max_actions'],
-            per_seconds=RATE_LIMIT_CONFIG['reveal_identity']['per_seconds'],
-            name="reveal_identity"
-        )
+        self.join_limiter = RateLimiter(max_actions=3, per_seconds=60)
+        self.message_limiter = RateLimiter(max_actions=10, per_seconds=5)
+        self.reveal_limiter = RateLimiter(max_actions=2, per_seconds=30)
         
         # Track recently banned users (in-memory cache)
         self.recent_bans: Dict[int, datetime.datetime] = {}
-    
-    async def get_rate_limit_info(self) -> Dict[str, str]:
-        """Get current rate limit configuration."""
-        return {
-            'join_queue': self.join_limiter.get_limit_info(),
-            'send_messages': self.message_limiter.get_limit_info(),
-            'reveal_identity': self.reveal_limiter.get_limit_info()
-        }
     
     async def is_user_banned(self, user_id: int) -> bool:
         """Check if a user is banned from Shadow Chat."""
@@ -147,7 +89,7 @@ class AccessController:
         # 2. Check rate limit
         if await self.join_limiter.is_rate_limited(user.id):
             remaining = await self.join_limiter.get_time_remaining(user.id)
-            return False, f"Please wait {remaining}s before joining again. (Limit: {self.join_limiter.get_limit_info()})"
+            return False, f"Please wait {remaining}s before joining again."
         
         # 3. Check if user is banned
         if await self.db.is_user_banned(user.id):
@@ -181,7 +123,7 @@ class AccessController:
         # 1. Rate limit check
         if await self.message_limiter.is_rate_limited(user_id):
             remaining = await self.message_limiter.get_time_remaining(user_id)
-            return False, f"Please wait {remaining}s before sending another message. (Limit: {self.message_limiter.get_limit_info()})"
+            return False, f"Please wait {remaining}s before sending another message."
         
         # 2. Get session
         session = await self.db.get_session(session_id)
@@ -205,7 +147,7 @@ class AccessController:
         # 1. Rate limit check
         if await self.reveal_limiter.is_rate_limited(user_id):
             remaining = await self.reveal_limiter.get_time_remaining(user_id)
-            return False, f"Please wait {remaining}s before trying again. (Limit: {self.reveal_limiter.get_limit_info()})"
+            return False, f"Please wait {remaining}s before trying again."
         
         # 2. Get session
         session = await self.db.get_session(session_id)
@@ -226,29 +168,6 @@ class AccessController:
             return False, "You've already requested reveal."
         
         return True, None
-    
-    async def reset_rate_limit(self, user_id: int, limit_type: str = "all") -> bool:
-        """
-        Reset rate limit for a specific user.
-        Types: 'join_queue', 'send_messages', 'reveal_identity', 'all'
-        """
-        try:
-            if limit_type == "all" or limit_type == "join_queue":
-                if user_id in self.join_limiter.user_actions:
-                    self.join_limiter.user_actions[user_id].clear()
-            
-            if limit_type == "all" or limit_type == "send_messages":
-                if user_id in self.message_limiter.user_actions:
-                    self.message_limiter.user_actions[user_id].clear()
-            
-            if limit_type == "all" or limit_type == "reveal_identity":
-                if user_id in self.reveal_limiter.user_actions:
-                    self.reveal_limiter.user_actions[user_id].clear()
-            
-            return True
-        except Exception as e:
-            print(f"[Shadow Chat] Rate limit reset failed: {e}")
-            return False
     
     async def ban_user(self, user_id: int, reason: str, moderator: discord.Member) -> bool:
         """
