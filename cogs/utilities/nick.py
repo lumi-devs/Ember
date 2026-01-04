@@ -83,7 +83,7 @@ class NicknameChanger(commands.Cog):
         can_change, reason = self.can_change_nickname(ctx.author, member)
         if not can_change:
             embed = discord.Embed(description=reason, color=discord.Color.red())
-            return await ctx.send(embed=embed)
+            return await ctx.reply(embed=embed, mention_author=False)  # Reply to command
         
         # Check bot's ability to change the nickname
         if member.top_role.position >= ctx.guild.me.top_role.position:
@@ -91,7 +91,7 @@ class NicknameChanger(commands.Cog):
                 description="❌ I can't change the nickname of someone **equal to or higher** than my role.",
                 color=discord.Color.red()
             )
-            return await ctx.send(embed=embed)
+            return await ctx.reply(embed=embed, mention_author=False)  # Reply to command
         
         try:
             old_nick = member.nick or member.name
@@ -118,21 +118,21 @@ class NicknameChanger(commands.Cog):
                 text=f"Changed by {ctx.author} ({role_names[executor_level]})", 
                 icon_url=ctx.author.avatar.url if ctx.author.avatar else None
             )
-            await ctx.send(embed=embed)
+            await ctx.reply(embed=embed, mention_author=False)  # Reply to command
             
         except discord.Forbidden:
             embed = discord.Embed(
                 description="❌ I don't have permission to change that user's nickname.",
                 color=discord.Color.red()
             )
-            await ctx.send(embed=embed)
+            await ctx.reply(embed=embed, mention_author=False)  # Reply to command
             
         except discord.HTTPException:
             embed = discord.Embed(
                 description="⚠️ Something went wrong while trying to change the nickname.",
                 color=discord.Color.red()
             )
-            await ctx.send(embed=embed)
+            await ctx.reply(embed=embed, mention_author=False)  # Reply to command
 
     @change_nickname.error
     async def nick_error(self, ctx, error):
@@ -141,21 +141,21 @@ class NicknameChanger(commands.Cog):
                 description="❗ Usage:\n`.nick @user` → Reset nickname\n`.nick @user new_nick` → Change nickname",
                 color=discord.Color.orange()
             )
-            await ctx.send(embed=embed)
+            await ctx.reply(embed=embed, mention_author=False)  # Reply to command
             
         elif isinstance(error, commands.BadArgument):
             embed = discord.Embed(
                 description="❗ Couldn't find that user. Make sure you **mention them properly**.",
                 color=discord.Color.orange()
             )
-            await ctx.send(embed=embed)
+            await ctx.reply(embed=embed, mention_author=False)  # Reply to command
             
         else:
             embed = discord.Embed(
                 description="⚠️ An unexpected error occurred.",
                 color=discord.Color.red()
             )
-            await ctx.send(embed=embed)
+            await ctx.reply(embed=embed, mention_author=False)  # Reply to command
 
 async def setup(bot):
     await bot.add_cog(NicknameChanger(bot))
