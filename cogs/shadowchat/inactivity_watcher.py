@@ -7,7 +7,7 @@ import asyncio
 import discord
 import datetime
 from typing import Dict, List
-from .constants import SESSION_TIMEOUT_MINUTES, GUILD_ID, COLOR_WARNING
+from .constants import SESSION_TIMEOUT_MINUTES, GUILD_ID, COLOR_WARNING, MAX_SESSION_HOURS
 from .session_manager import SessionManager
 from .models import ShadowSession
 from .utils import get_thread_by_id
@@ -118,7 +118,7 @@ class InactivityWatcher:
         duration_hours = (now - session.created_at).total_seconds() / 3600
         
         # Max 6 hours per session (safety limit)
-        if duration_hours >= 6:
+        if duration_hours >= MAX_SESSION_HOURS:
             await self.session_manager.end_session(
                 session.session_id,
                 "Maximum session duration reached (6 hours)"

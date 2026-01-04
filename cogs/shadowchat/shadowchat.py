@@ -1578,7 +1578,7 @@ class ShadowChat(commands.Cog):
                 embed.add_field(
                     name="Current Session",
                     value=f"• Use `/end` to end your current session\n"
-                          f"• Use `/reveal` to request identity reveal",
+                          f"• Use `/skip` to skip the current match\n",
                     inline=False
                 )
                 
