@@ -4,43 +4,98 @@ from discord.ext import commands
 class NicknameChanger(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        # Replace these with your actual role IDs
+        self.MODERATOR_ROLE_ID = 123456789012345678  # Change this
+        self.HELPER_ROLE_ID = 234567890123456789     # Change this
+        self.CHAT_MANAGER_ROLE_ID = 345678901234567890  # Change this
+        
+        # Define dangerous permissions to check for
+        self.DANGEROUS_PERMISSIONS = [
+            'administrator',
+            'manage_guild',
+            'manage_roles',
+            'manage_channels',
+            'manage_nicknames',
+            'manage_webhooks',
+            'manage_emojis',
+            'manage_events'
+        ]
+
+    def has_dangerous_permissions(self, member):
+        """Check if a member has any dangerous permissions."""
+        permissions = member.guild_permissions
+        for perm in self.DANGEROUS_PERMISSIONS:
+            if getattr(permissions, perm):
+                return True
+        return False
+
+    def get_hierarchy_level(self, member):
+        """Get the hierarchy level of a member based on the 3 special roles."""
+        role_ids = [role.id for role in member.roles]
+        
+        if self.MODERATOR_ROLE_ID in role_ids:
+            return 3  # Highest
+        elif self.HELPER_ROLE_ID in role_ids:
+            return 2  # Middle
+        elif self.CHAT_MANAGER_ROLE_ID in role_ids:
+            return 1  # Lowest
+        else:
+            return 0  # No special role
+
+    def can_change_nickname(self, executor, target):
+        """Check if executor can change target's nickname based on custom rules."""
+        
+        # Prevent changing bot's nickname
+        if target.bot:
+            return False, "❌ You can't change a **bot's nickname** with this command."
+        
+        # Prevent changing own nickname (except through normal means)
+        if target == executor:
+            return False, "⚠️ You can't change your **own nickname** with this command."
+        
+        # Get hierarchy levels
+        executor_level = self.get_hierarchy_level(executor)
+        target_level = self.get_hierarchy_level(target)
+        
+        # If executor doesn't have any of the 3 special roles, deny
+        if executor_level == 0:
+            return False, "🚫 You don't have permission to use this command."
+        
+        # SPECIAL RULE: Check hierarchy between the 3 roles
+        if target_level > 0:  # Target has one of the 3 special roles
+            if target_level >= executor_level:
+                # Can't change someone equal or higher in our custom hierarchy
+                if target_level == 3 and executor_level < 3:
+                    return False, "❌ You can't change a **Moderator's** nickname."
+                elif target_level == 2 and executor_level < 2:
+                    return False, "❌ You can't change a **Helper's** nickname."
+                elif target_level == 1 and executor_level < 1:
+                    return False, "❌ You can't change a **Chat Manager's** nickname."
+        
+        # SECONDARY RULE: Check if target has dangerous permissions
+        if self.has_dangerous_permissions(target):
+            return False, "❌ You can't change the nickname of someone with **admin/manage permissions**."
+        
+        return True, ""
 
     @commands.command(name='nick')
-    @commands.has_permissions(manage_nicknames=True)
     async def change_nickname(self, ctx, member: discord.Member, *, new_nick: str = None):
-        """Change or reset a member's nickname if they are lower in role hierarchy."""
-
-        # Prevent changing own or bot's nickname
-        if member == ctx.author:
-            embed = discord.Embed(
-                description="⚠️ You can't change your **own nickname** with this command.",
-                color=discord.Color.orange()
-            )
+        """Change or reset a member's nickname based on custom hierarchy rules."""
+        
+        # Check if executor can change target's nickname
+        can_change, reason = self.can_change_nickname(ctx.author, member)
+        if not can_change:
+            embed = discord.Embed(description=reason, color=discord.Color.red())
             return await ctx.send(embed=embed)
-
-        if member == ctx.guild.me:
-            embed = discord.Embed(
-                description="⚠️ You can't change **my nickname** with this command.",
-                color=discord.Color.orange()
-            )
-            return await ctx.send(embed=embed)
-
-        # Role hierarchy check (user vs target)
-        if member.top_role.position >= ctx.author.top_role.position:
-            embed = discord.Embed(
-                description="❌ You can only change the nickname of users **below** you in the role hierarchy.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-
-        # Role hierarchy check (bot vs target)
+        
+        # Check bot's ability to change the nickname
         if member.top_role.position >= ctx.guild.me.top_role.position:
             embed = discord.Embed(
                 description="❌ I can't change the nickname of someone **equal to or higher** than my role.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
-
+        
         try:
             old_nick = member.nick or member.name
             if new_nick:
@@ -57,17 +112,24 @@ class NicknameChanger(commands.Cog):
                     description=f"**{old_nick}**'s nickname has been **reset** to their username.",
                     color=discord.Color.green()
                 )
-
-            embed.set_footer(text=f"Changed by {ctx.author}", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+            
+            # Add who changed the nickname
+            executor_level = self.get_hierarchy_level(ctx.author)
+            role_names = {3: "Moderator", 2: "Helper", 1: "Chat Manager", 0: "Member"}
+            
+            embed.set_footer(
+                text=f"Changed by {ctx.author} ({role_names[executor_level]})", 
+                icon_url=ctx.author.avatar.url if ctx.author.avatar else None
+            )
             await ctx.send(embed=embed)
-
+            
         except discord.Forbidden:
             embed = discord.Embed(
                 description="❌ I don't have permission to change that user's nickname.",
                 color=discord.Color.red()
             )
             await ctx.send(embed=embed)
-
+            
         except discord.HTTPException:
             embed = discord.Embed(
                 description="⚠️ Something went wrong while trying to change the nickname.",
@@ -77,27 +139,20 @@ class NicknameChanger(commands.Cog):
 
     @change_nickname.error
     async def nick_error(self, ctx, error):
-        if isinstance(error, commands.MissingPermissions):
-            embed = discord.Embed(
-                description="🚫 You don't have permission to use this command.",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed)
-
-        elif isinstance(error, commands.MissingRequiredArgument):
+        if isinstance(error, commands.MissingRequiredArgument):
             embed = discord.Embed(
                 description="❗ Usage:\n`.nick @user` → Reset nickname\n`.nick @user new_nick` → Change nickname",
                 color=discord.Color.orange()
             )
             await ctx.send(embed=embed)
-
+            
         elif isinstance(error, commands.BadArgument):
             embed = discord.Embed(
                 description="❗ Couldn't find that user. Make sure you **mention them properly**.",
                 color=discord.Color.orange()
             )
             await ctx.send(embed=embed)
-
+            
         else:
             embed = discord.Embed(
                 description="⚠️ An unexpected error occurred.",
