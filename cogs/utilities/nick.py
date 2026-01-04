@@ -5,9 +5,9 @@ class NicknameChanger(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         # Replace these with your actual role IDs
-        self.MODERATOR_ROLE_ID = 1406324000736542911  # Change this
-        self.HELPER_ROLE_ID = 1410302930485121106     # Change this
-        self.CHAT_MANAGER_ROLE_ID = 1408709182856630332  # Change this
+        self.MODERATOR_ROLE_ID = 1406324000736542911  
+        self.HELPER_ROLE_ID = 1410302930485121106     
+        self.CHAT_MANAGER_ROLE_ID = 1408709182856630332  
         
         # Define dangerous permissions to check for
         self.DANGEROUS_PERMISSIONS = [
@@ -15,10 +15,7 @@ class NicknameChanger(commands.Cog):
             'manage_guild',
             'manage_roles',
             'manage_channels',
-            'manage_nicknames',
             'manage_webhooks',
-            'manage_emojis',
-            'manage_events'
         ]
 
     def has_dangerous_permissions(self, member):
