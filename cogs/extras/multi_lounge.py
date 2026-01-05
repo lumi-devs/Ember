@@ -387,7 +387,7 @@ class SmartLoungeCog(commands.Cog):
             await ctx.send("❌ Could not fetch lounge data. System may not be initialized.")
             return
         
-        # Calculate more stats
+        # Calculate stats
         total_users = sum(l['count'] for l in lounges)
         total_lounges = len(lounges)
         active_lounges = sum(1 for l in lounges if l['count'] > 0)
@@ -396,6 +396,25 @@ class SmartLoungeCog(commands.Cog):
         
         avg_users = total_users / total_lounges if total_lounges > 0 else 0
         utilization = (active_lounges / total_lounges * 100) if total_lounges > 0 else 0
+
+        # --- PREDICTIVE LOGIC FOR NEXT ACTION ---
+        all_lounges_busy = all(l['count'] >= self.busy_threshold for l in lounges)
+        current_time = time.time()
+        cooldown_remaining = max(0, int(self.creation_cooldown - (current_time - self.last_creation_time)))
+        can_create = cooldown_remaining <= 0
+        
+        custom_spares = [l for l in lounges if l['count'] == 0 and l['num'] > 2]
+        
+        if all_lounges_busy:
+            if can_create:
+                next_action = f"📈 **CREATE:** All rooms busy. Will create Lounge {lounges[-1]['num'] + 1}."
+            else:
+                next_action = f"⏳ **WAIT:** All rooms busy, but on cooldown for `{cooldown_remaining}s`."
+        elif len(custom_spares) > 1:
+            spare_nums = [l['num'] for l in custom_spares[1:]]
+            next_action = f"📉 **DELETE:** Excess spares detected. Will remove Lounge(s): `{', '.join(map(str, spare_nums))}`."
+        else:
+            next_action = "✅ **STABLE:** No creation or deletion needed at this time."
         
         # Create detailed embed
         embed = discord.Embed(
@@ -404,63 +423,58 @@ class SmartLoungeCog(commands.Cog):
             color=discord.Color.purple(),
             timestamp=datetime.now()
         )
+
+        # 1. Prediction Field (Added as requested)
+        embed.add_field(
+            name="🤖 PREDICTED NEXT ACTION",
+            value=next_action,
+            inline=False
+        )
         
-        # Basic Info
+        # 2. Basic Info
         embed.add_field(
             name="🏢 SYSTEM INFO",
             value=(
                 f"**Category:** {category.name}\n"
-                f"**Base Lounge ID:** `{self.base_lounge_id}`\n"
                 f"**Busy Threshold:** {self.busy_threshold} users\n"
-                f"**Loop Interval:** 2 minutes\n"
                 f"**Creation Cooldown:** {self.creation_cooldown}s\n"
-                f"**Data File:** `{self.data_file}`\n"
             ),
-            inline=False
+            inline=True
         )
-        
-        # Current State
-        current_state = "\n".join([
-            f"**Lounge {l['num']}:** {l['count']} user{'s' if l['count'] != 1 else ''} "
-            f"{'🚨 BUSY' if l['count'] >= self.busy_threshold else '✅ OK' if l['count'] > 0 else '💤 EMPTY'}"
-            for l in lounges[:10]  # Show first 10 lounges
-        ])
-        if len(lounges) > 10:
-            current_state += f"\n... and {len(lounges) - 10} more lounges"
-            
-        embed.add_field(
-            name="📈 CURRENT STATE",
-            value=current_state,
-            inline=False
-        )
-        
-        # Statistics
+
+        # 3. Statistics
         embed.add_field(
             name="🔢 NUMERICAL STATS",
             value=(
                 f"**Total Lounges:** {total_lounges}\n"
-                f"**Active Lounges:** {active_lounges} ({utilization:.1f}%)\n"
-                f"**Empty Lounges:** {empty_lounges}\n"
                 f"**Busy Lounges:** {busy_lounges} ({self.stats['busy_percentage']:.1f}%)\n"
                 f"**Total Users:** {total_users}\n"
-                f"**Avg Users/Lounge:** {avg_users:.2f}\n"
             ),
             inline=True
         )
         
+        # 4. Timestamps
+        last_creation = self.stats['last_creation_time']
+        peak_time = self.stats['peak_users_time']
+        
         embed.add_field(
-            name="📊 SYSTEM METRICS",
+            name="⏰ TIMESTAMPS",
             value=(
-                f"**Loop Executions:** {self.stats['loop_executions']}\n"
-                f"**Total Creations:** {self.stats['total_creations']}\n"
-                f"**Total Deletions:** {self.stats['total_deletions']}\n"
-                f"**Net Growth:** {self.stats['total_creations'] - self.stats['total_deletions']}\n"
-                f"**Peak Users:** {self.stats['peak_users']}\n"
-                f"**Avg Users/Lounge:** {self.stats['avg_users_per_lounge']:.2f}\n"
-                f"**Data Persisted:** ✅ Yes\n"
+                f"**Last Creation:** {last_creation.strftime('%H:%M:%S') if last_creation else 'Never'}\n"
+                f"**Peak Time:** {peak_time.strftime('%H:%M:%S') if peak_time else 'Never'}\n"
+                f"**Loop Next Run:** <t:{int((datetime.now().timestamp() + 120))}:R>\n"
             ),
-            inline=True
+            inline=False
         )
+
+        # ... (Remaining parts of the embed like current state and health)
+        current_state = "\n".join([
+            f"**L{l['num']}:** {l['count']} users {'🚨' if l['count'] >= self.busy_threshold else '💤' if l['count'] == 0 else '✅'}"
+            for l in lounges[:10]
+        ])
+        embed.add_field(name="📈 CURRENT STATE (Top 10)", value=current_state, inline=False)
+        
+        await ctx.send(embed=embed)
         
         # Timestamps
         last_creation = self.stats['last_creation_time']
