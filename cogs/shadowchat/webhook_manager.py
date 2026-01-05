@@ -4,10 +4,10 @@ WITH OPTIMIZED CACHING
 """
 
 import asyncio
+import secrets
 import discord
 import io
 import aiohttp
-import random
 from typing import Optional, Dict, Tuple, List
 from . import constants
 import os
@@ -233,16 +233,19 @@ class WebhookManager:
                         self.avatar_cache[filename] = f.read()
                         self.avatar_keys.append(filename)
                         loaded_count += 1
+                    print("Loaded {} avatars.".format(loaded_count))
                 except Exception as e:
                     logger.error(f"Failed to load avatar {filename}: {e}")
         
         logger.debug(f"Loaded {loaded_count} avatars from {avatar_dir}")
     
     def _get_random_avatar_bytes(self) -> Optional[bytes]:
-        """Get random avatar bytes from cache."""
+        """Get random avatar bytes from cache using cryptographically secure random selection."""
         if not self.avatar_keys:
             return None
-        random_key = random.choice(self.avatar_keys)
+        
+        # Use secrets.choice() for cryptographically secure random selection
+        random_key = secrets.choice(self.avatar_keys)
         return self.avatar_cache.get(random_key)
     
     async def associate_thread_with_session(self, thread: discord.Thread, session_id: str):
@@ -257,8 +260,8 @@ class WebhookManager:
             if len(self.available_webhooks) < 2:
                 return None, None
             
-            webhook1 = self.available_webhooks.pop(random.randrange(len(self.available_webhooks)))
-            webhook2 = self.available_webhooks.pop(random.randrange(len(self.available_webhooks)))
+            webhook1 = self.available_webhooks.pop(secrets.randbelow(len(self.available_webhooks)))
+            webhook2 = self.available_webhooks.pop(secrets.randbelow(len(self.available_webhooks)))
             try:
                 # Get random avatar bytes from cache
                 avatar_bytes1 = self._get_random_avatar_bytes()

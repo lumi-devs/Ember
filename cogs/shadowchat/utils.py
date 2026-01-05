@@ -3,11 +3,10 @@ SHADOW CHAT - UTILITY FUNCTIONS (MERGED & SAFE)
 Combines O(1) optimizations with original API compatibility.
 """
 
-import random
 import string
 import datetime
 import re
-import math
+import secrets
 import secrets  # Added for security
 import hashlib  # Added for thread-safe determinism
 from typing import Optional, Tuple
@@ -54,33 +53,30 @@ NEWLINE_PATTERN = re.compile(r'\n{4,}')
 
 def generate_session_id() -> str:
     """Generate a unique session ID using secure random."""
-    random_part = ''.join(secrets.choice(CHARS) for _ in range(8))
+    random_part = ''.join(secrets.choice(CHARS) for _ in range(10))
     return f"shadow_{random_part}"
 
 def generate_user_code() -> str:
     """Generate 4-char user code."""
     return ''.join(secrets.choice(CHARS) for _ in range(4))
 
-def format_thread_name(session_id: str, user1_id: int, user2_id: int) -> Tuple[str, str]:
+def format_thread_name(session_id: str, user1_id: int, user2_id: str) -> Tuple[str, str]:
     """
-    Generate thread names deterministically using hashing (Thread-Safe).
-    Replaces random.seed() which is not thread-safe in async contexts.
+    Generate thread names using secure random selection.
     """
-    seed = f"{session_id}_{user1_id}_{user2_id}".encode()
-    # Create a deterministic integer from the hash
-    hash_int = int.from_bytes(hashlib.sha256(seed).digest(), 'big')
-    
+    # Use secrets.randbelow() for secure random indices
     emoji_len = len(CUTE_EMOJIS_TUPLE)
     words_len = len(CUTE_WORDS_TUPLE)
 
-    emoji_idx1 = hash_int % emoji_len
-    emoji_idx2 = (hash_int // emoji_len) % emoji_len
+    # Generate secure random indices
+    emoji_idx1 = secrets.randbelow(emoji_len)
+    emoji_idx2 = secrets.randbelow(emoji_len)
     
-    # Get words using shifting parts of the hash
-    w1 = (hash_int // 100) % words_len
-    w2 = (hash_int // 200) % words_len
-    w3 = (hash_int // 300) % words_len
-    w4 = (hash_int // 400) % words_len
+    # Use different random indices for words
+    w1 = secrets.randbelow(words_len)
+    w2 = secrets.randbelow(words_len)
+    w3 = secrets.randbelow(words_len)
+    w4 = secrets.randbelow(words_len)
 
     thread1_name = f"{CUTE_EMOJIS_TUPLE[emoji_idx1]} Room {CUTE_WORDS_TUPLE[w1]} {CUTE_WORDS_TUPLE[w2]}"[:100]
     thread2_name = f"{CUTE_EMOJIS_TUPLE[emoji_idx2]} Room {CUTE_WORDS_TUPLE[w3]} {CUTE_WORDS_TUPLE[w4]}"[:100]
