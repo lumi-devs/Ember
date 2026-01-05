@@ -298,6 +298,33 @@ class SmartLoungeCog(commands.Cog):
                             self.stats['total_deletions'] += 1
                             self.stats['last_deletion_time'] = datetime.now()
                         await asyncio.sleep(1)  # Safety delay
+            # --- PHASE 3: FIX NUMBERING GAPS ---
+            await self.fix_numbering_gaps(lounges)
+                        
+    async def fix_numbering_gaps(self, lounges):
+        """Fix numbering gaps in lounge sequence."""
+        fixed = False
+        
+        # Check for gaps
+        expected_number = 2  # Start from Lounge 2
+        for lounge in lounges:
+            if lounge['num'] != expected_number:
+                # Found a gap or mis-numbering
+                old_name = lounge['channel'].name
+                new_name = self.lounge_name_fmt.format(expected_number)
+                
+                if old_name != new_name:
+                    try:
+                        await lounge['channel'].edit(name=new_name, 
+                                                    reason=f"Lounge Logic: Fixed numbering gap {lounge['num']} → {expected_number}")
+                        self.logger.info(f"🔢 Renamed Lounge {lounge['num']} → Lounge {expected_number}")
+                        fixed = True
+                    except Exception as e:
+                        self.logger.error(f"❌ Failed to rename lounge: {e}")
+            
+            expected_number += 1
+        
+        return fixed
 
     async def create_lounge(self, category, number, position):
         """Create a new lounge channel."""

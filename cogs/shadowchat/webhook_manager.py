@@ -414,7 +414,6 @@ class WebhookManager:
                 if managed.revealed_user.avatar:
                     avatar_url = str(managed.revealed_user.avatar.url)
             else:
-                # For anonymous, get the webhook's current avatar
                 if managed.webhook.avatar:
                     avatar_url = str(managed.webhook.avatar.url)
 
@@ -453,7 +452,6 @@ class WebhookManager:
                         reply_author_avatar = None
                         
                         if webhook_info:
-                            # Find the managed webhook by URL
                             managed_webhook = self.managed_webhooks.get(webhook_info['webhook_url'])
                             if managed_webhook:
                                 # USE FAST CACHE INSTEAD OF API CALL
@@ -466,7 +464,7 @@ class WebhookManager:
                                     # Fallback to managed webhook state (no API call)
                                     if managed_webhook.is_anonymous:
                                         reply_author_name = "Shadow"
-                                        reply_author_avatar = None
+                                        reply_author_avatar = managed_webhook.webhook.avatar.url if managed_webhook.webhook.avatar else None
                                     else:
                                         reply_author_name = managed_webhook.revealed_user.display_name if managed_webhook.revealed_user else "Shadow"
                                         reply_author_avatar = str(managed_webhook.revealed_user.avatar.url) if managed_webhook.revealed_user and managed_webhook.revealed_user.avatar else None
