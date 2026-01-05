@@ -27,7 +27,7 @@ class AutoDelete(commands.Cog):
             await asyncio.sleep(DELETE_DELAY)
             try:
                 await message.delete()
-                print(f"🧹 Deleted a caught-cat message in #{message.channel}")
+                #print(f"🧹 Deleted a caught-cat message in #{message.channel}")
             except discord.NotFound:
                 pass
             except discord.Forbidden:

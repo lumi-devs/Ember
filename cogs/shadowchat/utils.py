@@ -180,19 +180,25 @@ async def get_or_create_webhook(channel: discord.TextChannel, name: str) -> disc
     )
 
 async def get_thread_by_id(guild: discord.Guild, thread_id: int) -> Optional[discord.Thread]:
-    """Retrieve a thread by ID, searching all channels."""
-    for channel in guild.text_channels:
-        if isinstance(channel, discord.Thread):
-            if channel.id == thread_id:
-                return channel
-        # Also check active threads in the channel
-        try:
-            threads = channel.threads
-            for thread in threads:
-                if thread.id == thread_id:
-                    return thread
-        except AttributeError:
-            continue
+    """
+    Retrieve a thread by ID efficiently using direct lookups.
+    Tries the internal cache first, then falls back to an API fetch.
+    """
+    # 1. Try to get the thread from the bot's internal cache (Fastest)
+    thread = guild.get_thread(thread_id)
+    if thread:
+        return thread
+        
+    # 2. If not in cache (e.g., archived or bot just restarted), fetch from API
+    try:
+        # fetch_channel can retrieve any channel type, including threads
+        fetched = await guild.fetch_channel(thread_id)
+        if isinstance(fetched, discord.Thread):
+            return fetched
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        # Return None if the ID is invalid, inaccessible, or an API error occurs
+        return None
+        
     return None
 
 def create_queue_embed(position: int, queue_size: int, joined_at: datetime.datetime, estimated_wait_minutes: float = None) -> Embed:

@@ -124,6 +124,43 @@ class Database:
             )
             await self.conn.commit()
 
+
+    async def get_message_mapping_by_mirrored(self, session_id: str, thread_id: int, mirrored_id: int) -> Optional[Tuple]:
+        """Find message mapping by the mirrored message ID."""
+        cursor = await self.conn.execute("""
+            SELECT * FROM shadow_message_mappings 
+            WHERE session_id = ? AND (from_thread_id = ? OR to_thread_id = ?) AND mirrored_id = ?
+        """, (session_id, thread_id, thread_id, mirrored_id))
+        return await cursor.fetchone()
+
+    async def get_message_mapping_by_original(self, session_id: str, thread_id: int, original_message_id: int) -> Optional[Tuple]:
+        """Find message mapping by the original message ID."""
+        cursor = await self.conn.execute("""
+            SELECT * FROM shadow_message_mappings 
+            WHERE session_id = ? AND (from_thread_id = ? OR to_thread_id = ?) AND original_message_id = ?
+        """, (session_id, thread_id, thread_id, original_message_id))
+        return await cursor.fetchone()
+
+    async def cleanup_message_mappings(self, hours: int = 24):
+        """Clean up message mappings older than X hours."""
+        try:
+            # Calculate cutoff time string for SQLite
+            # SQLite uses 'YYYY-MM-DD HH:MM:SS' format
+            await self.conn.execute("""
+                DELETE FROM shadow_message_mappings 
+                WHERE created_at < datetime('now', ?)
+            """, (f'-{hours} hours',))
+            
+            await self.conn.execute("""
+                DELETE FROM message_mappings 
+                WHERE created_at < datetime('now', ?)
+            """, (f'-{hours} hours',))
+            
+            await self.conn.commit()
+            # print("[Database] Cleaned up old message mappings")
+        except Exception as e:
+            print(f"[Database] Error cleaning mappings: {e}")
+
     async def initialize(self):
         """Create tables if they don't exist - With ON DELETE CASCADE."""
         self.conn = await aiosqlite.connect(self.db_path)
@@ -169,6 +206,24 @@ class Database:
                 FOREIGN KEY (user1_id) REFERENCES shadow_users(user_id) ON DELETE CASCADE,
                 FOREIGN KEY (user2_id) REFERENCES shadow_users(user_id) ON DELETE CASCADE
             )
+        """)
+        
+        await self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS webhook_message_mappings (
+                message_id INTEGER PRIMARY KEY,
+                webhook_id INTEGER NOT NULL,
+                webhook_url TEXT NOT NULL,
+                thread_id INTEGER NOT NULL,
+                session_id TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (session_id) REFERENCES shadow_sessions(session_id) ON DELETE CASCADE
+            )
+        """)
+        await self.conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_webhook_messages_message ON webhook_message_mappings(message_id)
+        """)
+        await self.conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_webhook_messages_webhook ON webhook_message_mappings(webhook_id)
         """)
         
         # Queue table 
@@ -698,6 +753,42 @@ class Database:
     
     # ========== MESSAGE MAPPING METHODS ==========
     
+    
+    
+    async def store_webhook_message(self, message_id: int, webhook_id: int, webhook_url: str, thread_id: int, session_id: str):
+        """Store which webhook sent which message."""
+        await self.conn.execute("""
+            INSERT OR REPLACE INTO webhook_message_mappings 
+            (message_id, webhook_id, webhook_url, thread_id, session_id)
+            VALUES (?, ?, ?, ?, ?)
+        """, (message_id, webhook_id, webhook_url, thread_id, session_id))
+        await self.conn.commit()
+
+    async def get_webhook_for_message(self, message_id: int) -> Optional[dict]:
+        """Get webhook info for a message."""
+        cursor = await self.conn.execute("""
+            SELECT webhook_id, webhook_url, thread_id, session_id 
+            FROM webhook_message_mappings 
+            WHERE message_id = ?
+        """, (message_id,))
+        row = await cursor.fetchone()
+        if row:
+            return {
+                'webhook_id': row[0],
+                'webhook_url': row[1],
+                'thread_id': row[2],
+                'session_id': row[3]
+            }
+        return None
+
+    async def delete_session_webhook_mappings(self, session_id: str):
+        """Delete all webhook message mappings for a session."""
+        await self.conn.execute(
+            "DELETE FROM webhook_message_mappings WHERE session_id = ?",
+            (session_id,)
+        )
+        await self.conn.commit()
+    
     async def add_message_mapping(self, mapping: MessageMapping):
         """Store a message mapping."""
         await self.conn.execute("""
@@ -733,8 +824,19 @@ class Database:
     
     async def delete_session_mappings(self, session_id: str):
         """Delete all message mappings for a session."""
+        # Delete regular message mappings
         await self.conn.execute(
             "DELETE FROM message_mappings WHERE session_id = ?",
+            (session_id,)
+        )
+        # Delete shadow message mappings  
+        await self.conn.execute(
+            "DELETE FROM shadow_message_mappings WHERE session_id = ?",
+            (session_id,)
+        )
+        # Delete webhook message mappings
+        await self.conn.execute(
+            "DELETE FROM webhook_message_mappings WHERE session_id = ?",
             (session_id,)
         )
         await self.conn.commit()
@@ -787,4 +889,42 @@ class Database:
         row = await cursor.fetchone()
         if not row:
             return True
-        return bool(row[0]) and bool(row[1])
+
+
+    async def cleanup_inactive_users(self, days: int = 30):
+        """Clean up users who haven't been active for X days."""
+        cutoff = discord.utils.utcnow() - datetime.timedelta(days=days)
+        
+        # First, delete users who have no sessions, no queue entries, and are old
+        await self.conn.execute("""
+            DELETE FROM shadow_users 
+            WHERE user_id NOT IN (
+                SELECT DISTINCT user1_id FROM shadow_sessions 
+                UNION 
+                SELECT DISTINCT user2_id FROM shadow_sessions
+                UNION
+                SELECT DISTINCT user_id FROM shadow_queue
+            )
+            AND last_active < ?
+        """, (cutoff.isoformat(),))
+        await self.conn.commit()
+
+    async def cleanup_old_session_history(self, days: int = 90):
+        """Clean up old session history entries."""
+        cutoff = discord.utils.utcnow() - datetime.timedelta(days=days)
+        await self.conn.execute(
+            "DELETE FROM session_history WHERE ended_at < ?",
+            (cutoff.isoformat(),)
+        )
+        await self.conn.commit()
+
+    async def cleanup_abandoned_sessions(self, hours: int = 6):
+        """Clean up sessions where both users have left but session is still active."""
+        await self.conn.execute("""
+            DELETE FROM shadow_sessions 
+            WHERE is_active = 1 
+            AND user1_left = 1 
+            AND user2_left = 1
+            AND last_activity < datetime('now', ?)
+        """, (f'-{hours} hours',))
+        await self.conn.commit()

@@ -63,7 +63,7 @@ class ActivityRoles(commands.Cog):
                 try:
                     await member.remove_roles(*roles_to_remove, reason="Startup cleanup")
                     cleanup_count += len(roles_to_remove)
-                    print(f"🧹 Removed {[r.name for r in roles_to_remove]} from {member.display_name}")
+                    #print(f"🧹 Removed {[r.name for r in roles_to_remove]} from {member.display_name}")
                 except discord.Forbidden:
                     print(f"❌ Missing permissions to clean roles for {member.display_name}")
                 except discord.HTTPException as e:
@@ -149,11 +149,11 @@ class ActivityRoles(commands.Cog):
         try:
             if to_add:
                 await after.add_roles(*to_add, reason="Activity detected")
-                print(f"✅ Added {[r.name for r in to_add]} to {after.display_name}")
+                #print(f"✅ Added {[r.name for r in to_add]} to {after.display_name}")
                 
             if to_remove:
                 await after.remove_roles(*to_remove, reason="Activity ended")
-                print(f"✅ Removed {[r.name for r in to_remove]} from {after.display_name}")
+                #print(f"✅ Removed {[r.name for r in to_remove]} from {after.display_name}")
                 
         except discord.Forbidden:
             print(f"❌ Missing permissions to edit roles for {after.display_name}")

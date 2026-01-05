@@ -30,7 +30,7 @@ MOD_CHANNEL_ID = 1456635931707703521  # Mod-only channel for commands
 
 # ==================== SESSION CONFIG ====================
 MAX_ACTIVE_SESSIONS = 5    # Maximum concurrent sessions in the guild
-SESSION_TIMEOUT_MINUTES = 5  # Auto-terminate after X minutes of inactivity
+SESSION_TIMEOUT_MINUTES = 10  # Auto-terminate after X minutes of inactivity
 QUEUE_CHECK_INTERVAL = 30  # Seconds between queue processing checks
 
 # ==================== THREAD CONFIG ====================
@@ -76,3 +76,22 @@ DB_PATH = "data/shadowchat.db"
 WEBHOOK_NAME_ANONYMOUS = "Shadow"
 WEBHOOK_NAME_REVEALED = "{username}"
 WEBHOOK_AVATAR_REVEALED = "{avatar_url}"
+
+
+WEBHOOK_URLS = [
+    "***WEBHOOK_REMOVED***",
+    "***WEBHOOK_REMOVED***",
+    "***WEBHOOK_REMOVED***",
+    "***WEBHOOK_REMOVED***",
+    "***WEBHOOK_REMOVED***",
+    "***WEBHOOK_REMOVED***",
+    "***WEBHOOK_REMOVED***",
+    "***WEBHOOK_REMOVED***",
+    "***WEBHOOK_REMOVED***",
+    "***WEBHOOK_REMOVED***",
+    "***WEBHOOK_REMOVED***",
+    "***WEBHOOK_REMOVED***",
+    "***WEBHOOK_REMOVED***",
+    "***WEBHOOK_REMOVED***",
+    "***WEBHOOK_REMOVED***",
+]

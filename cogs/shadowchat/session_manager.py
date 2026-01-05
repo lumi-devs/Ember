@@ -18,12 +18,13 @@ from .webhook_manager import WebhookManager
 class SessionManager:
     """Manages active chat sessions."""
     
-    def __init__(self, bot, db: Database, thread_manager: ThreadManager, webhook_manager: WebhookManager):
+    def __init__(self, bot, db, thread_manager, webhook_manager):
+        #print(f"[DEBUG] SessionManager init: webhook_manager is {webhook_manager}")
         self.bot = bot
         self.db = db
         self.thread_manager = thread_manager
         self.webhook_manager = webhook_manager
-        
+        self.bot.session_manager = self
         # In-memory cache for quick session lookups
         self.session_cache: dict[str, ShadowSession] = {}
         self.user_to_session: dict[int, str] = {}
@@ -45,26 +46,37 @@ class SessionManager:
         # Start cleanup task
         self.cleanup_task = asyncio.create_task(self._periodic_cleanup())
     
+
     async def _periodic_cleanup(self):
         """Periodically check for inactive sessions."""
         while True:
             try:
-                await asyncio.sleep(60)  # Check every minute
+                await asyncio.sleep(300)  # Check every 5 minutes
                 
+                # Existing cleanup
                 active_sessions = await self.get_all_active_sessions()
                 now = discord.utils.utcnow()
                 
                 for session in active_sessions:
-                    # Check for inactivity
                     if (now - session.last_activity).total_seconds() > constants.SESSION_TIMEOUT_MINUTES * 60:
                         await self.end_session(session.session_id, "Inactivity timeout")
-                    # Check for very old sessions (safety measure)
-                    elif (now - session.created_at).total_seconds() > 3600:  # 1 hour max
+                    elif (now - session.created_at).total_seconds() > 3600 * 6:
                         await self.end_session(session.session_id, "Maximum session duration reached")
                 
-                # Clean old sessions from database
+                # Clean old sessions
                 await self.db.cleanup_old_sessions(cutoff_minutes=120)
                 
+                # Clean old message mappings
+                await self.db.cleanup_message_mappings(hours=24)
+                
+                # NEW: Add these cleanup calls
+                await self.db.cleanup_abandoned_sessions(hours=6)
+                await self.db.cleanup_old_session_history(days=90)
+                
+                # Run user cleanup less frequently (once a day)
+                if datetime.datetime.now().hour == 3:  # 3 AM
+                    await self.db.cleanup_inactive_users(days=30)
+                    
             except Exception as e:
                 print(f"[Shadow Chat] Cleanup task error: {e}")
     
@@ -121,41 +133,45 @@ class SessionManager:
         return session
     
     async def create_session(self, user1: discord.Member, user2: discord.Member) -> Optional[ShadowSession]:
-        """Create a new session between two users."""
         try:
-            # Generate unique session ID
             session_id = generate_session_id()
             
-            # Create threads
-            thread1 = await self.thread_manager.create_thread(
-                session_id, user1, user2, is_user1=True
-            )
-            thread2 = await self.thread_manager.create_thread(
-                session_id, user2, user1, is_user1=False
-            )
+            # 1. Create threads
+            thread1 = await self.thread_manager.create_thread(session_id, user1, user2, is_user1=True)
+            thread2 = await self.thread_manager.create_thread(session_id, user2, user1, is_user1=False)
             
             if not thread1 or not thread2:
-                print(f"[Shadow Chat] Failed to create threads for session {session_id}")
+                if thread1: await self.thread_manager.delete_thread(thread1.id)
+                if thread2: await self.thread_manager.delete_thread(thread2.id)
                 return None
             
-            # Create webhooks
-            webhook1_url, webhook2_url = await self.webhook_manager.assign_webhooks_for_session(session_id)
+            # 2. Safety check for webhook manager
+            if self.webhook_manager is None:
+                print("[Shadow Chat] ERROR: webhook_manager is None inside SessionManager!")
+                await self.thread_manager.delete_thread(thread1.id)
+                await self.thread_manager.delete_thread(thread2.id)
+                return None
+
+            # 3. Assign webhooks
+            webhook1_url, webhook2_url = await self.webhook_manager.assign_webhooks_for_session(session_id, thread1)
+            await self.webhook_manager.associate_thread_with_session(thread1, session_id)
             
             if not webhook1_url or not webhook2_url:
                 print(f"[Shadow Chat] Failed to assign webhooks for session {session_id}")
-                # Clean up threads
-                await self.thread_manager.cleanup_threads(session.thread1_id, session.thread2_id)
+                # Use the thread IDs directly, not the 'session' object which isn't made yet
+                await self.thread_manager.delete_thread(thread1.id)
+                await self.thread_manager.delete_thread(thread2.id)
                 return None
             
-            # Create session object
+            # 4. Now create the session object
             session = ShadowSession(
                 session_id=session_id,
                 user1_id=user1.id,
                 user2_id=user2.id,
                 thread1_id=thread1.id,
                 thread2_id=thread2.id,
-                webhook1_url=webhook1_url,  # Store the provided URL
-                webhook2_url=webhook2_url,  # Store the provided URL
+                webhook1_url=webhook1_url,
+                webhook2_url=webhook2_url,
                 webhook1_name="Shadow",
                 webhook2_name="Shadow",
                 created_at=discord.utils.utcnow(),
@@ -185,6 +201,8 @@ class SessionManager:
             
         except Exception as e:
             print(f"[Shadow Chat] Error creating session: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     async def _send_match_dms(self, session: ShadowSession, user1: discord.Member, user2: discord.Member):
@@ -220,7 +238,7 @@ class SessionManager:
         try:
             embed = create_match_found_embed(session.thread1_id, session.session_id)
             await user1.send(embed=embed)
-            print(f"[Shadow Chat] ✓ DM sent to {user1}")
+            #print(f"[Shadow Chat] ✓ DM sent to {user1}")
         except discord.Forbidden:
             print(f"[Shadow Chat] Cannot DM {user1}")
         
@@ -228,7 +246,7 @@ class SessionManager:
         try:
             embed = create_match_found_embed(session.thread2_id, session.session_id)
             await user2.send(embed=embed)
-            print(f"[Shadow Chat] ✓ DM sent to {user2}")
+            #print(f"[Shadow Chat] ✓ DM sent to {user2}")
         except discord.Forbidden:
             print(f"[Shadow Chat] Cannot DM {user2}")
     
@@ -237,9 +255,10 @@ class SessionManager:
         from .utils import create_session_header, create_session_header_buttons
         
         # Get threads
-        thread1 = await get_thread_by_id(self.bot.get_guild(constants.GUILD_ID), session.thread1_id)
-        thread2 = await get_thread_by_id(self.bot.get_guild(constants.GUILD_ID), session.thread2_id)
-        
+        guild = self.bot.get_guild(constants.GUILD_ID)
+        thread1 = await get_thread_by_id(guild, session.thread1_id)
+        thread2 = await get_thread_by_id(guild, session.thread2_id)
+
         if not thread1 or not thread2:
             return
         
@@ -515,7 +534,7 @@ class SessionManager:
             # Send notification to both threads
             await self._send_reveal_notification(session, user1, user2)
             
-            print(f"[Shadow Chat] Identities revealed successfully!")
+            #print(f"[Shadow Chat] Identities revealed successfully!")
         else:
             print(f"[Shadow Chat] Failed to reveal identities")
     
@@ -583,12 +602,7 @@ class SessionManager:
         if not session:
             return False
         
-        # Check rate limit for ending sessions (per user)
-        user_ids = [session.user1_id, session.user2_id]
-        for user_id in user_ids:
-            if await self.session_end_limiter.is_rate_limited(user_id):
-                # Log but continue (since this might be called by timeout)
-                print(f"[Shadow Chat] User {user_id} rate limited for session end")
+        #print(f"[Shadow Chat] Ending session {session_id}")
         
         # Mark as inactive in database
         await self.db.end_session(session_id)
@@ -636,7 +650,8 @@ class SessionManager:
         if send_tasks:
             await asyncio.gather(*send_tasks, return_exceptions=True)
         
-        # RESET WEBHOOKS FOR REUSE (don't delete them!)
+        # RETURN WEBHOOKS TO POOL (this is what your webhook_manager.end_session does)
+        print(f"[Shadow Chat] Returning webhooks to pool for session {session_id}")
         await self.webhook_manager.end_session(session_id)
         
         # Delete message mappings
@@ -669,6 +684,7 @@ class SessionManager:
         # Log session end
         await self._log_session_end(session, reason)
         
+        print(f"[Shadow Chat] Session {session_id} ended successfully")
         return True
     
     async def _log_session_end(self, session: ShadowSession, reason: str):

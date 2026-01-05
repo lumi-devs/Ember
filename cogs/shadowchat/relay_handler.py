@@ -102,10 +102,20 @@ class RelayHandler:
     async def handle_message(self, message: discord.Message) -> Tuple[bool, Optional[str]]:
         """Handle and relay a message from a session thread."""
         try:
+            #print(f"[DEBUG] Handling message in thread {message.channel.id}")
+            
             # Get session for this thread
             session = await self.session_manager.get_session_by_thread(message.channel.id)
             if not session:
+                print(f"[DEBUG] No session found for thread {message.channel.id}")
                 return False, "Not in an active session."
+            
+
+            
+            # Check if session has valid webhooks
+            if not session.webhook1_url or not session.webhook2_url:
+                print(f"[DEBUG] ERROR: Session missing webhooks!")
+                return False, "Session configuration error (missing webhooks)."
             
             # Update session activity
             await self.session_manager.update_session_activity(session.session_id)
@@ -117,14 +127,6 @@ class RelayHandler:
             if not (is_user1 or is_user2):
                 return False, "You're not in this session."
             
-            #print(f"[DEBUG ROUTING CHECK]")
-            #print(f"  Session ID: {session.session_id}")
-            #print(f"  User1 ID: {session.user1_id}, Thread1: {session.thread1_id}")
-            #print(f"  User2 ID: {session.user2_id}, Thread2: {session.thread2_id}")
-            #print(f"  Current thread: {message.channel.id}")
-            #print(f"  Message author: {message.author.id}")
-            #print(f"  Is User1? {is_user1}")
-            #print(f"  Is User2? {is_user2}")
             
             # Determine target webhook (OPPOSITE user)
             if is_user1:
@@ -158,31 +160,48 @@ class RelayHandler:
             
             # Check for reply
             reply_to_mirrored_id = None
+            # In the handle_message method, update the reply detection section:
             if message.reference and message.reference.message_id:
                 # Get original message ID that was replied to
                 original_message_id = message.reference.message_id
-                #print(f"[DEBUG] Reply detected to message ID: {original_message_id}")
+                #print(f"[RELAY DEBUG] Reply detected to message ID: {original_message_id}")
                 
-                # Look up the mirrored ID in the opposite direction
-                # We need to find what message ID in the partner's thread corresponds to this
-                mapping = await self.db.get_message_mapping(
+                # Try to find the mapping in both directions
+                # First, try to find where this message is the mirrored message (looking for original)
+                mapping = await self.db.get_message_mapping_by_mirrored(
                     session.session_id,
-                    from_thread_id,  # Thread where reply was made
-                    original_message_id  # Message being replied to
+                    from_thread_id,  # The thread where the reply was made
+                    original_message_id  # The mirrored message being replied to
                 )
                 
-                # FIXED: Use tuple indexing instead of dictionary access
+                # If not found, try the other direction (where this message is the original)
+                if not mapping:
+                    mapping = await self.db.get_message_mapping_by_original(
+                        session.session_id,
+                        from_thread_id,  # The thread where the reply was made
+                        original_message_id  # The original message being replied to
+                    )
+                
                 if mapping and isinstance(mapping, tuple):
-                    # shadow_message_mappings table columns:
-                    # 0: id, 1: session_id, 2: from_thread_id, 3: to_thread_id, 
-                    # 4: original_message_id, 5: mirrored_id, 6: created_at
-                    if len(mapping) > 5:
+                    # Determine which direction we found
+                    # If we found by mirrored, we need to get the original_message_id from the mapping
+                    # If we found by original, we need to get the mirrored_id from the mapping
+                    
+                    # Check if the mapping's from_thread_id matches our from_thread_id
+                    if mapping[2] == from_thread_id:  # from_thread_id at index 2
+                        # This means we found a mapping where this thread is the source
+                        # So the reply target is the mirrored_id in the other thread
                         reply_to_mirrored_id = mapping[5]  # mirrored_id is at index 5
-                        #print(f"[DEBUG] Found mirrored ID for reply: {reply_to_mirrored_id}")
+                        #print(f"[RELAY DEBUG] Found mapping (original → mirrored): {mapping[4]} → {reply_to_mirrored_id}")
                     else:
-                        print(f"[DEBUG] Tuple is too short: {mapping}")
+                        # This means we found a mapping where this thread is the destination
+                        # So the reply target is the original_message_id in the other thread
+                        reply_to_mirrored_id = mapping[4]  # original_message_id is at index 4
+                        #print(f"[RELAY DEBUG] Found mapping (mirrored → original): {original_message_id} → {reply_to_mirrored_id}")
                 else:
-                    print(f"[DEBUG] No mapping found for reply message {original_message_id}")
+                    print(f"[RELAY DEBUG] No mapping found for reply message {original_message_id} in session {session.session_id}")
+                    # Log more details for debugging
+                    #print(f"[RELAY DEBUG] Session: {session.session_id}, Thread: {from_thread_id}")
             
             # Create a modified message object with censored content
             class CensoredMessage:
@@ -206,13 +225,25 @@ class RelayHandler:
             else:
                 message_to_send = message
             
+            #print(f"[DEBUG] Calling webhook_manager.relay_message()...")
+            
             # Relay the message
-            mirrored_id, error = await self.webhook_manager.relay_message(
-                from_thread=to_thread,  # This should be the thread to send to (partner's thread)
-                to_webhook_url=target_webhook_url,
+            result = await self.webhook_manager.relay_message(
+                thread=to_thread,  # This should be the thread to send to (partner's thread)
+                webhook_url=target_webhook_url,
                 message=message_to_send,
                 reply_to_mirrored_id=reply_to_mirrored_id
+                # Note: We're NOT passing files parameter - relay_message will create them from attachments
             )
+            
+            #print(f"[DEBUG] relay_message() returned: {result}")
+            
+            # Check if result is a tuple
+            if isinstance(result, tuple) and len(result) == 2:
+                mirrored_id, error = result
+            else:
+                print(f"[ERROR] relay_message() did not return a tuple. Got: {result}")
+                return False, "Internal relay error"
             
             if mirrored_id:
                 # Store mapping for future replies
@@ -226,6 +257,7 @@ class RelayHandler:
                 #print(f"[DEBUG] Stored mapping: {message.id} → {mirrored_id}")
                 return True, None
             else:
+                print(f"[DEBUG] Relay failed with error: {error}")
                 return False, error or "Failed to send message"
                 
         except Exception as e:

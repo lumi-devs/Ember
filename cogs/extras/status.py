@@ -26,7 +26,10 @@ class CustomStatusRotator(commands.Cog):
             "LEMME CATCH THE CATS!!",
             "Mother HONEY??",
             "avi yappity yappity yap yap",
-            "Gaming with Daemon!",
+            "DAMIEN ITS ROBLOX TIME",
+            "Chai Pe Charcha with Garamchai",
+            "Let's play ROBLOX!!",
+            "Meow meow???",
             "Kims IS A 13YO!",
             "Aster and chai in gulugulu mood 24/7",
             "aagmeinghee swaha!"
@@ -62,7 +65,7 @@ class CustomStatusRotator(commands.Cog):
         next_status = self.get_next_status()
         activity = discord.CustomActivity(name=next_status)
         await self.bot.change_presence(status=discord.Status.idle, activity=activity)
-        print(f"🔁 Status changed to: {next_status}")
+        #print(f"🔁 Status changed to: {next_status}")
 
     @update_status.before_loop
     async def before_update(self):

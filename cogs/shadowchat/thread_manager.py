@@ -132,7 +132,7 @@ class ThreadManager:
                     print(f"[Shadow Chat] Warning: Could not set thread permissions: {e}")
                     # Continue anyway - the thread exists and user is added
             
-            print(f"[Shadow Chat] Created thread {thread.id} ({thread.name}) for {user}")
+            #print(f"[Shadow Chat] Created thread {thread.id} ({thread.name}) for {user}")
             return thread
             
         except discord.Forbidden:

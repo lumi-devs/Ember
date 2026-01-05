@@ -63,7 +63,7 @@ class GitHubSync(commands.Cog):
         if not all_files:
             return
             
-        print(f"⬆ Uploading {len(all_files)} files to GitHub...")
+        #print(f"⬆ Uploading {len(all_files)} files to GitHub...")
         
         for file_path in all_files:
             try:
@@ -99,7 +99,7 @@ class GitHubSync(commands.Cog):
             except Exception as e:
                 print(f"  ❌ Failed {file_path}: {e}")
         
-        print("✅ All files uploaded!")
+        #print("✅ All files uploaded!")
 
     async def upload_all_files(self):
         """Async wrapper for upload_all_files_sync."""

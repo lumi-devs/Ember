@@ -11,7 +11,7 @@ import datetime
 import asyncio
 import aiohttp
 import io
-from discord.ui import Button, View
+from collections import OrderedDict
 from typing import Optional
 
 from . import constants
@@ -24,7 +24,62 @@ from .relay_handler import RelayHandler
 from .identity_manager import IdentityManager
 from .inactivity_watcher import InactivityWatcher
 from .permissions import AccessController, is_moderator
-from .utils import create_queue_button, create_queue_embed, get_thread_by_id
+from .utils import get_thread_by_id
+
+
+# ==================== LRU CACHE ====================
+
+class LRUCache:
+    """Thread-safe LRU cache with async lock support."""
+    
+    def __init__(self, max_size: int = 1000):
+        self.max_size = max_size
+        self.cache = OrderedDict()
+        self._lock = asyncio.Lock()
+    
+    async def get(self, key):
+        """Get a value from cache, updating its position as most recently used."""
+        async with self._lock:
+            if key not in self.cache:
+                return None
+            # Move to end (most recently used)
+            self.cache.move_to_end(key)
+            return self.cache[key]
+    
+    async def set(self, key, value):
+        """Set a value in cache, removing oldest if at capacity."""
+        async with self._lock:
+            if key in self.cache:
+                # Update existing key
+                self.cache.move_to_end(key)
+                self.cache[key] = value
+            else:
+                # Add new key
+                self.cache[key] = value
+                # Remove oldest if over capacity
+                if len(self.cache) > self.max_size:
+                    self.cache.popitem(last=False)
+    
+    async def delete(self, key):
+        """Remove a key from cache."""
+        async with self._lock:
+            if key in self.cache:
+                del self.cache[key]
+    
+    async def clear(self):
+        """Clear all items from cache."""
+        async with self._lock:
+            self.cache.clear()
+    
+    async def size(self):
+        """Get current cache size."""
+        async with self._lock:
+            return len(self.cache)
+    
+    async def keys(self):
+        """Get all cache keys."""
+        async with self._lock:
+            return list(self.cache.keys())
 
 # ==================== MAIN COG ====================
 
@@ -51,13 +106,12 @@ class ShadowChat(commands.Cog):
         # Defer initialization until bot is ready
         self.initialized = False
         
-        # Button cooldown and race condition handling
-        self.button_cooldowns = {}  # user_id -> timestamp
-        self.button_locks = {}  # custom_id -> asyncio.Lock
-        self.user_locks = {}  # user_id -> asyncio.Lock
+        self.button_cooldowns = LRUCache(max_size=2000)  # user_id -> timestamp
+        self.button_locks = {}  # custom_id -> asyncio.Lock (kept as dict for simplicity)
+        self.user_locks = LRUCache(max_size=2000)  # user_id -> asyncio.Lock
         
         # For tracking interaction responses to prevent duplicates
-        self.processed_interactions = {}  # interaction_id -> timestamp
+        self.processed_interactions = LRUCache(max_size=5000)  # interaction_id -> timestamp
         self.processing_users = set()  # Users currently being processed
         
         # Cleanup task
@@ -67,47 +121,65 @@ class ShadowChat(commands.Cog):
         """Initialize the cog after bot is ready."""
         print("[Shadow Chat] Initializing cog...")
         
-        # Initialize database
-        self.db = Database(constants.DB_PATH)
-        await self.db.initialize()
-        
-        # Initialize managers
-        self.access_controller = AccessController(self.db)
-        self.queue_manager = QueueManager(self.bot, self.db, self.access_controller)
-        
-        self.thread_manager = ThreadManager(self.bot)
-        await self.thread_manager.initialize()
-        
-        self.webhook_manager = WebhookManager(self.bot)
-        await self.webhook_manager.initialize()
-        
-        self.session_manager = SessionManager(
-            self.bot, self.db, self.thread_manager, self.webhook_manager
-        )
-        await self.session_manager.initialize()
-        
-        self.relay_handler = RelayHandler(
-            self.bot, self.db, self.session_manager, self.webhook_manager
-        )
-        
-        self.identity_manager = IdentityManager(
-            self.bot, self.db, self.session_manager, self.webhook_manager
-        )
-        
-        self.inactivity_watcher = InactivityWatcher(self.bot, self.session_manager)
-        
-        # Register callbacks
-        self.queue_manager.register_queue_callback(self._on_queue_update)
-        self.queue_manager.register_matchmaking_callback(self.process_queue_matchmaking)
-        
-        # Start inactivity watcher
-        await self.inactivity_watcher.start()
-        
-        # RE-REGISTER PERSISTENT VIEWS AFTER RESTART
-        await self._register_persistent_views()
-        
-        self.initialized = True
-        print("[Shadow Chat] Cog initialized successfully")
+        try:
+            # Initialize database
+            self.db = Database(constants.DB_PATH)
+            await self.db.initialize()
+            
+            # Initialize managers
+            self.access_controller = AccessController(self.db)
+            self.queue_manager = QueueManager(self.bot, self.db, self.access_controller)
+            
+            self.thread_manager = ThreadManager(self.bot)
+            await self.thread_manager.initialize()
+            
+            self.webhook_manager = WebhookManager(self.bot, self.db)
+            await self.webhook_manager.initialize()
+            
+            self.session_manager = SessionManager(
+                self.bot, self.db, self.thread_manager, self.webhook_manager
+            )
+            await self.session_manager.initialize()
+            # Check that all components are initialized
+            if not all([
+                self.db,
+                self.queue_manager,
+                self.thread_manager,
+                self.webhook_manager,
+                self.session_manager,
+                self.access_controller
+            ]):
+                raise RuntimeError("Failed to initialize all components")
+            
+            self.relay_handler = RelayHandler(
+                self.bot, self.db, self.session_manager, self.webhook_manager
+            )
+            
+            self.identity_manager = IdentityManager(
+                self.bot, self.db, self.session_manager, self.webhook_manager
+            )
+            
+            self.inactivity_watcher = InactivityWatcher(self.bot, self.session_manager)
+            
+            # Register callbacks
+            self.queue_manager.register_queue_callback(self._on_queue_update)
+            self.queue_manager.register_matchmaking_callback(self.process_queue_matchmaking)
+            
+            # Start inactivity watcher
+            await self.inactivity_watcher.start()
+            
+            # RE-REGISTER PERSISTENT VIEWS AFTER RESTART
+            await self._register_persistent_views()
+            
+            self.initialized = True
+            print("[Shadow Chat] ✅ Cog initialized successfully")
+            
+        except Exception as e:
+            print(f"[Shadow Chat] ❌ Failed to initialize cog: {e}")
+            import traceback
+            traceback.print_exc()
+            # Don't set initialized to True if any component failed
+            self.initialized = False
     
     async def _register_persistent_views(self):
         """Register persistent views after bot restart."""
@@ -136,7 +208,7 @@ class ShadowChat(commands.Cog):
                 
                 try:
                     # Acquire lock for this user
-                    async with self.cog._get_user_lock(interaction.user.id):
+                    async with (await self.cog._get_user_lock(interaction.user.id)):
                         # Check cooldown
                         if not await self.cog._check_cooldown(interaction.user.id):
                             await interaction.response.send_message(
@@ -169,7 +241,7 @@ class ShadowChat(commands.Cog):
                 
                 try:
                     # Acquire lock for this user
-                    async with self.cog._get_user_lock(interaction.user.id):
+                    async with (await self.cog._get_user_lock(interaction.user.id)):
                         # Check cooldown
                         if not await self.cog._check_cooldown(interaction.user.id):
                             await interaction.response.send_message(
@@ -202,7 +274,7 @@ class ShadowChat(commands.Cog):
                 
                 try:
                     # Acquire lock for this user
-                    async with self.cog._get_user_lock(interaction.user.id):
+                    async with (await self.cog._get_user_lock(interaction.user.id)):
                         # Check cooldown
                         if not await self.cog._check_cooldown(interaction.user.id):
                             await interaction.response.send_message(
@@ -266,22 +338,24 @@ class ShadowChat(commands.Cog):
             self.button_locks[key] = asyncio.Lock()
         return self.button_locks[key]
     
-    def _get_user_lock(self, user_id: int):
+    async def _get_user_lock(self, user_id: int):
         """Get or create a lock for a specific user."""
-        if user_id not in self.user_locks:
-            self.user_locks[user_id] = asyncio.Lock()
-        return self.user_locks[user_id]
+        lock = await self.user_locks.get(user_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            await self.user_locks.set(user_id, lock)
+        return lock
     
     async def _check_cooldown(self, user_id: int, cooldown_seconds: int = 2):
         """Check if user is on cooldown for button clicks."""
         now = datetime.datetime.now().timestamp()
         
-        if user_id in self.button_cooldowns:
-            last_click = self.button_cooldowns[user_id]
+        last_click = await self.button_cooldowns.get(user_id)
+        if last_click is not None:
             if now - last_click < cooldown_seconds:
                 return False
         
-        self.button_cooldowns[user_id] = now
+        await self.button_cooldowns.set(user_id, now)
         return True
     
     async def _on_queue_update(self):
@@ -306,25 +380,28 @@ class ShadowChat(commands.Cog):
             await asyncio.sleep(300)  # Clean up every 5 minutes
             try:
                 now = discord.utils.utcnow()
-                to_remove = []
+                # Get all keys to check (this is safe with LRU cache)
+                keys = await self.processed_interactions.keys()
                 
-                for interaction_key, timestamp in self.processed_interactions.items():
-                    # Remove interactions older than 10 minutes
-                    if (now - timestamp).total_seconds() > 600:
-                        to_remove.append(interaction_key)
-                
-                for key in to_remove:
-                    del self.processed_interactions[key]
+                for key in keys:
+                    timestamp = await self.processed_interactions.get(key)
+                    if timestamp and (now - timestamp).total_seconds() > 600:
+                        await self.processed_interactions.delete(key)
                 
                 # Also clean up old cooldowns
                 current_time = datetime.datetime.now().timestamp()
-                old_users = []
-                for user_id, timestamp in self.button_cooldowns.items():
-                    if current_time - timestamp > 30:  # 30 seconds old
-                        old_users.append(user_id)
+                cooldown_keys = await self.button_cooldowns.keys()
                 
-                for user_id in old_users:
-                    del self.button_cooldowns[user_id]
+                for user_id in cooldown_keys:
+                    timestamp = await self.button_cooldowns.get(user_id)
+                    if timestamp and current_time - timestamp > 30:
+                        await self.button_cooldowns.delete(user_id)
+                        
+                # No need to clear user_locks - LRU handles it automatically
+                # Check and log cache sizes
+                user_locks_size = await self.user_locks.size()
+                if user_locks_size > 1000:
+                    print(f"[Shadow Chat] User lock cache size: {user_locks_size}")
                     
             except Exception as e:
                 print(f"[Shadow Chat] Cleanup error: {e}")
@@ -339,6 +416,11 @@ class ShadowChat(commands.Cog):
                 await self.cleanup_task
             except asyncio.CancelledError:
                 pass
+        
+        # Clear all caches
+        await self.processed_interactions.clear()
+        await self.button_cooldowns.clear()
+        await self.user_locks.clear()
         
         if self.inactivity_watcher:
             await self.inactivity_watcher.stop()
@@ -427,7 +509,7 @@ class ShadowChat(commands.Cog):
                 
                 try:
                     # Acquire lock for this user
-                    async with self.cog._get_user_lock(interaction.user.id):
+                    async with (await self.cog._get_user_lock(interaction.user.id)):
                         # Check cooldown
                         if not await self.cog._check_cooldown(interaction.user.id):
                             await interaction.response.send_message(
@@ -460,7 +542,7 @@ class ShadowChat(commands.Cog):
                 
                 try:
                     # Acquire lock for this user
-                    async with self.cog._get_user_lock(interaction.user.id):
+                    async with (await self.cog._get_user_lock(interaction.user.id)):
                         # Check cooldown
                         if not await self.cog._check_cooldown(interaction.user.id):
                             await interaction.response.send_message(
@@ -493,7 +575,7 @@ class ShadowChat(commands.Cog):
                 
                 try:
                     # Acquire lock for this user
-                    async with self.cog._get_user_lock(interaction.user.id):
+                    async with (await self.cog._get_user_lock(interaction.user.id)):
                         # Check cooldown
                         if not await self.cog._check_cooldown(interaction.user.id):
                             await interaction.response.send_message(
@@ -1279,7 +1361,7 @@ class ShadowChat(commands.Cog):
         interaction_key = f"{interaction.id}_{interaction.user.id}"
         
         # Check if this interaction was already processed
-        if interaction_key in self.processed_interactions:
+        if await self.processed_interactions.get(interaction_key):
             # Already processing, ignore duplicate
             try:
                 await interaction.response.defer(ephemeral=True, thinking=False)
@@ -1371,10 +1453,10 @@ class ShadowChat(commands.Cog):
                             pass
                         return
                     
-                    self.cog.processed_interactions[refresh_key] = discord.utils.utcnow()
+                    await self.cog.processed_interactions.set(refresh_key, discord.utils.utcnow())
                     
                     try:
-                        async with self.cog._get_user_lock(interaction.user.id):
+                        async with (await self.cog._get_user_lock(interaction.user.id)):
                             if not await self.cog._check_cooldown(interaction.user.id, 5):
                                 await interaction.response.send_message(
                                     "⏳ Please wait a moment before refreshing again.",
@@ -1438,8 +1520,7 @@ class ShadowChat(commands.Cog):
                             await interaction.edit_original_response(embed=embed, view=self)
                     finally:
                         # Clean up
-                        if refresh_key in self.cog.processed_interactions:
-                            del self.cog.processed_interactions[refresh_key]
+                         await self.cog.processed_interactions.delete(refresh_key)
                 
                 async def on_timeout(self):
                     for child in self.children:
@@ -1466,21 +1547,21 @@ class ShadowChat(commands.Cog):
                 pass
         finally:
             # Always clean up, even on error
-            if interaction_key in self.processed_interactions:
+            if await self.processed_interactions.get(interaction_key):
                 del self.processed_interactions[interaction_key]
     
     async def handle_leave_queue_button(self, interaction: discord.Interaction):
         """Handle leave queue button click."""
         interaction_key = f"{interaction.id}_{interaction.user.id}_leave"
         
-        if interaction_key in self.processed_interactions:
+        if await self.processed_interactions.get(interaction_key):
             try:
                 await interaction.response.defer(ephemeral=True, thinking=False)
             except:
                 pass
             return
         
-        self.processed_interactions[interaction_key] = discord.utils.utcnow()
+        await self.processed_interactions.set(interaction_key, discord.utils.utcnow())
         
         try:
             await interaction.response.defer(ephemeral=True)
@@ -1517,8 +1598,7 @@ class ShadowChat(commands.Cog):
                 ephemeral=True
             )
         finally:
-            if interaction_key in self.processed_interactions:
-                del self.processed_interactions[interaction_key]
+            await self.processed_interactions.delete(interaction_key)
     
     async def handle_join_queue(self, interaction: discord.Interaction):
         """Handle join queue button click with race condition protection."""
@@ -1526,7 +1606,7 @@ class ShadowChat(commands.Cog):
         interaction_key = f"{interaction.id}_{interaction.user.id}"
         
         # Check if this interaction was already processed
-        if interaction_key in self.processed_interactions:
+        if await self.processed_interactions.get(interaction_key):
             # Already processing, ignore duplicate
             try:
                 await interaction.response.defer(ephemeral=True, thinking=False)
@@ -1535,7 +1615,7 @@ class ShadowChat(commands.Cog):
             return
         
         # Mark as processing
-        self.processed_interactions[interaction_key] = discord.utils.utcnow()
+        await self.processed_interactions.set(interaction_key, discord.utils.utcnow())
         
         try:
             # IMMEDIATE RESPONSE - don't defer, just respond right away
@@ -1683,7 +1763,7 @@ class ShadowChat(commands.Cog):
             print(f"[Shadow Chat] Error in handle_join_queue: {e}")
             import traceback
             traceback.print_exc()
-            
+        
             # Try to send a generic error message
             try:
                 await interaction.followup.send(
@@ -1694,8 +1774,7 @@ class ShadowChat(commands.Cog):
                 pass
         finally:
             # Always clean up, even on error
-            if interaction_key in self.processed_interactions:
-                del self.processed_interactions[interaction_key]
+            await self.processed_interactions.delete(interaction_key)
     
     async def _background_matchmaking(self, user: discord.Member):
         """Background task to handle matchmaking after user joins queue."""
@@ -1708,14 +1787,14 @@ class ShadowChat(commands.Cog):
             # Check if user is still in queue
             queue_info = await self.queue_manager.get_queue_info(user.id)
             if not queue_info:
-                print(f"[Background Matchmaking] User {user.id} not in queue anymore")
+                #print(f"[Background Matchmaking] User {user.id} not in queue anymore")
                 return
             
             # Try to process queue (this will check for matches)
             # Note: process_queue is already async and handles its own locks
             await self.queue_manager.process_queue()
             
-            print(f"[Background Matchmaking] Completed for user {user.id}")
+            #print(f"[Background Matchmaking] Completed for user {user.id}")
             
         except Exception as e:
             print(f"[Background Matchmaking] Error: {e}")
@@ -1732,7 +1811,7 @@ class ShadowChat(commands.Cog):
         
         custom_id = interaction.data['custom_id']
         
-        print(f"[Shadow Chat] Interaction received: {custom_id}")
+        #print(f"[Shadow Chat] Interaction received: {custom_id}")
         
         # Handle the main join and status buttons
         if custom_id == "shadow_join_queue":
@@ -1994,8 +2073,9 @@ class ShadowChat(commands.Cog):
             # Create session - this will automatically send DMs via _send_match_dms
             session = await self.session_manager.create_session(user1, user2)
             if session:
-                print(f"[Shadow Chat] ✓ Created session {session.session_id} "
-                    f"for {user1} and {user2}")
+                pass
+                #print(f"[Shadow Chat] ✓ Created session {session.session_id} "
+                    #f"for {user1} and {user2}")
                 # DMs are already sent by _send_match_dms in create_session method
             else:
                 print(f"[Shadow Chat] ✗ Failed to create session")
