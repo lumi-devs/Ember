@@ -250,10 +250,10 @@ class SmartLoungeCog(commands.Cog):
                     # We fetch the channel fresh from API to get the absolute real-time position
                     try:
                         fresh_highest_channel = await self.bot.fetch_channel(highest_channel_id)
-                        target_position = fresh_highest_channel.position + 1
+                        target_position = fresh_highest_channel.position 
                     except:
                         # Fallback to cached position if fetch fails
-                        target_position = lounges[-1]['channel'].position + 1
+                        target_position = lounges[-1]['channel'].position 
                     
                     # Create directly below the highest channel using the FRESH position
                     success = await self.create_lounge(category, next_num, target_position)
