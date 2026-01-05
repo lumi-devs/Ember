@@ -34,76 +34,43 @@ class ManagedWebhook:
         self.last_used: Optional[datetime] = None
         
     async def reset_to_anonymous(self, avatar_bytes: Optional[bytes] = None):
-        """
-        Reset webhook to anonymous state.
-        OPTIMIZED: Only calls API if state actually needs to change.
-        """
-        # If already anonymous and avatar hasn't changed, skip API call
-        if self.is_anonymous and self.current_avatar_bytes == avatar_bytes:
-            return
-
-        try:
-            self.webhook = await self.webhook.edit(
-                name="Shadow",
-                avatar=avatar_bytes,
-                reason="Reset to anonymous for new session"
-            )
-            self.is_anonymous = True
-            self.revealed_user = None
-            self.current_avatar_bytes = avatar_bytes
-            self.is_valid = True
-            self.last_used = datetime.now()
-            
-            # Update fast cache if manager is available
-            if self.manager:
-                avatar_url = str(self.webhook.avatar.url) if self.webhook.avatar else None
-                self.manager._update_fast_webhook_cache(self.url, "Shadow", avatar_url)
-            
-            logger.debug(f"Webhook reset to anonymous: {self.url}")
-        except discord.NotFound:
-            logger.error(f"Webhook not found, marking as invalid: {self.url}")
-            self.is_valid = False
-            raise
-        except discord.HTTPException as e:
-            logger.error(f"Failed to reset webhook: {e}")
-            self.is_valid = False
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected error resetting webhook: {e}")
-            self.is_valid = False
-            raise
-
+        """Reset webhook to anonymous state WITHOUT API calls."""
+        # Just update internal state, no API calls needed
+        self.is_anonymous = True
+        self.revealed_user = None
+        self.current_avatar_bytes = avatar_bytes
+        self.is_valid = True
+        self.last_used = datetime.now()
+        
+        # Update fast cache with anonymous info
+        if self.manager:
+            # Use default avatar URL or cached one
+            avatar_url = "https://cdn.discordapp.com/embed/avatars/0.png"
+            if avatar_bytes:
+                # Store in cache with a key
+                cache_key = f"anon_{hash(avatar_bytes) % 1000}"
+                self.manager.avatar_cache[cache_key] = avatar_bytes
+                # You'd need to serve this via a local endpoint or use Discord CDN
+                # For simplicity, use default for now
+            self.manager._update_fast_webhook_cache(self.url, "Shadow", avatar_url)
+        
+        logger.debug(f"Webhook prepared for anonymous: {self.url}")
+        
     async def update_identity(self, user: discord.User, avatar_bytes: Optional[bytes]):
-        """Update webhook to match a specific user (Reveal)."""
-        try:
-            display_name = user.display_name[:80] if user.display_name else user.name[:80]
-            self.webhook = await self.webhook.edit(
-                name=display_name,
-                avatar=avatar_bytes,
-                reason=f"Identity reveal: {user.id}"
-            )
-            self.is_anonymous = False
-            self.revealed_user = user
-            self.current_avatar_bytes = avatar_bytes
-            self.is_valid = True
-            self.last_used = datetime.now()
-            
-            # Update fast cache if manager is available
-            if self.manager:
-                avatar_url = str(user.avatar.url) if user.avatar else None
-                self.manager._update_fast_webhook_cache(self.url, display_name, avatar_url)
-            
-            logger.debug(f"Webhook identity updated to user: {user.id}")
-        except discord.NotFound:
-            logger.error(f"Webhook not found during reveal: {self.url}")
-            self.is_valid = False
-            raise
-        except discord.HTTPException as e:
-            logger.error(f"Discord HTTP error updating identity: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected error updating identity: {e}")
-            raise
+        """Update webhook identity (for reveal) WITHOUT API calls."""
+        display_name = user.display_name[:80] if user.display_name else user.name[:80]
+        self.is_anonymous = False
+        self.revealed_user = user
+        self.current_avatar_bytes = avatar_bytes
+        self.is_valid = True
+        self.last_used = datetime.now()
+        
+        # Update fast cache
+        if self.manager:
+            avatar_url = str(user.avatar.url) if user.avatar else None
+            self.manager._update_fast_webhook_cache(self.url, display_name, avatar_url)
+        
+        logger.debug(f"Webhook identity set to user: {user.id}")
     
     async def get_avatar_url(self) -> str:
         """Get avatar URL without API calls where possible."""
@@ -268,10 +235,8 @@ class WebhookManager:
                 avatar_bytes2 = self._get_random_avatar_bytes()
                 
                 # Use asyncio.gather for parallel execution
-                await asyncio.gather(
-                    webhook1.reset_to_anonymous(avatar_bytes1),
-                    webhook2.reset_to_anonymous(avatar_bytes2)
-                )
+                webhook1.reset_to_anonymous(avatar_bytes1)
+                webhook2.reset_to_anonymous(avatar_bytes2)
                 
             except Exception:
                 self.available_webhooks.extend([webhook1, webhook2])
