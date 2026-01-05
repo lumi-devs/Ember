@@ -255,8 +255,6 @@ class TwoWayMessaging(commands.Cog):
             embed.set_footer(text=f"✅ Replied • UserID:{user_id}")
             await referenced_msg.edit(embed=embed)
 
-            # Add reaction to owner message to confirm send
-            await message.add_reaction("✅")
 
         except discord.Forbidden:
             # User has DMs disabled
