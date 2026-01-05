@@ -75,24 +75,29 @@ class GitHubSync(commands.Cog):
                 with open(file_path, 'rb') as f:
                     content_bytes = f.read()
                 
+                # Encode to base64 for GitHub API
+                content_base64 = base64.b64encode(content_bytes).decode('utf-8')
+                
                 # Create/Update file on GitHub
                 try:
-                    # Try to get existing file
-                    existing = self.repo.get_contents(github_path)
-                    # Just update it
+                    # Try to get existing file with explicit ref
+                    existing = self.repo.get_contents(github_path, ref="main")
+                    # Update existing file
                     self.repo.update_file(
                         github_path,
                         f"Update {rel_path}",
-                        content_bytes,
-                        existing.sha
+                        content_base64,
+                        existing.sha,
+                        branch="main"
                     )
                     #logging.info(f"  ✅ Updated: {rel_path}")
-                except Exception:
-                    # Create new file
+                except Exception as e:
+                    # If file doesn't exist or other error, create new file
                     self.repo.create_file(
                         github_path,
                         f"Add {rel_path}",
-                        content_bytes
+                        content_base64,
+                        branch="main"
                     )
                     print(f"  ✅ Created: {rel_path}")
                     
