@@ -208,7 +208,8 @@ class ShadowChat(commands.Cog):
                 
                 try:
                     # Acquire lock for this user
-                    async with (await self.cog._get_user_lock(interaction.user.id)):
+                    lock = await self.cog._get_user_lock(interaction.user.id)
+                    async with lock:
                         # Check cooldown
                         if not await self.cog._check_cooldown(interaction.user.id):
                             await interaction.response.send_message(
@@ -241,7 +242,8 @@ class ShadowChat(commands.Cog):
                 
                 try:
                     # Acquire lock for this user
-                    async with (await self.cog._get_user_lock(interaction.user.id)):
+                    lock = await self.cog._get_user_lock(interaction.user.id)
+                    async with lock:
                         # Check cooldown
                         if not await self.cog._check_cooldown(interaction.user.id):
                             await interaction.response.send_message(
@@ -274,7 +276,8 @@ class ShadowChat(commands.Cog):
                 
                 try:
                     # Acquire lock for this user
-                    async with (await self.cog._get_user_lock(interaction.user.id)):
+                    lock = await self.cog._get_user_lock(interaction.user.id)
+                    async with lock:
                         # Check cooldown
                         if not await self.cog._check_cooldown(interaction.user.id):
                             await interaction.response.send_message(
@@ -509,7 +512,8 @@ class ShadowChat(commands.Cog):
                 
                 try:
                     # Acquire lock for this user
-                    async with (await self.cog._get_user_lock(interaction.user.id)):
+                    lock = await self.cog._get_user_lock(interaction.user.id)
+                    async with lock:
                         # Check cooldown
                         if not await self.cog._check_cooldown(interaction.user.id):
                             await interaction.response.send_message(
@@ -542,7 +546,8 @@ class ShadowChat(commands.Cog):
                 
                 try:
                     # Acquire lock for this user
-                    async with (await self.cog._get_user_lock(interaction.user.id)):
+                    lock = await self.cog._get_user_lock(interaction.user.id)
+                    async with lock:
                         # Check cooldown
                         if not await self.cog._check_cooldown(interaction.user.id):
                             await interaction.response.send_message(
@@ -575,7 +580,8 @@ class ShadowChat(commands.Cog):
                 
                 try:
                     # Acquire lock for this user
-                    async with (await self.cog._get_user_lock(interaction.user.id)):
+                    lock = await self.cog._get_user_lock(interaction.user.id)
+                    async with lock:
                         # Check cooldown
                         if not await self.cog._check_cooldown(interaction.user.id):
                             await interaction.response.send_message(
@@ -665,7 +671,8 @@ class ShadowChat(commands.Cog):
             return
         
         # Use identity manager to request reveal
-        async with self._get_user_lock(interaction.user.id):
+        lock = await self._get_user_lock(interaction.user.id)
+        async with lock:
             success, message = await self.identity_manager.request_reveal(
                 interaction.user.id,
                 session.session_id
@@ -1370,7 +1377,7 @@ class ShadowChat(commands.Cog):
             return
         
         # Mark as processing
-        self.processed_interactions[interaction_key] = discord.utils.utcnow()
+        await self.processed_interactions.set(interaction_key, discord.utils.utcnow())
         
         try:
             await interaction.response.defer(ephemeral=True)
@@ -1456,7 +1463,8 @@ class ShadowChat(commands.Cog):
                     await self.cog.processed_interactions.set(refresh_key, discord.utils.utcnow())
                     
                     try:
-                        async with (await self.cog._get_user_lock(interaction.user.id)):
+                        lock = await self.cog._get_user_lock(interaction.user.id)
+                        async with lock:
                             if not await self.cog._check_cooldown(interaction.user.id, 5):
                                 await interaction.response.send_message(
                                     "⏳ Please wait a moment before refreshing again.",
