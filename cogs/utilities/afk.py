@@ -140,7 +140,7 @@ class AFK(commands.Cog):
         
         # Rate limiting
         self._nick_edit_timestamps: Dict[int, float] = {}
-        self._nick_edit_cooldown = 0.5
+        self._nick_edit_cooldown = 1
         
         # Message cooldown
         self._last_mentions: Dict[int, float] = {}  # Channel ID -> timestamp
@@ -149,6 +149,9 @@ class AFK(commands.Cog):
         # AFK removal cooldown - NEW: prevent rapid AFK toggling
         self._afk_removal_cooldown: Dict[int, float] = {}
         self._min_afk_duration = 2.0  # Minimum seconds before AFK can be removed
+        
+        self._message_queue: Dict[int, asyncio.Queue] = {}  # Channel ID -> Queue
+        self._message_limit_cooldown = 1.5  # 1.5 seconds between messages per channel
         
         # Performance tracking
         self.stats = {
@@ -436,6 +439,33 @@ class AFK(commands.Cog):
     
     # ─── UTILITY METHODS ───────────────────────────────────────────
     
+    async def _queued_send(self, channel: discord.TextChannel, embed: discord.Embed, delete_after: Optional[int] = None):
+        """Queues a message to be sent to a specific channel to avoid spam."""
+        if channel.id not in self._message_queue:
+            self._message_queue[channel.id] = asyncio.Queue()
+            self.bot.loop.create_task(self._process_channel_queue(channel.id))
+        
+        await self._message_queue[channel.id].put((channel, embed, delete_after))
+
+    async def _process_channel_queue(self, channel_id: int):
+        """Processes messages for a specific channel one by one with a delay."""
+        queue = self._message_queue[channel_id]
+        while not queue.empty():
+            channel, embed, delete_after = await queue.get()
+            try:
+                msg = await channel.send(embed=embed)
+                if delete_after:
+                    asyncio.create_task(self._auto_delete_message(msg, delete_after))
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+            finally:
+                queue.task_done()
+                # Wait the cooldown period before sending the next message in this channel
+                await asyncio.sleep(self._message_limit_cooldown)
+        
+        # Clean up the queue object if empty
+        del self._message_queue[channel_id]
+    
     async def _safe_edit_nick(self, member: discord.Member, new_nick: str):
         """Rate-limited nickname editing."""
         current_time = time.time()
@@ -624,8 +654,7 @@ class AFK(commands.Cog):
                         description=f"{message.author.mention}, AFK removed.\nYou had been AFK for **{entry.human_readable_duration}**.",
                         color=AFK_REMOVED_COLOR
                     )
-                    msg = await message.channel.send(embed=embed)
-                    asyncio.create_task(self._auto_delete_message(msg, 20))
+                    await self._queued_send(message.channel, embed, 20)
         
         # Always process commands (in case not processed above)
         await self.bot.process_commands(message)
@@ -645,8 +674,7 @@ class AFK(commands.Cog):
                             description=f"**Reason:** {entry.reason}\n**AFK for:** {entry.human_readable_duration}",
                             color=AFK_MENTION_COLOR
                         )
-                        msg = await message.channel.send(embed=embed)
-                        asyncio.create_task(self._auto_delete_message(msg, 600))
+                        await self._queued_send(message.channel, embed, 600)
                         
                         self._last_mentions[message.channel.id] = current_time
                         break  # Only show first AFK user per message
