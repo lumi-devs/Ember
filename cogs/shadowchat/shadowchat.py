@@ -1452,7 +1452,7 @@ class ShadowChat(commands.Cog):
                 async def refresh_button(self, interaction: discord.Interaction, button: discord.ui.Button):
                     # Check if already processing
                     refresh_key = f"{interaction.id}_{interaction.user.id}_refresh"
-                    if refresh_key in self.cog.processed_interactions:
+                    if await self.cog.processed_interactions.get(refresh_key):
                         try:
                             await interaction.response.defer(ephemeral=True, thinking=False)
                         except:

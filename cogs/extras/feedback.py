@@ -137,12 +137,6 @@ class TwoWayMessaging(commands.Cog):
             await owner_channel.send(embed=embed)
 
             # Send confirmation to user
-            confirm_embed = discord.Embed(
-                title="✅ Feedback Received",
-                description="Your message has been sent to the staff. Please wait for a response.",
-                color=discord.Color.green()
-            )
-            await message.author.send(embed=confirm_embed)
         except discord.Forbidden:
             # Owner has DMs disabled
             error_embed = discord.Embed(

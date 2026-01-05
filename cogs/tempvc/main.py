@@ -55,7 +55,7 @@ class TempVoice(commands.Cog):
         if guild_id not in self.cleanup_locks:
             self.cleanup_locks[guild_id] = asyncio.Lock()
 
-    def _cooldown_ok(self, user_id, cooldown=15):
+    def _cooldown_ok(self, user_id, cooldown=30):
         now = time.time()
         last = self.creation_cooldowns.get(user_id, 0)
         if now - last < cooldown:
@@ -182,6 +182,7 @@ class TempVoice(commands.Cog):
                 member, channel = queue.popleft()
                 try:
                     await self._process_creation(member, channel)
+                    await asyncio.sleep(2.0)
                 except Exception:
                     print(f"[TempVoice] queue task error:\n{traceback.format_exc()}")
                 await asyncio.sleep(0.5)  # Reduced delay for speed
@@ -340,7 +341,7 @@ class TempVoice(commands.Cog):
             self.cleanup_tasks[ch.id] = task
 
     async def _cleanup_task(self, ch):
-        await asyncio.sleep(3)  # Reduced from 5 to 3 seconds
+        await asyncio.sleep(15)  # Reduced from 5 to 3 seconds
         
         try:
             if ch.members:
