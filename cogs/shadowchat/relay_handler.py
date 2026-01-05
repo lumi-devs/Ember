@@ -51,7 +51,7 @@ class RelayHandler:
             'tatte',
             
             # Original censored words
-            'asshole', 'bitch', 'dick', 'pussy', 'cunt',
+            'bitch', 'dick', 'pussy', 'cunt',
             'retard', ' faggot', 'whore', 'slut',
             'kill', 'suicide', 'rape', 'pedo', 'incest', 'madarchod'
         }
@@ -80,8 +80,6 @@ class RelayHandler:
         
         # Also check for variations with symbols (e.g., f*ck, sh1t, etc.)
         variations = [
-            (r's[!@#$%^&*]*h[!@#$%^&*]*i[!@#$%^&*]*t', 'shit'),
-            (r'a[!@#$%^&*]*s[!@#$%^&*]*s', 'ass'),
         ]
         
         for pattern, original_word in variations:
