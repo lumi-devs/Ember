@@ -1548,7 +1548,7 @@ class ShadowChat(commands.Cog):
         finally:
             # Always clean up, even on error
             if await self.processed_interactions.get(interaction_key):
-                del self.processed_interactions[interaction_key]
+                await self.processed_interactions.delete(interaction_key)
     
     async def handle_leave_queue_button(self, interaction: discord.Interaction):
         """Handle leave queue button click."""
@@ -1644,7 +1644,7 @@ class ShadowChat(commands.Cog):
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 
                 # Clean up after processing
-                del self.processed_interactions[interaction_key]
+                await self.processed_interactions.delete(interaction_key)
                 return
             
             # Check if in active session
@@ -1665,7 +1665,7 @@ class ShadowChat(commands.Cog):
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 
                 # Clean up after processing
-                del self.processed_interactions[interaction_key]
+                await self.processed_interactions.delete(interaction_key)
                 return
             
             # QUICK ADD TO QUEUE - minimal processing for immediate response
@@ -1679,7 +1679,7 @@ class ShadowChat(commands.Cog):
                     )
                     await interaction.followup.send(embed=embed, ephemeral=True)
                     
-                    del self.processed_interactions[interaction_key]
+                    await self.processed_interactions.delete(interaction_key)
                     return
                 
                 # Add to queue quickly
