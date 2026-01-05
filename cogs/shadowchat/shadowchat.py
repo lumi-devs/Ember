@@ -1291,13 +1291,12 @@ class ShadowChat(commands.Cog):
             embed.description = f"**Total in queue:** {len(queue_users)}"
             
             queue_list = []
-            for i, queue_user in enumerate(queue_users, 1):
-                user = self.bot.get_user(queue_user.user_id)
-                wait_time = (discord.utils.utcnow() - queue_user.joined_at).seconds
-                
+            for i, user_id in enumerate(queue_users, 1):  # user_id is int, not QueueEntry
+                user = self.bot.get_user(user_id)
+                # We can't get wait_time without querying the database
+                # For now, just show the user
                 queue_list.append(
-                    f"{i}. {user.mention if user else 'Unknown'} - "
-                    f"Waiting: {wait_time // 60}m {wait_time % 60}s"
+                    f"{i}. {user.mention if user else f'Unknown ({user_id})'}"
                 )
             
             # Split into chunks to avoid field value limits
