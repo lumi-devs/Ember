@@ -1028,7 +1028,7 @@ class ShadowChat(commands.Cog):
             # Note: We send files + embed in one go. 
             # Discord limits: 10 files per message. The loop above caps at 10.
             try:
-                await mod_channel.send(embed=embed, files=files_to_upload)
+                await mod_channel.send(content=f"{session.session_id}", embed=embed, files=files_to_upload)
             except discord.HTTPException as e:
                 # Fallback if files are too massive
                 await mod_channel.send(embed=embed)

@@ -735,7 +735,7 @@ class SessionManager:
             inline=False
         )
         
-        await channel.send(embed=embed)
+        await channel.send(content=f"{session.session_id}",embed=embed)
     
     async def get_all_active_sessions(self) -> List[ShadowSession]:
         """Get all active sessions."""
