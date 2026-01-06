@@ -216,68 +216,53 @@ class WebhookManager:
     
 
     async def run_maintenance(self) -> dict:
-            """
-            Manually run the avatar maintenance cycle.
-            Returns a summary of actions taken.
-            """
-            summary = {
-                'checked': 0,
-                'missing': 0,
-                'expired': 0,
-                'uploaded': 0,
-                'failed': 0
-            }
-            
-            if not self._avatar_upload_channel_id:
-                logger.warning("No avatar upload channel found, skipping maintenance.")
-                return summary
-
-            # Iterate through all local avatar files
-            for filename in self._avatar_files:
-                summary['checked'] += 1
-                if filename not in self._avatar_file_cache:
-                    continue
-
-                avatar_bytes = self._avatar_file_cache[filename]
-                file_hash = hashlib.md5(avatar_bytes).hexdigest()[:12]
-                cache_key = f"{filename}_{file_hash}"
-                
-                should_upload = False
-                
-                # Case 1: Not in cache at all
-                if cache_key not in self._avatar_cache:
-                    summary['missing'] += 1
-                    should_upload = True
-                
-                # Case 2: In cache, but expired
-                else:
-                    entry = self._avatar_cache[cache_key]
-                    if entry.is_expired(self._avatar_cache_max_age_hours):
-                        summary['expired'] += 1
-                        # Try to delete old message to keep channel clean
-                        try:
-                            await self._delete_cached_avatar(entry)
-                        except:
-                            pass
-                        should_upload = True
-                
-                # Execute Upload
-                if should_upload:
-                    try:
-                        new_url = await self._upload_avatar_to_cdn(filename, avatar_bytes, cache_key)
-                        if new_url:
-                            summary['uploaded'] += 1
-                            await asyncio.sleep(2)  # Rate limit protection
-                        else:
-                            summary['failed'] += 1
-                            await asyncio.sleep(5)
-                    except Exception as e:
-                        logger.error(f"Manual maintenance upload error: {e}")
-                        summary['failed'] += 1
-            
-            # Save cache after manual cycle
-            await self._save_cache()
+        """Manually run the avatar maintenance cycle using cached data."""
+        summary = {'checked': 0, 'missing': 0, 'expired': 0, 'uploaded': 0, 'failed': 0}
+        
+        if not self._avatar_upload_channel_id:
+            logger.warning("No avatar upload channel found, skipping maintenance.")
             return summary
+
+        for filename in self._avatar_files:
+            summary['checked'] += 1
+            if filename not in self._avatar_file_cache:
+                continue
+
+            avatar_bytes = self._avatar_file_cache[filename]
+            file_hash = hashlib.md5(avatar_bytes).hexdigest()[:12]
+            cache_key = f"{filename}_{file_hash}"
+            
+            should_upload = False
+            
+            # Case 1: TRULY missing from dictionary (not loaded from JSON)
+            if cache_key not in self._avatar_cache:
+                summary['missing'] += 1
+                should_upload = True
+            
+            # Case 2: In cache, but actually expired (use a longer window, e.g., 24h)
+            else:
+                entry = self._avatar_cache[cache_key]
+                # Only re-upload if it's older than 24 hours to save API calls
+                if entry.is_expired(24): 
+                    summary['expired'] += 1
+                    should_upload = True
+            
+            if should_upload:
+                try:
+                    # We don't delete old messages anymore; let Discord's CDN 
+                    # handle it to avoid unnecessary "Message Deleted" logs.
+                    new_url = await self._upload_avatar_to_cdn(filename, avatar_bytes, cache_key)
+                    if new_url:
+                        summary['uploaded'] += 1
+                        await asyncio.sleep(2) # Protect against rate limits
+                    else:
+                        summary['failed'] += 1
+                except Exception as e:
+                    logger.error(f"Maintenance upload error: {e}")
+                    summary['failed'] += 1
+        
+        await self._save_cache()
+        return summary
 
     async def _avatar_maintenance_loop(self):
         await self.bot.wait_until_ready()
@@ -286,11 +271,9 @@ class WebhookManager:
                 logger.info("Running scheduled avatar cache maintenance...")
                 
                 if not self._avatar_upload_channel_id:
-                    logger.warning("No avatar upload channel found, skipping maintenance.")
                     await asyncio.sleep(600)
                     continue
 
-                # Iterate through all local avatar files
                 for filename in self._avatar_files:
                     if filename not in self._avatar_file_cache:
                         continue
@@ -299,51 +282,26 @@ class WebhookManager:
                     file_hash = hashlib.md5(avatar_bytes).hexdigest()[:12]
                     cache_key = f"{filename}_{file_hash}"
                     
-                    should_upload = False
-                    
-                    # Case 1: Not in cache at all
+                    # ONLY upload if it's actually missing from the cache
                     if cache_key not in self._avatar_cache:
-                        logger.debug(f"Maintenance: {filename} missing from cache. Queueing upload.")
-                        should_upload = True
+                        logger.info(f"Maintenance: {filename} actually missing from cache. Uploading.")
+                        await self._upload_avatar_to_cdn(filename, avatar_bytes, cache_key)
+                        await asyncio.sleep(2) # Protect rate limits
                     
-                    # Case 2: In cache, CHECK STATUS (Only upload if 404/Dead)
+                    # If it IS in cache, check the AGE, not the URL status
                     else:
                         entry = self._avatar_cache[cache_key]
-                        is_valid = False
-                        
-                        # Verify if the link is still alive
-                        try:
-                            async with self.session.head(entry.cdn_url) as resp:
-                                if resp.status == 200:
-                                    is_valid = True
-                        except:
-                            pass # Assume invalid if check fails
-                        
-                        if not is_valid:
-                            logger.debug(f"Maintenance: {filename} returned 404/403. Refreshing.")
-                            # REMOVED: await self._delete_cached_avatar(entry) 
-                            should_upload = True
-                    
-                    # Execute Upload with Rate Limiting
-                    if should_upload:
-                        new_url = await self._upload_avatar_to_cdn(filename, avatar_bytes, cache_key)
-                        if new_url:
-                            logger.info(f"Maintenance: Successfully cached {filename}")
-                            # FORCE WAIT 2 SECONDS between uploads
-                            await asyncio.sleep(2) 
-                        else:
-                            logger.error(f"Maintenance: Failed to upload {filename}")
-                            # If failed, wait a bit longer before trying next
-                            await asyncio.sleep(5)
+                        if entry.is_expired(self._avatar_cache_max_age_hours):
+                            logger.info(f"Maintenance: {filename} expired. Refreshing.")
+                            await self._refresh_avatar(cache_key, entry)
+                            await asyncio.sleep(2)
 
             except Exception as e:
                 logger.error(f"Error in avatar maintenance loop: {e}")
             
-            # Save cache after maintenance cycle
             await self._save_cache()
-            
-            # Wait 10 minutes before next full check
-            await asyncio.sleep(600)
+            # Change sleep to 1 hour. Checking every 10m is overkill for a 10h cache.
+            await asyncio.sleep(3600)
     
     def _get_fast_webhook_info(self, webhook_url: str) -> Optional[dict]:
         """Get webhook info from fast cache (no API calls)."""
@@ -369,45 +327,29 @@ class WebhookManager:
                            key=lambda k: self._webhook_info_fast_cache[k]['timestamp'])
             del self._webhook_info_fast_cache[oldest_key]
     
+
     async def _load_cache(self):
-        """Load avatar cache from disk."""
-        if not os.path.exists(self._cache_file):
-            logger.info("No existing avatar cache found")
-            return
+        """Load avatar cache from disk - corrected to not ignore old entries."""
+        if not os.path.exists(self._cache_file): return
             
         try:
             with open(self._cache_file, 'r') as f:
                 cache_data = json.load(f)
                 
-            loaded = 0
             for key, data in cache_data.items():
-                try:
-                    # Check if cache entry is still valid
-                    uploaded_at = datetime.fromisoformat(data['uploaded_at'])
-                    age = datetime.now() - uploaded_at
-                    
-                    if age.total_seconds() > (self._avatar_cache_max_age_hours * 3600):
-                        logger.debug(f"Skipping expired cache entry: {key}")
-                        continue
-                    
-                    entry = AvatarCacheEntry(
-                        filename=data['filename'],
-                        cdn_url=data['cdn_url'],
-                        message_id=data['message_id'],
-                        channel_id=data['channel_id']
-                    )
-                    entry.uploaded_at = uploaded_at
-                    entry.last_used = datetime.fromisoformat(data['last_used'])
-                    entry.use_count = data['use_count']
-                    
-                    self._avatar_cache[key] = entry
-                    loaded += 1
-                    
-                except Exception as e:
-                    logger.error(f"Error loading cache entry {key}: {e}")
-                    
-            logger.info(f"Loaded {loaded} cached avatars from disk")
-            
+                # Load EVERYTHING. Let the maintenance loop decide if it needs a refresh.
+                entry = AvatarCacheEntry(
+                    filename=data['filename'],
+                    cdn_url=data['cdn_url'],
+                    message_id=data['message_id'],
+                    channel_id=data['channel_id']
+                )
+                entry.uploaded_at = datetime.fromisoformat(data['uploaded_at'])
+                entry.last_used = datetime.fromisoformat(data['last_used'])
+                entry.use_count = data['use_count']
+                
+                self._avatar_cache[key] = entry
+                
         except Exception as e:
             logger.error(f"Error loading avatar cache: {e}")
     

@@ -4,6 +4,7 @@ Updated with skip command, shadow command group, and leave queue button
 Database reports removed - reports go directly to mod channel
 """
 
+import time
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -1084,42 +1085,51 @@ class ShadowChat(commands.Cog):
     )
     
     
-    @shadow_group.command(name="refresh_cache", description="Manually check and rebuild avatar cache (Mod only)")
     @app_commands.checks.has_permissions(manage_messages=True)
     async def shadow_refresh_cache(self, interaction: discord.Interaction):
         """Manually trigger avatar cache maintenance."""
         if not is_moderator(interaction.user):
-            await interaction.response.send_message("Moderator only.", ephemeral=True)
+            await interaction.response.send_message("❌ Moderator only.", ephemeral=True)
             return
         
         await interaction.response.defer(ephemeral=True)
-        await interaction.followup.send("🔄 Starting avatar cache maintenance... This may take a while.", ephemeral=True)
+        start_time = time.time()
         
         try:
             if not self.webhook_manager:
                 await interaction.followup.send("❌ Webhook Manager not initialized.", ephemeral=True)
                 return
 
-            # Run the maintenance
+            # Trigger the fixed maintenance logic
             stats = await self.webhook_manager.run_maintenance()
+            duration = round(time.time() - start_time, 2)
             
             # Report results
             embed = discord.Embed(
-                title="✅ Cache Maintenance Complete",
-                color=constants.COLOR_SUCCESS,
+                title="✅ Avatar Cache Maintenance Complete",
+                description=f"Maintenance finished in **{duration}s**.",
+                color=discord.Color.green(),
                 timestamp=discord.utils.utcnow()
             )
-            embed.add_field(name="Files Checked", value=str(stats['checked']), inline=True)
-            embed.add_field(name="Found Missing", value=str(stats['missing']), inline=True)
-            embed.add_field(name="Found Expired", value=str(stats['expired']), inline=True)
-            embed.add_field(name="Successfully Uploaded", value=str(stats['uploaded']), inline=True)
-            embed.add_field(name="Failed Uploads", value=str(stats['failed']), inline=True)
             
+            # This will now show 0 uploads if the JSON was loaded correctly!
+            embed.add_field(name="📁 Files Checked", value=f"`{stats['checked']}`", inline=True)
+            embed.add_field(name="🔍 Missing", value=f"`{stats['missing']}`", inline=True)
+            embed.add_field(name="⏰ Expired", value=f"`{stats['expired']}`", inline=True)
+            embed.add_field(name="📤 Uploaded", value=f"**{stats['uploaded']}**", inline=True)
+            embed.add_field(name="⚠️ Failed", value=f"`{stats['failed']}`", inline=True)
+            
+            # Helpful tip if everything was already cached
+            if stats['uploaded'] == 0:
+                embed.set_footer(text="Everything was already synced with the JSON cache.")
+            else:
+                embed.set_footer(text=f"Uploaded {stats['uploaded']} new assets to Discord CDN.")
+
             await interaction.followup.send(embed=embed, ephemeral=True)
             
         except Exception as e:
-            await interaction.followup.send(f"❌ Error during maintenance: {e}", ephemeral=True)
-    
+            print(f"Command Error (refresh_cache): {e}")
+            await interaction.followup.send(f"❌ Error during maintenance: `{e}`", ephemeral=True)
     
     @shadow_group.command(name="stats", description="View Shadow Chat statistics (Mod only)")
     @app_commands.checks.has_permissions(manage_messages=True)

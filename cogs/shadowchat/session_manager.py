@@ -531,15 +531,9 @@ class SessionManager:
                 if message.author.id == self.bot.user.id and message.embeds:
                     embed = message.embeds[0]
                     if embed.title == "👁️ Identity Reveal Request":
-                        # Found it! Update the embed
-                        new_embed = discord.Embed(
-                            title="👁️ Identity Reveal Accepted",
-                            description="✅ **Identities have been revealed!**",
-                            color=discord.Color.green()
-                        )
                         
                         # Remove buttons (view=None) and update embed
-                        await message.edit(embed=new_embed, view=None)
+                        await message.delete(delay=3)
                         break 
                         
         except Exception as e:
