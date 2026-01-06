@@ -43,7 +43,11 @@ class ManagedWebhook:
             return
 
         try:
-
+            self.webhook = await self.webhook.edit(
+                name="Shadow",
+                avatar=avatar_bytes,
+                reason="Reset to anonymous for new session"
+            )
             self.is_anonymous = True
             self.revealed_user = None
             self.current_avatar_bytes = avatar_bytes
@@ -72,7 +76,12 @@ class ManagedWebhook:
     async def update_identity(self, user: discord.User, avatar_bytes: Optional[bytes]):
         """Update webhook to match a specific user (Reveal)."""
         try:
-
+            display_name = user.display_name[:80] if user.display_name else user.name[:80]
+            self.webhook = await self.webhook.edit(
+                name=display_name,
+                avatar=avatar_bytes,
+                reason=f"Identity reveal: {user.id}"
+            )
             self.is_anonymous = False
             self.revealed_user = user
             self.current_avatar_bytes = avatar_bytes
@@ -401,12 +410,12 @@ class WebhookManager:
             avatar_url = None
             
             if not managed.is_anonymous and managed.revealed_user:
-                username = self._get_fast_webhook_info(webhook_url)['name'] 
+                username = managed.revealed_user.display_name
                 if managed.revealed_user.avatar:
                     avatar_url = str(managed.revealed_user.avatar.url)
             else:
                 if managed.webhook.avatar:
-                    avatar_url = self._get_fast_webhook_info(webhook_url)['avatar_url']
+                    avatar_url = str(managed.webhook.avatar.url)
 
             
             # Prepare webhook send parameters - USE WEBHOOK'S CURRENT AVATAR
