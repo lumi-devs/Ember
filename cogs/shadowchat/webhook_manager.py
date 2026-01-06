@@ -203,6 +203,70 @@ class WebhookManager:
     
     
 
+    async def run_maintenance(self) -> dict:
+            """
+            Manually run the avatar maintenance cycle.
+            Returns a summary of actions taken.
+            """
+            summary = {
+                'checked': 0,
+                'missing': 0,
+                'expired': 0,
+                'uploaded': 0,
+                'failed': 0
+            }
+            
+            if not self._avatar_upload_channel_id:
+                logger.warning("No avatar upload channel found, skipping maintenance.")
+                return summary
+
+            # Iterate through all local avatar files
+            for filename in self._avatar_files:
+                summary['checked'] += 1
+                if filename not in self._avatar_file_cache:
+                    continue
+
+                avatar_bytes = self._avatar_file_cache[filename]
+                file_hash = hashlib.md5(avatar_bytes).hexdigest()[:12]
+                cache_key = f"{filename}_{file_hash}"
+                
+                should_upload = False
+                
+                # Case 1: Not in cache at all
+                if cache_key not in self._avatar_cache:
+                    summary['missing'] += 1
+                    should_upload = True
+                
+                # Case 2: In cache, but expired
+                else:
+                    entry = self._avatar_cache[cache_key]
+                    if entry.is_expired(self._avatar_cache_max_age_hours):
+                        summary['expired'] += 1
+                        # Try to delete old message to keep channel clean
+                        try:
+                            await self._delete_cached_avatar(entry)
+                        except:
+                            pass
+                        should_upload = True
+                
+                # Execute Upload
+                if should_upload:
+                    try:
+                        new_url = await self._upload_avatar_to_cdn(filename, avatar_bytes, cache_key)
+                        if new_url:
+                            summary['uploaded'] += 1
+                            await asyncio.sleep(2)  # Rate limit protection
+                        else:
+                            summary['failed'] += 1
+                            await asyncio.sleep(5)
+                    except Exception as e:
+                        logger.error(f"Manual maintenance upload error: {e}")
+                        summary['failed'] += 1
+            
+            # Save cache after manual cycle
+            await self._save_cache()
+            return summary
+
     async def _avatar_maintenance_loop(self):
         """
         Runs every 10 minutes. 
@@ -807,20 +871,24 @@ class WebhookManager:
             
             # Create a list for all embeds
             all_embeds = []
-            
-            # FIXED: Handle reply embeds using YOUR EXACT CODE
             if reply_to_mirrored_id:
-                # Check cache first
+                reply_embed = None
+                
+                # 1. Try to get from Cache
                 if reply_to_mirrored_id in self._reply_message_cache:
                     cache_entry = self._reply_message_cache[reply_to_mirrored_id]
-                    if time.time() - cache_entry['timestamp'] < 300:  # 5 minute cache
-                        reply_embed = cache_entry['embed']
-                        all_embeds.append(reply_embed)
-                else:
+                    if time.time() - cache_entry['timestamp'] < 300:
+                        # CRITICAL FIX: Ensure 'embed' is not None before using it
+                        if cache_entry.get('embed'):
+                            reply_embed = cache_entry['embed']
+
+                # 2. If Cache failed or was None, Fetch from Discord
+                if not reply_embed:
                     try:
                         replied_message = await thread.fetch_message(reply_to_mirrored_id)
                         
-                        # METHOD 1: Look up webhook from our database tracking
+                        # [Existing logic to find webhook info/author name...]
+                        # METHOD 1: Look up webhook from database
                         webhook_info = await self.db.get_webhook_for_message(replied_message.id)
                         
                         reply_author_name = "Shadow"
@@ -829,14 +897,11 @@ class WebhookManager:
                         if webhook_info:
                             managed_webhook = self.managed_webhooks.get(webhook_info['webhook_url'])
                             if managed_webhook:
-                                # USE FAST CACHE INSTEAD OF API CALL
                                 cache_info = self._get_fast_webhook_info(webhook_info['webhook_url'])
                                 if cache_info:
-                                    # Use cached info
                                     reply_author_name = cache_info['name']
                                     reply_author_avatar = cache_info['avatar_url']
                                 else:
-                                    # Fallback to managed webhook state (no API call)
                                     if managed_webhook.is_anonymous:
                                         reply_author_name = "Shadow"
                                         reply_author_avatar = managed_webhook.get_avatar_url()
@@ -845,29 +910,23 @@ class WebhookManager:
                                         reply_author_avatar = managed_webhook.get_avatar_url()
                         else:
                             # METHOD 2: Try to determine from session context
-                            # Get session ID from thread tracking
                             session_id = None
                             for sess_id, (wh1, wh2) in self.session_webhooks.items():
                                 if wh1.url == webhook_url:
-                                    # Current webhook is wh1, so replied message was from wh2 (partner)
                                     partner_webhook = wh2
                                     session_id = sess_id
                                     break
                                 elif wh2.url == webhook_url:
-                                    # Current webhook is wh2, so replied message was from wh1 (partner)
                                     partner_webhook = wh1
                                     session_id = sess_id
                                     break
                             
                             if session_id:
-                                # USE FAST CACHE INSTEAD OF API CALL
                                 cache_info = self._get_fast_webhook_info(partner_webhook.url)
                                 if cache_info:
-                                    # Use cached info
                                     reply_author_name = cache_info['name']
                                     reply_author_avatar = cache_info['avatar_url']
                                 else:
-                                    # Fallback to partner webhook state (no API call)
                                     reply_author_name = partner_webhook.get_display_name()
                                     reply_author_avatar = partner_webhook.get_avatar_url()
                         
@@ -889,50 +948,36 @@ class WebhookManager:
                                 reply_embed.description = f"\n".join(attachment_texts)
                             else:
                                 reply_embed.description = f"📎 [Attachment]({message_link})"
-                            
-                            if len(replied_message.attachments) > 3:
-                                reply_embed.description += f"\n... and {len(replied_message.attachments) - 3} more"
                         elif replied_message.stickers:
                             sticker = replied_message.stickers[0]
                             sticker_name = getattr(sticker, 'name', 'Sticker')
-                            reply_embed.description = f"🩷 [{sticker_name}]({message_link})"
+                            reply_embed.description = f"🧩 [{sticker_name}]({message_link})"
                         elif replied_message.embeds:
-                            reply_embed.description = f"📄 [Embedded Content]({message_link})"
+                            reply_embed.description = f"🖼️ [Embedded Content]({message_link})"
                         else:
                             reply_embed.description = f"[Message]({message_link})"
                         
-                        # Set author with message link - USE WEBHOOK'S CURRENT AVATAR
+                        # Set author
                         reply_embed.set_author(
                             name=f"Reply to {reply_author_name}",
                             url=message_link,
-                            icon_url=reply_author_avatar  # Use webhook's current avatar
+                            icon_url=reply_author_avatar
                         )
                         
-                        all_embeds.append(reply_embed)
-                        
-                        # Cache the reply embed
+                        # Cache this new valid embed
                         self._reply_message_cache[reply_to_mirrored_id] = {
                             'embed': reply_embed,
                             'timestamp': time.time()
                         }
-                        # Limit cache size
-                        if len(self._reply_message_cache) > 100:
-                            # Remove oldest entry
-                            del self._reply_message_cache[next(iter(self._reply_message_cache))]
                         
                     except discord.NotFound:
-                        simple_reply_embed = discord.Embed(
-                            description="**Replying to a message**",
-                            color=0x87CEEB
-                        )
-                        all_embeds.append(simple_reply_embed)
+                        reply_embed = discord.Embed(description="**Replying to a deleted message**", color=0x87CEEB)
                     except Exception as e:
                         logger.error(f"Failed to create reply embed: {e}")
-                        simple_reply_embed = discord.Embed(
-                            description="**Replying to a message**",
-                            color=0x87CEEB
-                        )
-                        all_embeds.append(simple_reply_embed)
+                        reply_embed = discord.Embed(description="**Replying to a message**", color=0x87CEEB)
+
+                if reply_embed:
+                    all_embeds.append(reply_embed)
             
             # Handle stickers - KEEPING YOUR CODE
             if message.stickers:
@@ -981,7 +1026,9 @@ class WebhookManager:
             
             # Add embeds to send_kwargs if we have any
             if all_embeds:
-                send_kwargs['embeds'] = all_embeds[:10]
+                valid_embeds = [e for e in all_embeds if e is not None]
+                if valid_embeds:
+                    send_kwargs['embeds'] = valid_embeds[:10]
             
             # Send the message
             sent = await managed.webhook.send(**send_kwargs)

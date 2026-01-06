@@ -1083,6 +1083,44 @@ class ShadowChat(commands.Cog):
             description="Shadow Chat moderation commands"
     )
     
+    
+    @shadow_group.command(name="refresh_cache", description="Manually check and rebuild avatar cache (Mod only)")
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def shadow_refresh_cache(self, interaction: discord.Interaction):
+        """Manually trigger avatar cache maintenance."""
+        if not is_moderator(interaction.user):
+            await interaction.response.send_message("Moderator only.", ephemeral=True)
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        await interaction.followup.send("🔄 Starting avatar cache maintenance... This may take a while.", ephemeral=True)
+        
+        try:
+            if not self.webhook_manager:
+                await interaction.followup.send("❌ Webhook Manager not initialized.", ephemeral=True)
+                return
+
+            # Run the maintenance
+            stats = await self.webhook_manager.run_maintenance()
+            
+            # Report results
+            embed = discord.Embed(
+                title="✅ Cache Maintenance Complete",
+                color=constants.COLOR_SUCCESS,
+                timestamp=discord.utils.utcnow()
+            )
+            embed.add_field(name="Files Checked", value=str(stats['checked']), inline=True)
+            embed.add_field(name="Found Missing", value=str(stats['missing']), inline=True)
+            embed.add_field(name="Found Expired", value=str(stats['expired']), inline=True)
+            embed.add_field(name="Successfully Uploaded", value=str(stats['uploaded']), inline=True)
+            embed.add_field(name="Failed Uploads", value=str(stats['failed']), inline=True)
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error during maintenance: {e}", ephemeral=True)
+    
+    
     @shadow_group.command(name="stats", description="View Shadow Chat statistics (Mod only)")
     @app_commands.checks.has_permissions(manage_messages=True)
     async def shadow_stats(self, interaction: discord.Interaction):
