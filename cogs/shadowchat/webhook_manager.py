@@ -329,15 +329,20 @@ class WebhookManager:
     
 
     async def _load_cache(self):
-        """Load avatar cache from disk - corrected to not ignore old entries."""
-        if not os.path.exists(self._cache_file): return
+        """Load avatar cache from disk."""
+        if not os.path.exists(self._cache_file):
+            logger.info("No existing avatar cache found")
+            return
             
         try:
             with open(self._cache_file, 'r') as f:
                 cache_data = json.load(f)
                 
+            loaded = 0
             for key, data in cache_data.items():
-                # Load EVERYTHING. Let the maintenance loop decide if it needs a refresh.
+                # --- CRITICAL FIX START ---
+                # We load EVERYTHING. Even if it's 5 years old.
+                # Do NOT put an 'if expired: continue' check here.
                 entry = AvatarCacheEntry(
                     filename=data['filename'],
                     cdn_url=data['cdn_url'],
@@ -349,7 +354,11 @@ class WebhookManager:
                 entry.use_count = data['use_count']
                 
                 self._avatar_cache[key] = entry
+                loaded += 1
+                # --- CRITICAL FIX END ---
                 
+            logger.info(f"Loaded {loaded} cached avatars from disk")
+            
         except Exception as e:
             logger.error(f"Error loading avatar cache: {e}")
     
