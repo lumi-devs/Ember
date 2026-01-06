@@ -1,7 +1,8 @@
 """
 SHADOW CHAT - WEBHOOK MANAGER (OPTIMIZED - NO EDIT METHODS)
 USES AVATAR/NAME PARAMETERS IN SEND METHOD
-HOSTS AVATARS ON DISCORD'S CDN
+SMART AVATAR CACHING WITH DISCORD CDN
+FIXED REPLY EMBEDS
 """
 
 import asyncio
@@ -15,11 +16,39 @@ import os
 import logging
 from .models import Database
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
+import json
 
 # Set up logging
 logger = logging.getLogger(__name__)
+
+class AvatarCacheEntry:
+    """Represents a cached avatar with expiration."""
+    
+    def __init__(self, filename: str, cdn_url: str, message_id: int, channel_id: int):
+        self.filename = filename
+        self.cdn_url = cdn_url
+        self.message_id = message_id
+        self.channel_id = channel_id
+        self.uploaded_at = datetime.now()
+        self.last_used = datetime.now()
+        self.use_count = 0
+        
+    def is_expired(self, max_age_hours: int = 6) -> bool:
+        """Check if cache entry is expired."""
+        age = datetime.now() - self.uploaded_at
+        return age.total_seconds() > (max_age_hours * 3600)
+    
+    def should_refresh(self, max_age_hours: int = 4) -> bool:
+        """Check if cache entry should be refreshed soon."""
+        age = datetime.now() - self.uploaded_at
+        return age.total_seconds() > (max_age_hours * 3600)
+    
+    def mark_used(self):
+        """Mark this avatar as used."""
+        self.last_used = datetime.now()
+        self.use_count += 1
 
 class IdentityState:
     """Represents a webhook's identity state."""
@@ -42,7 +71,6 @@ class ManagedWebhook:
         self.assigned_session_id: Optional[str] = None
         self.is_valid = True  # Track if webhook is still valid
         self.last_used: Optional[datetime] = None
-        self._cached_default_avatar_url: Optional[str] = None
         
     def get_avatar_url(self) -> Optional[str]:
         """Get avatar URL from identity state."""
@@ -52,9 +80,6 @@ class ManagedWebhook:
         elif self.identity.avatar_url:
             # Use cached anonymous avatar URL
             return self.identity.avatar_url
-        elif self._cached_default_avatar_url:
-            # Use previously cached default avatar
-            return self._cached_default_avatar_url
         else:
             # Fallback to Discord's default avatar
             return "https://cdn.discordapp.com/embed/avatars/0.png"
@@ -64,7 +89,7 @@ class ManagedWebhook:
         return self.identity.display_name
 
 class WebhookManager:
-    """Manages webhooks using provided static URLs with caching."""
+    """Manages webhooks using provided static URLs with smart avatar caching."""
     
     def __init__(self, bot, db: Database):
         self.bot = bot
@@ -79,13 +104,18 @@ class WebhookManager:
         self.session_webhooks: Dict[str, Tuple[ManagedWebhook, ManagedWebhook]] = {}
         self.thread_sessions: Dict[int, str] = {}
         
-        # Caching system - store Discord CDN URLs for your custom avatars
-        self._avatar_cache: Dict[str, str] = {}  # filename_hash -> Discord CDN URL
+        # Smart avatar caching system
+        self._avatar_cache: Dict[str, AvatarCacheEntry] = {}  # filename_hash -> cache entry
         self._avatar_file_cache: Dict[str, bytes] = {}  # filename -> file bytes
         self._avatar_files: List[str] = []  # List of available avatar filenames
         self._user_avatar_cache: Dict[str, str] = {}  # user_id -> avatar_url
-        self._default_avatar_cache: Dict[str, str] = {}  # webhook_url -> default_avatar_url
-        self._reply_cache: Dict[int, dict] = {}  # message_id -> reply info
+        
+        # Reply cache - IMPORTANT: Cache the full reply embed data
+        self._reply_message_cache: Dict[int, dict] = {}  # message_id -> webhook info cache
+        
+        # Cache persistence
+        self._cache_file = "avatar_cache.json"
+        self._cache_save_task = None
         
         # Random display names for anonymous mode
         self._anonymous_names = [
@@ -94,12 +124,20 @@ class WebhookManager:
         ]
         
         # Channel for uploading avatar images
-        self._avatar_upload_channel_id = None  # Set this to a private channel ID
+        self._avatar_upload_channel_id = None
+        
+        # Cache settings
+        self._avatar_cache_max_age_hours = 6  # Delete after 6 hours
+        self._avatar_refresh_hours = 4  # Start refreshing after 4 hours
+        self._max_cached_avatars = 50  # Maximum avatars to keep cached
+        
+        # Fast cache for webhook info (no API calls needed)
+        self._webhook_info_fast_cache: Dict[str, dict] = {}  # webhook_url -> {name, avatar_url, timestamp}
         
         self._lock = asyncio.Lock()
         
     async def initialize(self):
-        """Initialize webhook manager and load/upload local avatars to Discord CDN."""
+        """Initialize webhook manager and load/setup avatar caching."""
         logger.info("Initializing Webhook Manager...")
         
         # Create aiohttp session with connection pooling
@@ -107,8 +145,17 @@ class WebhookManager:
             connector = aiohttp.TCPConnector(limit_per_host=20, ttl_dns_cache=300)
             self.session = aiohttp.ClientSession(connector=connector)
         
-        # Load your custom avatars and upload to Discord CDN
-        await self._load_and_upload_avatars()
+        # Load existing cache
+        await self._load_cache()
+        
+        # Load your custom avatars
+        await self._load_local_avatars()
+        
+        # Setup avatar upload channel
+        await self._ensure_avatar_channel()
+        
+        # Start cache maintenance in background
+        self._cache_save_task = asyncio.create_task(self._periodic_cache_save())
         
         if not self.provided_webhook_urls:
             logger.warning("No webhook URLs provided in constants.WEBHOOK_URLS")
@@ -128,11 +175,6 @@ class WebhookManager:
                 self.available_webhooks.append(managed)
                 loaded_count += 1
                 
-                # Cache the webhook's current avatar URL
-                if webhook.avatar:
-                    managed._cached_default_avatar_url = str(webhook.avatar.url)
-                    self._default_avatar_cache[url] = str(webhook.avatar.url)
-                
                 logger.debug(f"Loaded webhook: {url}")
                 
             except discord.NotFound:
@@ -147,8 +189,109 @@ class WebhookManager:
         
         logger.info(f"Webhook Manager initialized with {loaded_count}/{len(self.provided_webhook_urls)} webhooks")
     
-    async def _load_and_upload_avatars(self):
-        """Load avatar images from assets folder and upload to Discord CDN."""
+    def _get_fast_webhook_info(self, webhook_url: str) -> Optional[dict]:
+        """Get webhook info from fast cache (no API calls)."""
+        if webhook_url in self._webhook_info_fast_cache:
+            cache_entry = self._webhook_info_fast_cache[webhook_url]
+            # Cache valid for 1 minute (frequent updates possible)
+            if time.time() - cache_entry['timestamp'] < 60:
+                return cache_entry
+        return None
+
+    def _update_fast_webhook_cache(self, webhook_url: str, name: str, avatar_url: Optional[str]):
+        """Update fast cache for webhook information."""
+        self._webhook_info_fast_cache[webhook_url] = {
+            'name': name,
+            'avatar_url': avatar_url,
+            'timestamp': time.time()
+        }
+        
+        # Limit cache size
+        if len(self._webhook_info_fast_cache) > 100:
+            # Remove oldest entry
+            oldest_key = min(self._webhook_info_fast_cache.keys(), 
+                           key=lambda k: self._webhook_info_fast_cache[k]['timestamp'])
+            del self._webhook_info_fast_cache[oldest_key]
+    
+    async def _load_cache(self):
+        """Load avatar cache from disk."""
+        if not os.path.exists(self._cache_file):
+            logger.info("No existing avatar cache found")
+            return
+            
+        try:
+            with open(self._cache_file, 'r') as f:
+                cache_data = json.load(f)
+                
+            loaded = 0
+            for key, data in cache_data.items():
+                try:
+                    # Check if cache entry is still valid
+                    uploaded_at = datetime.fromisoformat(data['uploaded_at'])
+                    age = datetime.now() - uploaded_at
+                    
+                    if age.total_seconds() > (self._avatar_cache_max_age_hours * 3600):
+                        logger.debug(f"Skipping expired cache entry: {key}")
+                        continue
+                    
+                    entry = AvatarCacheEntry(
+                        filename=data['filename'],
+                        cdn_url=data['cdn_url'],
+                        message_id=data['message_id'],
+                        channel_id=data['channel_id']
+                    )
+                    entry.uploaded_at = uploaded_at
+                    entry.last_used = datetime.fromisoformat(data['last_used'])
+                    entry.use_count = data['use_count']
+                    
+                    self._avatar_cache[key] = entry
+                    loaded += 1
+                    
+                except Exception as e:
+                    logger.error(f"Error loading cache entry {key}: {e}")
+                    
+            logger.info(f"Loaded {loaded} cached avatars from disk")
+            
+        except Exception as e:
+            logger.error(f"Error loading avatar cache: {e}")
+    
+    async def _save_cache(self):
+        """Save avatar cache to disk."""
+        try:
+            cache_data = {}
+            for key, entry in self._avatar_cache.items():
+                cache_data[key] = {
+                    'filename': entry.filename,
+                    'cdn_url': entry.cdn_url,
+                    'message_id': entry.message_id,
+                    'channel_id': entry.channel_id,
+                    'uploaded_at': entry.uploaded_at.isoformat(),
+                    'last_used': entry.last_used.isoformat(),
+                    'use_count': entry.use_count
+                }
+            
+            with open(self._cache_file, 'w') as f:
+                json.dump(cache_data, f, indent=2)
+                
+            logger.debug(f"Saved {len(cache_data)} avatar cache entries to disk")
+            
+        except Exception as e:
+            logger.error(f"Error saving avatar cache: {e}")
+    
+    async def _periodic_cache_save(self):
+        """Periodically save cache to disk."""
+        while True:
+            try:
+                await asyncio.sleep(300)  # Save every 5 minutes
+                await self._save_cache()
+            except asyncio.CancelledError:
+                await self._save_cache()  # Final save on cancellation
+                break
+            except Exception as e:
+                logger.error(f"Error in periodic cache save: {e}")
+    
+    async def _load_local_avatars(self):
+        """Load avatar images from assets folder."""
         base_dir = os.path.dirname(os.path.abspath(__file__))
         avatar_dir = os.path.join(base_dir, "assets")
         
@@ -159,10 +302,6 @@ class WebhookManager:
         supported_extensions = ('.png', '.jpg', '.jpeg', '.gif', '.webp')
         loaded_count = 0
         
-        # Create or get avatar upload channel
-        await self._ensure_avatar_channel()
-        
-        # Load all avatar files
         for filename in os.listdir(avatar_dir):
             if filename.lower().endswith(supported_extensions):
                 try:
@@ -176,16 +315,8 @@ class WebhookManager:
         
         if loaded_count == 0:
             logger.warning("No avatars loaded! Using fallback Discord avatars.")
-            # Fallback to Discord default avatars
-            for i in range(6):
-                filename = f"discord_default_{i}"
-                self._avatar_cache[filename] = f"https://cdn.discordapp.com/embed/avatars/{i}.png"
-                self._avatar_files.append(filename)
         
         logger.info(f"Loaded {loaded_count} custom avatars from {avatar_dir}")
-        
-        # Upload avatars to Discord CDN in background (lazy loading)
-        asyncio.create_task(self._upload_avatars_to_cdn())
     
     async def _ensure_avatar_channel(self):
         """Ensure we have a private channel for uploading avatars."""
@@ -193,7 +324,7 @@ class WebhookManager:
             return
             
         # Try to get from environment or config
-        if hasattr(constants, 'AVATAR_UPLOAD_CHANNEL_ID'):
+        if hasattr(constants, 'AVATAR_UPLOAD_CHANNEL_ID') and constants.AVATAR_UPLOAD_CHANNEL_ID:
             self._avatar_upload_channel_id = constants.AVATAR_UPLOAD_CHANNEL_ID
             return
             
@@ -233,113 +364,166 @@ class WebhookManager:
         except Exception as e:
             logger.error(f"Error setting up avatar channel: {e}")
     
-    async def _upload_avatars_to_cdn(self):
-        """Upload avatars to Discord CDN and cache the URLs."""
-        if not self._avatar_upload_channel_id or not self._avatar_file_cache:
-            return
+    async def _get_or_upload_avatar(self, filename: str) -> Optional[str]:
+        """Get cached avatar URL or upload to Discord CDN."""
+        if filename not in self._avatar_file_cache:
+            return None
+            
+        avatar_bytes = self._avatar_file_cache[filename]
+        
+        # Create cache key
+        file_hash = hashlib.md5(avatar_bytes).hexdigest()[:12]
+        cache_key = f"{filename}_{file_hash}"
+        
+        # Check cache first
+        if cache_key in self._avatar_cache:
+            entry = self._avatar_cache[cache_key]
+            
+            # Check if expired
+            if entry.is_expired(self._avatar_cache_max_age_hours):
+                logger.debug(f"Cache entry expired for {filename}, removing")
+                await self._delete_cached_avatar(entry)
+                del self._avatar_cache[cache_key]
+            else:
+                # Check if needs refresh
+                if entry.should_refresh(self._avatar_refresh_hours):
+                    # Refresh in background
+                    asyncio.create_task(self._refresh_avatar(cache_key, entry))
+                
+                entry.mark_used()
+                return entry.cdn_url
+        
+        # Not in cache or expired, upload to Discord CDN
+        return await self._upload_avatar_to_cdn(filename, avatar_bytes, cache_key)
+    
+    async def _upload_avatar_to_cdn(self, filename: str, avatar_bytes: bytes, cache_key: str) -> Optional[str]:
+        """Upload avatar to Discord CDN and cache the URL."""
+        if not self._avatar_upload_channel_id:
+            logger.warning("No avatar upload channel available")
+            return None
             
         try:
             channel = self.bot.get_channel(self._avatar_upload_channel_id)
             if not channel:
                 logger.warning(f"Avatar upload channel {self._avatar_upload_channel_id} not found")
-                return
+                return None
             
-            uploaded_count = 0
-            for filename, avatar_bytes in self._avatar_file_cache.items():
-                try:
-                    # Create hash for cache key
-                    file_hash = hashlib.md5(avatar_bytes).hexdigest()[:8]
-                    cache_key = f"{filename}_{file_hash}"
-                    
-                    # Skip if already uploaded
-                    if cache_key in self._avatar_cache:
-                        continue
-                    
-                    # Create discord.File
-                    file = discord.File(io.BytesIO(avatar_bytes), filename=filename)
-                    
-                    # Upload to Discord
-                    message = await channel.send(file=file)
-                    
-                    if message.attachments:
-                        # Get the Discord CDN URL
-                        cdn_url = message.attachments[0].url
-                        self._avatar_cache[cache_key] = cdn_url
-                        uploaded_count += 1
-                        
-                        # Also map filename to this URL for random selection
-                        self._avatar_cache[filename] = cdn_url
-                        
-                        logger.debug(f"Uploaded avatar to Discord CDN: {filename} -> {cdn_url}")
-                    
-                    # Rate limiting prevention
-                    await asyncio.sleep(0.5)
-                    
-                except discord.HTTPException as e:
-                    logger.error(f"Discord error uploading avatar {filename}: {e}")
-                    # Rate limit backoff
-                    await asyncio.sleep(2)
-                except Exception as e:
-                    logger.error(f"Error uploading avatar {filename}: {e}")
-                    continue
+            # Create discord.File
+            file = discord.File(io.BytesIO(avatar_bytes), filename=filename)
             
-            logger.info(f"Uploaded {uploaded_count} avatars to Discord CDN")
+            # Upload to Discord
+            message = await channel.send(file=file)
             
-            # Clean up old messages (keep only the most recent 50)
-            if uploaded_count > 0:
-                await self._cleanup_old_avatar_messages(channel)
+            if message.attachments:
+                # Get the Discord CDN URL
+                cdn_url = message.attachments[0].url
                 
+                # Create cache entry
+                entry = AvatarCacheEntry(
+                    filename=filename,
+                    cdn_url=cdn_url,
+                    message_id=message.id,
+                    channel_id=channel.id
+                )
+                entry.mark_used()
+                
+                self._avatar_cache[cache_key] = entry
+                
+                # Clean up old cache entries if needed
+                await self._cleanup_old_cache_entries()
+                
+                logger.debug(f"Uploaded avatar to Discord CDN: {filename} -> {cdn_url}")
+                return cdn_url
+            
+        except discord.HTTPException as e:
+            logger.error(f"Discord error uploading avatar {filename}: {e}")
+            # Rate limit backoff
+            await asyncio.sleep(2)
         except Exception as e:
-            logger.error(f"Error in avatar upload process: {e}")
+            logger.error(f"Error uploading avatar {filename}: {e}")
+            
+        return None
     
-    async def _cleanup_old_avatar_messages(self, channel):
-        """Clean up old avatar messages to keep channel clean."""
+    async def _refresh_avatar(self, cache_key: str, old_entry: AvatarCacheEntry):
+        """Refresh an avatar by re-uploading it."""
         try:
-            # Keep only the most recent 50 messages
-            messages_to_delete = []
-            async for message in channel.history(limit=100):
-                if len(message.attachments) > 0:
-                    messages_to_delete.append(message)
-            
-            if len(messages_to_delete) > 50:
-                messages_to_delete = messages_to_delete[50:]
+            filename = old_entry.filename
+            if filename not in self._avatar_file_cache:
+                return
                 
-                for message in messages_to_delete:
-                    try:
-                        await message.delete()
-                        await asyncio.sleep(0.1)  # Rate limiting
-                    except Exception as e:
-                        logger.error(f"Failed to delete old avatar message: {e}")
-                        
+            avatar_bytes = self._avatar_file_cache[filename]
+            
+            # Upload new version
+            new_cdn_url = await self._upload_avatar_to_cdn(filename, avatar_bytes, cache_key)
+            
+            if new_cdn_url:
+                # Delete old message
+                await self._delete_cached_avatar(old_entry)
+                logger.debug(f"Refreshed avatar: {filename}")
+                
         except Exception as e:
-            logger.error(f"Error cleaning up avatar messages: {e}")
+            logger.error(f"Error refreshing avatar: {e}")
+    
+    async def _delete_cached_avatar(self, entry: AvatarCacheEntry):
+        """Delete a cached avatar from Discord."""
+        try:
+            channel = self.bot.get_channel(entry.channel_id)
+            if channel:
+                message = await channel.fetch_message(entry.message_id)
+                await message.delete()
+        except Exception as e:
+            logger.error(f"Error deleting cached avatar message: {e}")
+    
+    async def _cleanup_old_cache_entries(self):
+        """Clean up old cache entries to stay within limits."""
+        if len(self._avatar_cache) <= self._max_cached_avatars:
+            return
+            
+        # Sort by last used (oldest first)
+        sorted_entries = sorted(
+            self._avatar_cache.items(),
+            key=lambda x: x[1].last_used
+        )
+        
+        # Delete oldest entries
+        for cache_key, entry in sorted_entries[:len(self._avatar_cache) - self._max_cached_avatars]:
+            try:
+                await self._delete_cached_avatar(entry)
+                del self._avatar_cache[cache_key]
+            except Exception as e:
+                logger.error(f"Error cleaning up cache entry {cache_key}: {e}")
     
     def _get_random_anonymous_state(self) -> Tuple[str, str]:
         """Get random anonymous identity state using YOUR custom avatars."""
         name = secrets.choice(self._anonymous_names)
         
-        if self._avatar_files and self._avatar_cache:
-            # Try to use custom avatars
-            for _ in range(10):  # Try multiple times
-                random_avatar_file = secrets.choice(self._avatar_files)
-                if random_avatar_file in self._avatar_cache:
-                    avatar_url = self._avatar_cache[random_avatar_file]
-                    return name, avatar_url
+        if not self._avatar_files:
+            # No custom avatars, use Discord default
+            avatar_url = f"https://cdn.discordapp.com/embed/avatars/{secrets.randbelow(6)}.png"
+            return name, avatar_url
+        
+        # Try to get a random custom avatar
+        attempts = 0
+        while attempts < 5:
+            random_avatar_file = secrets.choice(self._avatar_files)
+            
+            # Try to get cached or upload
+            cdn_url_task = asyncio.create_task(self._get_or_upload_avatar(random_avatar_file))
+            
+            # Wait a short time for the upload
+            try:
+                cdn_url = asyncio.run(asyncio.wait_for(cdn_url_task, timeout=1.0))
+                if cdn_url:
+                    return name, cdn_url
+            except (asyncio.TimeoutError, Exception):
+                # Upload timed out or failed, try another
+                pass
+            
+            attempts += 1
         
         # Fallback to Discord default
         avatar_url = f"https://cdn.discordapp.com/embed/avatars/{secrets.randbelow(6)}.png"
         return name, avatar_url
-    
-    def _get_random_avatar_url(self) -> str:
-        """Get a random avatar URL from your custom avatars."""
-        if self._avatar_files and self._avatar_cache:
-            for _ in range(10):  # Try multiple times
-                random_avatar_file = secrets.choice(self._avatar_files)
-                if random_avatar_file in self._avatar_cache:
-                    return self._avatar_cache[random_avatar_file]
-        
-        # Fallback to Discord default
-        return f"https://cdn.discordapp.com/embed/avatars/{secrets.randbelow(6)}.png"
     
     async def associate_thread_with_session(self, thread: discord.Thread, session_id: str):
         """Associate a thread with a session for reply tracking."""
@@ -362,8 +546,10 @@ class WebhookManager:
             name2, avatar2 = self._get_random_anonymous_state()
             
             # Ensure avatars are different
-            while avatar1 == avatar2:
+            attempts = 0
+            while avatar1 == avatar2 and attempts < 5:
                 name2, avatar2 = self._get_random_anonymous_state()
+                attempts += 1
             
             webhook1.identity.is_anonymous = True
             webhook1.identity.display_name = name1
@@ -372,6 +558,10 @@ class WebhookManager:
             webhook2.identity.is_anonymous = True
             webhook2.identity.display_name = name2
             webhook2.identity.avatar_url = avatar2
+            
+            # Update fast cache
+            self._update_fast_webhook_cache(webhook1.url, name1, avatar1)
+            self._update_fast_webhook_cache(webhook2.url, name2, avatar2)
             
             webhook1.assigned_session_id = session_id
             webhook2.assigned_session_id = session_id
@@ -413,13 +603,15 @@ class WebhookManager:
                 avatar_index = discriminator % 6
                 webhook2.identity.avatar_url = f"https://cdn.discordapp.com/embed/avatars/{avatar_index}.png"
             
+            # Update fast cache
+            self._update_fast_webhook_cache(webhook1.url, webhook1.identity.display_name, webhook1.identity.avatar_url)
+            self._update_fast_webhook_cache(webhook2.url, webhook2.identity.display_name, webhook2.identity.avatar_url)
+            
             logger.debug(f"Revealed identities for session {session_id}: {user1.id} <-> {user2.id}")
             return True
     
     async def update_webhook_identity(self, webhook_url: str, user: discord.User, use_default_avatar: bool = False):
-        """
-        Update webhook identity state without API calls.
-        """
+        """Update webhook identity state without API calls."""
         managed = self.managed_webhooks.get(webhook_url)
         if not managed:
             logger.error(f"Webhook not found for URL: {webhook_url}")
@@ -437,6 +629,9 @@ class WebhookManager:
                 managed.identity.avatar_url = f"https://cdn.discordapp.com/embed/avatars/{avatar_index}.png"
             else:
                 managed.identity.avatar_url = str(user.avatar.url)
+            
+            # Update fast cache
+            self._update_fast_webhook_cache(webhook_url, managed.identity.display_name, managed.identity.avatar_url)
             
             managed.identity.last_updated = time.time()
             logger.debug(f"Updated identity state for webhook {webhook_url} to user {user.id}")
@@ -460,6 +655,9 @@ class WebhookManager:
             managed.identity.avatar_url = avatar_url
             managed.identity.user = None
             
+            # Update fast cache
+            self._update_fast_webhook_cache(webhook_url, name, avatar_url)
+            
             logger.debug(f"Reset webhook {webhook_url} to anonymous: {name}")
             return True
         except Exception as e:
@@ -467,7 +665,7 @@ class WebhookManager:
             return False
     
     async def relay_message(self, thread, webhook_url, message, reply_to_mirrored_id=None):
-        """Relay message with identity from state."""
+        """Relay message with identity from state - WITH FIXED REPLY EMBEDS."""
         managed = self.managed_webhooks.get(webhook_url)
         if not managed: 
             logger.error(f"Webhook not found for URL: {webhook_url}")
@@ -522,15 +720,133 @@ class WebhookManager:
             # Create a list for all embeds
             all_embeds = []
             
-            # Handle reply embeds
+            # FIXED: Handle reply embeds using YOUR EXACT CODE
             if reply_to_mirrored_id:
-                reply_embed = await self._create_reply_embed(
-                    thread, reply_to_mirrored_id, webhook_url
-                )
-                if reply_embed:
-                    all_embeds.append(reply_embed)
+                # Check cache first
+                if reply_to_mirrored_id in self._reply_message_cache:
+                    cache_entry = self._reply_message_cache[reply_to_mirrored_id]
+                    if time.time() - cache_entry['timestamp'] < 300:  # 5 minute cache
+                        reply_embed = cache_entry['embed']
+                        all_embeds.append(reply_embed)
+                else:
+                    try:
+                        replied_message = await thread.fetch_message(reply_to_mirrored_id)
+                        
+                        # METHOD 1: Look up webhook from our database tracking
+                        webhook_info = await self.db.get_webhook_for_message(replied_message.id)
+                        
+                        reply_author_name = "Shadow"
+                        reply_author_avatar = None
+                        
+                        if webhook_info:
+                            managed_webhook = self.managed_webhooks.get(webhook_info['webhook_url'])
+                            if managed_webhook:
+                                # USE FAST CACHE INSTEAD OF API CALL
+                                cache_info = self._get_fast_webhook_info(webhook_info['webhook_url'])
+                                if cache_info:
+                                    # Use cached info
+                                    reply_author_name = cache_info['name']
+                                    reply_author_avatar = cache_info['avatar_url']
+                                else:
+                                    # Fallback to managed webhook state (no API call)
+                                    if managed_webhook.is_anonymous:
+                                        reply_author_name = "Shadow"
+                                        reply_author_avatar = managed_webhook.get_avatar_url()
+                                    else:
+                                        reply_author_name = managed_webhook.get_display_name()
+                                        reply_author_avatar = managed_webhook.get_avatar_url()
+                        else:
+                            # METHOD 2: Try to determine from session context
+                            # Get session ID from thread tracking
+                            session_id = None
+                            for sess_id, (wh1, wh2) in self.session_webhooks.items():
+                                if wh1.url == webhook_url:
+                                    # Current webhook is wh1, so replied message was from wh2 (partner)
+                                    partner_webhook = wh2
+                                    session_id = sess_id
+                                    break
+                                elif wh2.url == webhook_url:
+                                    # Current webhook is wh2, so replied message was from wh1 (partner)
+                                    partner_webhook = wh1
+                                    session_id = sess_id
+                                    break
+                            
+                            if session_id:
+                                # USE FAST CACHE INSTEAD OF API CALL
+                                cache_info = self._get_fast_webhook_info(partner_webhook.url)
+                                if cache_info:
+                                    # Use cached info
+                                    reply_author_name = cache_info['name']
+                                    reply_author_avatar = cache_info['avatar_url']
+                                else:
+                                    # Fallback to partner webhook state (no API call)
+                                    reply_author_name = partner_webhook.get_display_name()
+                                    reply_author_avatar = partner_webhook.get_avatar_url()
+                        
+                        # Create message link
+                        message_link = f"https://discord.com/channels/{thread.guild.id}/{thread.id}/{reply_to_mirrored_id}"
+                        
+                        # Create reply embed
+                        reply_embed = discord.Embed(color=0x87CEEB)
+                        
+                        if replied_message.content:
+                            content_preview = replied_message.content[:100] + "..." if len(replied_message.content) > 100 else replied_message.content
+                            reply_embed.description = f"{content_preview}"
+                        elif replied_message.attachments:
+                            attachment_texts = []
+                            for att in replied_message.attachments[:3]:
+                                attachment_texts.append(f"📎 [{att.filename}]({att.url})")
+                            
+                            if attachment_texts:
+                                reply_embed.description = f"\n".join(attachment_texts)
+                            else:
+                                reply_embed.description = f"📎 [Attachment]({message_link})"
+                            
+                            if len(replied_message.attachments) > 3:
+                                reply_embed.description += f"\n... and {len(replied_message.attachments) - 3} more"
+                        elif replied_message.stickers:
+                            sticker = replied_message.stickers[0]
+                            sticker_name = getattr(sticker, 'name', 'Sticker')
+                            reply_embed.description = f"🩷 [{sticker_name}]({message_link})"
+                        elif replied_message.embeds:
+                            reply_embed.description = f"📄 [Embedded Content]({message_link})"
+                        else:
+                            reply_embed.description = f"[Message]({message_link})"
+                        
+                        # Set author with message link - USE WEBHOOK'S CURRENT AVATAR
+                        reply_embed.set_author(
+                            name=f"Reply to {reply_author_name}",
+                            url=message_link,
+                            icon_url=reply_author_avatar  # Use webhook's current avatar
+                        )
+                        
+                        all_embeds.append(reply_embed)
+                        
+                        # Cache the reply embed
+                        self._reply_message_cache[reply_to_mirrored_id] = {
+                            'embed': reply_embed,
+                            'timestamp': time.time()
+                        }
+                        # Limit cache size
+                        if len(self._reply_message_cache) > 100:
+                            # Remove oldest entry
+                            del self._reply_message_cache[next(iter(self._reply_message_cache))]
+                        
+                    except discord.NotFound:
+                        simple_reply_embed = discord.Embed(
+                            description="**Replying to a message**",
+                            color=0x87CEEB
+                        )
+                        all_embeds.append(simple_reply_embed)
+                    except Exception as e:
+                        logger.error(f"Failed to create reply embed: {e}")
+                        simple_reply_embed = discord.Embed(
+                            description="**Replying to a message**",
+                            color=0x87CEEB
+                        )
+                        all_embeds.append(simple_reply_embed)
             
-            # Handle stickers
+            # Handle stickers - KEEPING YOUR CODE
             if message.stickers:
                 for sticker in message.stickers:
                     try:
@@ -602,14 +918,14 @@ class WebhookManager:
                     )
                     
                     # Cache the message info for replies
-                    self._reply_cache[sent.id] = {
-                        'webhook_url': webhook_url,
+                    self._reply_message_cache[sent.id] = {
+                        'embed': sent.embeds[0] if sent.embeds else None,
+                        'timestamp': time.time(),
                         'username': username,
-                        'avatar_url': avatar_url,
-                        'timestamp': time.time()
+                        'avatar_url': avatar_url
                     }
                     # Clean old cache entries
-                    self._clean_old_cache_entries()
+                    self._clean_old_reply_cache_entries()
 
             return sent.id, None
             
@@ -624,98 +940,29 @@ class WebhookManager:
             logger.error(f"Error sending message: {e}")
             return None, str(e)
     
-    async def _create_reply_embed(self, thread, reply_to_mirrored_id: int, current_webhook_url: str) -> Optional[discord.Embed]:
-        """Create a reply embed using cached data."""
-        # Check cache first
-        if reply_to_mirrored_id in self._reply_cache:
-            cache_entry = self._reply_cache[reply_to_mirrored_id]
-            if time.time() - cache_entry['timestamp'] < 300:  # 5 minute cache
-                return self._build_reply_embed(
-                    thread, reply_to_mirrored_id,
-                    cache_entry['username'],
-                    cache_entry['avatar_url']
-                )
-        
-        # Try database lookup
-        try:
-            replied_message = await thread.fetch_message(reply_to_mirrored_id)
-            
-            # Look up webhook from database
-            webhook_info = await self.db.get_webhook_for_message(replied_message.id)
-            
-            if webhook_info:
-                # Get partner webhook from session
-                session_id = None
-                partner_webhook = None
-                
-                for sess_id, (wh1, wh2) in self.session_webhooks.items():
-                    if wh1.url == current_webhook_url:
-                        partner_webhook = wh2
-                        session_id = sess_id
-                        break
-                    elif wh2.url == current_webhook_url:
-                        partner_webhook = wh1
-                        session_id = sess_id
-                        break
-                
-                if partner_webhook:
-                    return self._build_reply_embed(
-                        thread, reply_to_mirrored_id,
-                        partner_webhook.get_display_name(),
-                        partner_webhook.get_avatar_url()
-                    )
-            
-            # Fallback: generic reply
-            return self._build_reply_embed(
-                thread, reply_to_mirrored_id,
-                "Shadow",
-                "https://cdn.discordapp.com/embed/avatars/0.png"
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to create reply embed: {e}")
-            return None
-    
-    def _build_reply_embed(self, thread, message_id: int, username: str, avatar_url: str) -> discord.Embed:
-        """Build a reply embed with given information."""
-        message_link = f"https://discord.com/channels/{thread.guild.id}/{thread.id}/{message_id}"
-        
-        embed = discord.Embed(color=0x87CEEB)
-        embed.set_author(
-            name=f"Reply to {username}",
-            url=message_link,
-            icon_url=avatar_url
-        )
-        embed.description = f"[Jump to message]({message_link})"
-        
-        return embed
-    
-    def _clean_old_cache_entries(self, max_age: int = 300, max_size: int = 1000):
-        """Clean old cache entries."""
+    def _clean_old_reply_cache_entries(self, max_age: int = 300, max_size: int = 1000):
+        """Clean old reply cache entries."""
         current_time = time.time()
         
         # Remove old entries
         to_remove = []
-        for key, entry in self._reply_cache.items():
+        for key, entry in self._reply_message_cache.items():
             if current_time - entry['timestamp'] > max_age:
                 to_remove.append(key)
         
         for key in to_remove:
-            del self._reply_cache[key]
+            del self._reply_message_cache[key]
         
         # Limit cache size
-        if len(self._reply_cache) > max_size:
+        if len(self._reply_message_cache) > max_size:
             # Remove oldest entries
-            sorted_keys = sorted(self._reply_cache.keys(), 
-                               key=lambda k: self._reply_cache[k]['timestamp'])
+            sorted_keys = sorted(self._reply_message_cache.keys(), 
+                               key=lambda k: self._reply_message_cache[k]['timestamp'])
             for key in sorted_keys[:len(sorted_keys) - max_size]:
-                del self._reply_cache[key]
+                del self._reply_message_cache[key]
     
     async def delete_webhook(self, webhook_url: str):
-        """
-        Dummy method for compatibility.
-        Since we use static webhooks, we don't actually delete them.
-        """
+        """Dummy method for compatibility."""
         logger.debug(f"Delete webhook called (no-op for static webhook): {webhook_url}")
         pass
         
@@ -753,6 +1000,10 @@ class WebhookManager:
             webhook2.identity.user = None
             webhook2.assigned_session_id = None
             
+            # Update fast cache
+            self._update_fast_webhook_cache(webhook1.url, name1, avatar1)
+            self._update_fast_webhook_cache(webhook2.url, name2, avatar2)
+            
             # Return to available pool
             if webhook1.is_valid and webhook1 not in self.available_webhooks:
                 self.available_webhooks.append(webhook1)
@@ -764,25 +1015,72 @@ class WebhookManager:
 
     async def close(self):
         """Cleanup resources."""
+        # Cancel cache save task
+        if self._cache_save_task:
+            self._cache_save_task.cancel()
+            try:
+                await self._cache_save_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Save cache one final time
+        await self._save_cache()
+        
         if self.session and not self.session.closed:
             await self.session.close()
         logger.info("Webhook Manager closed")
 
     def get_stats(self) -> Dict:
         """Get statistics about webhook manager."""
+        # Count active vs expired cache entries
+        active_cache = 0
+        expired_cache = 0
+        for entry in self._avatar_cache.values():
+            if entry.is_expired(self._avatar_cache_max_age_hours):
+                expired_cache += 1
+            else:
+                active_cache += 1
+        
         return {
             "total_webhooks": len(self.managed_webhooks),
             "available_webhooks": len(self.available_webhooks),
             "active_sessions": len(self.session_webhooks),
             "valid_webhooks": sum(1 for w in self.managed_webhooks.values() if w.is_valid),
-            "reply_cache_size": len(self._reply_cache),
+            "reply_cache_size": len(self._reply_message_cache),
             "local_avatar_count": len(self._avatar_files),
-            "uploaded_avatar_count": len(self._avatar_cache),
-            "user_avatar_cache_size": len(self._user_avatar_cache)
+            "cached_avatars_active": active_cache,
+            "cached_avatars_expired": expired_cache,
+            "user_avatar_cache_size": len(self._user_avatar_cache),
+            "avatar_upload_channel": self._avatar_upload_channel_id,
+            "fast_webhook_cache_size": len(self._webhook_info_fast_cache)
         }
     
     def clear_cache(self):
         """Clear all caches (for debugging)."""
-        self._reply_cache.clear()
+        self._reply_message_cache.clear()
         self._user_avatar_cache.clear()
+        self._avatar_cache.clear()
+        self._webhook_info_fast_cache.clear()
         logger.info("All caches cleared")
+    
+    async def cleanup_expired_avatars(self):
+        """Manually clean up expired avatar cache entries."""
+        logger.info("Starting manual avatar cache cleanup...")
+        
+        expired_keys = []
+        for cache_key, entry in self._avatar_cache.items():
+            if entry.is_expired(self._avatar_cache_max_age_hours):
+                expired_keys.append(cache_key)
+        
+        cleaned = 0
+        for cache_key in expired_keys:
+            try:
+                entry = self._avatar_cache[cache_key]
+                await self._delete_cached_avatar(entry)
+                del self._avatar_cache[cache_key]
+                cleaned += 1
+            except Exception as e:
+                logger.error(f"Error cleaning up expired avatar {cache_key}: {e}")
+        
+        await self._save_cache()
+        logger.info(f"Cleaned up {cleaned} expired avatars")
