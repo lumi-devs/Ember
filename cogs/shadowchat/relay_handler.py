@@ -100,6 +100,10 @@ class RelayHandler:
     async def handle_message(self, message: discord.Message) -> Tuple[bool, Optional[str]]:
         """Handle and relay a message from a session thread."""
         try:
+            # Check for user mentions and handle them
+            if await self.handle_user_mentions(message):
+                return True, None
+            
             #print(f"[DEBUG] Handling message in thread {message.channel.id}")
             
             # Get session for this thread
@@ -263,3 +267,107 @@ class RelayHandler:
             import traceback
             traceback.print_exc()
             return False, "Internal error"
+    
+    async def handle_user_mentions(self, message: discord.Message) -> bool:
+        """
+        Handle user mentions in threads.
+        Returns True if mentions were handled (and message should not be relayed),
+        False otherwise.
+        """
+        try:
+            # Check if this is a thread
+            if not isinstance(message.channel, discord.Thread):
+                return False
+            
+            # Check if message contains user mentions
+            if not message.mentions:
+                return False
+            
+            # Get the thread
+            thread = message.channel
+            
+            # Check if there's an active session for this thread
+            session = await self.session_manager.get_session_by_thread(thread.id)
+            if not session:
+                return False
+            
+            # Check if the user is part of the session
+            is_user1 = message.author.id == session.user1_id
+            is_user2 = message.author.id == session.user2_id
+            
+            if not (is_user1 or is_user2):
+                return False
+            
+            # Get the mentioned users
+            mentioned_users = [user for user in message.mentions if not user.bot]
+            
+            if not mentioned_users:
+                return False
+            
+            # Check if any mentioned user is not part of the session
+            session_user_ids = [session.user1_id, session.user2_id]
+            unauthorized_mentions = []
+            
+            for user in mentioned_users:
+                if user.id not in session_user_ids:
+                    unauthorized_mentions.append(user)
+            
+            if not unauthorized_mentions:
+                return False
+            
+            # Remove unauthorized users from the thread
+            removed_users = []
+            for user in unauthorized_mentions:
+                try:
+                    await thread.remove_user(user)
+                    removed_users.append(user.mention)
+                    print(f"[SECURITY] Removed {user.name} ({user.id}) from thread {thread.id} at request of {message.author.name}")
+                except discord.Forbidden:
+                    print(f"[ERROR] No permission to remove user {user.id} from thread {thread.id}")
+                except discord.HTTPException as e:
+                    print(f"[ERROR] Failed to remove user {user.id} from thread: {e}")
+            
+            # Send warning embed
+            embed = discord.Embed(
+                title="⚠️ Privacy Warning",
+                description=(
+                    "**Do not add other users to your thread!**\n\n"
+                    "This is a private, anonymous conversation space. "
+                    "Mentioning people adds them to the thread."
+                    "USse names instead of mentions to refer to others.\n\n"
+                    "Adding other users compromises:\n"
+                    "• **Your anonymity**\n"
+                    "• **Your partner's anonymity**\n"
+                    "• **The privacy of your conversation**\n\n"
+                    f"Removed users: {', '.join(removed_users) if removed_users else 'None'}\n\n"
+                    "Please keep this space private."
+                ),
+                color=discord.Color.red()
+            )
+            
+            # Add footer with timestamp
+            embed.set_footer(text="Shadow Chat Privacy System")
+            embed.timestamp = discord.utils.utcnow()
+            
+            try:
+                # Delete the original message with mentions
+                await message.delete()
+                
+                # Send warning embed
+                warning_msg = await thread.send(embed=embed)
+                
+                # Delete warning after 10 seconds
+                await warning_msg.delete(delay=10)
+                
+            except discord.Forbidden:
+                print(f"[ERROR] No permission to delete/send messages in thread {thread.id}")
+            except discord.HTTPException as e:
+                print(f"[ERROR] Failed to handle mention warning: {e}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to handle user mentions: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
