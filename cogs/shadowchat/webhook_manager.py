@@ -365,36 +365,36 @@ class WebhookManager:
             logger.error(f"Error setting up avatar channel: {e}")
     
     async def _get_or_upload_avatar(self, filename: str) -> Optional[str]:
-        """Get cached avatar URL or upload to Discord CDN."""
-        if filename not in self._avatar_file_cache:
-            return None
-            
-        avatar_bytes = self._avatar_file_cache[filename]
-        
-        # Create cache key
-        file_hash = hashlib.md5(avatar_bytes).hexdigest()[:12]
-        cache_key = f"{filename}_{file_hash}"
-        
-        # Check cache first
-        if cache_key in self._avatar_cache:
-            entry = self._avatar_cache[cache_key]
-            
-            # Check if expired
-            if entry.is_expired(self._avatar_cache_max_age_hours):
-                logger.debug(f"Cache entry expired for {filename}, removing")
-                await self._delete_cached_avatar(entry)
-                del self._avatar_cache[cache_key]
-            else:
-                # Check if needs refresh
-                if entry.should_refresh(self._avatar_refresh_hours):
-                    # Refresh in background
-                    asyncio.create_task(self._refresh_avatar(cache_key, entry))
+            """Get cached avatar URL or upload to Discord CDN - async version."""
+            if filename not in self._avatar_file_cache:
+                return None
                 
-                entry.mark_used()
-                return entry.cdn_url
-        
-        # Not in cache or expired, upload to Discord CDN
-        return await self._upload_avatar_to_cdn(filename, avatar_bytes, cache_key)
+            avatar_bytes = self._avatar_file_cache[filename]
+            
+            # Create cache key
+            file_hash = hashlib.md5(avatar_bytes).hexdigest()[:12]
+            cache_key = f"{filename}_{file_hash}"
+            
+            # Check cache first
+            if cache_key in self._avatar_cache:
+                entry = self._avatar_cache[cache_key]
+                
+                # Check if expired
+                if entry.is_expired(self._avatar_cache_max_age_hours):
+                    logger.debug(f"Cache entry expired for {filename}, removing")
+                    await self._delete_cached_avatar(entry)
+                    del self._avatar_cache[cache_key]
+                else:
+                    # Check if needs refresh
+                    if entry.should_refresh(self._avatar_refresh_hours):
+                        # Refresh in background
+                        asyncio.create_task(self._refresh_avatar(cache_key, entry))
+                    
+                    entry.mark_used()
+                    return entry.cdn_url
+            
+            # Not in cache or expired, upload to Discord CDN
+            return await self._upload_avatar_to_cdn(filename, avatar_bytes, cache_key)
     
     async def _upload_avatar_to_cdn(self, filename: str, avatar_bytes: bytes, cache_key: str) -> Optional[str]:
         """Upload avatar to Discord CDN and cache the URL."""
@@ -493,8 +493,10 @@ class WebhookManager:
             except Exception as e:
                 logger.error(f"Error cleaning up cache entry {cache_key}: {e}")
     
-    def _get_random_anonymous_state(self) -> Tuple[str, str]:
-        """Get random anonymous identity state using YOUR custom avatars."""
+    
+    
+    async def get_random_anonymous_state(self) -> Tuple[str, str]:
+        """Get random anonymous identity state using YOUR custom avatars - ASYNC."""
         name = secrets.choice(self._anonymous_names)
         
         if not self._avatar_files:
@@ -502,34 +504,27 @@ class WebhookManager:
             avatar_url = f"https://cdn.discordapp.com/embed/avatars/{secrets.randbelow(6)}.png"
             return name, avatar_url
         
-        # Try to get a random custom avatar
-        attempts = 0
-        while attempts < 5:
-            random_avatar_file = secrets.choice(self._avatar_files)
+        # Look for any available cached avatar
+        for filename in self._avatar_files:
+            file_hash = hashlib.md5(self._avatar_file_cache[filename]).hexdigest()[:12]
+            cache_key = f"{filename}_{file_hash}"
             
-            # Try to get cached or upload
-            cdn_url_task = asyncio.create_task(self._get_or_upload_avatar(random_avatar_file))
-            
-            # Wait a short time for the upload
-            try:
-                cdn_url = asyncio.run(asyncio.wait_for(cdn_url_task, timeout=1.0))
-                if cdn_url:
-                    return name, cdn_url
-            except (asyncio.TimeoutError, Exception):
-                # Upload timed out or failed, try another
-                pass
-            
-            attempts += 1
+            if cache_key in self._avatar_cache:
+                entry = self._avatar_cache[cache_key]
+                if not entry.is_expired(self._avatar_cache_max_age_hours):
+                    entry.mark_used()
+                    return name, entry.cdn_url
+        
+        # If no cached avatars, try to upload one
+        random_avatar_file = secrets.choice(self._avatar_files)
+        cdn_url = await self._get_or_upload_avatar(random_avatar_file)
+        
+        if cdn_url:
+            return name, cdn_url
         
         # Fallback to Discord default
         avatar_url = f"https://cdn.discordapp.com/embed/avatars/{secrets.randbelow(6)}.png"
         return name, avatar_url
-    
-    async def associate_thread_with_session(self, thread: discord.Thread, session_id: str):
-        """Associate a thread with a session for reply tracking."""
-        async with self._lock:
-            self.thread_sessions[thread.id] = session_id
-            logger.debug(f"Associated thread {thread.id} with session {session_id}")
     
     async def assign_webhooks_for_session(self, session_id: str, thread: discord.Thread = None) -> Tuple[Optional[str], Optional[str]]:
         """Assign webhooks for a new session with anonymous state."""
@@ -542,13 +537,13 @@ class WebhookManager:
             webhook2 = self.available_webhooks.pop(secrets.randbelow(len(self.available_webhooks)))
             
             # Set anonymous identity for both webhooks using YOUR avatars
-            name1, avatar1 = self._get_random_anonymous_state()
-            name2, avatar2 = self._get_random_anonymous_state()
+            name1, avatar1 = await self.get_random_anonymous_state()
+            name2, avatar2 = await self.get_random_anonymous_state()
             
             # Ensure avatars are different
             attempts = 0
             while avatar1 == avatar2 and attempts < 5:
-                name2, avatar2 = self._get_random_anonymous_state()
+                name2, avatar2 = await self.get_random_anonymous_state()
                 attempts += 1
             
             webhook1.identity.is_anonymous = True
@@ -572,7 +567,15 @@ class WebhookManager:
             
             logger.debug(f"Assigned webhooks for session {session_id}: {webhook1.url}, {webhook2.url}")
             return webhook1.url, webhook2.url
+
     
+    async def associate_thread_with_session(self, thread: discord.Thread, session_id: str):
+        """Associate a thread with a session for reply tracking."""
+        async with self._lock:
+            self.thread_sessions[thread.id] = session_id
+            logger.debug(f"Associated thread {thread.id} with session {session_id}")
+    
+
     async def reveal_identities(self, session_id: str, user1: discord.User, user2: discord.User) -> bool:
         """Reveal identities by swapping identity states."""
         async with self._lock:
@@ -647,8 +650,8 @@ class WebhookManager:
             return False
         
         try:
-            # Get new random anonymous identity
-            name, avatar_url = self._get_random_anonymous_state()
+            # Get new random anonymous identity - FIX: Use async version!
+            name, avatar_url = await self.get_random_anonymous_state()  # CHANGED THIS LINE
             
             managed.identity.is_anonymous = True
             managed.identity.display_name = name
@@ -984,9 +987,9 @@ class WebhookManager:
             
             webhook1, webhook2 = self.session_webhooks[session_id]
             
-            # Reset identity states with NEW random avatars
-            name1, avatar1 = self._get_random_anonymous_state()
-            name2, avatar2 = self._get_random_anonymous_state()
+            # Reset identity states with NEW random avatars - FIX: Use async versions!
+            name1, avatar1 = await self.get_random_anonymous_state()  # CHANGED
+            name2, avatar2 = await self.get_random_anonymous_state()  # CHANGED
             
             webhook1.identity.is_anonymous = True
             webhook1.identity.display_name = name1
@@ -1012,7 +1015,7 @@ class WebhookManager:
             
             del self.session_webhooks[session_id]
             logger.info(f"Session {session_id} ended, webhooks returned to pool")
-
+        
     async def close(self):
         """Cleanup resources."""
         # Cancel cache save task
