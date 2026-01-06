@@ -332,9 +332,9 @@ class RelayHandler:
                 title="⚠️ Privacy Warning",
                 description=(
                     "**Do not add other users to your thread!**\n\n"
-                    "This is a private, anonymous conversation space. "
-                    "Mentioning people adds them to the thread."
-                    "USse names instead of mentions to refer to others.\n\n"
+                    "### This is a private, anonymous conversation space. "
+                    "### Mentioning people adds them to the thread.\n"
+                    "Use names instead of mentions to refer to others.\n\n"
                     "Adding other users compromises:\n"
                     "• **Your anonymity**\n"
                     "• **Your partner's anonymity**\n"
@@ -357,7 +357,7 @@ class RelayHandler:
                 warning_msg = await thread.send(embed=embed)
                 
                 # Delete warning after 10 seconds
-                await warning_msg.delete(delay=10)
+                await warning_msg.delete(delay=20)
                 
             except discord.Forbidden:
                 print(f"[ERROR] No permission to delete/send messages in thread {thread.id}")

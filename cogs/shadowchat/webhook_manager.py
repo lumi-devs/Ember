@@ -528,6 +528,7 @@ class WebhookManager:
     
     async def assign_webhooks_for_session(self, session_id: str, thread: discord.Thread = None) -> Tuple[Optional[str], Optional[str]]:
         """Assign webhooks for a new session with anonymous state."""
+        print(f"[DEBUG] Available webhooks: {len(self.available_webhooks)}") # Check pool size
         async with self._lock:
             if len(self.available_webhooks) < 2:
                 return None, None
@@ -535,6 +536,7 @@ class WebhookManager:
             # Get two random webhooks
             webhook1 = self.available_webhooks.pop(secrets.randbelow(len(self.available_webhooks)))
             webhook2 = self.available_webhooks.pop(secrets.randbelow(len(self.available_webhooks)))
+            print(f"Selected webhooks: {webhook1.url}, {webhook2.url}")
             
             # Set anonymous identity for both webhooks using YOUR avatars
             name1, avatar1 = await self.get_random_anonymous_state()

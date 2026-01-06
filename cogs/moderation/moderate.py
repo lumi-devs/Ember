@@ -98,11 +98,15 @@ def can_punish(punisher: discord.Member, target: discord.Member, action: str) ->
     if punisher.id == target.id:
         return False, "You cannot punish yourself."
     
-    # Rule 2: Can't punish someone with higher or equal role level
-    if target_role_level >= punisher_role_level and target_role_level > 0:
+    # Rule 2: Can't punish someone with higher role level
+    if target_role_level > punisher_role_level:
         return False, f"You cannot punish a {target_role_name} as a {punisher_role_name}."
     
-    # Rule 3: Check action permissions based on role
+    # Rule 3: Can't punish someone with the same role level (FIXED)
+    if target_role_level == punisher_role_level and target_role_level > 0:
+        return False, f"You cannot punish another {punisher_role_name}."
+    
+    # Rule 4: Check action permissions based on role
     if action == "mute":
         # All moderation roles can mute
         pass  # Allowed for all
@@ -117,7 +121,7 @@ def can_punish(punisher: discord.Member, target: discord.Member, action: str) ->
         if punisher_role_level < 3:  # Only Moderators (level 3) can ban
             return False, f"{punisher_role_name}s cannot ban members."
     
-    # Rule 4: Check Discord role hierarchy for non-moderation roles
+    # Rule 5: Check Discord role hierarchy for non-moderation roles
     if target_role_level == 0:  # Target has no moderation role
         # Get highest non-moderation role positions
         punisher_highest = max(
