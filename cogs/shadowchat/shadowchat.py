@@ -1084,7 +1084,7 @@ class ShadowChat(commands.Cog):
             description="Shadow Chat moderation commands"
     )
     
-    
+    @shadow_group.command(name="avatars", description="Manually check and rebuild avatar cache (Mod only)")
     @app_commands.checks.has_permissions(manage_messages=True)
     async def shadow_refresh_cache(self, interaction: discord.Interaction):
         """Manually trigger avatar cache maintenance."""
