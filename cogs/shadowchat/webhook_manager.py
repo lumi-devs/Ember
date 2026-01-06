@@ -127,7 +127,19 @@ class WebhookManager:
         # Random display names for anonymous mode
         self._anonymous_names = [
             "Shadow", "Ghost", "Echo", "Spectre", "Phantom", "Wraith",
-            "Mystery", "Unknown", "Stranger", "Incognito", "Anon", "Mask"
+            "Mystery", "Unknown", "Stranger", "Incognito", "Anon", "Mask", 
+            "Shade", "Void", "Abyss", "Umbra", "Gloom", "Obsidian", 
+            "Midnight", "Eclipse", "Silhouette", "Noir", "Vanta", "Enigma", 
+            "Cipher", "Riddle", "Paradox", "Secret", "Whisper", "Veil", 
+            "Cloak", "Shroud", "Mirage", "Illusion", "Camouflage", "Mist", 
+            "Fog", "Haze", "Smoke", "Vapor", "Ash", "Dust", "Storm", 
+            "Frost", "Winter", "Rain", "Thunder", "Nomad", "Drifter", 
+            "Rogue", "Ronin", "Exile", "Outcast", "Traveler", "Watcher", 
+            "Observer", "Scout", "Agent", "Proxy", "Alias", "Glitch", 
+            "Signal", "Static", "Null", "Blank", "Zero", "Nobody", 
+            "System", "Chaos", "Entropy", "Raven", "Crow", "Wolf", 
+            "Viper", "Cobra", "Hawk", "Spirit", "Soul", "Wisp", 
+            "Banshee", "Ghoul", "Revenant"
         ]
         
         # Channel for uploading avatar images
@@ -268,14 +280,7 @@ class WebhookManager:
             return summary
 
     async def _avatar_maintenance_loop(self):
-        """
-        Runs every 10 minutes. 
-        1. Checks if local files are missing from cache (integrity).
-        2. Checks if cached files are > 10 hours old (refresh).
-        3. Uploads missing/old files with a 2s delay to prevent rate limits.
-        """
         await self.bot.wait_until_ready()
-        
         while not self.bot.is_closed():
             try:
                 logger.info("Running scheduled avatar cache maintenance...")
@@ -291,7 +296,6 @@ class WebhookManager:
                         continue
 
                     avatar_bytes = self._avatar_file_cache[filename]
-                    # Generate the key exactly how _get_or_upload_avatar does
                     file_hash = hashlib.md5(avatar_bytes).hexdigest()[:12]
                     cache_key = f"{filename}_{file_hash}"
                     
@@ -302,13 +306,22 @@ class WebhookManager:
                         logger.debug(f"Maintenance: {filename} missing from cache. Queueing upload.")
                         should_upload = True
                     
-                    # Case 2: In cache, but expired (older than 10 hours)
+                    # Case 2: In cache, CHECK STATUS (Only upload if 404/Dead)
                     else:
                         entry = self._avatar_cache[cache_key]
-                        if entry.is_expired(self._avatar_cache_max_age_hours):
-                            logger.debug(f"Maintenance: {filename} expired (>10h). Refreshing.")
-                            # Optional: Try to delete the old message to keep channel clean
-                            await self._delete_cached_avatar(entry)
+                        is_valid = False
+                        
+                        # Verify if the link is still alive
+                        try:
+                            async with self.session.head(entry.cdn_url) as resp:
+                                if resp.status == 200:
+                                    is_valid = True
+                        except:
+                            pass # Assume invalid if check fails
+                        
+                        if not is_valid:
+                            logger.debug(f"Maintenance: {filename} returned 404/403. Refreshing.")
+                            # REMOVED: await self._delete_cached_avatar(entry) 
                             should_upload = True
                     
                     # Execute Upload with Rate Limiting

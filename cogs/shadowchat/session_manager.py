@@ -497,14 +497,54 @@ class SessionManager:
         else:
             session.user2_consent = True
         
-        # Check if both consented
         if session.user1_consent and session.user2_consent:
+            # NEW: Cleanup the request message for the user who just accepted
+            await self._cleanup_reveal_request_message(session, user_id)
+            
             await self._reveal_identities(session)
             return True, constants.MESSAGE_REVEAL_CONFIRMED
         else:
             # Notify partner
             await self._notify_reveal_request(session, user_id)
             return True, constants.MESSAGE_REVEAL_PENDING
+    
+    
+    async def _cleanup_reveal_request_message(self, session: ShadowSession, user_id: int):
+        """Find and edit the reveal request message to remove buttons and show success."""
+        try:
+            # The user who just accepted (user_id) is the one who had the buttons in their thread
+            thread_id = session.get_user_thread(user_id)
+            if not thread_id:
+                return
+
+            guild = self.bot.get_guild(constants.GUILD_ID)
+            if not guild:
+                return
+
+            thread = await get_thread_by_id(guild, thread_id)
+            if not thread:
+                return
+
+            # Scan recent messages to find the request
+            # We look for a message from the bot with the specific title
+            async for message in thread.history(limit=20):
+                if message.author.id == self.bot.user.id and message.embeds:
+                    embed = message.embeds[0]
+                    if embed.title == "👁️ Identity Reveal Request":
+                        # Found it! Update the embed
+                        new_embed = discord.Embed(
+                            title="👁️ Identity Reveal Accepted",
+                            description="✅ **Identities have been revealed!**",
+                            color=discord.Color.green()
+                        )
+                        
+                        # Remove buttons (view=None) and update embed
+                        await message.edit(embed=new_embed, view=None)
+                        break 
+                        
+        except Exception as e:
+            print(f"[Shadow Chat] Error cleaning up reveal message: {e}")
+    
     
     async def _reveal_identities(self, session: ShadowSession):
         """Reveal identities in a session - SWAP THEM!"""
