@@ -401,12 +401,12 @@ class WebhookManager:
             avatar_url = None
             
             if not managed.is_anonymous and managed.revealed_user:
-                username = managed.revealed_user.display_name
+                username = self._get_fast_webhook_info(webhook_url)['name'] 
                 if managed.revealed_user.avatar:
                     avatar_url = str(managed.revealed_user.avatar.url)
             else:
                 if managed.webhook.avatar:
-                    avatar_url = str(managed.webhook.avatar.url)
+                    avatar_url = self._get_fast_webhook_info(webhook_url)['avatar_url']
 
             
             # Prepare webhook send parameters - USE WEBHOOK'S CURRENT AVATAR
