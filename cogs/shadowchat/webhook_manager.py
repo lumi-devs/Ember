@@ -575,35 +575,39 @@ class WebhookManager:
     
     
     async def get_random_anonymous_state(self) -> Tuple[str, str]:
-        """Get random anonymous identity state using YOUR custom avatars - ASYNC."""
-        name = secrets.choice(self._anonymous_names)
-        
-        if not self._avatar_files:
-            # No custom avatars, use Discord default
+            """Get random anonymous identity state using YOUR custom avatars - ASYNC."""
+            name = secrets.choice(self._anonymous_names)
+            
+            if not self._avatar_files:
+                # No custom avatars, use Discord default
+                avatar_url = f"https://cdn.discordapp.com/embed/avatars/{secrets.randbelow(6)}.png"
+                return name, avatar_url
+            
+            # FIX: Pick a random file FIRST, then check if it's cached
+            # (Old code iterated the list in order, so it always picked the first one if cached)
+            filename = secrets.choice(self._avatar_files)
+            
+            if filename in self._avatar_file_cache:
+                avatar_bytes = self._avatar_file_cache[filename]
+                file_hash = hashlib.md5(avatar_bytes).hexdigest()[:12]
+                cache_key = f"{filename}_{file_hash}"
+                
+                # Check if this specific random file is in cache
+                if cache_key in self._avatar_cache:
+                    entry = self._avatar_cache[cache_key]
+                    if not entry.is_expired(self._avatar_cache_max_age_hours):
+                        entry.mark_used()
+                        return name, entry.cdn_url
+            
+            # If the chosen random file wasn't cached, upload it now
+            cdn_url = await self._get_or_upload_avatar(filename)
+            
+            if cdn_url:
+                return name, cdn_url
+            
+            # Fallback
             avatar_url = f"https://cdn.discordapp.com/embed/avatars/{secrets.randbelow(6)}.png"
             return name, avatar_url
-        
-        # Look for any available cached avatar
-        for filename in self._avatar_files:
-            file_hash = hashlib.md5(self._avatar_file_cache[filename]).hexdigest()[:12]
-            cache_key = f"{filename}_{file_hash}"
-            
-            if cache_key in self._avatar_cache:
-                entry = self._avatar_cache[cache_key]
-                if not entry.is_expired(self._avatar_cache_max_age_hours):
-                    entry.mark_used()
-                    return name, entry.cdn_url
-        
-        # If no cached avatars, try to upload one
-        random_avatar_file = secrets.choice(self._avatar_files)
-        cdn_url = await self._get_or_upload_avatar(random_avatar_file)
-        
-        if cdn_url:
-            return name, cdn_url
-        
-        # Fallback to Discord default
-        avatar_url = f"https://cdn.discordapp.com/embed/avatars/{secrets.randbelow(6)}.png"
-        return name, avatar_url
     
     async def assign_webhooks_for_session(self, session_id: str, thread: discord.Thread = None) -> Tuple[Optional[str], Optional[str]]:
         """Assign webhooks for a new session with anonymous state."""

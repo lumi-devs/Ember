@@ -813,7 +813,7 @@ class ShadowChat(commands.Cog):
             return
         
         # Check if session is already ending
-        if session.ending:
+        if getattr(session, 'ending', False):
             await interaction.followup.send(
                 "❌ This session is already ending.",
                 ephemeral=True
@@ -1865,112 +1865,119 @@ class ShadowChat(commands.Cog):
                 await self.handle_cancel_reveal(interaction, session_id)
     
     async def handle_skip_chat(self, interaction: discord.Interaction, session_id: str):
-        """Handle skip button click."""
-        await interaction.response.defer(thinking=True, ephemeral=True)
-        
-        #print(f"[Shadow Chat] Skip button clicked by {interaction.user.id} for session {session_id}")
-        
-        # Verify user is in this session
-        session = await self.session_manager.get_session(session_id)
-        if not session:
-            await interaction.followup.send("Session not found.", ephemeral=True)
-            return
-        
-        if interaction.user.id not in (session.user1_id, session.user2_id):
-            await interaction.followup.send("You're not in this session.", ephemeral=True)
-            return
-        
-        # Show confirmation
-        embed = discord.Embed(
-            title="⏭️ Skip Partner",
-            description="Are you sure you want to skip your current partner?\n\n**What happens:**\n• You'll be re-added to the queue\n• Session ends for both users in 10 seconds\n• You'll be matched with someone new",
-            color=constants.COLOR_WARNING
-        )
-        
-        class SkipConfirmView(discord.ui.View):
-            def __init__(self, cog, session_id, user_id):
-                super().__init__(timeout=30)
-                self.cog = cog
-                self.session_id = session_id
-                self.user_id = user_id
+        try:
+            """Handle skip button click."""
+            await interaction.response.defer(thinking=True, ephemeral=True)
             
-            @discord.ui.button(label="Yes, Skip Partner", style=discord.ButtonStyle.primary)
-            async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-                if interaction.user.id != self.user_id:
-                    await interaction.response.send_message(
-                        "❌ This confirmation is not for you.",
-                        ephemeral=True
-                    )
-                    return
-                
-                await interaction.response.defer(ephemeral=True)
-                
-                # Send skip notification to both threads BEFORE processing skip
-                guild = self.cog.bot.get_guild(constants.GUILD_ID)
-                if guild:
-                    # Get threads
-                    thread1 = await get_thread_by_id(guild, session.thread1_id)
-                    thread2 = await get_thread_by_id(guild, session.thread2_id)
-                    
-                    skip_embed = discord.Embed(
-                        title="⏭️ Session Skipped",
-                        description=f"This session has been skipped.\n\nThis thread will be deleted in 10 seconds.",
-                        color=constants.COLOR_WARNING
-                    )
-                    
-                    if thread1:
-                        try:
-                            await thread1.send(embed=skip_embed)
-                        except Exception as e:
-                            print(f"[Shadow Chat] Error sending skip notification to thread1: {e}")
-                    
-                    if thread2:
-                        try:
-                            await thread2.send(embed=skip_embed)
-                        except Exception as e:
-                            print(f"[Shadow Chat] Error sending skip notification to thread2: {e}")
-                
-                # Process skip
-                success, message = await self.cog.session_manager.skip_session(self.session_id, self.user_id)
-                try:
-                    if success:
-                        embed = discord.Embed(
-                            title="✅ Partner Skipped",
-                            description=message,
-                            color=constants.COLOR_SUCCESS
-                        )
-                        await interaction.followup.send(embed=embed, ephemeral=True)
-                    else:
-                        embed = discord.Embed(
-                            title="❌ Failed to Skip",
-                            description=message,
-                            color=constants.COLOR_ERROR
-                        )
-                        await interaction.followup.send(embed=embed, ephemeral=True)
-                except Exception as e:
-                    print(f"[Shadow Chat] Skip followup error: {e}")
-                # Disable buttons
-                for child in self.children:
-                    child.disabled = True
-                await interaction.edit_original_response(view=self)
+            #print(f"[Shadow Chat] Skip button clicked by {interaction.user.id} for session {session_id}")
             
-            @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
-            async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-                if interaction.user.id != self.user_id:
-                    await interaction.response.send_message(
-                        "❌ This confirmation is not for you.",
-                        ephemeral=True
-                    )
-                    return
+            # Verify user is in this session
+            session = await self.session_manager.get_session(session_id)
+            if not session:
+                await interaction.followup.send("Session not found.", ephemeral=True)
+                return
+            
+            if interaction.user.id not in (session.user1_id, session.user2_id):
+                await interaction.followup.send("You're not in this session.", ephemeral=True)
+                return
+            
+            # Show confirmation
+            embed = discord.Embed(
+                title="⏭️ Skip Partner",
+                description="Are you sure you want to skip your current partner?\n\n**What happens:**\n• You'll be re-added to the queue\n• Session ends for both users in 10 seconds\n• You'll be matched with someone new",
+                color=constants.COLOR_WARNING
+            )
+            
+            class SkipConfirmView(discord.ui.View):
+                def __init__(self, cog, session_id, user_id):
+                    super().__init__(timeout=30)
+                    self.cog = cog
+                    self.session_id = session_id
+                    self.user_id = user_id
                 
-                await interaction.response.edit_message(
-                    content="❌ Skip cancelled.",
-                    embed=None,
-                    view=None
-                )
-        
-        view = SkipConfirmView(self, session_id, interaction.user.id)
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+                @discord.ui.button(label="Yes, Skip Partner", style=discord.ButtonStyle.primary)
+                async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+                    if interaction.user.id != self.user_id:
+                        await interaction.response.send_message(
+                            "❌ This confirmation is not for you.",
+                            ephemeral=True
+                        )
+                        return
+                    
+                    await interaction.response.defer(ephemeral=True)
+                    
+                    # Send skip notification to both threads BEFORE processing skip
+                    guild = self.cog.bot.get_guild(constants.GUILD_ID)
+                    if guild:
+                        # Get threads
+                        thread1 = await get_thread_by_id(guild, session.thread1_id)
+                        thread2 = await get_thread_by_id(guild, session.thread2_id)
+                        
+                        skip_embed = discord.Embed(
+                            title="⏭️ Session Skipped",
+                            description=f"This session has been skipped.\n\nThis thread will be deleted in 10 seconds.",
+                            color=constants.COLOR_WARNING
+                        )
+                        
+                        if thread1:
+                            try:
+                                await thread1.send(embed=skip_embed)
+                            except Exception as e:
+                                print(f"[Shadow Chat] Error sending skip notification to thread1: {e}")
+                        
+                        if thread2:
+                            try:
+                                await thread2.send(embed=skip_embed)
+                            except Exception as e:
+                                print(f"[Shadow Chat] Error sending skip notification to thread2: {e}")
+                    
+                    # Process skip
+                    success, message = await self.cog.session_manager.skip_session(self.session_id, self.user_id)
+                    try:
+                        if success:
+                            embed = discord.Embed(
+                                title="✅ Partner Skipped",
+                                description=message,
+                                color=constants.COLOR_SUCCESS
+                            )
+                            await interaction.followup.send(embed=embed, ephemeral=True)
+                        else:
+                            embed = discord.Embed(
+                                title="❌ Failed to Skip",
+                                description=message,
+                                color=constants.COLOR_ERROR
+                            )
+                            await interaction.followup.send(embed=embed, ephemeral=True)
+                    except Exception as e:
+                        print(f"[Shadow Chat] Skip followup error: {e}")
+                    # Disable buttons
+                    for child in self.children:
+                        child.disabled = True
+                    await interaction.edit_original_response(view=self)
+                
+                @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+                async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+                    if interaction.user.id != self.user_id:
+                        await interaction.response.send_message(
+                            "❌ This confirmation is not for you.",
+                            ephemeral=True
+                        )
+                        return
+                    
+                    await interaction.response.edit_message(
+                        content="❌ Skip cancelled.",
+                        embed=None,
+                        view=None
+                    )
+            
+            view = SkipConfirmView(self, session_id, interaction.user.id)
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        except discord.NotFound:
+            # The thread or interaction is already gone
+            print(f"[Shadow Chat] Ignored skip interaction for deleted thread")
+            return
+        except Exception:
+            pass
 
 
     async def handle_end_chat(self, interaction: discord.Interaction, session_id: str):
