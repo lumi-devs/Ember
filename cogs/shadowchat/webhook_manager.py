@@ -1,10 +1,8 @@
 """
-SHADOW CHAT - WEBHOOK MANAGER (OPTIMIZED)
-WITH ENHANCED AVATAR CACHE MANAGEMENT
-- URL validation every 10 minutes
-- Cache completeness verification on startup
-- Complete cache refresh every 10 hours
-- 5-second delay between avatar uploads
+SHADOW CHAT - WEBHOOK MANAGER (OPTIMIZED - NO EDIT METHODS)
+USES AVATAR/NAME PARAMETERS IN SEND METHOD
+SMART AVATAR CACHING WITH DISCORD CDN
+FIXED REPLY EMBEDS
 """
 
 import asyncio
@@ -26,7 +24,7 @@ import json
 logger = logging.getLogger(__name__)
 
 class AvatarCacheEntry:
-    """Represents a cached avatar with expiration and validation."""
+    """Represents a cached avatar with expiration."""
     
     def __init__(self, filename: str, cdn_url: str, message_id: int, channel_id: int):
         self.filename = filename
@@ -34,30 +32,19 @@ class AvatarCacheEntry:
         self.message_id = message_id
         self.channel_id = channel_id
         self.uploaded_at = datetime.now()
-        self.last_validated = datetime.now()
         self.last_used = datetime.now()
         self.use_count = 0
-        self.is_valid = True  # Track if URL is still valid
         
-    def is_expired(self, max_age_hours: int = 10) -> bool:
+    def is_expired(self, max_age_hours: int = 6) -> bool:
         """Check if cache entry is expired."""
         age = datetime.now() - self.uploaded_at
         return age.total_seconds() > (max_age_hours * 3600)
     
-    def needs_validation(self, validation_interval_minutes: int = 10) -> bool:
-        """Check if cache entry needs validation."""
-        last_validated = datetime.now() - self.last_validated
-        return last_validated.total_seconds() > (validation_interval_minutes * 60)
+    def should_refresh(self, max_age_hours: int = 4) -> bool:
+        """Check if cache entry should be refreshed soon."""
+        age = datetime.now() - self.uploaded_at
+        return age.total_seconds() > (max_age_hours * 3600)
     
-    def mark_validated(self):
-        """Mark this avatar as recently validated."""
-        self.last_validated = datetime.now()
-        self.is_valid = True
-        
-    def mark_invalid(self):
-        """Mark this avatar URL as invalid."""
-        self.is_valid = False
-        
     def mark_used(self):
         """Mark this avatar as used."""
         self.last_used = datetime.now()
@@ -102,7 +89,7 @@ class ManagedWebhook:
         return self.identity.display_name
 
 class WebhookManager:
-    """Manages webhooks using provided static URLs with enhanced avatar caching."""
+    """Manages webhooks using provided static URLs with smart avatar caching."""
     
     def __init__(self, bot, db: Database):
         self.bot = bot
@@ -117,22 +104,25 @@ class WebhookManager:
         self.session_webhooks: Dict[str, Tuple[ManagedWebhook, ManagedWebhook]] = {}
         self.thread_sessions: Dict[int, str] = {}
         
-        # Enhanced avatar caching system
+        # Smart avatar caching system
         self._avatar_cache: Dict[str, AvatarCacheEntry] = {}  # filename_hash -> cache entry
         self._avatar_file_cache: Dict[str, bytes] = {}  # filename -> file bytes
         self._avatar_files: List[str] = []  # List of available avatar filenames
         self._user_avatar_cache: Dict[str, str] = {}  # user_id -> avatar_url
         
-        # Reply cache
+        # Reply cache - IMPORTANT: Cache the full reply embed data
         self._reply_message_cache: Dict[int, dict] = {}  # message_id -> webhook info cache
         
         # Cache persistence
         self._cache_file = "avatar_cache.json"
         self._cache_save_task = None
         
-        # Background tasks
-        self._validation_task = None
-        self._refresh_task = None
+        self._avatar_cache_max_age_hours = 10  # CHANGED: Full refresh every 10 hours
+        self._avatar_refresh_hours = 9.5       # Start refreshing slightly before 10h
+        self._max_cached_avatars = 100         # Increased to hold all your assets
+        
+        # New task tracker
+        self._maintenance_task = None
         
         # Random display names for anonymous mode
         self._anonymous_names = [
@@ -144,26 +134,18 @@ class WebhookManager:
         self._avatar_upload_channel_id = None
         
         # Cache settings
-        self._avatar_cache_max_age_hours = 10  # Delete after 10 hours (increased from 6)
-        self._avatar_refresh_hours = 8  # Start refreshing after 8 hours (increased from 4)
-        self._max_cached_avatars = 100  # Maximum avatars to keep cached (increased from 50)
-        
-        # Validation settings
-        self._validation_interval_minutes = 10  # Validate URLs every 10 minutes
-        self._full_refresh_hours = 10  # Complete cache refresh every 10 hours
-        
-        # Upload settings
-        self._upload_delay_seconds = 5  # Wait 5 seconds between uploads
+        self._avatar_cache_max_age_hours = 6  # Delete after 6 hours
+        self._avatar_refresh_hours = 4  # Start refreshing after 4 hours
+        self._max_cached_avatars = 50  # Maximum avatars to keep cached
         
         # Fast cache for webhook info (no API calls needed)
         self._webhook_info_fast_cache: Dict[str, dict] = {}  # webhook_url -> {name, avatar_url, timestamp}
         
         self._lock = asyncio.Lock()
-        self._upload_lock = asyncio.Lock()  # Separate lock for upload operations
         
     async def initialize(self):
-        """Initialize webhook manager with enhanced avatar caching."""
-        logger.info("Initializing Webhook Manager with enhanced avatar caching...")
+        """Initialize webhook manager and load/setup avatar caching."""
+        logger.info("Initializing Webhook Manager...")
         
         # Create aiohttp session with connection pooling
         if not self.session or self.session.closed:
@@ -182,14 +164,10 @@ class WebhookManager:
         # Start cache maintenance in background
         self._cache_save_task = asyncio.create_task(self._periodic_cache_save())
         
-        # Start URL validation task
-        self._validation_task = asyncio.create_task(self._periodic_url_validation())
-        
-        # Start full cache refresh task
-        self._refresh_task = asyncio.create_task(self._periodic_cache_refresh())
-        
-        # Check and ensure all avatars are cached
-        await self._ensure_all_avatars_cached()
+        # NEW: Start the Avatar Maintenance Loop
+        if self._maintenance_task is None:
+            self._maintenance_task = asyncio.create_task(self._avatar_maintenance_loop())
+            logger.info("Started Avatar Maintenance Loop (10m check / 10h refresh)")
         
         if not self.provided_webhook_urls:
             logger.warning("No webhook URLs provided in constants.WEBHOOK_URLS")
@@ -222,199 +200,73 @@ class WebhookManager:
                 continue
         
         logger.info(f"Webhook Manager initialized with {loaded_count}/{len(self.provided_webhook_urls)} webhooks")
-        logger.info(f"Avatar cache: {len(self._avatar_cache)} entries for {len(self._avatar_files)} files")
     
-    async def _ensure_all_avatars_cached(self):
-        """Ensure all local avatar files have valid cache entries on startup."""
-        if not self._avatar_upload_channel_id:
-            logger.warning("No avatar upload channel, skipping cache completeness check")
-            return
-            
-        logger.info("Checking avatar cache completeness...")
-        
-        # Track which files need upload
-        files_to_upload = []
-        
-        for filename in self._avatar_files:
-            avatar_bytes = self._avatar_file_cache[filename]
-            file_hash = hashlib.md5(avatar_bytes).hexdigest()[:12]
-            cache_key = f"{filename}_{file_hash}"
-            
-            if cache_key not in self._avatar_cache:
-                # File not cached at all
-                files_to_upload.append((filename, cache_key, avatar_bytes))
-                logger.debug(f"File not cached: {filename}")
-            else:
-                entry = self._avatar_cache[cache_key]
-                if entry.is_expired(self._avatar_cache_max_age_hours) or not entry.is_valid:
-                    # Cache entry expired or invalid
-                    files_to_upload.append((filename, cache_key, avatar_bytes))
-                    logger.debug(f"Cache entry invalid/expired: {filename}")
-        
-        if files_to_upload:
-            logger.info(f"Uploading {len(files_to_upload)} missing/invalid avatars...")
-            
-            for i, (filename, cache_key, avatar_bytes) in enumerate(files_to_upload):
-                try:
-                    # Apply upload delay between files
-                    if i > 0:
-                        await asyncio.sleep(self._upload_delay_seconds)
-                    
-                    await self._upload_avatar_to_cdn(filename, avatar_bytes, cache_key)
-                    logger.info(f"Uploaded {i+1}/{len(files_to_upload)}: {filename}")
-                    
-                except Exception as e:
-                    logger.error(f"Failed to upload {filename}: {e}")
-        
-        # Clean up cache entries for files that no longer exist
-        await self._cleanup_orphaned_cache_entries()
-        
-        logger.info(f"Cache completeness check complete. {len(self._avatar_cache)} cached entries for {len(self._avatar_files)} files.")
     
-    async def _cleanup_orphaned_cache_entries(self):
-        """Remove cache entries for files that no longer exist locally."""
-        current_hashes = {}
-        for filename in self._avatar_files:
-            if filename in self._avatar_file_cache:
-                avatar_bytes = self._avatar_file_cache[filename]
-                file_hash = hashlib.md5(avatar_bytes).hexdigest()[:12]
-                cache_key = f"{filename}_{file_hash}"
-                current_hashes[cache_key] = True
+
+    async def _avatar_maintenance_loop(self):
+        """
+        Runs every 10 minutes. 
+        1. Checks if local files are missing from cache (integrity).
+        2. Checks if cached files are > 10 hours old (refresh).
+        3. Uploads missing/old files with a 2s delay to prevent rate limits.
+        """
+        await self.bot.wait_until_ready()
         
-        # Find orphaned cache entries
-        orphaned_keys = []
-        for cache_key in list(self._avatar_cache.keys()):
-            # Extract filename from cache key (format: filename_hash)
-            if '_' in cache_key:
-                # Check if this cache key matches any current file
-                if cache_key not in current_hashes:
-                    # Also check if it's for a different hash of the same filename
-                    filename = cache_key.rsplit('_', 1)[0]
-                    if filename in self._avatar_files:
-                        # This is a stale hash, remove it
-                        orphaned_keys.append(cache_key)
-        
-        # Remove orphaned entries
-        for cache_key in orphaned_keys:
+        while not self.bot.is_closed():
             try:
-                entry = self._avatar_cache[cache_key]
-                await self._delete_cached_avatar(entry)
-                del self._avatar_cache[cache_key]
-                logger.debug(f"Removed orphaned cache entry: {cache_key}")
-            except Exception as e:
-                logger.error(f"Error removing orphaned cache entry {cache_key}: {e}")
-    
-    async def _periodic_url_validation(self):
-        """Periodically validate avatar URLs every 10 minutes."""
-        while True:
-            try:
-                await asyncio.sleep(self._validation_interval_minutes * 60)
+                logger.info("Running scheduled avatar cache maintenance...")
                 
-                logger.info("Starting periodic avatar URL validation...")
-                await self._validate_all_avatar_urls()
-                logger.info("Avatar URL validation complete")
-                
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in periodic URL validation: {e}")
-                await asyncio.sleep(60)  # Wait before retrying
-    
-    async def _periodic_cache_refresh(self):
-        """Periodically refresh entire cache every 10 hours."""
-        while True:
-            try:
-                await asyncio.sleep(self._full_refresh_hours * 3600)
-                
-                logger.info(f"Starting full cache refresh (every {self._full_refresh_hours} hours)...")
-                await self._refresh_all_avatars()
-                logger.info("Full cache refresh complete")
-                
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in periodic cache refresh: {e}")
-                await asyncio.sleep(300)  # Wait 5 minutes before retrying
-    
-    async def _validate_all_avatar_urls(self):
-        """Validate all cached avatar URLs."""
-        async with self._lock:
-            tasks = []
-            for cache_key, entry in self._avatar_cache.items():
-                # Skip recently validated entries
-                if not entry.needs_validation(self._validation_interval_minutes):
+                if not self._avatar_upload_channel_id:
+                    logger.warning("No avatar upload channel found, skipping maintenance.")
+                    await asyncio.sleep(600)
                     continue
-                    
-                tasks.append(self._validate_avatar_url(cache_key, entry))
-            
-            if tasks:
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                valid_count = sum(1 for r in results if r is True)
-                invalid_count = sum(1 for r in results if r is False)
-                logger.info(f"URL validation: {valid_count} valid, {invalid_count} invalid")
-                
-                # Save cache after validation
-                await self._save_cache()
-    
-    async def _validate_avatar_url(self, cache_key: str, entry: AvatarCacheEntry) -> bool:
-        """Validate a single avatar URL."""
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.head(entry.cdn_url, allow_redirects=True) as response:
-                    if response.status == 200:
-                        entry.mark_validated()
-                        return True
-                    else:
-                        logger.warning(f"Avatar URL invalid (HTTP {response.status}): {entry.filename}")
-                        entry.mark_invalid()
-                        
-                        # Re-upload invalid avatar
-                        if entry.filename in self._avatar_file_cache:
-                            avatar_bytes = self._avatar_file_cache[entry.filename]
-                            await self._upload_avatar_to_cdn(entry.filename, avatar_bytes, cache_key)
-                        return False
-        except Exception as e:
-            logger.error(f"Error validating avatar URL {entry.cdn_url}: {e}")
-            entry.mark_invalid()
-            return False
-    
-    async def _refresh_all_avatars(self):
-        """Refresh all avatars by re-uploading them."""
-        logger.info(f"Refreshing all {len(self._avatar_files)} avatars...")
-        
-        successful = 0
-        failed = 0
-        
-        for i, filename in enumerate(self._avatar_files):
-            try:
-                # Apply upload delay between files
-                if i > 0:
-                    await asyncio.sleep(self._upload_delay_seconds)
-                
-                if filename in self._avatar_file_cache:
+
+                # Iterate through all local avatar files
+                for filename in self._avatar_files:
+                    if filename not in self._avatar_file_cache:
+                        continue
+
                     avatar_bytes = self._avatar_file_cache[filename]
+                    # Generate the key exactly how _get_or_upload_avatar does
                     file_hash = hashlib.md5(avatar_bytes).hexdigest()[:12]
                     cache_key = f"{filename}_{file_hash}"
                     
-                    # Upload fresh copy
-                    cdn_url = await self._upload_avatar_to_cdn(filename, avatar_bytes, cache_key, force_refresh=True)
+                    should_upload = False
                     
-                    if cdn_url:
-                        successful += 1
-                        logger.debug(f"Refreshed {i+1}/{len(self._avatar_files)}: {filename}")
+                    # Case 1: Not in cache at all
+                    if cache_key not in self._avatar_cache:
+                        logger.debug(f"Maintenance: {filename} missing from cache. Queueing upload.")
+                        should_upload = True
+                    
+                    # Case 2: In cache, but expired (older than 10 hours)
                     else:
-                        failed += 1
-                        logger.error(f"Failed to refresh {filename}")
-                else:
-                    failed += 1
-                    logger.error(f"File not in cache: {filename}")
+                        entry = self._avatar_cache[cache_key]
+                        if entry.is_expired(self._avatar_cache_max_age_hours):
+                            logger.debug(f"Maintenance: {filename} expired (>10h). Refreshing.")
+                            # Optional: Try to delete the old message to keep channel clean
+                            await self._delete_cached_avatar(entry)
+                            should_upload = True
                     
+                    # Execute Upload with Rate Limiting
+                    if should_upload:
+                        new_url = await self._upload_avatar_to_cdn(filename, avatar_bytes, cache_key)
+                        if new_url:
+                            logger.info(f"Maintenance: Successfully cached {filename}")
+                            # FORCE WAIT 2 SECONDS between uploads
+                            await asyncio.sleep(2) 
+                        else:
+                            logger.error(f"Maintenance: Failed to upload {filename}")
+                            # If failed, wait a bit longer before trying next
+                            await asyncio.sleep(5)
+
             except Exception as e:
-                failed += 1
-                logger.error(f"Error refreshing {filename}: {e}")
-        
-        logger.info(f"Cache refresh complete: {successful} successful, {failed} failed")
-        await self._save_cache()
+                logger.error(f"Error in avatar maintenance loop: {e}")
+            
+            # Save cache after maintenance cycle
+            await self._save_cache()
+            
+            # Wait 10 minutes before next full check
+            await asyncio.sleep(600)
     
     def _get_fast_webhook_info(self, webhook_url: str) -> Optional[dict]:
         """Get webhook info from fast cache (no API calls)."""
@@ -468,10 +320,8 @@ class WebhookManager:
                         channel_id=data['channel_id']
                     )
                     entry.uploaded_at = uploaded_at
-                    entry.last_validated = datetime.fromisoformat(data.get('last_validated', data['uploaded_at']))
                     entry.last_used = datetime.fromisoformat(data['last_used'])
                     entry.use_count = data['use_count']
-                    entry.is_valid = data.get('is_valid', True)
                     
                     self._avatar_cache[key] = entry
                     loaded += 1
@@ -495,10 +345,8 @@ class WebhookManager:
                     'message_id': entry.message_id,
                     'channel_id': entry.channel_id,
                     'uploaded_at': entry.uploaded_at.isoformat(),
-                    'last_validated': entry.last_validated.isoformat(),
                     'last_used': entry.last_used.isoformat(),
-                    'use_count': entry.use_count,
-                    'is_valid': entry.is_valid
+                    'use_count': entry.use_count
                 }
             
             with open(self._cache_file, 'w') as f:
@@ -596,46 +444,38 @@ class WebhookManager:
             logger.error(f"Error setting up avatar channel: {e}")
     
     async def _get_or_upload_avatar(self, filename: str) -> Optional[str]:
-        """Get cached avatar URL or upload to Discord CDN."""
-        if filename not in self._avatar_file_cache:
-            return None
-            
-        avatar_bytes = self._avatar_file_cache[filename]
-        
-        # Create cache key
-        file_hash = hashlib.md5(avatar_bytes).hexdigest()[:12]
-        cache_key = f"{filename}_{file_hash}"
-        
-        # Check cache first
-        if cache_key in self._avatar_cache:
-            entry = self._avatar_cache[cache_key]
-            
-            # Check if expired
-            if entry.is_expired(self._avatar_cache_max_age_hours):
-                logger.debug(f"Cache entry expired for {filename}, removing")
-                await self._delete_cached_avatar(entry)
-                del self._avatar_cache[cache_key]
-            elif not entry.is_valid:
-                logger.debug(f"Cache entry invalid for {filename}, re-uploading")
-                # Remove invalid entry and re-upload
-                await self._delete_cached_avatar(entry)
-                del self._avatar_cache[cache_key]
-            else:
-                # Check if needs validation
-                if entry.needs_validation(self._validation_interval_minutes):
-                    # Validate in background
-                    asyncio.create_task(self._validate_avatar_url(cache_key, entry))
+            """Get cached avatar URL or upload to Discord CDN - async version."""
+            if filename not in self._avatar_file_cache:
+                return None
                 
-                entry.mark_used()
-                return entry.cdn_url
-        
-        # Not in cache or expired/invalid, upload to Discord CDN
-        async with self._upload_lock:
-            # Wait before upload to respect rate limits
-            await asyncio.sleep(self._upload_delay_seconds)
+            avatar_bytes = self._avatar_file_cache[filename]
+            
+            # Create cache key
+            file_hash = hashlib.md5(avatar_bytes).hexdigest()[:12]
+            cache_key = f"{filename}_{file_hash}"
+            
+            # Check cache first
+            if cache_key in self._avatar_cache:
+                entry = self._avatar_cache[cache_key]
+                
+                # Check if expired
+                if entry.is_expired(self._avatar_cache_max_age_hours):
+                    logger.debug(f"Cache entry expired for {filename}, removing")
+                    await self._delete_cached_avatar(entry)
+                    del self._avatar_cache[cache_key]
+                else:
+                    # Check if needs refresh
+                    if entry.should_refresh(self._avatar_refresh_hours):
+                        # Refresh in background
+                        asyncio.create_task(self._refresh_avatar(cache_key, entry))
+                    
+                    entry.mark_used()
+                    return entry.cdn_url
+            
+            # Not in cache or expired, upload to Discord CDN
             return await self._upload_avatar_to_cdn(filename, avatar_bytes, cache_key)
     
-    async def _upload_avatar_to_cdn(self, filename: str, avatar_bytes: bytes, cache_key: str, force_refresh: bool = False) -> Optional[str]:
+    async def _upload_avatar_to_cdn(self, filename: str, avatar_bytes: bytes, cache_key: str) -> Optional[str]:
         """Upload avatar to Discord CDN and cache the URL."""
         if not self._avatar_upload_channel_id:
             logger.warning("No avatar upload channel available")
@@ -657,31 +497,16 @@ class WebhookManager:
                 # Get the Discord CDN URL
                 cdn_url = message.attachments[0].url
                 
-                # Check if we need to delete old entry
-                old_entry = self._avatar_cache.get(cache_key)
-                if old_entry and old_entry.message_id != message.id:
-                    # Delete old message if it's different
-                    await self._delete_cached_avatar(old_entry)
-                
-                # Create or update cache entry
-                if cache_key in self._avatar_cache:
-                    entry = self._avatar_cache[cache_key]
-                    entry.cdn_url = cdn_url
-                    entry.message_id = message.id
-                    entry.channel_id = channel.id
-                    entry.uploaded_at = datetime.now()
-                    entry.last_validated = datetime.now()
-                    entry.is_valid = True
-                else:
-                    entry = AvatarCacheEntry(
-                        filename=filename,
-                        cdn_url=cdn_url,
-                        message_id=message.id,
-                        channel_id=channel.id
-                    )
-                    self._avatar_cache[cache_key] = entry
-                
+                # Create cache entry
+                entry = AvatarCacheEntry(
+                    filename=filename,
+                    cdn_url=cdn_url,
+                    message_id=message.id,
+                    channel_id=channel.id
+                )
                 entry.mark_used()
+                
+                self._avatar_cache[cache_key] = entry
                 
                 # Clean up old cache entries if needed
                 await self._cleanup_old_cache_entries()
@@ -692,7 +517,7 @@ class WebhookManager:
         except discord.HTTPException as e:
             logger.error(f"Discord error uploading avatar {filename}: {e}")
             # Rate limit backoff
-            await asyncio.sleep(self._upload_delay_seconds)
+            await asyncio.sleep(2)
         except Exception as e:
             logger.error(f"Error uploading avatar {filename}: {e}")
             
@@ -747,8 +572,10 @@ class WebhookManager:
             except Exception as e:
                 logger.error(f"Error cleaning up cache entry {cache_key}: {e}")
     
+    
+    
     async def get_random_anonymous_state(self) -> Tuple[str, str]:
-        """Get random anonymous identity state using custom avatars."""
+        """Get random anonymous identity state using YOUR custom avatars - ASYNC."""
         name = secrets.choice(self._anonymous_names)
         
         if not self._avatar_files:
@@ -756,24 +583,18 @@ class WebhookManager:
             avatar_url = f"https://cdn.discordapp.com/embed/avatars/{secrets.randbelow(6)}.png"
             return name, avatar_url
         
-        # Try to find a valid cached avatar
-        valid_avatars = []
+        # Look for any available cached avatar
         for filename in self._avatar_files:
             file_hash = hashlib.md5(self._avatar_file_cache[filename]).hexdigest()[:12]
             cache_key = f"{filename}_{file_hash}"
             
             if cache_key in self._avatar_cache:
                 entry = self._avatar_cache[cache_key]
-                if not entry.is_expired(self._avatar_cache_max_age_hours) and entry.is_valid:
-                    valid_avatars.append((filename, entry))
+                if not entry.is_expired(self._avatar_cache_max_age_hours):
+                    entry.mark_used()
+                    return name, entry.cdn_url
         
-        if valid_avatars:
-            # Use a valid cached avatar
-            filename, entry = secrets.choice(valid_avatars)
-            entry.mark_used()
-            return name, entry.cdn_url
-        
-        # If no valid cached avatars, try to upload one
+        # If no cached avatars, try to upload one
         random_avatar_file = secrets.choice(self._avatar_files)
         cdn_url = await self._get_or_upload_avatar(random_avatar_file)
         
@@ -827,6 +648,7 @@ class WebhookManager:
             
             logger.debug(f"Assigned webhooks for session {session_id}: {webhook1.url}, {webhook2.url}")
             return webhook1.url, webhook2.url
+
     
     async def associate_thread_with_session(self, thread: discord.Thread, session_id: str):
         """Associate a thread with a session for reply tracking."""
@@ -834,6 +656,7 @@ class WebhookManager:
             self.thread_sessions[thread.id] = session_id
             logger.debug(f"Associated thread {thread.id} with session {session_id}")
     
+
     async def reveal_identities(self, session_id: str, user1: discord.User, user2: discord.User) -> bool:
         """Reveal identities by swapping identity states."""
         async with self._lock:
@@ -908,8 +731,8 @@ class WebhookManager:
             return False
         
         try:
-            # Get new random anonymous identity
-            name, avatar_url = await self.get_random_anonymous_state()
+            # Get new random anonymous identity - FIX: Use async version!
+            name, avatar_url = await self.get_random_anonymous_state()  # CHANGED THIS LINE
             
             managed.identity.is_anonymous = True
             managed.identity.display_name = name
@@ -981,7 +804,7 @@ class WebhookManager:
             # Create a list for all embeds
             all_embeds = []
             
-            # FIXED: Handle reply embeds
+            # FIXED: Handle reply embeds using YOUR EXACT CODE
             if reply_to_mirrored_id:
                 # Check cache first
                 if reply_to_mirrored_id in self._reply_message_cache:
@@ -1107,7 +930,7 @@ class WebhookManager:
                         )
                         all_embeds.append(simple_reply_embed)
             
-            # Handle stickers
+            # Handle stickers - KEEPING YOUR CODE
             if message.stickers:
                 for sticker in message.stickers:
                     try:
@@ -1245,9 +1068,9 @@ class WebhookManager:
             
             webhook1, webhook2 = self.session_webhooks[session_id]
             
-            # Reset identity states with NEW random avatars
-            name1, avatar1 = await self.get_random_anonymous_state()
-            name2, avatar2 = await self.get_random_anonymous_state()
+            # Reset identity states with NEW random avatars - FIX: Use async versions!
+            name1, avatar1 = await self.get_random_anonymous_state()  # CHANGED
+            name2, avatar2 = await self.get_random_anonymous_state()  # CHANGED
             
             webhook1.identity.is_anonymous = True
             webhook1.identity.display_name = name1
@@ -1276,25 +1099,11 @@ class WebhookManager:
         
     async def close(self):
         """Cleanup resources."""
-        # Cancel all background tasks
+        # Cancel cache save task
         if self._cache_save_task:
             self._cache_save_task.cancel()
             try:
                 await self._cache_save_task
-            except asyncio.CancelledError:
-                pass
-        
-        if self._validation_task:
-            self._validation_task.cancel()
-            try:
-                await self._validation_task
-            except asyncio.CancelledError:
-                pass
-        
-        if self._refresh_task:
-            self._refresh_task.cancel()
-            try:
-                await self._refresh_task
             except asyncio.CancelledError:
                 pass
         
@@ -1307,22 +1116,14 @@ class WebhookManager:
 
     def get_stats(self) -> Dict:
         """Get statistics about webhook manager."""
-        # Count valid vs invalid cache entries
-        valid_cache = 0
-        invalid_cache = 0
+        # Count active vs expired cache entries
+        active_cache = 0
         expired_cache = 0
-        needs_validation = 0
-        
         for entry in self._avatar_cache.values():
             if entry.is_expired(self._avatar_cache_max_age_hours):
                 expired_cache += 1
-            elif not entry.is_valid:
-                invalid_cache += 1
-            elif entry.needs_validation(self._validation_interval_minutes):
-                needs_validation += 1
-                valid_cache += 1
             else:
-                valid_cache += 1
+                active_cache += 1
         
         return {
             "total_webhooks": len(self.managed_webhooks),
@@ -1331,15 +1132,11 @@ class WebhookManager:
             "valid_webhooks": sum(1 for w in self.managed_webhooks.values() if w.is_valid),
             "reply_cache_size": len(self._reply_message_cache),
             "local_avatar_count": len(self._avatar_files),
-            "cached_avatars_valid": valid_cache,
-            "cached_avatars_invalid": invalid_cache,
+            "cached_avatars_active": active_cache,
             "cached_avatars_expired": expired_cache,
-            "cached_avatars_needs_validation": needs_validation,
-            "total_cached_avatars": len(self._avatar_cache),
+            "user_avatar_cache_size": len(self._user_avatar_cache),
             "avatar_upload_channel": self._avatar_upload_channel_id,
-            "fast_webhook_cache_size": len(self._webhook_info_fast_cache),
-            "validation_interval_minutes": self._validation_interval_minutes,
-            "full_refresh_hours": self._full_refresh_hours
+            "fast_webhook_cache_size": len(self._webhook_info_fast_cache)
         }
     
     def clear_cache(self):
@@ -1371,13 +1168,3 @@ class WebhookManager:
         
         await self._save_cache()
         logger.info(f"Cleaned up {cleaned} expired avatars")
-    
-    async def validate_cache_now(self):
-        """Manually trigger cache validation."""
-        logger.info("Manual cache validation triggered")
-        await self._validate_all_avatar_urls()
-    
-    async def refresh_cache_now(self):
-        """Manually trigger full cache refresh."""
-        logger.info("Manual cache refresh triggered")
-        await self._refresh_all_avatars()
