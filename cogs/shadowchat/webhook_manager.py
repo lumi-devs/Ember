@@ -1,7 +1,7 @@
 """
 SHADOW CHAT - WEBHOOK MANAGER (OPTIMIZED - NO EDIT METHODS)
-USES AVATAR/NAME PARAMETERS IN SEND METHOD WITH CACHING
-CUSTOM RANDOM AVATARS FROM LOCAL FILES
+USES AVATAR/NAME PARAMETERS IN SEND METHOD
+HOSTS AVATARS ON DISCORD'S CDN
 """
 
 import asyncio
@@ -16,8 +16,6 @@ import logging
 from .models import Database
 import time
 from datetime import datetime
-import urllib.parse
-import base64
 import hashlib
 
 # Set up logging
@@ -81,8 +79,9 @@ class WebhookManager:
         self.session_webhooks: Dict[str, Tuple[ManagedWebhook, ManagedWebhook]] = {}
         self.thread_sessions: Dict[int, str] = {}
         
-        # Caching system for YOUR custom avatars
-        self._local_avatar_cache: Dict[str, str] = {}  # filename -> Data URL or hosted URL
+        # Caching system - store Discord CDN URLs for your custom avatars
+        self._avatar_cache: Dict[str, str] = {}  # filename_hash -> Discord CDN URL
+        self._avatar_file_cache: Dict[str, bytes] = {}  # filename -> file bytes
         self._avatar_files: List[str] = []  # List of available avatar filenames
         self._user_avatar_cache: Dict[str, str] = {}  # user_id -> avatar_url
         self._default_avatar_cache: Dict[str, str] = {}  # webhook_url -> default_avatar_url
@@ -94,13 +93,13 @@ class WebhookManager:
             "Mystery", "Unknown", "Stranger", "Incognito", "Anon", "Mask"
         ]
         
-        # For hosting avatars - Discord accepts data URLs for webhooks!
-        self._local_avatar_data_urls: Dict[str, str] = {}  # filename -> data URL
+        # Channel for uploading avatar images
+        self._avatar_upload_channel_id = None  # Set this to a private channel ID
         
         self._lock = asyncio.Lock()
         
     async def initialize(self):
-        """Initialize webhook manager and load local avatars."""
+        """Initialize webhook manager and load/upload local avatars to Discord CDN."""
         logger.info("Initializing Webhook Manager...")
         
         # Create aiohttp session with connection pooling
@@ -108,8 +107,8 @@ class WebhookManager:
             connector = aiohttp.TCPConnector(limit_per_host=20, ttl_dns_cache=300)
             self.session = aiohttp.ClientSession(connector=connector)
         
-        # Load your custom avatars first
-        await self._load_local_avatars()
+        # Load your custom avatars and upload to Discord CDN
+        await self._load_and_upload_avatars()
         
         if not self.provided_webhook_urls:
             logger.warning("No webhook URLs provided in constants.WEBHOOK_URLS")
@@ -148,8 +147,8 @@ class WebhookManager:
         
         logger.info(f"Webhook Manager initialized with {loaded_count}/{len(self.provided_webhook_urls)} webhooks")
     
-    async def _load_local_avatars(self):
-        """Load avatar images from assets folder and convert to data URLs."""
+    async def _load_and_upload_avatars(self):
+        """Load avatar images from assets folder and upload to Discord CDN."""
         base_dir = os.path.dirname(os.path.abspath(__file__))
         avatar_dir = os.path.join(base_dir, "assets")
         
@@ -160,23 +159,18 @@ class WebhookManager:
         supported_extensions = ('.png', '.jpg', '.jpeg', '.gif', '.webp')
         loaded_count = 0
         
+        # Create or get avatar upload channel
+        await self._ensure_avatar_channel()
+        
+        # Load all avatar files
         for filename in os.listdir(avatar_dir):
             if filename.lower().endswith(supported_extensions):
                 try:
                     with open(os.path.join(avatar_dir, filename), 'rb') as f:
                         avatar_bytes = f.read()
-                    
-                    # Convert to Data URL
-                    mime_type = self._get_mime_type(filename)
-                    if mime_type:
-                        data_url = f"data:{mime_type};base64,{base64.b64encode(avatar_bytes).decode('utf-8')}"
-                        self._local_avatar_data_urls[filename] = data_url
+                        self._avatar_file_cache[filename] = avatar_bytes
                         self._avatar_files.append(filename)
                         loaded_count += 1
-                        logger.debug(f"Loaded avatar as Data URL: {filename}")
-                    else:
-                        logger.warning(f"Unsupported file type for Data URL: {filename}")
-                        
                 except Exception as e:
                     logger.error(f"Failed to load avatar {filename}: {e}")
         
@@ -184,46 +178,168 @@ class WebhookManager:
             logger.warning("No avatars loaded! Using fallback Discord avatars.")
             # Fallback to Discord default avatars
             for i in range(6):
-                filename = f"discord_default_{i}.png"
-                self._local_avatar_data_urls[filename] = f"https://cdn.discordapp.com/embed/avatars/{i}.png"
+                filename = f"discord_default_{i}"
+                self._avatar_cache[filename] = f"https://cdn.discordapp.com/embed/avatars/{i}.png"
                 self._avatar_files.append(filename)
         
         logger.info(f"Loaded {loaded_count} custom avatars from {avatar_dir}")
+        
+        # Upload avatars to Discord CDN in background (lazy loading)
+        asyncio.create_task(self._upload_avatars_to_cdn())
     
-    def _get_mime_type(self, filename: str) -> Optional[str]:
-        """Get MIME type from filename extension."""
-        ext = filename.lower().split('.')[-1]
-        mime_types = {
-            'png': 'image/png',
-            'jpg': 'image/jpeg',
-            'jpeg': 'image/jpeg',
-            'gif': 'image/gif',
-            'webp': 'image/webp',
-        }
-        return mime_types.get(ext)
+    async def _ensure_avatar_channel(self):
+        """Ensure we have a private channel for uploading avatars."""
+        if self._avatar_upload_channel_id:
+            return
+            
+        # Try to get from environment or config
+        if hasattr(constants, 'AVATAR_UPLOAD_CHANNEL_ID'):
+            self._avatar_upload_channel_id = constants.AVATAR_UPLOAD_CHANNEL_ID
+            return
+            
+        # Find or create a private channel
+        try:
+            # Look for existing channel named "avatar-storage"
+            for guild in self.bot.guilds:
+                for channel in guild.text_channels:
+                    if channel.name == "avatar-storage" and channel.permissions_for(guild.me).send_messages:
+                        self._avatar_upload_channel_id = channel.id
+                        logger.info(f"Found existing avatar upload channel: {channel.id}")
+                        return
+            
+            # Create a new channel in the first available guild
+            for guild in self.bot.guilds:
+                if guild.me.guild_permissions.manage_channels:
+                    try:
+                        overwrites = {
+                            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+                        }
+                        
+                        channel = await guild.create_text_channel(
+                            "avatar-storage",
+                            overwrites=overwrites,
+                            reason="Channel for storing anonymous chat avatars"
+                        )
+                        self._avatar_upload_channel_id = channel.id
+                        logger.info(f"Created avatar upload channel: {channel.id}")
+                        return
+                    except Exception as e:
+                        logger.error(f"Failed to create avatar channel: {e}")
+                        continue
+            
+            logger.warning("Could not create or find avatar upload channel. Using Discord default avatars.")
+            
+        except Exception as e:
+            logger.error(f"Error setting up avatar channel: {e}")
+    
+    async def _upload_avatars_to_cdn(self):
+        """Upload avatars to Discord CDN and cache the URLs."""
+        if not self._avatar_upload_channel_id or not self._avatar_file_cache:
+            return
+            
+        try:
+            channel = self.bot.get_channel(self._avatar_upload_channel_id)
+            if not channel:
+                logger.warning(f"Avatar upload channel {self._avatar_upload_channel_id} not found")
+                return
+            
+            uploaded_count = 0
+            for filename, avatar_bytes in self._avatar_file_cache.items():
+                try:
+                    # Create hash for cache key
+                    file_hash = hashlib.md5(avatar_bytes).hexdigest()[:8]
+                    cache_key = f"{filename}_{file_hash}"
+                    
+                    # Skip if already uploaded
+                    if cache_key in self._avatar_cache:
+                        continue
+                    
+                    # Create discord.File
+                    file = discord.File(io.BytesIO(avatar_bytes), filename=filename)
+                    
+                    # Upload to Discord
+                    message = await channel.send(file=file)
+                    
+                    if message.attachments:
+                        # Get the Discord CDN URL
+                        cdn_url = message.attachments[0].url
+                        self._avatar_cache[cache_key] = cdn_url
+                        uploaded_count += 1
+                        
+                        # Also map filename to this URL for random selection
+                        self._avatar_cache[filename] = cdn_url
+                        
+                        logger.debug(f"Uploaded avatar to Discord CDN: {filename} -> {cdn_url}")
+                    
+                    # Rate limiting prevention
+                    await asyncio.sleep(0.5)
+                    
+                except discord.HTTPException as e:
+                    logger.error(f"Discord error uploading avatar {filename}: {e}")
+                    # Rate limit backoff
+                    await asyncio.sleep(2)
+                except Exception as e:
+                    logger.error(f"Error uploading avatar {filename}: {e}")
+                    continue
+            
+            logger.info(f"Uploaded {uploaded_count} avatars to Discord CDN")
+            
+            # Clean up old messages (keep only the most recent 50)
+            if uploaded_count > 0:
+                await self._cleanup_old_avatar_messages(channel)
+                
+        except Exception as e:
+            logger.error(f"Error in avatar upload process: {e}")
+    
+    async def _cleanup_old_avatar_messages(self, channel):
+        """Clean up old avatar messages to keep channel clean."""
+        try:
+            # Keep only the most recent 50 messages
+            messages_to_delete = []
+            async for message in channel.history(limit=100):
+                if len(message.attachments) > 0:
+                    messages_to_delete.append(message)
+            
+            if len(messages_to_delete) > 50:
+                messages_to_delete = messages_to_delete[50:]
+                
+                for message in messages_to_delete:
+                    try:
+                        await message.delete()
+                        await asyncio.sleep(0.1)  # Rate limiting
+                    except Exception as e:
+                        logger.error(f"Failed to delete old avatar message: {e}")
+                        
+        except Exception as e:
+            logger.error(f"Error cleaning up avatar messages: {e}")
     
     def _get_random_anonymous_state(self) -> Tuple[str, str]:
         """Get random anonymous identity state using YOUR custom avatars."""
         name = secrets.choice(self._anonymous_names)
         
-        if self._avatar_files:
-            # Use YOUR custom avatar
-            random_avatar_file = secrets.choice(self._avatar_files)
-            avatar_url = self._local_avatar_data_urls[random_avatar_file]
-        else:
-            # Fallback to Discord default
-            avatar_url = f"https://cdn.discordapp.com/embed/avatars/{secrets.randbelow(6)}.png"
+        if self._avatar_files and self._avatar_cache:
+            # Try to use custom avatars
+            for _ in range(10):  # Try multiple times
+                random_avatar_file = secrets.choice(self._avatar_files)
+                if random_avatar_file in self._avatar_cache:
+                    avatar_url = self._avatar_cache[random_avatar_file]
+                    return name, avatar_url
         
+        # Fallback to Discord default
+        avatar_url = f"https://cdn.discordapp.com/embed/avatars/{secrets.randbelow(6)}.png"
         return name, avatar_url
     
     def _get_random_avatar_url(self) -> str:
         """Get a random avatar URL from your custom avatars."""
-        if self._avatar_files:
-            random_avatar_file = secrets.choice(self._avatar_files)
-            return self._local_avatar_data_urls[random_avatar_file]
-        else:
-            # Fallback to Discord default
-            return f"https://cdn.discordapp.com/embed/avatars/{secrets.randbelow(6)}.png"
+        if self._avatar_files and self._avatar_cache:
+            for _ in range(10):  # Try multiple times
+                random_avatar_file = secrets.choice(self._avatar_files)
+                if random_avatar_file in self._avatar_cache:
+                    return self._avatar_cache[random_avatar_file]
+        
+        # Fallback to Discord default
+        return f"https://cdn.discordapp.com/embed/avatars/{secrets.randbelow(6)}.png"
     
     async def associate_thread_with_session(self, thread: discord.Thread, session_id: str):
         """Associate a thread with a session for reply tracking."""
@@ -283,7 +399,9 @@ class WebhookManager:
                 webhook1.identity.avatar_url = str(user2.avatar.url)
             else:
                 # Use Discord's default avatar for user without custom avatar
-                webhook1.identity.avatar_url = f"https://cdn.discordapp.com/embed/avatars/{int(user2.discriminator) % 5}.png"
+                discriminator = int(user2.discriminator) if user2.discriminator != "0" else user2.id
+                avatar_index = discriminator % 6
+                webhook1.identity.avatar_url = f"https://cdn.discordapp.com/embed/avatars/{avatar_index}.png"
             
             webhook2.identity.is_anonymous = False
             webhook2.identity.display_name = user1.display_name[:80]
@@ -291,7 +409,9 @@ class WebhookManager:
             if user1.avatar:
                 webhook2.identity.avatar_url = str(user1.avatar.url)
             else:
-                webhook2.identity.avatar_url = f"https://cdn.discordapp.com/embed/avatars/{int(user1.discriminator) % 5}.png"
+                discriminator = int(user1.discriminator) if user1.discriminator != "0" else user1.id
+                avatar_index = discriminator % 6
+                webhook2.identity.avatar_url = f"https://cdn.discordapp.com/embed/avatars/{avatar_index}.png"
             
             logger.debug(f"Revealed identities for session {session_id}: {user1.id} <-> {user2.id}")
             return True
@@ -313,7 +433,7 @@ class WebhookManager:
             if use_default_avatar or not user.avatar:
                 # Use Discord's default avatar based on discriminator
                 discriminator = int(user.discriminator) if user.discriminator != "0" else user.id
-                avatar_index = discriminator % 6  # 6 default avatars available
+                avatar_index = discriminator % 6
                 managed.identity.avatar_url = f"https://cdn.discordapp.com/embed/avatars/{avatar_index}.png"
             else:
                 managed.identity.avatar_url = str(user.avatar.url)
@@ -381,6 +501,12 @@ class WebhookManager:
             # Get identity from state
             username = managed.get_display_name()
             avatar_url = managed.get_avatar_url()
+            
+            # IMPORTANT: Ensure avatar_url is a valid Discord CDN URL
+            if avatar_url and (avatar_url.startswith('data:') or ';base64,' in avatar_url):
+                # Invalid URL format, use default
+                logger.warning(f"Invalid avatar URL format for webhook {webhook_url}, using default")
+                avatar_url = "https://cdn.discordapp.com/embed/avatars/0.png"
             
             # Prepare webhook send parameters
             send_kwargs = {
@@ -543,7 +669,7 @@ class WebhookManager:
             return self._build_reply_embed(
                 thread, reply_to_mirrored_id,
                 "Shadow",
-                self._get_random_avatar_url()  # Use random avatar for fallback
+                "https://cdn.discordapp.com/embed/avatars/0.png"
             )
             
         except Exception as e:
@@ -651,6 +777,7 @@ class WebhookManager:
             "valid_webhooks": sum(1 for w in self.managed_webhooks.values() if w.is_valid),
             "reply_cache_size": len(self._reply_cache),
             "local_avatar_count": len(self._avatar_files),
+            "uploaded_avatar_count": len(self._avatar_cache),
             "user_avatar_cache_size": len(self._user_avatar_cache)
         }
     

@@ -19,8 +19,10 @@ END_SESSION_THUMBNAIL="https://cdn.discordapp.com/attachments/145690728675147777
 MATCH_FOUND_THUMBNAIL="https://cdn.discordapp.com/attachments/1393171149038293023/1456927366503731341/GhwoPFw.png?ex=695a24d8&is=6958d358&hm=5d93f1abb4e11459cd9a9d9d26cffb2174c9036c6827082abcb2d758ef1ccdd7&"
 SHADOW_CHAT_QUEUE_IMAGE="https://cdn.discordapp.com/attachments/1425245166247088290/1456924060658176144/From_KlickPin_CF_Pixel_Art_Loading_Screen_Animation_-_Ko-fi_Where_creators_get_support_from_fans_through_donations_membership...___Pixel_art_background_Pixel_animation_Pixel_artWill_Grayson.gif?ex=695a21c4&is=6958d044&hm=02cfa8fa39814822f4ba28962e974ca7e6ab54e57b34ff35d97e7c67a8a14708&"
 SHADOW_CHAT_QUEUE_COLOR=0xF58D42
+
 # ==================== DISCORD IDs (HARDCODED) ====================
 # Replace these with your actual IDs
+AVATAR_UPLOAD_CHANNEL_ID = 1453780776238845982
 GUILD_ID = 1388612461703467128  # Your server ID
 ENTRY_CHANNEL_ID = 1453780737294860359  # #shadow-chat entry point
 PARENT_CHANNEL_ID = 1453780737294860359  # Channel where threads will be created
