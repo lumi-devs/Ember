@@ -11,4 +11,4 @@ praw
 wget
 quart
 aiosqlite
-
+markovify

@@ -138,6 +138,24 @@ class SmartLoungeCog(commands.Cog):
                 return 0
         return 0
 
+    def get_limit_for_number(self, number: int) -> int:
+        """
+        Determines the user limit based on the lounge number.
+        1-2: Unlimited (0)
+        3-4: 8 users
+        5-6: 7 users
+        7+ : 6 users
+        """
+        if number <= 2:
+            return 0
+        elif number <= 4: # 3, 4
+            return 8
+        elif number <= 6: # 5, 6
+            return 7
+        else: # 7+
+            return 6
+        
+        
     async def get_lounge_state(self) -> Tuple[discord.CategoryChannel, List[Dict]]:
         """Scans all lounges and sorts them."""
         base_channel = self.bot.get_channel(self.base_lounge_id)
@@ -312,44 +330,64 @@ class SmartLoungeCog(commands.Cog):
                             self.stats['total_deletions'] += 1
                             self.stats['last_deletion_time'] = datetime.now()
                         await asyncio.sleep(5)  # Safety delay
-            # --- PHASE 3: FIX NUMBERING GAPS ---
+            
+            # --- PHASE 3: FIX NUMBERING GAPS & LIMITS ---
             await self.fix_numbering_gaps(lounges)
                         
     async def fix_numbering_gaps(self, lounges):
-        """Fix numbering gaps in lounge sequence."""
+        """Fix numbering gaps and enforce user limits."""
         fixed = False
         
-        # Check for gaps
-        expected_number = 1  # Start from Lounge 2
+        # We start checking from expected_number = 1
+        expected_number = 1 
+        
         for lounge in lounges:
-            if lounge['num'] != expected_number:
-                # Found a gap or mis-numbering
-                old_name = lounge['channel'].name
-                new_name = self.lounge_name_fmt.format(expected_number)
-                
-                if old_name != new_name:
-                    try:
-                        await lounge['channel'].edit(name=new_name, 
-                                                    reason=f"Lounge Logic: Fixed numbering gap {lounge['num']} → {expected_number}")
-                        self.logger.info(f"🔢 Renamed Lounge {lounge['num']} → Lounge {expected_number}")
-                        fixed = True
-                    except Exception as e:
-                        self.logger.error(f"❌ Failed to rename lounge: {e}")
+            # Determine correct name and limit for this slot in the list
+            expected_name_str = self.lounge_name_fmt.format(expected_number)
+            expected_limit = self.get_limit_for_number(expected_number)
+            
+            channel = lounge['channel']
+            
+            # Check if Name OR Limit is wrong
+            name_wrong = (channel.name != expected_name_str)
+            # Note: channel.user_limit is 0 for unlimited
+            limit_wrong = (channel.user_limit != expected_limit)
+            
+            if name_wrong or limit_wrong:
+                try:
+                    changes = []
+                    if name_wrong: changes.append(f"Name {lounge['num']}->{expected_number}")
+                    if limit_wrong: changes.append(f"Cap {channel.user_limit}->{expected_limit}")
+                    
+                    reason_msg = f"Lounge Fix: {', '.join(changes)}"
+                    
+                    await channel.edit(
+                        name=expected_name_str,
+                        user_limit=expected_limit,
+                        reason=reason_msg
+                    )
+                    self.logger.info(f"🔧 Fixed Lounge {expected_number}: {reason_msg}")
+                    fixed = True
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to fix lounge {expected_number}: {e}")
             
             expected_number += 1
         
         return fixed
 
     async def create_lounge(self, category, number, position):
-        """Create a new lounge channel."""
+        """Create a new lounge channel with the correct user limit."""
         try:
             name = self.lounge_name_fmt.format(number)
+            limit = self.get_limit_for_number(number) # Get correct cap
+            
             await category.create_voice_channel(
                 name=name,
                 position=position,
-                reason=f"Lounge Logic: Created Lounge {number}"
+                user_limit=limit, # Apply cap
+                reason=f"Lounge Logic: Created Lounge {number} (Cap: {limit})"
             )
-            self.logger.info(f"✅ Created Lounge {number}")
+            self.logger.info(f"✅ Created Lounge {number} [Cap: {limit}]")
             return True
         except discord.Forbidden:
             self.logger.warning(f"❌ Permission denied to create Lounge {number}")
@@ -435,7 +473,7 @@ class SmartLoungeCog(commands.Cog):
             timestamp=datetime.now()
         )
 
-        # 1. Prediction Field (Added as requested)
+        # 1. Prediction Field
         embed.add_field(
             name="🤖 PREDICTED NEXT ACTION",
             value=next_action,
@@ -464,30 +502,17 @@ class SmartLoungeCog(commands.Cog):
             inline=True
         )
         
-        # 4. Timestamps
-        last_creation = self.stats['last_creation_time']
-        peak_time = self.stats['peak_users_time']
+        # 4. Current State with Limits
+        state_list = []
+        for l in lounges[:10]:  # Show first 10 lounges
+            limit = l['channel'].user_limit
+            cap_str = "∞" if limit == 0 else str(limit)
+            status_icon = '🚨' if l['count'] >= self.busy_threshold else '💤' if l['count'] == 0 else '✅'
+            state_list.append(f"**L{l['num']}:** {l['count']}/{cap_str} users {status_icon}")
         
-        embed.add_field(
-            name="⏰ TIMESTAMPS",
-            value=(
-                f"**Last Creation:** {last_creation.strftime('%H:%M:%S') if last_creation else 'Never'}\n"
-                f"**Peak Time:** {peak_time.strftime('%H:%M:%S') if peak_time else 'Never'}\n"
-                f"**Loop Next Run:** <t:{int((datetime.now().timestamp() + 120))}:R>\n"
-            ),
-            inline=False
-        )
-
-        # ... (Remaining parts of the embed like current state and health)
-        current_state = "\n".join([
-            f"**L{l['num']}:** {l['count']} users {'🚨' if l['count'] >= self.busy_threshold else '💤' if l['count'] == 0 else '✅'}"
-            for l in lounges[:10]
-        ])
-        embed.add_field(name="📈 CURRENT STATE (Top 10)", value=current_state, inline=False)
+        embed.add_field(name="📈 CURRENT STATE (Top 10)", value="\n".join(state_list), inline=False)
         
-        #await ctx.send(embed=embed)
-        
-        # Timestamps
+        # 5. Timestamps
         last_creation = self.stats['last_creation_time']
         last_deletion = self.stats['last_deletion_time']
         peak_time = self.stats['peak_users_time']
@@ -504,7 +529,7 @@ class SmartLoungeCog(commands.Cog):
             inline=False
         )
         
-        # Error Log (last 5)
+        # 6. Error Log (last 5)
         if self.stats['errors']:
             error_list = "\n".join([f"• {e}" for e in self.stats['errors'][-5:]])
             embed.add_field(
@@ -513,7 +538,7 @@ class SmartLoungeCog(commands.Cog):
                 inline=False
             )
         
-        # System Health
+        # 7. System Health
         health_status = "✅ HEALTHY"
         health_color = discord.Color.green()
         
@@ -545,7 +570,7 @@ class SmartLoungeCog(commands.Cog):
         # Also send detailed lounge list if requested
         if len(lounges) <= 15:  # Only if not too many
             detailed = "\n".join([
-                f"**#{l['num']}:** {l['name']} → {l['count']} user{'s' if l['count'] != 1 else ''} "
+                f"**#{l['num']}:** {l['name']} → {l['count']}/{l['channel'].user_limit if l['channel'].user_limit != 0 else '∞'} users "
                 f"(ID: `{l['id']}`)"
                 for l in lounges
             ])
@@ -573,4 +598,4 @@ class SmartLoungeCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(SmartLoungeCog(bot))
-    print("✅ Smart Lounge Cog loaded with JSON persistence.")
+    print("✅ Smart Lounge Cog loaded with JSON persistence and Variable User Caps.")
