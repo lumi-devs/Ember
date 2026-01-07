@@ -138,63 +138,6 @@ class VCAFKManager(commands.Cog):
                         else:
                             # Different person is alone now
                             del self.tracked_users[user_id]
-    
-    @commands.command()
-    @commands.has_permissions(administrator=True)
-    async def afkstats(self, ctx):
-        """Show current AFK tracking statistics"""
-        if not self.tracked_users:
-            await ctx.send(f"No users are currently being tracked for AFK. (Timeout: {self.afk_minutes} mins)")
-            return
-        
-        embed = discord.Embed(
-            title="AFK Tracking Statistics",
-            color=discord.Color.blue(),
-            timestamp=datetime.utcnow()
-        )
-        
-        for user_id, data in self.tracked_users.items():
-            member = ctx.guild.get_member(user_id)
-            channel = ctx.guild.get_channel(data["channel_id"])
-            time_in_channel = datetime.utcnow() - data["time_joined"]
-            minutes_alone = int(time_in_channel.total_seconds() / 60)
-            
-            if member and channel:
-                embed.add_field(
-                    name=f"👤 {member.name}",
-                    value=f"Channel: {channel.mention}\n"
-                          f"Time alone: {minutes_alone} minutes\n"
-                          f"Time joined: {data['time_joined'].strftime('%H:%M:%S')}",
-                    inline=False
-                )
-        
-        embed.set_footer(text=f"Users will be kicked after {self.afk_minutes} minutes alone in lounge channels")
-        await ctx.send(embed=embed)
-    
-    @commands.command()
-    @commands.has_permissions(administrator=True)
-    async def resetafk(self, ctx, member: discord.Member = None):
-        """Reset AFK tracking for a user"""
-        if member:
-            if member.id in self.tracked_users:
-                del self.tracked_users[member.id]
-                await ctx.send(f"Reset AFK tracking for {member.mention}")
-            else:
-                await ctx.send(f"{member.mention} is not being tracked for AFK.")
-        else:
-            self.tracked_users.clear()
-            await ctx.send("Reset AFK tracking for all users.")
-
-    @commands.command()
-    @commands.has_permissions(administrator=True)
-    async def setafktime(self, ctx, minutes: int):
-        """Set the AFK timeout duration in minutes"""
-        if minutes < 1:
-            await ctx.send("Please specify a time of at least 1 minute.")
-            return
-        
-        self.afk_minutes = minutes
-        await ctx.send(f"✅ AFK timeout has been updated to **{self.afk_minutes} minutes**.")
 
 async def setup(bot):
     await bot.add_cog(VCAFKManager(bot))
