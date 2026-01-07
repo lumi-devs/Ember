@@ -403,7 +403,7 @@ class SmartLoungeCog(commands.Cog):
         cooldown_remaining = max(0, int(self.creation_cooldown - (current_time - self.last_creation_time)))
         can_create = cooldown_remaining <= 0
         
-        custom_spares = [l for l in lounges if l['count'] == 0 and l['num'] > 2]
+        custom_spares = [l for l in lounges if l['count'] == 0 and l['num'] > 1]
         
         if all_lounges_busy:
             if can_create:
