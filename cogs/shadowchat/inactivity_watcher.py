@@ -6,8 +6,8 @@ Monitors sessions for inactivity and cleans up old sessions using async concurre
 import asyncio
 import discord
 import datetime
-from typing import Dict, List
-from .constants import SESSION_TIMEOUT_MINUTES, GUILD_ID, COLOR_WARNING
+from typing import Dict, List, Optional
+from .constants import SESSION_TIMEOUT_MINUTES, GUILD_ID, COLOR_WARNING, COLOR_ERROR
 from .session_manager import SessionManager
 from .models import ShadowSession
 from .utils import get_thread_by_id
@@ -23,6 +23,8 @@ class InactivityWatcher:
         
         # Cache for warning messages to avoid spamming
         self.warnings_sent: Dict[str, datetime.datetime] = {}
+        # Cache for closing warnings (1 minute countdown)
+        self.closing_warnings_sent: Dict[str, datetime.datetime] = {}
     
     async def start(self):
         """Start the inactivity watcher."""
@@ -93,40 +95,50 @@ class InactivityWatcher:
     async def _check_session_inactivity(self, session: ShadowSession, now: datetime.datetime) -> bool:
         """Check if a session has been inactive too long. Returns True if ended."""
         inactive_seconds = (now - session.last_activity).total_seconds()
-        warning_threshold = float((SESSION_TIMEOUT_MINUTES * 60) / 2) # 1 minute before timeout
+        total_timeout = SESSION_TIMEOUT_MINUTES * 60
+        
+        # First warning threshold (half of timeout)
+        first_warning_threshold = float(total_timeout / 2)
+        
+        # Second warning threshold (1 minute before timeout)
+        closing_warning_threshold = total_timeout - 60
         
         # End session if timed out
-        if inactive_seconds >= SESSION_TIMEOUT_MINUTES * 60:
-            await self.session_manager.end_session(
-                session.session_id,
-                "Inactivity timeout"
-            )
-            # Clean up warning cache
+        if inactive_seconds >= total_timeout:
+            await self._end_session_with_notification(session, "Inactivity timeout")
+            return True
+        
+        # Send closing warning (1 minute before timeout)
+        elif inactive_seconds >= closing_warning_threshold and session.session_id not in self.closing_warnings_sent:
+            await self._send_closing_warning(session, 1)  # 1 minute remaining
+            self.closing_warnings_sent[session.session_id] = now
+            # Remove from first warnings if present
             if session.session_id in self.warnings_sent:
                 del self.warnings_sent[session.session_id]
-            return True
-
-        # Send warning if close to timeout
-        if inactive_seconds >= warning_threshold and session.session_id not in self.warnings_sent:
-            # We don't await this to block execution, just fire and forget or simple await
-            await self._send_inactivity_warning(session)
+        
+        # Send first warning (halfway point)
+        elif inactive_seconds >= first_warning_threshold and session.session_id not in self.warnings_sent:
+            remaining_minutes = SESSION_TIMEOUT_MINUTES // 2
+            await self._send_inactivity_warning(session, remaining_minutes)
             self.warnings_sent[session.session_id] = now
             
         return False
     
-    async def _check_session_duration(self, session: ShadowSession, now: datetime.datetime):
-        """Check if session has been active too long (safety measure)."""
-        duration_hours = (now - session.created_at).total_seconds() / 3600
+    async def _end_session_with_notification(self, session: ShadowSession, reason: str):
+        """End session and send final notification."""
+        # Send final closure message
+        await self._send_session_closed_notification(session, reason)
         
-        # Max 6 hours per session (safety limit)
-        if duration_hours >= 6:
-            await self.session_manager.end_session(
-                session.session_id,
-                "Maximum session duration reached (6 hours)"
-            )
+        # End the session
+        await self.session_manager.end_session(session.session_id, reason)
+        
+        # Clean up warning caches
+        for cache in [self.warnings_sent, self.closing_warnings_sent]:
+            if session.session_id in cache:
+                del cache[session.session_id]
     
-    async def _send_inactivity_warning(self, session: ShadowSession):
-        """Send inactivity warning to both users (Parallelized)."""
+    async def _send_inactivity_warning(self, session: ShadowSession, remaining_minutes: int):
+        """Send inactivity warning to both users."""
         guild = self.bot.get_guild(GUILD_ID)
         if not guild: return
 
@@ -138,14 +150,14 @@ class InactivityWatcher:
         if not thread1 or not thread2:
             return
         
-        remaining = int(SESSION_TIMEOUT_MINUTES / 2)
         # Create warning embed
         embed = discord.Embed(
             title="⏰ Session Inactive",
-            description=f"Session will end in {remaining} minute due to inactivity.",
+            description=f"Session will end in {remaining_minutes} minutes due to inactivity.",
             color=COLOR_WARNING
         )
         embed.add_field(name="To Continue", value="Send a message to reset the timer.", inline=False)
+        embed.set_footer(text=f"You'll receive another warning at 1 minute remaining.")
         
         # Send warnings in parallel
         await asyncio.gather(
@@ -154,12 +166,90 @@ class InactivityWatcher:
             return_exceptions=True
         )
     
+    async def _send_closing_warning(self, session: ShadowSession, remaining_minutes: int):
+        """Send 1-minute closing warning to both users."""
+        guild = self.bot.get_guild(GUILD_ID)
+        if not guild: return
+
+        # Fetch threads in parallel
+        t1_task = get_thread_by_id(guild, session.thread1_id)
+        t2_task = get_thread_by_id(guild, session.thread2_id)
+        thread1, thread2 = await asyncio.gather(t1_task, t2_task)
+        
+        if not thread1 or not thread2:
+            return
+        
+        # Create urgent warning embed
+        embed = discord.Embed(
+            title="⚠️ Session Closing Soon!",
+            description=f"**Session will end in {remaining_minutes} minute due to inactivity!**",
+            color=COLOR_ERROR
+        )
+        embed.add_field(name="Last Chance!", value="Send a message NOW to keep the session alive.", inline=False)
+        embed.set_footer(text=f"Session will auto-close in {remaining_minutes} minute.")
+        
+        # Send urgent warnings in parallel
+        await asyncio.gather(
+            thread1.send(content=f"<@{session.user1_id}>", embed=embed),
+            thread2.send(content=f"<@{session.user2_id}>", embed=embed),
+            return_exceptions=True
+        )
+    
+    async def _send_session_closed_notification(self, session: ShadowSession, reason: str):
+        """Send notification that session has been closed."""
+        guild = self.bot.get_guild(GUILD_ID)
+        if not guild: return
+
+        # Fetch threads in parallel
+        t1_task = get_thread_by_id(guild, session.thread1_id)
+        t2_task = get_thread_by_id(guild, session.thread2_id)
+        thread1, thread2 = await asyncio.gather(t1_task, t2_task)
+        
+        if not thread1 or not thread2:
+            return
+        
+        # Create closure embed
+        embed = discord.Embed(
+            title="🔒 Session Ended",
+            description=f"**Session has been closed due to inactivity.**",
+            color=COLOR_ERROR
+        )
+        embed.add_field(name="Reason", value=reason, inline=False)
+        embed.add_field(name="Session Duration", 
+                       value=f"Created: {discord.utils.format_dt(session.created_at, 'R')}",
+                       inline=False)
+        
+        # Send closure notifications in parallel
+        await asyncio.gather(
+            thread1.send(content=f"<@{session.user1_id}>", embed=embed),
+            thread2.send(content=f"<@{session.user2_id}>", embed=embed),
+            return_exceptions=True
+        )
+    
+    async def _check_session_duration(self, session: ShadowSession, now: datetime.datetime):
+        """Check if session has been active too long (safety measure)."""
+        duration_hours = (now - session.created_at).total_seconds() / 3600
+        
+        # Max 6 hours per session (safety limit)
+        if duration_hours >= 6:
+            await self._end_session_with_notification(
+                session,
+                "Maximum session duration reached (6 hours)"
+            )
+    
     async def cleanup_old_warnings(self):
-        """Clean up old entries from warnings cache."""
+        """Clean up old entries from warnings caches."""
         cutoff = discord.utils.utcnow() - datetime.timedelta(minutes=10)
-        # Use dict comprehension for efficiency
+        
+        # Clean up first warnings cache
         self.warnings_sent = {
             sid: ts for sid, ts in self.warnings_sent.items() 
+            if ts > cutoff
+        }
+        
+        # Clean up closing warnings cache
+        self.closing_warnings_sent = {
+            sid: ts for sid, ts in self.closing_warnings_sent.items() 
             if ts > cutoff
         }
     
