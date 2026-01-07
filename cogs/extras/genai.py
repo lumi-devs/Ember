@@ -92,7 +92,7 @@ class GlobalGenAICog(commands.Cog):
         async with self.buffer_lock:
             self.message_buffer.append({
                 'content': clean_content,
-                'timestamp': datetime.utcnow().isoformat()
+                'timestamp': discord.utils.utcnow().isoformat()
             })
             
             if len(self.message_buffer) >= self.FLUSH_THRESHOLD:
@@ -189,7 +189,7 @@ class GlobalGenAICog(commands.Cog):
 
             if new_model:
                 self.global_model = new_model
-                self.model_timestamp = datetime.utcnow()
+                self.model_timestamp = discord.utils.utcnow()
                 logger.info(f"Model updated. Lines: {len(data)}")
         except Exception as e:
             logger.error(f"Error rebuilding model: {e}")
@@ -201,7 +201,7 @@ class GlobalGenAICog(commands.Cog):
             asyncio.create_task(self.rebuild_global_model())
             return
             
-        age = (datetime.utcnow() - self.model_timestamp).seconds
+        age = (discord.utils.utcnow() - self.model_timestamp).seconds
         if age > self.MODEL_TTL and not self.is_building_model:
             asyncio.create_task(self.rebuild_global_model())
 
@@ -229,24 +229,44 @@ class GlobalGenAICog(commands.Cog):
     async def on_message(self, message):
         if message.author.bot: return
         
-        # Non-blocking add
+        # 1. Save data (Non-blocking)
         asyncio.create_task(self.add_message(message.content))
 
+        # 2. Check Triggers
         is_mentioned = self.bot.user in message.mentions
-        chance = 1.0 if is_mentioned else self.REPLY_CHANCE
+        is_reply_to_me = False
 
-        if random.random() < chance or is_mentioned:
-            if not is_mentioned and message.channel.id in self.reply_cooldowns:
-                if (datetime.utcnow() - self.reply_cooldowns[message.channel.id]).seconds < self.REPLY_COOLDOWN:
+        # Check if this is a reply to the bot
+        if message.reference:
+            # Try to get the message object from cache/reference
+            ref_msg = message.reference.cached_message or message.reference.resolved
+            if ref_msg and ref_msg.author.id == self.bot.user.id:
+                is_reply_to_me = True
+
+        # 3. Decision Logic
+        # Reply if mentioned OR if it's a direct reply to the bot
+        should_reply = is_mentioned or is_reply_to_me
+        
+        # Set Probability
+        chance = 1.0 if should_reply else self.REPLY_CHANCE
+
+        # 4. Execution
+        if random.random() < chance or should_reply:
+            # Cooldown Check (Skip if mentioned/replied to)
+            if not should_reply and message.channel.id in self.reply_cooldowns:
+                if (discord.utils.utcnow() - self.reply_cooldowns[message.channel.id]).seconds < self.REPLY_COOLDOWN:
                     return
 
             async with message.channel.typing():
+                # Random "thinking" delay
                 await asyncio.sleep(random.uniform(0.5, 1.0))
+                
                 reply = await self.generate_reply(message)
                 
                 if reply:
-                    await message.channel.send(reply)
-                    self.reply_cooldowns[message.channel.id] = datetime.utcnow()
+                    # If the user replied to us, let's reply back to them specifically
+                    await message.channel.send(reply, reference=message if should_reply else None, mention_author=False)
+                    self.reply_cooldowns[message.channel.id] = discord.utils.utcnow()
 
     @commands.command(name="stats")
     async def stats(self, ctx):
