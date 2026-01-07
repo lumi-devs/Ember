@@ -93,7 +93,7 @@ class InactivityWatcher:
     async def _check_session_inactivity(self, session: ShadowSession, now: datetime.datetime) -> bool:
         """Check if a session has been inactive too long. Returns True if ended."""
         inactive_seconds = (now - session.last_activity).total_seconds()
-        warning_threshold = SESSION_TIMEOUT_MINUTES * 60 - 60  # 1 minute before timeout
+        warning_threshold = float((SESSION_TIMEOUT_MINUTES * 60) / 2) # 1 minute before timeout
         
         # End session if timed out
         if inactive_seconds >= SESSION_TIMEOUT_MINUTES * 60:
@@ -138,18 +138,19 @@ class InactivityWatcher:
         if not thread1 or not thread2:
             return
         
+        remaining = int(SESSION_TIMEOUT_MINUTES / 2)
         # Create warning embed
         embed = discord.Embed(
             title="⏰ Session Inactive",
-            description="Session will end in 1 minute due to inactivity.",
+            description=f"Session will end in {remaining} minute due to inactivity.",
             color=COLOR_WARNING
         )
         embed.add_field(name="To Continue", value="Send a message to reset the timer.", inline=False)
         
         # Send warnings in parallel
         await asyncio.gather(
-            thread1.send(embed=embed),
-            thread2.send(embed=embed),
+            thread1.send(content=f"<@{session.user1_id}>", embed=embed),
+            thread2.send(content=f"<@{session.user2_id}>", embed=embed),
             return_exceptions=True
         )
     

@@ -190,8 +190,6 @@ class SessionManager:
             # Send welcome messages
             await self._send_welcome_messages(session, user1, user2)
             
-            # Send DMs to users
-            await self._send_match_dms(session, user1, user2)
             
             # Log session creation
             await self._log_session_creation(session, user1, user2)
@@ -204,11 +202,10 @@ class SessionManager:
             import traceback
             traceback.print_exc()
             return None
-    
+        
+    """
     async def _send_match_dms(self, session: ShadowSession, user1: discord.Member, user2: discord.Member):
-        """Send match found DMs to both users."""
         def create_match_found_embed(thread_id: int, session_id: str) -> discord.Embed:
-            """Create a match found embed with session details."""
             embed = discord.Embed(
                 title="🎭 Shadow Found!",
                 description="Your cloaked chat session is ready.",
@@ -249,7 +246,7 @@ class SessionManager:
             #print(f"[Shadow Chat] ✓ DM sent to {user2}")
         except discord.Forbidden:
             print(f"[Shadow Chat] Cannot DM {user2}")
-    
+    """
     async def _send_welcome_messages(self, session: ShadowSession, user1: discord.Member, user2: discord.Member):
         """Send welcome messages to both threads."""
         from .utils import create_session_header, create_session_header_buttons
@@ -282,10 +279,24 @@ class SessionManager:
                 pass  # Can't pin, that's okay
             
             # Send initial greeting message
-            embed=discord.Embed(description="💬 Start chatting! Make sure not to share any personal information.",
-                                color=constants.SHADOW_CHAT_QUEUE_COLOR)
-            await thread1.send(embed=embed)
-            await thread2.send(embed=embed)
+            embed1=discord.Embed(description="💬 Start chatting! Make sure not to share any personal information.", color=constants.SHADOW_CHAT_QUEUE_COLOR)
+            embed1.add_field(
+                name="Session Codes",
+                value=f"Session ID: `{session.session_id}`\n\nUse the Session ID to report any misdeeds to moderators.",
+                inline=False
+            )
+            embed1.set_footer(text="Safety Tip: Use /complain immediately if you feel unsafe. Do not share personal info.")
+            
+            embed2=discord.Embed(description="💬 Start chatting! Make sure not to share any personal information.", color=constants.SHADOW_CHAT_QUEUE_COLOR)
+            embed2.add_field(
+                name="Session Codes",
+                value=f"Session ID: `{session.session_id}`\n\nUse the Session ID to report any misdeeds to moderators.",
+                inline=False
+            )
+            embed2.set_footer(text="Safety Tip: Use /complain immediately if you feel unsafe. Do not share personal info.")
+            
+            await thread1.send(content=user1.mention,embed=embed1)
+            await thread2.send(content=user2.mention,embed=embed2)
             
         except Exception as e:
             print(f"[Shadow Chat] Welcome message error: {e}")

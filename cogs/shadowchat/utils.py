@@ -238,12 +238,6 @@ def create_session_header(session_id: str, partner_code: str) -> discord.Embed:
         value="`/complain <reason>` — Report bad behavior\n`/skip` — Find a new partner\n`/reveal` — Reveal your identities\n`/end` — End the conversation",
         inline=False
     )
-    embed.add_field(
-        name="Session Codes",
-        value=f"Session ID: `{session_id}`\n\nUse the Session ID to report any misdeeds to moderators.",
-        inline=False
-    )
-    embed.set_footer(text="Safety Tip: Use /complain immediately if you feel unsafe. Do not share personal info.")
     embed.color = constants.SESSION_STARTED_COLOR
     return embed
 
