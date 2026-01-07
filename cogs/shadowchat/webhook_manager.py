@@ -489,7 +489,6 @@ class WebhookManager:
                 # Check if expired
                 if entry.is_expired(self._avatar_cache_max_age_hours):
                     logger.debug(f"Cache entry expired for {filename}, removing")
-                    await self._delete_cached_avatar(entry)
                     del self._avatar_cache[cache_key]
                 else:
                     # Check if needs refresh
@@ -565,21 +564,12 @@ class WebhookManager:
             
             if new_cdn_url:
                 # Delete old message
-                await self._delete_cached_avatar(old_entry)
                 logger.debug(f"Refreshed avatar: {filename}")
                 
         except Exception as e:
             logger.error(f"Error refreshing avatar: {e}")
     
-    async def _delete_cached_avatar(self, entry: AvatarCacheEntry):
-        """Delete a cached avatar from Discord."""
-        try:
-            channel = self.bot.get_channel(entry.channel_id)
-            if channel:
-                message = await channel.fetch_message(entry.message_id)
-                await message.delete()
-        except Exception as e:
-            logger.error(f"Error deleting cached avatar message: {e}")
+
     
     async def _cleanup_old_cache_entries(self):
         """Clean up old cache entries to stay within limits."""
@@ -595,7 +585,6 @@ class WebhookManager:
         # Delete oldest entries
         for cache_key, entry in sorted_entries[:len(self._avatar_cache) - self._max_cached_avatars]:
             try:
-                await self._delete_cached_avatar(entry)
                 del self._avatar_cache[cache_key]
             except Exception as e:
                 logger.error(f"Error cleaning up cache entry {cache_key}: {e}")
@@ -1175,7 +1164,6 @@ class WebhookManager:
         for cache_key in expired_keys:
             try:
                 entry = self._avatar_cache[cache_key]
-                await self._delete_cached_avatar(entry)
                 del self._avatar_cache[cache_key]
                 cleaned += 1
             except Exception as e:

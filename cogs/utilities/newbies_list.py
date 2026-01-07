@@ -17,7 +17,7 @@ class DynamicMemberList(commands.Cog):
         self.MAX_MEMBERS = 12
         self.MEMBER_EXPIRY_DAYS = 2
         self.ADD_ROLES = [1406324000736542911, 1410302930485121106, 1408709182856630332, 1438551732807536690, 1393170995157798983]  # Add role IDs here that can ADD members
-        
+        self.REMOVE_ROLES=[1406324000736542911]
         # Load existing data
         self.member_lists = self.load_data()
         
@@ -218,7 +218,7 @@ class DynamicMemberList(commands.Cog):
             )
     
     class RemoveMembersButton(Button):
-        """Button to remove members (Admin only)"""
+        """Button to remove members (Admin/Remove Roles only)"""
         def __init__(self, cog):
             super().__init__(
                 label="🗑️ Remove Members",
@@ -232,10 +232,35 @@ class DynamicMemberList(commands.Cog):
         async def callback(self, interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
             
+            # Check permissions - UPDATED VERSION
+            has_permission = False
+            
             # Check if user is admin
-            if not interaction.user.guild_permissions.administrator:
+            if interaction.user.guild_permissions.administrator:
+                has_permission = True
+            
+            # Check REMOVE_ROLES if not admin
+            if not has_permission and self.cog.REMOVE_ROLES:
+                # Check each role the user has
+                for role in interaction.user.roles:
+                    # Compare role.id (int) with REMOVE_ROLES (int)
+                    if role.id in self.cog.REMOVE_ROLES:
+                        has_permission = True
+                        break
+            
+            if not has_permission:
+                # Show which roles are required for debugging
+                required_roles = []
+                for role_id in self.cog.REMOVE_ROLES:
+                    role = interaction.guild.get_role(role_id)
+                    if role:
+                        required_roles.append(role.mention)
+                    else:
+                        required_roles.append(f"Unknown Role ({role_id})")
+                
                 await interaction.followup.send(
-                    "❌ Only administrators can remove members from the list!",
+                    f"❌ You don't have permission to remove members from this list!\n"
+                    f"**Required:** Administrator permission or one of these roles: {', '.join(required_roles) if required_roles else 'Administrator only'}\n",
                     ephemeral=True
                 )
                 return
@@ -468,9 +493,22 @@ class DynamicMemberList(commands.Cog):
                     await interaction.followup.send(f"❌ Error updating list: {str(e)}", ephemeral=True)
             
             elif self.action_type == "remove":
+                # Check permissions - UPDATED VERSION
+                has_permission = False
+                
                 # Check if user is admin
-                if not interaction.user.guild_permissions.administrator:
-                    await interaction.followup.send("❌ Only admins can remove members!", ephemeral=True)
+                if interaction.user.guild_permissions.administrator:
+                    has_permission = True
+                
+                # Check REMOVE_ROLES if not admin
+                if not has_permission and self.cog.REMOVE_ROLES:
+                    for role in interaction.user.roles:
+                        if role.id in self.cog.REMOVE_ROLES:
+                            has_permission = True
+                            break
+                
+                if not has_permission:
+                    await interaction.followup.send("❌ You don't have permission to remove members!", ephemeral=True)
                     return
                 
                 removed_members = []
