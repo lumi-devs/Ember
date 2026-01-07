@@ -25,7 +25,7 @@ class SmartLoungeCog(commands.Cog):
             self.logger.addHandler(handler)
         
         # --- CONFIGURATION ---
-        self.base_lounge_id = 1394677032922648747  # Lounge 2 (Permanent Base)
+        self.base_lounge_id = 1393171112753631243  # Lounge 2 (Permanent Base)
         self.busy_threshold = 2     # How many users make a room "Busy"?
         self.lounge_name_fmt = "┊ 🔊﹕₊˚⌇lounge {} ꜝꜝ‹3" 
         
@@ -148,7 +148,7 @@ class SmartLoungeCog(commands.Cog):
 
         # 1. Add Base Lounge (Lounge 2)
         lounges.append({
-            'num': 2,
+            'num': 1,
             'channel': base_channel,
             'count': len(base_channel.members),
             'id': base_channel.id,
@@ -162,7 +162,7 @@ class SmartLoungeCog(commands.Cog):
                 continue
             
             num = self.get_lounge_number(channel.name)
-            if num > 2: 
+            if num > 1: 
                 lounges.append({
                     'num': num,
                     'channel': channel,
