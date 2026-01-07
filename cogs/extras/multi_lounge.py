@@ -306,7 +306,7 @@ class SmartLoungeCog(commands.Cog):
         fixed = False
         
         # Check for gaps
-        expected_number = 2  # Start from Lounge 2
+        expected_number = 1  # Start from Lounge 2
         for lounge in lounges:
             if lounge['num'] != expected_number:
                 # Found a gap or mis-numbering
