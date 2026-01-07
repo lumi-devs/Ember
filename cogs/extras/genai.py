@@ -235,7 +235,7 @@ class GlobalGenAICog(commands.Cog):
         return response
 
     @commands.Cog.listener()
-@commands.Cog.listener()
+    @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot: return
         
