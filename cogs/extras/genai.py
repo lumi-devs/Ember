@@ -84,12 +84,6 @@ class GenAICog(commands.Cog):
         # Remove URLs
         content = re.sub(r'https?://\S+', '', content)
         
-        # Remove mentions
-        content = re.sub(r'<@!?[0-9]+>', '', content)
-        
-        # Remove custom emojis
-        content = re.sub(r'<a?:\w+:\d+>', '', content)
-        
         # Remove excessive whitespace
         content = re.sub(r'\s+', ' ', content)
         
