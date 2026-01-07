@@ -1,325 +1,708 @@
 import discord
 from discord.ext import commands
-import markovify
 import aiosqlite
 import random
 import re
 import asyncio
-from datetime import datetime
 import logging
 from collections import deque
-import functools
+from datetime import datetime, timedelta
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("GlobalGenAI")
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("HighTrafficMarkovBot")
 
-class GlobalGenAICog(commands.Cog):
+class SingleServerMarkovCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = "./global_messages.db"
+        self.db_path = "./server_brain.db"
         
-        # Global Model State
-        self.global_model = None
-        self.model_timestamp = None
-        self.is_building_model = False
+        self.MAX_RAW_MESSAGES = 2_000_000      # Keep ~4 months of raw messages
+        self.MAX_TRIPLETS = 5_000_000          # Max unique triplets (~2-3 years)
+        self.RAW_MESSAGE_RETENTION_DAYS = 120  # Keep raw messages for 120 days
+        self.PRUNE_OLD_TRIPLETS_AFTER_DAYS = 365  # Archive triplets older than 1 year
         
-        # Caches
-        self.recent_messages = deque(maxlen=2000) 
+        # Add cleanup task
+        self.bot.loop.create_task(self.periodic_cleanup())
+        
+        # --- OPTIMIZED PARAMETERS FOR 17K DAILY MESSAGES ---
+        # Based on: 17k/day = ~708/hour = ~12/minute
+        self.MIN_TRIPLETS_FOR_REPLY = 1000      # Need at least 1000 learned triplets
+        self.REPLY_CHANCE = 0.015                # 1.5% chance to reply randomly
+        self.REPLY_COOLDOWN = 10                 # 10 seconds between replies per channel
+        self.TYPING_MIN_SECONDS = 0.3            # Minimum typing delay
+        self.TYPING_MAX_SECONDS = 0.8            # Maximum typing delay
+        self.SENTENCE_MAX_WORDS = 30             # Maximum words per generated sentence
+        self.SEED_WORD_MIN_LENGTH = 3            # Minimum seed word length
+        self.MIN_MESSAGE_WORDS = 3               # Minimum words to train on
+        
+        # Memory buffer for recent messages (helps with seeding)
+        self.recent_messages = deque(maxlen=1000)  # Keep last 1000 messages
+        
+        # Reply cooldown tracking
         self.reply_cooldowns = {}
-        
-        # --- HIGH TRAFFIC CONFIGURATION ---
-        self.FLUSH_THRESHOLD = 200     # Increased for high traffic (flush less often, bigger batches)
-        self.MIN_MESSAGES_FOR_MODEL = 500
-        self.MAX_TRAINING_SAMPLE = 100000  # Increased to remember ~4 days of chat (requires ~1-2GB RAM)
-        self.REPLY_CHANCE = 0.02
-        self.MODEL_TTL = 900          # Rebuild every 30 mins (10 mins is too frequent for 25k/day)
-        self.REPLY_COOLDOWN = 5
-        
-        # Buffers
         self.message_buffer = []
         self.buffer_lock = asyncio.Lock()
+        self.FLUSH_THRESHOLD = 100  # Flush every 100 messages
+        
+        # Performance tracking
+        self.stats = {
+            'messages_processed': 0,
+            'triplets_stored': 0,
+            'replies_generated': 0,
+            'last_flush': datetime.utcnow()
+        }
         
         # Start background tasks
         self.bot.loop.create_task(self.initialize_database())
         self.bot.loop.create_task(self.buffer_flusher())
 
-    async def initialize_database(self):
-        """Initialize SQLite database with WAL mode for concurrency"""
-        await self.bot.wait_until_ready()
+
+    async def periodic_cleanup(self):
+        """Run database cleanup every 24 hours"""
+        while True:
+            await asyncio.sleep(24 * 3600)  # 24 hours
+            
+            try:
+                await self.cleanup_old_data()
+                logger.info("Performed daily database cleanup")
+            except Exception as e:
+                logger.error(f"Cleanup failed: {e}")
+
+    async def cleanup_old_data(self):
+        """Remove old data to prevent unbounded growth"""
         async with aiosqlite.connect(self.db_path) as db:
-            # OPTIMIZATION: Enable Write-Ahead Logging (WAL)
-            # This allows reading and writing at the same time (Crucial for active servers)
-            await db.execute('PRAGMA journal_mode=WAL;')
-            await db.execute('PRAGMA synchronous=NORMAL;')
+            # 1. Remove old raw messages (older than retention period)
+            await db.execute(f"""
+                DELETE FROM message_log 
+                WHERE timestamp < datetime('now', '-{self.RAW_MESSAGE_RETENTION_DAYS} days')
+            """)
             
-            await db.execute('''
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    content TEXT NOT NULL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            await db.execute('CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp)')
+            # 2. Check if we have too many raw messages (safety limit)
+            async with db.execute("SELECT COUNT(*) FROM message_log") as cursor:
+                count = (await cursor.fetchone())[0]
+                
+            if count > self.MAX_RAW_MESSAGES:
+                excess = count - self.MAX_RAW_MESSAGES
+                await db.execute(f"""
+                    DELETE FROM message_log 
+                    WHERE id IN (
+                        SELECT id FROM message_log 
+                        ORDER BY timestamp ASC 
+                        LIMIT {excess}
+                    )
+                """)
+            
+            # 3. Prune very old, rarely used triplets
+            await db.execute(f"""
+                DELETE FROM markov_chain 
+                WHERE last_used < datetime('now', '-{self.PRUNE_OLD_TRIPLETS_AFTER_DAYS} days')
+                AND count < 3  -- Remove triplets used less than 3 times
+            """)
+            
+            # 4. Check triplet count limit
+            async with db.execute("SELECT COUNT(*) FROM markov_chain") as cursor:
+                triplet_count = (await cursor.fetchone())[0]
+                
+            if triplet_count > self.MAX_TRIPLETS:
+                # Remove least used triplets
+                excess_triplets = triplet_count - self.MAX_TRIPLETS
+                await db.execute(f"""
+                    DELETE FROM markov_chain 
+                    WHERE (word_a, word_b, next_word) IN (
+                        SELECT word_a, word_b, next_word 
+                        FROM markov_chain 
+                        ORDER BY count ASC, last_used ASC 
+                        LIMIT {excess_triplets}
+                    )
+                """)
+            
+            # 5. Vacuum to reclaim space
+            await db.execute("VACUUM")
             await db.commit()
-            
-        logger.info("Database initialized (WAL Mode ON). Warming up model...")
-        await self.rebuild_global_model()
 
-    # --- DATA INGESTION ---
 
+    # --- DATABASE INITIALIZATION ---
+    async def initialize_database(self):
+        """Initialize SQLite database optimized for single-server high traffic"""
+        await self.bot.wait_until_ready()
+        
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                # Enable WAL mode for concurrent reads/writes
+                await db.execute('PRAGMA journal_mode=WAL;')
+                await db.execute('PRAGMA synchronous=NORMAL;')
+                await db.execute('PRAGMA cache_size=10000;')  # 10MB cache
+                await db.execute('PRAGMA temp_store=MEMORY;')
+                
+                # Create Markov chain table (word triplets)
+                await db.execute('''
+                    CREATE TABLE IF NOT EXISTS markov_chain (
+                        word_a TEXT NOT NULL,
+                        word_b TEXT NOT NULL,
+                        next_word TEXT NOT NULL,
+                        count INTEGER DEFAULT 1,
+                        last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (word_a, word_b, next_word)
+                    )
+                ''')
+                
+                # Create indexes for fast lookups
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_markov_start 
+                    ON markov_chain(word_a, word_b)
+                ''')
+                
+                # Create message log table (optional, for stats)
+                await db.execute('''
+                    CREATE TABLE IF NOT EXISTS message_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        content TEXT NOT NULL,
+                        author_id INTEGER,
+                        channel_id INTEGER,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                
+                await db.commit()
+                logger.info("Database initialized with WAL mode and indexes")
+                
+        except Exception as e:
+            logger.error(f"Failed to initialize database: {e}")
+
+    # --- MESSAGE PROCESSING ---
     def sanitize_message(self, content):
-        if not content: return ""
-        if content.startswith(self.bot.command_prefix): return ""
+        """Clean message for training"""
+        if not content or len(content.strip()) < 5:
+            return ""
+            
+        # Remove bot commands and common prefixes
+        if content.startswith(('!', '/', '.', '?', '~', '$', '#')):
+            return ""
+            
+        # Remove URLs
+        content = re.sub(r'https?://\S+|www\.\S+', '', content)
         
-        # Filter typical bot command spam
-        if content.startswith(('!', '/', '?', '.', ';')): return ""
-
-        # Remove URLs, Mentions, Custom Emojis
-        content = re.sub(r'https?://\S+', '', content)
-        content = re.sub(r'<a?:\w+:\d+>', '', content)
-        content = re.sub(r'<@&?\d+>', '', content)
+        # Remove mentions and emojis
+        content = re.sub(r'<[@#][^>]+>|:[^:\s]+:', '', content)
         
-        return " ".join(content.split())
+        # Remove excessive whitespace and normalize
+        content = ' '.join(content.split())
+        
+        # Convert to lowercase for better matching (optional)
+        content = content.lower()
+        
+        return content if len(content.split()) >= self.MIN_MESSAGE_WORDS else ""
 
-    async def add_message(self, content):
-        """Add message to buffer"""
+    def extract_triplets(self, content):
+        """Extract word triplets from message content"""
+        words = content.split()
+        triplets = []
+        
+        if len(words) < 3:
+            return triplets
+            
+        for i in range(len(words) - 2):
+            # Ensure all words are non-empty
+            if words[i] and words[i+1] and words[i+2]:
+                triplets.append((words[i], words[i+1], words[i+2]))
+                
+        return triplets
+
+    async def train_on_message(self, content):
+        """Train Markov chain on a single message"""
         clean_content = self.sanitize_message(content)
-        if not clean_content or len(clean_content.split()) < 2:
-            return
+        if not clean_content:
+            return 0
+            
+        triplets = self.extract_triplets(clean_content)
+        if not triplets:
+            return 0
+            
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                # Batch insert/update triplets
+                await db.executemany('''
+                    INSERT INTO markov_chain (word_a, word_b, next_word, count, last_used)
+                    VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
+                    ON CONFLICT(word_a, word_b, next_word) 
+                    DO UPDATE SET 
+                        count = count + 1,
+                        last_used = CURRENT_TIMESTAMP
+                ''', triplets)
+                await db.commit()
+                
+                self.stats['triplets_stored'] += len(triplets)
+                return len(triplets)
+                
+        except Exception as e:
+            logger.error(f"Failed to train on message: {e}")
+            return 0
 
-        should_flush = False
+    async def buffer_message(self, message):
+        """Buffer message for async processing"""
         async with self.buffer_lock:
             self.message_buffer.append({
-                'content': clean_content,
-                'timestamp': discord.utils.utcnow().isoformat()
+                'content': message.content,
+                'author_id': message.author.id,
+                'channel_id': message.channel.id,
+                'timestamp': message.created_at.isoformat()
             })
             
-            if len(self.message_buffer) >= self.FLUSH_THRESHOLD:
-                should_flush = True
+            # Store in recent messages for seeding
+            clean = self.sanitize_message(message.content)
+            if clean:
+                self.recent_messages.append(clean)
+                
+            self.stats['messages_processed'] += 1
             
-        self.recent_messages.append(clean_content)
-        
-        # Non-blocking flush trigger
-        if should_flush:
-            asyncio.create_task(self.flush_buffer())
+            # Trigger flush if threshold reached
+            if len(self.message_buffer) >= self.FLUSH_THRESHOLD:
+                asyncio.create_task(self.flush_buffer())
 
     async def buffer_flusher(self):
-        """Backup timer flush (every 30s)"""
+        """Periodic buffer flusher (every 30 seconds)"""
         while True:
             await asyncio.sleep(30)
             await self.flush_buffer()
 
     async def flush_buffer(self):
-        """Flush buffer to DB safely"""
-        # Check if empty first to avoid locking
-        if not self.message_buffer:
-            return
-
+        """Flush buffered messages to database"""
         async with self.buffer_lock:
             if not self.message_buffer:
                 return
-            to_save = self.message_buffer.copy()
+                
+            messages_to_save = self.message_buffer.copy()
             self.message_buffer.clear()
-
-        if to_save:
-            try:
-                async with aiosqlite.connect(self.db_path) as db:
-                    await db.executemany(
-                        'INSERT INTO messages (content, timestamp) VALUES (?, ?)',
-                        [(m['content'], m['timestamp']) for m in to_save]
-                    )
-                    await db.commit()
-                # Reduce log noise - only log errors or large flushes
-                if len(to_save) > 50:
-                    logger.debug(f"Saved {len(to_save)} messages.")
-            except Exception as e:
-                logger.error(f"Failed to save messages: {e}")
-
-    # --- MODEL HANDLING ---
-
-    def _build_markov_process(self, text_data):
-        try:
-            # state_size=2 is faster and uses less RAM than 3
-            return markovify.NewlineText(text_data, state_size=2, well_formed=False)
-        except Exception as e:
-            return None
-
-    async def get_training_data(self):
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
             
-            # Fast count estimate (exact count is slow on large tables)
-            async with db.execute("SELECT MAX(id) FROM messages") as cursor:
-                row = await cursor.fetchone()
-                total = row[0] if row and row[0] else 0
-
-            if total < self.MIN_MESSAGES_FOR_MODEL:
-                return []
-
-            limit_recent = int(self.MAX_TRAINING_SAMPLE * 0.8) # 80% recent for relevance
-            limit_random = int(self.MAX_TRAINING_SAMPLE * 0.2)
-
-            async with db.execute(f"SELECT content FROM messages ORDER BY id DESC LIMIT {limit_recent}") as cursor:
-                recents = [row['content'] for row in await cursor.fetchall()]
-
-            randoms = []
-            if total > limit_recent:
-                # Optimized random selection for SQLite
-                async with db.execute(f"SELECT content FROM messages WHERE id IN (SELECT id FROM messages ORDER BY RANDOM() LIMIT {limit_random})") as cursor:
-                    randoms = [row['content'] for row in await cursor.fetchall()]
-
-            return recents + randoms
-
-    async def rebuild_global_model(self):
-            if self.is_building_model: return
-            self.is_building_model = True
-            logger.info("Rebuilding global model...")
-
-            try:
-                data = await self.get_training_data()
-                
-                # --- FIX: Handle low data gracefully ---
-                if not data:
-                    logger.warning(f"Not enough data to build model yet. (Need {self.MIN_MESSAGES_FOR_MODEL} messages)")
-                    # Set timestamp anyway so we don't try again for another 10-30 mins
-                    self.model_timestamp = discord.utils.utcnow()
-                    return
-                # ---------------------------------------
-
-                text_block = "\n".join(data)
-                
-                new_model = await self.bot.loop.run_in_executor(
-                    None, 
-                    functools.partial(self._build_markov_process, text_block)
-                )
-
-                if new_model:
-                    self.global_model = new_model
-                    self.model_timestamp = discord.utils.utcnow()
-                    logger.info(f"Model updated. Lines: {len(data)}")
-            except Exception as e:
-                logger.error(f"Error rebuilding model: {e}")
-                # Prevent retry spam on error too
-                self.model_timestamp = discord.utils.utcnow()
-            finally:
-                self.is_building_model = False
-
-    async def ensure_model_freshness(self):
-        if not self.model_timestamp:
-            asyncio.create_task(self.rebuild_global_model())
+        if not messages_to_save:
             return
             
-        age = (discord.utils.utcnow() - self.model_timestamp).seconds
-        if age > self.MODEL_TTL and not self.is_building_model:
-            asyncio.create_task(self.rebuild_global_model())
+        try:
+            # Save to message log
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.executemany('''
+                    INSERT INTO message_log (content, author_id, channel_id, timestamp)
+                    VALUES (?, ?, ?, ?)
+                ''', [
+                    (m['content'], m['author_id'], m['channel_id'], m['timestamp'])
+                    for m in messages_to_save
+                ])
+                
+                # Train on all buffered messages
+                for msg in messages_to_save:
+                    await self.train_on_message(msg['content'])
+                    
+                await db.commit()
+                
+            self.stats['last_flush'] = datetime.utcnow()
+            logger.debug(f"Flushed {len(messages_to_save)} messages to database")
+            
+        except Exception as e:
+            logger.error(f"Failed to flush buffer: {e}")
 
-    async def generate_reply(self, message):
-        # Fire and forget model check
-        asyncio.create_task(self.ensure_model_freshness())
+    # --- REPLY GENERATION ---
+    async def can_generate_reply(self):
+        """Check if we have enough data to generate replies"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute("SELECT COUNT(*) FROM markov_chain") as cursor:
+                    result = await cursor.fetchone()
+                    count = result[0] if result else 0
+                    
+                return count >= self.MIN_TRIPLETS_FOR_REPLY
+        except Exception as e:
+            logger.error(f"Error checking data: {e}")
+            return False
+
+    async def generate_sentence(self, seed_word=None):
+        """Generate a sentence using Markov chain"""
+        if not await self.can_generate_reply():
+            return None
+            
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                
+                # Step 1: Get starting word pair
+                start_pair = None
+                
+                if seed_word and len(seed_word) >= self.SEED_WORD_MIN_LENGTH:
+                    # Try to find a pair containing the seed word
+                    async with db.execute('''
+                        SELECT word_a, word_b FROM markov_chain 
+                        WHERE word_a LIKE ? OR word_b LIKE ?
+                        ORDER BY count DESC, RANDOM()
+                        LIMIT 1
+                    ''', (f'%{seed_word}%', f'%{seed_word}%')) as cursor:
+                        start_pair = await cursor.fetchone()
+                
+                if not start_pair:
+                    # Get a random starting pair weighted by frequency
+                    async with db.execute('''
+                        SELECT word_a, word_b FROM markov_chain 
+                        ORDER BY count * RANDOM() DESC 
+                        LIMIT 1
+                    ''') as cursor:
+                        start_pair = await cursor.fetchone()
+                
+                if not start_pair:
+                    return None
+                
+                # Step 2: Build sentence
+                sentence = [start_pair['word_a'], start_pair['word_b']]
+                
+                for _ in range(self.SENTENCE_MAX_WORDS - 2):
+                    w1, w2 = sentence[-2], sentence[-1]
+                    
+                    # Get possible next words with their frequencies
+                    async with db.execute('''
+                        SELECT next_word, count FROM markov_chain 
+                        WHERE word_a = ? AND word_b = ?
+                        ORDER BY count DESC
+                    ''', (w1, w2)) as cursor:
+                        options = await cursor.fetchall()
+                    
+                    if not options:
+                        break
+                    
+                    # Weighted random choice based on frequency
+                    words = [row['next_word'] for row in options]
+                    weights = [row['count'] for row in options]
+                    
+                    # Slightly favor more common words but allow randomness
+                    next_word = random.choices(words, weights=weights, k=1)[0]
+                    sentence.append(next_word)
+                    
+                    # Natural stopping point (end with punctuation)
+                    if next_word.endswith(('.', '!', '?')) and len(sentence) > 5:
+                        break
+                
+                return ' '.join(sentence).capitalize()
+                
+        except Exception as e:
+            logger.error(f"Error generating sentence: {e}")
+            return None
+
+    async def generate_reply_to_message(self, message):
+        """Generate a reply to a specific message"""
+        # Extract potential seed words from message
+        words = message.content.split()
+        seed_word = None
         
-        if not self.global_model: return None
-
-        response = None
-        user_words = [w for w in message.content.split() if len(w) > 4]
+        # Find a good seed word (longer words are better)
+        for word in words:
+            if len(word) >= self.SEED_WORD_MIN_LENGTH and word.isalpha():
+                seed_word = word.lower()
+                break
         
-        if user_words:
-            try:
-                seed = random.choice(user_words)
-                response = self.global_model.make_sentence_with_start(seed, tries=10, strict=False)
-            except: pass
+        # Also check recent messages for context
+        if not seed_word and self.recent_messages:
+            recent_text = ' '.join(self.recent_messages)
+            recent_words = recent_text.split()
+            if recent_words:
+                seed_word = random.choice(recent_words)
+        
+        return await self.generate_sentence(seed_word)
 
-        if not response:
-            response = self.global_model.make_sentence(tries=30, max_overlap_ratio=0.7)
-
-        return response
-
+    # --- DISCORD EVENT HANDLERS ---
     @commands.Cog.listener()
     async def on_message(self, message):
-        if message.author.bot: return
-        if message.guild is None: return
+        # Ignore bots and DMs
+        if message.author.bot:
+            return
+        if not message.guild:
+            return
+            
+        # Process message asynchronously
+        asyncio.create_task(self.buffer_message(message))
         
-        # 1. Save data (Non-blocking)
-        asyncio.create_task(self.add_message(message.content))
-
-        # 2. Check Triggers
+        # Check if we should reply
         is_mentioned = self.bot.user in message.mentions
         is_reply_to_me = False
-
-        # Check if this is a reply to the bot
+        
         if message.reference:
-            # Try to get the message object from cache/reference
             ref_msg = message.reference.cached_message or message.reference.resolved
             if ref_msg and ref_msg.author.id == self.bot.user.id:
                 is_reply_to_me = True
-
-        # 3. Decision Logic
-        # Reply if mentioned OR if it's a direct reply to the bot
+        
         should_reply = is_mentioned or is_reply_to_me
-        
-        # Set Probability
         chance = 1.0 if should_reply else self.REPLY_CHANCE
-
-       # 4. Execution
-        if random.random() < chance or should_reply:
-            # Cooldown Check (Skip if mentioned/replied to)
-            if not should_reply and message.channel.id in self.reply_cooldowns:
-                if (discord.utils.utcnow() - self.reply_cooldowns[message.channel.id]).seconds < self.REPLY_COOLDOWN:
-                    return
-
-            # FIX: Generate reply silently FIRST
-            reply = await self.generate_reply(message)
-
-            # FIX: If no reply generated and nobody pinged us, stop here (Don't start typing)
-            if not reply and not should_reply:
+        
+        # Apply cooldown for non-mention replies
+        if not should_reply:
+            now = datetime.utcnow()
+            last_reply = self.reply_cooldowns.get(message.channel.id)
+            if last_reply and (now - last_reply).seconds < self.REPLY_COOLDOWN:
                 return
-
-            # Now we know we will send SOMETHING (either a real reply or an error message)
+        
+        # Roll the dice
+        if random.random() < chance or should_reply:
+            # Check if we have enough data
+            if not await self.can_generate_reply():
+                if should_reply:  # Only respond to mentions if no data
+                    async with message.channel.typing():
+                        await asyncio.sleep(0.5)
+                        await message.channel.send(
+                            "🧠 I'm still learning from chat! Give me a bit more time to read messages.",
+                            reference=message if should_reply else None,
+                            mention_author=False
+                        )
+                return
+            
+            # Generate reply
+            reply = await self.generate_reply_to_message(message)
+            
+            if not reply:
+                return
+            
+            # Send with typing indicator
             async with message.channel.typing():
-                # Random "thinking" delay
-                await asyncio.sleep(random.uniform(0.5, 1.0))
+                thinking_time = random.uniform(
+                    self.TYPING_MIN_SECONDS, 
+                    self.TYPING_MAX_SECONDS
+                )
+                await asyncio.sleep(thinking_time)
                 
-                if reply:
-                    # If the user replied to us, let's reply back to them specifically
-                    await message.channel.send(reply, reference=message if should_reply else None, mention_author=False)
-                    self.reply_cooldowns[message.channel.id] = discord.utils.utcnow()
+                await message.channel.send(
+                    reply,
+                    reference=message if should_reply else None,
+                    mention_author=False
+                )
                 
-                # --- NEW FALLBACK LOGIC ---
-                elif should_reply:
-                    # If user pinged/replied but we have no response (Empty Model), tell them why.
-                    try:
-                        async with aiosqlite.connect(self.db_path) as db:
-                            async with db.execute("SELECT COUNT(*) as count FROM messages") as cursor:
-                                result = await cursor.fetchone()
-                                count = result[0] if result else 0
-                        
-                        needed = self.MIN_MESSAGES_FOR_MODEL - count
-                        
-                        if needed > 0:
-                            await message.channel.send(f"🧠 I need to read **{needed}** more messages before I can start talking!")
-                        else:
-                            await message.channel.send("😴 I'm currently rebuilding my brain... try again in a minute!")
-                    except Exception as e:
-                        logger.error(f"Error sending fallback message: {e}")
-                        
-                        
+                self.reply_cooldowns[message.channel.id] = datetime.utcnow()
+                self.stats['replies_generated'] += 1
 
-    @commands.command(name="stats")
-    async def stats(self, ctx):
-        db_count = 0
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT MAX(id) FROM messages") as cursor:
-                row = await cursor.fetchone()
-                db_count = row[0] if row and row[0] else 0
+    # --- COMMANDS ---
+    @commands.command(name="brainstats")
+    async def brain_stats(self, ctx):
+        """Show bot statistics"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                # Get triplet count
+                async with db.execute("SELECT COUNT(*) FROM markov_chain") as cursor:
+                    triplets = (await cursor.fetchone())[0]
+                
+                # Get unique word pairs
+                async with db.execute("SELECT COUNT(DISTINCT word_a, word_b) FROM markov_chain") as cursor:
+                    word_pairs = (await cursor.fetchone())[0]
+                
+                # Get message count
+                async with db.execute("SELECT COUNT(*) FROM message_log") as cursor:
+                    messages = (await cursor.fetchone())[0]
+                
+                # Get average chain length
+                async with db.execute("""
+                    SELECT AVG(sub.count) as avg_connections 
+                    FROM (
+                        SELECT COUNT(*) as count 
+                        FROM markov_chain 
+                        GROUP BY word_a, word_b
+                    ) sub
+                """) as cursor:
+                    avg_conn = (await cursor.fetchone())[0] or 0
+                
+                embed = discord.Embed(
+                    title="🧠 Brain Statistics",
+                    color=discord.Color.blue(),
+                    timestamp=datetime.utcnow()
+                )
+                
+                embed.add_field(
+                    name="Knowledge Base",
+                    value=f"**{triplets:,}** word connections\n"
+                          f"**{word_pairs:,}** unique word pairs\n"
+                          f"**{avg_conn:.1f}** avg options per pair",
+                    inline=False
+                )
+                
+                embed.add_field(
+                    name="Activity",
+                    value=f"**{messages:,}** messages learned\n"
+                          f"**{self.stats['replies_generated']}** replies sent\n"
+                          f"**{len(self.message_buffer)}** in buffer",
+                    inline=False
+                )
+                
+                embed.add_field(
+                    name="Performance",
+                    value=f"**{self.stats['messages_processed']:,}** processed\n"
+                          f"**{self.REPLY_CHANCE*100:.1f}%** reply chance\n"
+                          f"**{self.REPLY_COOLDOWN}s** cooldown",
+                    inline=False
+                )
+                
+                if triplets < self.MIN_TRIPLETS_FOR_REPLY:
+                    embed.add_field(
+                        name="⚠️ Status",
+                        value=f"Learning... ({triplets}/{self.MIN_TRIPLETS_FOR_REPLY} triplets)",
+                        inline=False
+                    )
+                else:
+                    embed.add_field(
+                        name="✅ Status",
+                        value="Ready to generate!",
+                        inline=False
+                    )
+                
+                await ctx.send(embed=embed)
+                
+        except Exception as e:
+            await ctx.send(f"Error getting stats: {str(e)}")
 
-        buffer_count = len(self.message_buffer)
-        
-        embed = discord.Embed(title="📊 High-Load Stats", color=discord.Color.gold())
-        embed.add_field(name="Total Messages", value=f"**{db_count + buffer_count:,}**", inline=False)
-        embed.add_field(name="Buffer", value=f"{buffer_count} / {self.FLUSH_THRESHOLD}", inline=True)
-        embed.add_field(name="Model Size", value=f"{self.MAX_TRAINING_SAMPLE:,} lines", inline=True)
-        
-        await ctx.send(embed=embed)
+    @commands.command(name="generate")
+    async def force_generate(self, ctx, *, seed_word=None):
+        """Force generate a sentence (optional seed word)"""
+        async with ctx.channel.typing():
+            sentence = await self.generate_sentence(seed_word)
+            
+            if sentence:
+                embed = discord.Embed(
+                    description=f"*{sentence}*",
+                    color=discord.Color.green()
+                )
+                if seed_word:
+                    embed.set_footer(text=f"Seeded with: {seed_word}")
+                await ctx.send(embed=embed)
+            else:
+                await ctx.send("❌ Not enough data yet! Keep chatting so I can learn.")
+
+    @commands.command(name="clearcooldown")
+    @commands.has_permissions(manage_messages=True)
+    async def clear_cooldown(self, ctx):
+        """Clear reply cooldown for this channel (Admin only)"""
+        self.reply_cooldowns.pop(ctx.channel.id, None)
+        await ctx.send("✅ Cooldown cleared for this channel.")
+
+    @commands.command(name="exportbrain")
+    @commands.has_permissions(administrator=True)
+    async def export_brain(self, ctx):
+        """Export brain data as text file (Admin only)"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute("""
+                    SELECT word_a, word_b, next_word, count 
+                    FROM markov_chain 
+                    ORDER BY count DESC 
+                    LIMIT 1000
+                """) as cursor:
+                    rows = await cursor.fetchall()
+                
+                if not rows:
+                    await ctx.send("No data to export yet.")
+                    return
+                
+                # Create formatted export
+                lines = []
+                lines.append(f"# Markov Brain Export - {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}")
+                lines.append(f"# Total triplets: {len(rows)}")
+                lines.append("")
+                
+                for word_a, word_b, next_word, count in rows:
+                    lines.append(f"{word_a} {word_b} -> {next_word} (x{count})")
+                
+                # Send as file
+                content = "\n".join(lines)
+                await ctx.send(
+                    "Here's a snapshot of my brain:",
+                    file=discord.File(
+                        bytes(content, 'utf-8'),
+                        filename=f"brain_export_{datetime.utcnow().strftime('%Y%m%d')}.txt"
+                    )
+                )
+                
+        except Exception as e:
+            await ctx.send(f"Error exporting: {str(e)}")
+            
+    
+    
+    @commands.command(name="storage")
+    async def storage_info(self, ctx):
+        """Show storage usage and limits"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                # Get raw message count and size
+                async with db.execute("""
+                    SELECT 
+                        COUNT(*) as count,
+                        SUM(LENGTH(content)) as total_chars
+                    FROM message_log
+                """) as cursor:
+                    msg_data = await cursor.fetchone()
+                
+                # Get triplet count
+                async with db.execute("SELECT COUNT(*) FROM markov_chain") as cursor:
+                    triplet_count = (await cursor.fetchone())[0]
+                
+                # Estimate sizes (rough)
+                raw_msg_size_mb = (msg_data['total_chars'] or 0) / 1024 / 1024
+                triplet_size_mb = triplet_count * 100 / 1024 / 1024
+                
+                # Calculate oldest data
+                async with db.execute("""
+                    SELECT MIN(timestamp) as oldest_msg,
+                        MIN(last_used) as oldest_triplet
+                    FROM message_log, markov_chain
+                """) as cursor:
+                    oldest = await cursor.fetchone()
+                
+                embed = discord.Embed(
+                    title="💾 Storage Information",
+                    color=discord.Color.purple()
+                )
+                
+                embed.add_field(
+                    name="Raw Messages",
+                    value=f"**{msg_data['count']:,}** messages\n"
+                        f"**{raw_msg_size_mb:.1f} MB** total\n"
+                        f"Limit: {self.MAX_RAW_MESSAGES:,} messages",
+                    inline=False
+                )
+                
+                embed.add_field(
+                    name="Markov Chain",
+                    value=f"**{triplet_count:,}** unique triplets\n"
+                        f"**{triplet_size_mb:.1f} MB** estimated\n"
+                        f"Limit: {self.MAX_TRIPLETS:,} triplets",
+                    inline=False
+                )
+                
+                embed.add_field(
+                    name="Retention",
+                    value=f"Raw: {self.RAW_MESSAGE_RETENTION_DAYS} days\n"
+                        f"Triplets: {self.PRUNE_OLD_TRIPLETS_AFTER_DAYS} days",
+                    inline=False
+                )
+                
+                await ctx.send(embed=embed)
+                
+        except Exception as e:
+            await ctx.send(f"Error getting storage info: {str(e)}")
+
+    @commands.command(name="optimize")
+    @commands.has_permissions(administrator=True)
+    async def optimize_database(self, ctx):
+        """Optimize database performance (Admin only)"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                # Vacuum to defragment
+                await db.execute("VACUUM")
+                
+                # Analyze for better query planning
+                await db.execute("ANALYZE")
+                
+                # Reindex
+                await db.execute("REINDEX")
+                
+                await db.commit()
+                
+            await ctx.send("✅ Database optimized!")
+            
+        except Exception as e:
+            await ctx.send(f"Error optimizing: {str(e)}")
 
 async def setup(bot):
-    await bot.add_cog(GlobalGenAICog(bot))
+    await bot.add_cog(SingleServerMarkovCog(bot))
