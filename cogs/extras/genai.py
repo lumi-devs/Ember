@@ -172,29 +172,38 @@ class GlobalGenAICog(commands.Cog):
             return recents + randoms
 
     async def rebuild_global_model(self):
-        if self.is_building_model: return
-        self.is_building_model = True
-        logger.info("Rebuilding global model...")
+            if self.is_building_model: return
+            self.is_building_model = True
+            logger.info("Rebuilding global model...")
 
-        try:
-            data = await self.get_training_data()
-            if not data: return
+            try:
+                data = await self.get_training_data()
+                
+                # --- FIX: Handle low data gracefully ---
+                if not data:
+                    logger.warning(f"Not enough data to build model yet. (Need {self.MIN_MESSAGES_FOR_MODEL} messages)")
+                    # Set timestamp anyway so we don't try again for another 10-30 mins
+                    self.model_timestamp = datetime.utcnow()
+                    return
+                # ---------------------------------------
 
-            text_block = "\n".join(data)
-            
-            new_model = await self.bot.loop.run_in_executor(
-                None, 
-                functools.partial(self._build_markov_process, text_block)
-            )
+                text_block = "\n".join(data)
+                
+                new_model = await self.bot.loop.run_in_executor(
+                    None, 
+                    functools.partial(self._build_markov_process, text_block)
+                )
 
-            if new_model:
-                self.global_model = new_model
-                self.model_timestamp = discord.utils.utcnow()
-                logger.info(f"Model updated. Lines: {len(data)}")
-        except Exception as e:
-            logger.error(f"Error rebuilding model: {e}")
-        finally:
-            self.is_building_model = False
+                if new_model:
+                    self.global_model = new_model
+                    self.model_timestamp = datetime.utcnow()
+                    logger.info(f"Model updated. Lines: {len(data)}")
+            except Exception as e:
+                logger.error(f"Error rebuilding model: {e}")
+                # Prevent retry spam on error too
+                self.model_timestamp = datetime.utcnow()
+            finally:
+                self.is_building_model = False
 
     async def ensure_model_freshness(self):
         if not self.model_timestamp:
@@ -226,6 +235,7 @@ class GlobalGenAICog(commands.Cog):
         return response
 
     @commands.Cog.listener()
+@commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot: return
         
@@ -267,6 +277,24 @@ class GlobalGenAICog(commands.Cog):
                     # If the user replied to us, let's reply back to them specifically
                     await message.channel.send(reply, reference=message if should_reply else None, mention_author=False)
                     self.reply_cooldowns[message.channel.id] = discord.utils.utcnow()
+                
+                # --- NEW FALLBACK LOGIC ---
+                elif should_reply:
+                    # If user pinged/replied but we have no response (Empty Model), tell them why.
+                    try:
+                        async with aiosqlite.connect(self.db_path) as db:
+                            async with db.execute("SELECT COUNT(*) as count FROM messages") as cursor:
+                                result = await cursor.fetchone()
+                                count = result['count'] if result else 0
+                        
+                        needed = self.MIN_MESSAGES_FOR_MODEL - count
+                        
+                        if needed > 0:
+                            await message.channel.send(f"🧠 I need to read **{needed}** more messages before I can start talking!")
+                        else:
+                            await message.channel.send("😴 I'm currently rebuilding my brain... try again in a minute!")
+                    except Exception as e:
+                        logger.error(f"Error sending fallback message: {e}")
 
     @commands.command(name="stats")
     async def stats(self, ctx):
