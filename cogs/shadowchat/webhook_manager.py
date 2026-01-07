@@ -117,9 +117,8 @@ class WebhookManager:
         self._cache_file = "avatar_cache.json"
         self._cache_save_task = None
         
-        self._avatar_cache_max_age_hours = 10  # CHANGED: Full refresh every 10 hours
-        self._avatar_refresh_hours = 9.5       # Start refreshing slightly before 10h
-        self._max_cached_avatars = 100         # Increased to hold all your assets
+        self._avatar_cache_max_age_hours = 48  # Keep entries for 48h if verified
+        self._max_cached_avatars = 200
         
         # New task tracker
         self._maintenance_task = None
@@ -145,10 +144,6 @@ class WebhookManager:
         # Channel for uploading avatar images
         self._avatar_upload_channel_id = None
         
-        # Cache settings
-        self._avatar_cache_max_age_hours = 6  # Delete after 6 hours
-        self._avatar_refresh_hours = 4  # Start refreshing after 4 hours
-        self._max_cached_avatars = 50  # Maximum avatars to keep cached
         
         # Fast cache for webhook info (no API calls needed)
         self._webhook_info_fast_cache: Dict[str, dict] = {}  # webhook_url -> {name, avatar_url, timestamp}
@@ -214,6 +209,32 @@ class WebhookManager:
         logger.info(f"Webhook Manager initialized with {loaded_count}/{len(self.provided_webhook_urls)} webhooks")
     
     
+    async def _verify_avatar_url(self, url: str) -> bool:
+        """
+        Checks if an image exists at URL using the existing bot session.
+        Returns True only for 200 OK with image content-type.
+        """
+        if not url:
+            return False
+            
+        if not self.session or self.session.closed:
+            # If session is dead, we can't verify, so assume false to trigger re-upload safe-guard
+            return False
+
+        try:
+            # HEAD request is faster - just check headers
+            # Added timeout to prevent hanging
+            async with self.session.head(url, timeout=5) as resp:
+                if resp.status != 200:
+                    return False
+                
+                content_type = resp.headers.get('Content-Type', '').lower()
+                return content_type.startswith('image/')
+                
+        except Exception as e:
+            logger.debug(f"Failed to verify URL {url}: {e}")
+            return False    
+
 
     async def run_maintenance(self) -> dict:
         """Manually run the avatar maintenance cycle using cached data."""
@@ -264,52 +285,56 @@ class WebhookManager:
 
     async def _avatar_maintenance_loop(self):
         await self.bot.wait_until_ready()
+        
         while not self.bot.is_closed():
             try:
-                logger.info(f"Running scheduled avatar cache maintenance. Cache has {len(self._avatar_cache)} entries.")
-                
-                # Debug: Show first few cache keys
-                sample_keys = list(self._avatar_cache.keys())[:3]
-                logger.info(f"Sample cache keys: {sample_keys}")
+                logger.info(f"Running avatar validity check on {len(self._avatar_files)} local assets...")
                 
                 if not self._avatar_upload_channel_id:
+                    logger.warning("No upload channel found, skipping maintenance.")
                     await asyncio.sleep(600)
                     continue
 
                 for filename in self._avatar_files:
+                    # 1. Check if we have the file data loaded
                     if filename not in self._avatar_file_cache:
                         continue
 
-                    # SIMPLIFY: Use just filename as cache key
-                    cache_key = filename  # CHANGED FROM: f"{filename}_{file_hash}"
+                    cache_key = filename
                     
-                    # DEBUG LOGGING
-                    logger.debug(f"Checking: {filename}, cache key: {cache_key}")
-                    
-                    # Check all possible cache keys for this filename
-                    matching_keys = [k for k in self._avatar_cache.keys() if k == filename]
-                    if matching_keys:
-                        logger.debug(f"Found existing cache key for {filename}")
-                    
-                    # ONLY upload if it's actually missing from the cache
+                    # 2. Check if it is completely missing from cache
                     if cache_key not in self._avatar_cache:
-                        logger.info(f"Maintenance: {filename} actually missing from cache. Uploading.")
+                        logger.info(f"Maintenance: {filename} missing from cache. Uploading.")
                         avatar_bytes = self._avatar_file_cache[filename]
                         await self._upload_avatar_to_cdn(filename, avatar_bytes, cache_key)
-                        await asyncio.sleep(2) # Protect rate limits
+                        await asyncio.sleep(2.5) # Rate limit protection
                     
-                    # If it IS in cache, check the AGE, not the URL status
+                    # 3. If in cache, VERIFY THE URL (The new logic)
                     else:
                         entry = self._avatar_cache[cache_key]
-                        if entry.is_expired(self._avatar_cache_max_age_hours):
-                            logger.info(f"Maintenance: {filename} expired. Refreshing.")
+                        
+                        # Check if the link works
+                        is_valid = await self._verify_avatar_url(entry.cdn_url)
+                        
+                        if is_valid:
+                            # It's good! Update last_used to keep it fresh in stats
+                            entry.last_used = datetime.now()
+                        else:
+                            # It's dead (403/404). Refresh it.
+                            logger.info(f"Maintenance: {filename} link is dead (Status != 200). Refreshing.")
                             await self._refresh_avatar(cache_key, entry)
-                            await asyncio.sleep(2)
+                            await asyncio.sleep(2.5) # Rate limit protection
+
+                logger.info("Avatar maintenance complete.")
 
             except Exception as e:
                 logger.error(f"Error in avatar maintenance loop: {e}")
             
+            # Save the updated cache to disk
             await self._save_cache()
+            
+            # Run this every 60 minutes. 
+            # Since we are checking status codes, we don't need to run this constantly.
             await asyncio.sleep(3600)
     
     def _get_fast_webhook_info(self, webhook_url: str) -> Optional[dict]:

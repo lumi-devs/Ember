@@ -593,7 +593,7 @@ class DynamicMemberList(commands.Cog):
                 
                 if member:
                     # Member is in the server
-                    member_text += f"**{member_count}.** **{member.display_name or member.name}** `(@{member.name})`\n"
+                    member_text += f"{member.mention} \n"
                     member_count += 1
                 else:
                     # Member left - skip them
