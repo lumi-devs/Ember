@@ -180,7 +180,8 @@ class SingleServerMarkovCog(commands.Cog):
             return ""
             
         # Remove bot commands and common prefixes
-        if content.startswith(('!', '/', '.', '?', '~', '$', '#')):
+        command_prefixes = ('!', '/', '.', '?', '~', '$', '#', '&', '*', '+', '-', '=', '%', '@')
+        if content.startswith(command_prefixes):
             return ""
             
         # Remove URLs
@@ -416,6 +417,11 @@ class SingleServerMarkovCog(commands.Cog):
             return
         if not message.guild:
             return
+        
+        content = message.content.strip()
+        command_prefixes = ('!', '/', '.', '?', '~', '$', '#', '&', '*', '+', '-', '=', '%', '@')
+        if content.startswith(command_prefixes):
+            return 
             
         # Process message asynchronously
         asyncio.create_task(self.buffer_message(message))
