@@ -31,7 +31,7 @@ SHADOW_CATEGORY_ID = 1400589151413342213  # Optional: category for organization
 MOD_CHANNEL_ID = 1456635931707703521  # Mod-only channel for commands
 
 # ==================== SESSION CONFIG ====================
-MAX_ACTIVE_SESSIONS = 5    # Maximum concurrent sessions in the guild
+MAX_ACTIVE_SESSIONS = 6    # Maximum concurrent sessions in the guild
 SESSION_TIMEOUT_MINUTES = 5  # Auto-terminate after X minutes of inactivity
 QUEUE_CHECK_INTERVAL = 30  # Seconds between queue processing checks
 
