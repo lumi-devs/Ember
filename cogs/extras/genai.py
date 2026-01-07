@@ -482,28 +482,44 @@ class SingleServerMarkovCog(commands.Cog):
         """Show bot statistics"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
-                # Get triplet count
+                # Get triplet count - FIXED
                 async with db.execute("SELECT COUNT(*) FROM markov_chain") as cursor:
-                    triplets = (await cursor.fetchone())[0]
+                    row = await cursor.fetchone()
+                    triplets = row[0] if row else 0
                 
-                # Get unique word pairs
-                async with db.execute("SELECT COUNT(DISTINCT word_a, word_b) FROM markov_chain") as cursor:
-                    word_pairs = (await cursor.fetchone())[0]
+                # Get unique word pairs - FIXED
+                async with db.execute("SELECT COUNT(*) FROM (SELECT DISTINCT word_a, word_b FROM markov_chain)") as cursor:
+                    row = await cursor.fetchone()
+                    word_pairs = row[0] if row else 0
                 
-                # Get message count
+                # Get message count - FIXED
                 async with db.execute("SELECT COUNT(*) FROM message_log") as cursor:
-                    messages = (await cursor.fetchone())[0]
+                    row = await cursor.fetchone()
+                    messages = row[0] if row else 0
                 
-                # Get average chain length
+                # Get average chain length - FIXED
                 async with db.execute("""
-                    SELECT AVG(sub.count) as avg_connections 
+                    SELECT AVG(cnt) as avg_connections 
                     FROM (
-                        SELECT COUNT(*) as count 
+                        SELECT COUNT(*) as cnt 
                         FROM markov_chain 
                         GROUP BY word_a, word_b
-                    ) sub
+                    )
                 """) as cursor:
-                    avg_conn = (await cursor.fetchone())[0] or 0
+                    row = await cursor.fetchone()
+                    avg_conn = float(row[0]) if row and row[0] else 0.0
+                
+                # Get most common word pair
+                async with db.execute("""
+                    SELECT word_a, word_b, SUM(count) as total 
+                    FROM markov_chain 
+                    GROUP BY word_a, word_b 
+                    ORDER BY total DESC 
+                    LIMIT 1
+                """) as cursor:
+                    row = await cursor.fetchone()
+                    common_pair = f"{row[0]} {row[1]}" if row else "Not enough data"
+                    common_count = row[2] if row else 0
                 
                 embed = discord.Embed(
                     title="🧠 Brain Statistics",
@@ -520,10 +536,17 @@ class SingleServerMarkovCog(commands.Cog):
                 )
                 
                 embed.add_field(
+                    name="Most Common Phrase",
+                    value=f"**{common_pair}**\nUsed **{common_count:,}** times",
+                    inline=False
+                )
+                
+                embed.add_field(
                     name="Activity",
                     value=f"**{messages:,}** messages learned\n"
                           f"**{self.stats['replies_generated']}** replies sent\n"
-                          f"**{len(self.message_buffer)}** in buffer",
+                          f"**{len(self.message_buffer)}** in buffer\n"
+                          f"**{self.stats['triplets_stored']:,}** triplets stored today",
                     inline=False
                 )
                 
@@ -538,20 +561,28 @@ class SingleServerMarkovCog(commands.Cog):
                 if triplets < self.MIN_TRIPLETS_FOR_REPLY:
                     embed.add_field(
                         name="⚠️ Status",
-                        value=f"Learning... ({triplets}/{self.MIN_TRIPLETS_FOR_REPLY} triplets)",
+                        value=f"Learning... ({triplets}/{self.MIN_TRIPLETS_FOR_REPLY} triplets needed)",
                         inline=False
                     )
+                    embed.color = discord.Color.orange()
                 else:
                     embed.add_field(
                         name="✅ Status",
                         value="Ready to generate!",
                         inline=False
                     )
+                    embed.color = discord.Color.green()
+                
+                # Reset daily counters at midnight
+                now = datetime.utcnow()
+                if now.hour == 0 and now.minute == 0:
+                    self.stats['triplets_stored'] = 0
                 
                 await ctx.send(embed=embed)
                 
         except Exception as e:
-            await ctx.send(f"Error getting stats: {str(e)}")
+            logger.error(f"Error in brain_stats: {e}")
+            await ctx.send(f"❌ Error getting stats: {str(e)}")
 
     @commands.command(name="generate")
     async def force_generate(self, ctx, *, seed_word=None):
@@ -658,32 +689,9 @@ class SingleServerMarkovCog(commands.Cog):
             inline=False
         )
         
-        embed.add_field(
-            name="📈 **For Users**",
-            value="• **Mention the bot** for guaranteed reply\n"
-                  "• **Reply to the bot** for conversation\n"
-                  "• Bot learns from chat automatically\n"
-                  "• Quality improves over time (be patient!)",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="⚡ **Performance Info**",
-            value="• **Database:** SQLite with auto-cleanup\n"
-                  "• **Memory:** ~50-100MB RAM usage\n"
-                  "• **Storage:** Capped at ~5GB total\n"
-                  "• **Self-maintaining:** No manual intervention needed",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="🔐 **Permissions Required**",
-            value="• Read Messages\n"
-                  "• Send Messages\n"
-                  "• Read Message History\n"
-                  "• Use External Emojis",
-            inline=False
-        )
+
+
+
         
         # Add footer with current status
         try:
@@ -704,33 +712,33 @@ class SingleServerMarkovCog(commands.Cog):
     
     @commands.command(name="storage")
     async def storage_info(self, ctx):
-        """Show storage usage and limits"""
+        """💾 Show storage usage and limits"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
-                # Get raw message count and size
+                # Get raw message count and size - FIXED
                 async with db.execute("""
                     SELECT 
                         COUNT(*) as count,
                         SUM(LENGTH(content)) as total_chars
                     FROM message_log
                 """) as cursor:
-                    msg_data = await cursor.fetchone()
+                    row = await cursor.fetchone()
+                    msg_count = row[0] if row else 0
+                    total_chars = row[1] if row and row[1] else 0
                 
-                # Get triplet count
+                # Get triplet count - FIXED
                 async with db.execute("SELECT COUNT(*) FROM markov_chain") as cursor:
-                    triplet_count = (await cursor.fetchone())[0]
+                    row = await cursor.fetchone()
+                    triplet_count = row[0] if row else 0
                 
                 # Estimate sizes (rough)
-                raw_msg_size_mb = (msg_data['total_chars'] or 0) / 1024 / 1024
+                raw_msg_size_mb = (total_chars or 0) / 1024 / 1024
                 triplet_size_mb = triplet_count * 100 / 1024 / 1024
                 
                 # Calculate oldest data
-                async with db.execute("""
-                    SELECT MIN(timestamp) as oldest_msg,
-                        MIN(last_used) as oldest_triplet
-                    FROM message_log, markov_chain
-                """) as cursor:
-                    oldest = await cursor.fetchone()
+                async with db.execute("SELECT MIN(timestamp) as oldest_msg FROM message_log") as cursor:
+                    row = await cursor.fetchone()
+                    oldest_msg = row[0] if row and row[0] else "No data"
                 
                 embed = discord.Embed(
                     title="💾 Storage Information",
@@ -739,31 +747,33 @@ class SingleServerMarkovCog(commands.Cog):
                 
                 embed.add_field(
                     name="Raw Messages",
-                    value=f"**{msg_data['count']:,}** messages\n"
-                        f"**{raw_msg_size_mb:.1f} MB** total\n"
-                        f"Limit: {self.MAX_RAW_MESSAGES:,} messages",
+                    value=f"**{msg_count:,}** messages\n"
+                          f"**{raw_msg_size_mb:.1f} MB** total\n"
+                          f"Oldest: {oldest_msg[:10] if oldest_msg != 'No data' else 'N/A'}",
                     inline=False
                 )
                 
                 embed.add_field(
                     name="Markov Chain",
                     value=f"**{triplet_count:,}** unique triplets\n"
-                        f"**{triplet_size_mb:.1f} MB** estimated\n"
-                        f"Limit: {self.MAX_TRIPLETS:,} triplets",
+                          f"**{triplet_size_mb:.1f} MB** estimated\n"
+                          f"Limit: {self.MAX_TRIPLETS:,} triplets",
                     inline=False
                 )
                 
                 embed.add_field(
-                    name="Retention",
-                    value=f"Raw: {self.RAW_MESSAGE_RETENTION_DAYS} days\n"
-                        f"Triplets: {self.PRUNE_OLD_TRIPLETS_AFTER_DAYS} days",
+                    name="System Health",
+                    value=f"✅ **Normal**\n"
+                          f"Buffer: {len(self.message_buffer)}/{self.FLUSH_THRESHOLD}\n"
+                          f"Last flush: {self.stats['last_flush'].strftime('%H:%M')} UTC",
                     inline=False
                 )
                 
                 await ctx.send(embed=embed)
                 
         except Exception as e:
-            await ctx.send(f"Error getting storage info: {str(e)}")
+            logger.error(f"Error in storage_info: {e}")
+            await ctx.send(f"❌ Error getting storage info: {str(e)}")
 
     @commands.command(name="optimize")
     @commands.has_permissions(administrator=True)
