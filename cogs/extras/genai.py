@@ -237,6 +237,7 @@ class GlobalGenAICog(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot: return
+        if message.guild is None: return
         
         # 1. Save data (Non-blocking)
         asyncio.create_task(self.add_message(message.content))
