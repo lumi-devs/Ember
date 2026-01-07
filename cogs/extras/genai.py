@@ -33,7 +33,7 @@ class GlobalGenAICog(commands.Cog):
         self.MIN_MESSAGES_FOR_MODEL = 500
         self.MAX_TRAINING_SAMPLE = 100000  # Increased to remember ~4 days of chat (requires ~1-2GB RAM)
         self.REPLY_CHANCE = 0.02
-        self.MODEL_TTL = 1800          # Rebuild every 30 mins (10 mins is too frequent for 25k/day)
+        self.MODEL_TTL = 900          # Rebuild every 30 mins (10 mins is too frequent for 25k/day)
         self.REPLY_COOLDOWN = 5
         
         # Buffers
