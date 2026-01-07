@@ -180,7 +180,7 @@ class SingleServerMarkovCog(commands.Cog):
             return ""
             
         # Remove bot commands and common prefixes
-        command_prefixes = ('!', '/', '.', '?', '~', '$', '#', '&', '*', '+', '-', '=', '%', '@')
+        command_prefixes = ('!', '/', '.', '?', '~', '$', '&', '*', '+', '-', '=', '%', '@')
         if content.startswith(command_prefixes):
             return ""
             
@@ -419,7 +419,7 @@ class SingleServerMarkovCog(commands.Cog):
             return
         
         content = message.content.strip()
-        command_prefixes = ('!', '/', '.', '?', '~', '$', '#', '&', '*', '+', '-', '=', '%', '@')
+        command_prefixes = ('!', '/', '.', '?', '~', '$', '&', '*', '+', '-', '=', '%', '@')
         if content.startswith(command_prefixes):
             return 
             
