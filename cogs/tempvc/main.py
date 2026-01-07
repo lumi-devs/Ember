@@ -453,28 +453,18 @@ class TempVoice(commands.Cog):
             return
         
         # Verify ownership with fast query
+        data=None
         async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute(
-                "SELECT userID FROM voiceChannel WHERE voiceID = ? LIMIT 1", 
-                (voice_channel.id,)
-            ) as cursor:
+            async with db.execute("SELECT userID FROM voiceChannel WHERE voiceID = ? LIMIT 1", (voice_channel.id,)) as cursor:  
                 data = await cursor.fetchone()
-        
-        if not data:
-            await interaction.response.send_message(
-                "❌ Database error!", 
-                ephemeral=True
-            )
-            return
+                if not data:
+                    await interaction.response.send_message(
+                        "❌ Database error!", 
+                        ephemeral=True
+                    )
+                    return
         
         owner_id = data[0]
-        
-        if interaction.user.id != owner_id:
-            await interaction.response.send_message(
-                "❌ You are not the owner of this voice channel!", 
-                ephemeral=True
-            )
-            return
         
         # All conditions met - send panel
         embed = discord.Embed(

@@ -41,9 +41,10 @@ class SmartLoungeCog(commands.Cog):
         
         # JSON file for persistence
         self.data_file = "data/lounge_data.json"
-        
+        self.check_interval = 1
         # Initialize or load statistics
         self.stats = self.load_stats()
+        self.next_manage_time = 0
 
     def load_stats(self):
         """Load statistics from JSON file or create default."""
@@ -176,26 +177,39 @@ class SmartLoungeCog(commands.Cog):
         lounges.sort(key=lambda x: x['num'])
         return category, lounges
 
-    @tasks.loop(minutes=2)
-    async def manage_lounges_loop(self):
-        """Main loop to manage lounges with error handling."""
-        try:
-            await self._manage_lounges()
-        except Exception as e:
-            error_msg = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}: {str(e)}"
-            self.stats['errors'].append(error_msg[:200])  # Keep only first 200 chars
-            if len(self.stats['errors']) > 10:  # Keep only last 10 errors
-                self.stats['errors'] = self.stats['errors'][-10:]
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member, before, after):
+        # 1. IGNORE NOISE: If the user just muted/deafened, do nothing.
+        if before.channel == after.channel:
+            return
+
+        # 2. CHECK RELEVANCE: Only run if the event happened in our Lounge Category
+        # (Prevents the bot from scanning when people move in other parts of the server)
+        base_channel = self.bot.get_channel(self.base_lounge_id)
+        if not base_channel or not base_channel.category:
+            return
             
-            # Use logger instead of print to avoid IO Error
-            self.logger.error(f"❌ Smart Lounge loop error: {e}", exc_info=True)
-        finally:
-            # Always try to save stats after each loop execution
-            try:
-                # Save stats asynchronously to prevent blocking
-                await asyncio.to_thread(self.save_stats_async)
-            except Exception as e:
-                self.logger.warning(f"⚠️ Could not save stats: {e}")
+        is_lounge_event = False
+        if before.channel and before.channel.category_id == base_channel.category.id:
+            is_lounge_event = True
+        if after.channel and after.channel.category_id == base_channel.category.id:
+            is_lounge_event = True
+            
+        if not is_lounge_event:
+            return
+
+        # 3. DEBOUNCE (The Rate Limit Saver)
+        # Only allow the full logic to run once every 5 seconds, no matter how fast people move.
+        current_time = time.time()
+        if current_time < self.next_manage_time:
+            return
+        
+        # Set the next allowed run time (e.g., 5 seconds from now)
+        self.next_manage_time = current_time + self.check_interval
+        
+        # 4. RUN LOGIC
+        # Run the management function as a background task so it doesn't block the event loop
+        self.bot.loop.create_task(self._manage_lounges())
 
     async def _manage_lounges(self):
             """Core lounge management logic."""
@@ -266,7 +280,7 @@ class SmartLoungeCog(commands.Cog):
             # --- PHASE 2: DELETION (The "Keep Lowest Spare" Logic) ---
             
             # Identify "Custom Spares" (Lounge 3+ that are completely empty)
-            custom_spares = [l for l in lounges if l['count'] == 0 and l['num'] > 2]
+            custom_spares = [l for l in lounges if l['count'] == 0 and l['num'] > 1]
 
             # We allow exactly 1 custom spare to exist (Lounge 3).
             # If we have > 1, we must delete the extras.
@@ -277,7 +291,7 @@ class SmartLoungeCog(commands.Cog):
                     if not lounges:
                         return
                         
-                    custom_spares = [l for l in lounges if l['count'] == 0 and l['num'] > 2]
+                    custom_spares = [l for l in lounges if l['count'] == 0 and l['num'] > 1]
                     if len(custom_spares) <= 1:
                         return
                     
@@ -297,7 +311,7 @@ class SmartLoungeCog(commands.Cog):
                         if success:
                             self.stats['total_deletions'] += 1
                             self.stats['last_deletion_time'] = datetime.now()
-                        await asyncio.sleep(1)  # Safety delay
+                        await asyncio.sleep(5)  # Safety delay
             # --- PHASE 3: FIX NUMBERING GAPS ---
             await self.fix_numbering_gaps(lounges)
                         
@@ -369,9 +383,6 @@ class SmartLoungeCog(commands.Cog):
             self.logger.error(f"❌ Error deleting channel: {e}", exc_info=True)
             return False
 
-    @manage_lounges_loop.before_loop
-    async def before_loop(self):
-        await self.bot.wait_until_ready()
 
     @commands.command(name="ls", aliases=["loungestats", "lstat"])
     @commands.has_permissions(manage_channels=True)
@@ -474,7 +485,7 @@ class SmartLoungeCog(commands.Cog):
         ])
         embed.add_field(name="📈 CURRENT STATE (Top 10)", value=current_state, inline=False)
         
-        await ctx.send(embed=embed)
+        #await ctx.send(embed=embed)
         
         # Timestamps
         last_creation = self.stats['last_creation_time']
