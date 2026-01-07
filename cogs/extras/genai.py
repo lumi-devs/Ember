@@ -183,7 +183,7 @@ class GlobalGenAICog(commands.Cog):
                 if not data:
                     logger.warning(f"Not enough data to build model yet. (Need {self.MIN_MESSAGES_FOR_MODEL} messages)")
                     # Set timestamp anyway so we don't try again for another 10-30 mins
-                    self.model_timestamp = datetime.utcnow()
+                    self.model_timestamp = discord.utils.utcnow()
                     return
                 # ---------------------------------------
 
@@ -196,12 +196,12 @@ class GlobalGenAICog(commands.Cog):
 
                 if new_model:
                     self.global_model = new_model
-                    self.model_timestamp = datetime.utcnow()
+                    self.model_timestamp = discord.utils.utcnow()
                     logger.info(f"Model updated. Lines: {len(data)}")
             except Exception as e:
                 logger.error(f"Error rebuilding model: {e}")
                 # Prevent retry spam on error too
-                self.model_timestamp = datetime.utcnow()
+                self.model_timestamp = discord.utils.utcnow()
             finally:
                 self.is_building_model = False
 
@@ -234,7 +234,6 @@ class GlobalGenAICog(commands.Cog):
 
         return response
 
-    @commands.Cog.listener()
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot: return
@@ -285,7 +284,9 @@ class GlobalGenAICog(commands.Cog):
                         async with aiosqlite.connect(self.db_path) as db:
                             async with db.execute("SELECT COUNT(*) as count FROM messages") as cursor:
                                 result = await cursor.fetchone()
-                                count = result['count'] if result else 0
+                                # FIX 2: Use integer index [0] instead of string key ['count']
+                                # because we didn't set a row_factory for this specific connection
+                                count = result[0] if result else 0
                         
                         needed = self.MIN_MESSAGES_FOR_MODEL - count
                         
