@@ -118,8 +118,7 @@ class SmartLoungeCog(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         self.logger.info(f"✅ Smart Lounge System Ready (2-min heartbeat). Data saved to: {self.data_file}")
-        if not self.manage_lounges_loop.is_running():
-            self.manage_lounges_loop.start()
+
 
     def cog_unload(self):
         """Clean up when cog is unloaded."""
