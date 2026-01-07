@@ -619,6 +619,89 @@ class SingleServerMarkovCog(commands.Cog):
             
     
     
+    
+    @commands.command(name="genai")
+    @commands.has_permissions(manage_messages=True)
+    async def genai_help(self, ctx):
+        """🤖 Admin-only help command with bot information and usage"""
+        
+        embed = discord.Embed(
+            title="🤖 Markov Bot - Admin Commands",
+            description="Advanced commands for server administrators",
+            color=discord.Color.purple(),
+            timestamp=datetime.utcnow()
+        )
+        
+        embed.add_field(
+            name="📊 **Statistics & Info**",
+            value="• `.brainstats` - View detailed bot statistics and learning progress\n"
+                  "• `.storage` - Check database storage usage and limits\n"
+                  "• `.genai` - This help menu (Admin only)",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="⚙️ **Administration**",
+            value="• `.generate [word]` - Force generate a sentence (optional seed word)\n"
+                  "• `.clearcooldown` - Clear reply cooldown for this channel (Admin only)\n"
+                  "• `.exportbrain` - Export brain data as text file (Admin only)\n"
+                  "• `.optimize` - Optimize database performance (Admin only)",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="🔧 **Bot Configuration**",
+            value=f"• **Reply Chance:** {self.REPLY_CHANCE*100:.1f}% random replies\n"
+                  f"• **Cooldown:** {self.REPLY_COOLDOWN}s between replies per channel\n"
+                  f"• **Learning:** Active - learns from all non-bot messages\n"
+                  f"• **Typing Delay:** {self.TYPING_MIN_SECONDS}-{self.TYPING_MAX_SECONDS}s",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="📈 **For Users**",
+            value="• **Mention the bot** for guaranteed reply\n"
+                  "• **Reply to the bot** for conversation\n"
+                  "• Bot learns from chat automatically\n"
+                  "• Quality improves over time (be patient!)",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="⚡ **Performance Info**",
+            value="• **Database:** SQLite with auto-cleanup\n"
+                  "• **Memory:** ~50-100MB RAM usage\n"
+                  "• **Storage:** Capped at ~5GB total\n"
+                  "• **Self-maintaining:** No manual intervention needed",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="🔐 **Permissions Required**",
+            value="• Read Messages\n"
+                  "• Send Messages\n"
+                  "• Read Message History\n"
+                  "• Use External Emojis",
+            inline=False
+        )
+        
+        # Add footer with current status
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute("SELECT COUNT(*) FROM markov_chain") as cursor:
+                    triplets = (await cursor.fetchone())[0]
+                
+                status = "✅ **Ready to generate!**" if triplets >= self.MIN_TRIPLETS_FOR_REPLY else "⏳ **Learning from chat...**"
+                
+                embed.set_footer(
+                    text=f"{status} | {triplets:,} word patterns learned | Admin: {ctx.author.display_name}",
+                    icon_url=ctx.author.avatar.url if ctx.author.avatar else None
+                )
+        except:
+            embed.set_footer(text=f"Admin: {ctx.author.display_name}")
+        
+        await ctx.send(embed=embed)
+    
     @commands.command(name="storage")
     async def storage_info(self, ctx):
         """Show storage usage and limits"""
