@@ -260,18 +260,24 @@ class GlobalGenAICog(commands.Cog):
         # Set Probability
         chance = 1.0 if should_reply else self.REPLY_CHANCE
 
-        # 4. Execution
+       # 4. Execution
         if random.random() < chance or should_reply:
             # Cooldown Check (Skip if mentioned/replied to)
             if not should_reply and message.channel.id in self.reply_cooldowns:
                 if (discord.utils.utcnow() - self.reply_cooldowns[message.channel.id]).seconds < self.REPLY_COOLDOWN:
                     return
 
+            # FIX: Generate reply silently FIRST
+            reply = await self.generate_reply(message)
+
+            # FIX: If no reply generated and nobody pinged us, stop here (Don't start typing)
+            if not reply and not should_reply:
+                return
+
+            # Now we know we will send SOMETHING (either a real reply or an error message)
             async with message.channel.typing():
                 # Random "thinking" delay
                 await asyncio.sleep(random.uniform(0.5, 1.0))
-                
-                reply = await self.generate_reply(message)
                 
                 if reply:
                     # If the user replied to us, let's reply back to them specifically
@@ -285,8 +291,6 @@ class GlobalGenAICog(commands.Cog):
                         async with aiosqlite.connect(self.db_path) as db:
                             async with db.execute("SELECT COUNT(*) as count FROM messages") as cursor:
                                 result = await cursor.fetchone()
-                                # FIX 2: Use integer index [0] instead of string key ['count']
-                                # because we didn't set a row_factory for this specific connection
                                 count = result[0] if result else 0
                         
                         needed = self.MIN_MESSAGES_FOR_MODEL - count
@@ -297,6 +301,8 @@ class GlobalGenAICog(commands.Cog):
                             await message.channel.send("😴 I'm currently rebuilding my brain... try again in a minute!")
                     except Exception as e:
                         logger.error(f"Error sending fallback message: {e}")
+                        
+                        
 
     @commands.command(name="stats")
     async def stats(self, ctx):
