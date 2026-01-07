@@ -31,7 +31,7 @@ class GlobalGenAICog(commands.Cog):
         # --- HIGH TRAFFIC CONFIGURATION ---
         self.FLUSH_THRESHOLD = 200     # Increased for high traffic (flush less often, bigger batches)
         self.MIN_MESSAGES_FOR_MODEL = 500
-        self.MAX_TRAINING_SAMPLE = 50000  # Increased to remember ~4 days of chat (requires ~1-2GB RAM)
+        self.MAX_TRAINING_SAMPLE = 100000  # Increased to remember ~4 days of chat (requires ~1-2GB RAM)
         self.REPLY_CHANCE = 0.02
         self.MODEL_TTL = 1800          # Rebuild every 30 mins (10 mins is too frequent for 25k/day)
         self.REPLY_COOLDOWN = 5
