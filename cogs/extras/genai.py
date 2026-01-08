@@ -128,6 +128,7 @@ class EnhancedMarkovCog(commands.Cog):
         self.message_timestamps = {}
         self.last_bot_message = {}
         self.reply_cooldowns = {}
+        self.server_emoji_cache = {}
         self.message_buffer = deque(maxlen=1000)
         self.recent_messages = deque(maxlen=5000)
         
@@ -966,7 +967,7 @@ class EnhancedMarkovCog(commands.Cog):
     # --- ENHANCED MESSAGE PROCESSING WITH NLP ---
     def sanitize_message(self, content: str, message=None) -> str:
         """Clean message for Hinglish"""
-        if not content or len(content.strip()) < 2:  # Reduced minimum length
+        if not content or len(content.strip()) < 2:
             return ""
         
         # Remove bot commands
@@ -1010,74 +1011,89 @@ class EnhancedMarkovCog(commands.Cog):
         # Remove @everyone and @here
         content = re.sub(r'@everyone|@here', '', content, flags=re.IGNORECASE)
         
-        # Handle emojis (same as before but keep more for Hinglish)
+        # Handle emojis - Check server existence FIRST
         emoji_list = list(emoji.emoji_list(content))
-        raw_custom_matches = re.findall(r'<a?:(\w+):(\d+)>', content)
+        custom_emoji_matches = re.findall(r'<(a?):(\w+):(\d+)>', content)
         
-        # Filter server emojis
+        # Store valid emojis that exist on the server
         valid_custom_emojis = []
-        server_emoji_ids = set()
+        server_emoji_cache = {}
         
         if message and message.guild:
-            server_emoji_ids = {str(e.id) for e in message.guild.emojis}
+            # Get all server emojis and create a lookup dictionary
+            for server_emoji in message.guild.emojis:
+                server_emoji_cache[str(server_emoji.id)] = server_emoji
+                server_emoji_cache[server_emoji.name] = server_emoji
             
-        for name, e_id in raw_custom_matches:
-            if str(e_id) in server_emoji_ids:
-                # Store the full tag as the "token"
-                valid_custom_emojis.append(f"<:{name}:{e_id}>")
-            else:
-                pattern = fr'<a?:{re.escape(name)}:{e_id}>'
-                content = re.sub(pattern, '', content)
-
-        # Convert Valid Discord emojis to tokens (keeping full tag)
-        for emoji_tag in valid_custom_emojis:
-            # Add spaces around it to ensure it's treated as a single word/token
-            content = content.replace(emoji_tag, f' {emoji_tag} ')
-
-        custom_emojis = [name for name, _ in valid_custom_emojis]
-        all_emojis = emoji_list + [{'emoji': f':{e}:'} for e in custom_emojis]
+            for anim, name, e_id in custom_emoji_matches:
+                # Check if emoji exists on server by ID OR by name
+                emoji_exists = False
+                
+                # First check by ID (more reliable)
+                if str(e_id) in server_emoji_cache:
+                    emoji_exists = True
+                # Also check by name (in case ID lookup fails but emoji is known)
+                elif name in server_emoji_cache:
+                    e_id = str(server_emoji_cache[name].id)  # Use the correct ID from server
+                    emoji_exists = True
+                
+                if emoji_exists:
+                    # Store the full Discord emoji format <:name:id> or <a:name:id>
+                    emoji_format = f"<{anim}:{name}:{e_id}>"
+                    valid_custom_emojis.append((emoji_format, name, e_id))
+                    logger.debug(f"Found valid server emoji: {emoji_format}")
+                else:
+                    # Remove emojis not in the server
+                    pattern = fr'<{anim}:{re.escape(name)}:{e_id}>'
+                    content = re.sub(pattern, '', content)
+                    logger.debug(f"Removed non-server emoji: <{anim}:{name}:{e_id}>")
         
         # Calculate emoji density
         total_chars = len(original_content)
-        emoji_chars = sum(len(e['emoji']) for e in emoji_list) + len(''.join(custom_emojis))
+        emoji_chars = sum(len(e['emoji']) for e in emoji_list) + \
+                    sum(len(e[0]) for e in valid_custom_emojis)
         emoji_density = emoji_chars / total_chars if total_chars > 0 else 0
         
         if emoji_density > self.MAX_EMOJI_DENSITY:
+            # Combine all emojis
+            all_emojis = []
+            for e in emoji_list:
+                all_emojis.append(('unicode', e['emoji'], e['emoji']))
+            for emoji_format, name, e_id in valid_custom_emojis:
+                all_emojis.append(('custom', name, emoji_format))
+            
+            # Keep only limited emojis
             kept_emojis = all_emojis[:self.MAX_EMOJIS_PER_MESSAGE]
             
-            # Remove all Unicode emojis
+            # Remove all emojis first
             for e in emoji_list:
                 content = content.replace(e['emoji'], ' ')
             
-            # Remove all Discord emojis
-            content = re.sub(r'<a?:\w+:\d+>', ' ', content)
+            # Remove all custom emojis from content
+            for anim, name, e_id in custom_emoji_matches:
+                pattern = fr'<{anim}:{re.escape(name)}:{e_id}>'
+                content = re.sub(pattern, ' ', content)
             
-            # Add back limited emojis
-            for i, e in enumerate(kept_emojis):
-                if i < self.MAX_EMOJIS_PER_MESSAGE:
-                    if isinstance(e, dict):
-                        emoji_name = emoji.demojize(e['emoji'])[1:-1]
-                        content += f" :emoji_{emoji_name}:"
-                    else:
-                        clean_name = e['emoji'].replace(':', '')
-                        content += f" :custom_emoji_{clean_name}:"
+            # Add back limited emojis (only valid server emojis)
+            for emoji_type, name, emoji_data in kept_emojis:
+                if emoji_type == 'unicode':
+                    emoji_name = emoji.demojize(emoji_data)[1:-1]
+                    content += f" :emoji_{emoji_name}:"
+                else:
+                    # Only add emojis that exist on server
+                    content += f" {emoji_data}"
         else:
             # Convert Unicode emojis to tokens
             for e in emoji_list:
                 emoji_name = emoji.demojize(e['emoji'])[1:-1]
                 content = content.replace(e['emoji'], f' :emoji_{emoji_name}: ')
             
-            # Convert Valid Discord emojis to tokens
-            for emoji_name, emoji_id in valid_custom_emojis:
-                pattern = fr'<a?:{re.escape(emoji_name)}:{emoji_id}>'
-                content = re.sub(
-                    pattern,
-                    f' :custom_emoji_{emoji_name}: ',
-                    content
-                )
+            # Keep Discord emojis in FULL format - they're already validated
+            # No need to convert them, they stay as <:name:id>
+            # The invalid ones have already been removed above
         
         # Clean up punctuation (more lenient for Hinglish)
-        content = re.sub(r'([!?.]){3,}', r'\1', content)  # Reduce excessive punctuation
+        content = re.sub(r'([!?.]){3,}', r'\1', content)
         
         # Remove excessive whitespace
         content = ' '.join(content.split()).strip()
@@ -1088,7 +1104,7 @@ class EnhancedMarkovCog(commands.Cog):
             if lang_mix['hindi'] > 0.1 or lang_mix['hinglish'] > 0.1:
                 self.stats['hinglish_messages'] += 1
         
-        # Return if we have enough words (reduced threshold)
+        # Return if we have enough words
         word_count = len(content.split())
         return content if word_count >= self.MIN_MESSAGE_WORDS else ""
 
@@ -1117,16 +1133,57 @@ class EnhancedMarkovCog(commands.Cog):
         
         return triplets
 
+
+    def is_server_emoji(self, emoji_string: str, guild=None) -> bool:
+        """Check if an emoji exists on the server"""
+        # Parse the emoji string
+        match = re.match(r'^<(a?):([\w]+):(\d+)>$', emoji_string)
+        if not match:
+            return False
+        
+        anim, name, e_id = match.groups()
+        
+        if not guild:
+            # Can't check without guild context
+            return False
+        
+        # Check by ID first
+        emoji_by_id = discord.utils.get(guild.emojis, id=int(e_id))
+        if emoji_by_id:
+            return True
+        
+        # Check by name as fallback
+        emoji_by_name = discord.utils.get(guild.emojis, name=name)
+        return emoji_by_name is not None
+
     def classify_word_type(self, word: str) -> str:
         """Classify word type for better generation"""
-        if word.startswith(':emoji_') or word.startswith(':custom_emoji_'):
+        # Check if it's a Discord custom emoji (animated or normal)
+        discord_emoji_match = re.match(r'^<(a?):([\w]+):(\d+)>$', word)
+        if discord_emoji_match:
+            # Verify it's a valid Discord emoji format
+            anim, name, e_id = discord_emoji_match.groups()
+            
+            # Basic validation: check if it looks like a proper emoji format
+            if name and e_id and e_id.isdigit():
+                return 'emoji'
+        
+        # Check if it's a Unicode emoji token
+        elif word.startswith(':emoji_'):
             return 'emoji'
+        
+        # Check mentions
         elif word.startswith('@USER_') or word.startswith('@user_') or word.startswith('@role_') or word.startswith('#channel_'):
             return 'mention'
+        
+        # Check proper nouns
         elif re.match(r'^[A-Z][a-z]*$', word) and len(word) > 1:
             return 'proper_noun'
+        
+        # Check verb/adverb endings
         elif word.endswith(('ing', 'ed', 'ly')):
             return 'verb_or_adverb'
+        
         else:
             return 'normal'
 
@@ -1489,31 +1546,31 @@ class EnhancedMarkovCog(commands.Cog):
                     if len(sentence_words) >= self.SENTENCE_MAX_WORDS:
                         break
                 
-                # Convert to readable text
-                readable_sentence = []
-                
-                for i, word in enumerate(sentence_words):
-                    if word.startswith(':emoji_'):
-                        emoji_name = word[7:-1] if word.endswith(':') else word[7:]
-                        try:
-                            # Unicode emojis: Add a trailing space inside the token
-                            emoji_char = emoji.emojize(f":{emoji_name}:", language='alias')
-                            readable_sentence.append(emoji_char)
-                        except:
-                            readable_sentence.append(f":{emoji_name}:")
-                    
-                    elif word.startswith('<:') and word.endswith('>'):
-                        # This is our stored custom emoji tag
-                        readable_sentence.append(word)
-                    
-                    elif word.startswith('@USER_'):
-                        user_id = word[6:]
-                        readable_sentence.append(f"<@{user_id}>")
-                    
-                    else:
-                        if i == 0 and word[0].islower():
-                            word = word[0].upper() + word[1:]
-                        readable_sentence.append(word)
+                    # Convert to readable text
+                    readable_sentence = []
+
+                    for i, word in enumerate(sentence_words):
+                        if word.startswith(':emoji_'):
+                            emoji_name = word[7:-1] if word.endswith(':') else word[7:]
+                            try:
+                                # Unicode emojis: Add a trailing space inside the token
+                                emoji_char = emoji.emojize(f":{emoji_name}:", language='alias')
+                                readable_sentence.append(emoji_char)
+                            except:
+                                readable_sentence.append(f":{emoji_name}:")
+                        
+                        elif word.startswith('<:') and word.endswith('>'):
+                            # This is our stored custom emoji tag - KEEP AS-IS
+                            readable_sentence.append(word)
+                        
+                        elif word.startswith('@USER_'):
+                            user_id = word[6:]
+                            readable_sentence.append(f"<@{user_id}>")
+                        
+                        else:
+                            if i == 0 and word[0].islower():
+                                word = word[0].upper() + word[1:]
+                            readable_sentence.append(word)
                 
                 # Assemble final sentence with FORCED space after emojis
                 result = ''
@@ -1759,6 +1816,7 @@ class EnhancedMarkovCog(commands.Cog):
             # Clear user caches if they get too large (over 1000 items)
             if len(self.user_cache) > 1000:
                 self.user_cache.clear()
+                self.server_emoji_cache.clear()
                 self.user_id_map.clear()
                 logger.info("Cleared user cache to free RAM")
             # -------------------------------------
@@ -2116,7 +2174,7 @@ class EnhancedMarkovCog(commands.Cog):
                 await db.create_function("REGEXP", 2, self.regexp)
                 db.row_factory = aiosqlite.Row
                 
-                # Get emoji stats
+                # Get emoji stats - UPDATED QUERY
                 async with db.execute("""
                     SELECT 
                         COUNT(*) as total_emojis,
@@ -2126,16 +2184,7 @@ class EnhancedMarkovCog(commands.Cog):
                 """) as cursor:
                     emoji_stats = await cursor.fetchone()
                 
-                # Get average emojis per message
-                async with db.execute("""
-                    SELECT AVG(emoji_count) as avg_per_message
-                    FROM message_log
-                    WHERE emoji_count > 0
-                """) as cursor:
-                    avg_result = await cursor.fetchone()
-                    avg_per_message = avg_result['avg_per_message'] if avg_result and avg_result['avg_per_message'] else 0
-                
-                # Get most common emojis
+                # Get most common emojis - UPDATED QUERY
                 async with db.execute("""
                     SELECT next_word, COUNT(*) as usage_count 
                     FROM markov_chain 
@@ -2156,24 +2205,32 @@ class EnhancedMarkovCog(commands.Cog):
                     embed.add_field(
                         name="Overview",
                         value=f"**{emoji_stats['total_emojis']:,}** total emoji usages\n"
-                              f"**{emoji_stats['unique_emojis']}** unique emojis\n"
-                              f"**{avg_per_message:.1f}** avg emojis per message\n"
-                              f"**{self.MAX_EMOJIS_PER_MESSAGE}** max learned per message\n"
-                              f"**{self.MAX_REPLY_EMOJIS}** max in replies",
+                            f"**{emoji_stats['unique_emojis']}** unique emojis",
                         inline=False
                     )
                 
-                # Top emojis
+                # Top emojis - UPDATED DISPLAY
                 if top_emojis:
                     emoji_list = []
                     for emoji_row in top_emojis:
-                        emoji_name = emoji_row['next_word'].replace(':emoji_', '').replace(':custom_emoji_', '').rstrip(':')
-                        try:
-                            # Try to show actual emoji
-                            emoji_char = emoji.emojize(f":{emoji_name}: ", language='alias')
-                            emoji_list.append(f"{emoji_char}: {emoji_row['usage_count']:,}")
-                        except:
-                            emoji_list.append(f":{emoji_name}: {emoji_row['usage_count']:,}")
+                        emoji_word = emoji_row['next_word']
+                        
+                        # Check if it's a Discord emoji format
+                        discord_match = re.match(r'^<(a?):(\w+):(\d+)>$', emoji_word)
+                        if discord_match:
+                            # It's a Discord emoji - show as-is
+                            emoji_list.append(f"{emoji_word}: {emoji_row['usage_count']:,}")
+                        elif emoji_word.startswith(':emoji_'):
+                            # It's a Unicode emoji token
+                            emoji_name = emoji_word.replace(':emoji_', '').rstrip(':')
+                            try:
+                                emoji_char = emoji.emojize(f":{emoji_name}:", language='alias')
+                                emoji_list.append(f"{emoji_char}: {emoji_row['usage_count']:,}")
+                            except:
+                                emoji_list.append(f":{emoji_name}: {emoji_row['usage_count']:,}")
+                        else:
+                            # Fallback
+                            emoji_list.append(f"{emoji_word}: {emoji_row['usage_count']:,}")
                     
                     embed.add_field(
                         name="Most Used Emojis",
@@ -2181,7 +2238,6 @@ class EnhancedMarkovCog(commands.Cog):
                         inline=False
                     )
                 
-                embed.set_footer(text=f"Emoji density limit: {self.MAX_EMOJI_DENSITY*100:.0f}%")
                 await ctx.send(embed=embed)
                 
         except Exception as e:
