@@ -7,6 +7,7 @@ import discord
 from discord.ext import commands, tasks
 import aiosqlite
 import re
+import random
 import asyncio
 import logging
 from collections import deque
