@@ -2104,7 +2104,7 @@ class EnhancedMarkovCog(commands.Cog):
     async def emoji_stats(self, ctx):
         """Show emoji usage statistics"""
         try:
-                        async with aiosqlite.connect(self.db_path) as db:
+            async with aiosqlite.connect(self.db_path) as db:
                 await db.create_function("REGEXP", 2, self.regexp)
                 db.row_factory = aiosqlite.Row
                 
@@ -2193,7 +2193,7 @@ class EnhancedMarkovCog(commands.Cog):
     async def export_brain(self, ctx):
         """Export brain data"""
         try:
-                        async with aiosqlite.connect(self.db_path) as db:
+            async with aiosqlite.connect(self.db_path) as db:
                 await db.create_function("REGEXP", 2, self.regexp)
                 async with db.execute("""
                     SELECT word_a, word_b, next_word, count 
@@ -2290,7 +2290,7 @@ class EnhancedMarkovCog(commands.Cog):
         await ctx.send(f"⏳ Learning from last {limit} messages...")
         
         try:
-                        async with aiosqlite.connect(self.db_path) as db:
+            async with aiosqlite.connect(self.db_path) as db:
                 await db.create_function("REGEXP", 2, self.regexp)
                 async with db.execute('''
                     SELECT content, author_id FROM message_log 
