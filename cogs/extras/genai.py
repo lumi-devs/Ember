@@ -550,7 +550,7 @@ class EnhancedMarkovCog(commands.Cog):
             elif word_lower in ['hai', 'hain', 'tha', 'thi', 'the', 'hoga', 'raha', 'rahi']:
                 final_tags.append((word, 'VERB'))
                 
-            elif word_lower.endswith(['ka', 'ki', 'ke', 'ko', 'se', 'par', 'pe', 'me']):
+            elif word_lower.endswith(('ka', 'ki', 'ke', 'ko', 'se', 'par', 'pe', 'me')):
                 final_tags.append((word, 'ADP')) # Adposition (Prepositions)
                 
             elif word_lower in ['acha', 'bura', 'sahi', 'galat', 'thik', 'badhiya']:
