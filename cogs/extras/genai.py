@@ -1463,4 +1463,4 @@ class EnhancedMarkovCog(commands.Cog):
             await ctx.send(f"❌ Error: {e}")
 
 async def setup(bot):
-    await bot.add_cog(EnhancedMarkovCog(bot)).
+    await bot.add_cog(EnhancedMarkovCog(bot))
