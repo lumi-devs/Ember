@@ -400,8 +400,7 @@ class EnhancedMarkovCog(commands.Cog):
         # Remove @everyone and @here
         content = re.sub(r'@everyone|@here', '', content, flags=re.IGNORECASE)
         
-        return content if len(content.split()) >= self.MIN_MESSAGE_WORDS else ""
-        
+        # FIX: MOVE THE RETURN STATEMENT TO THE END
         # Count and limit emojis
         emoji_list = list(emoji.emoji_list(content))
         custom_emojis = re.findall(r'<a?:(\w+):\d+>', content)
