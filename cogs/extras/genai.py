@@ -1,19 +1,8 @@
-<<<<<<< HEAD
-# a edit
-=======
-import time
-from contextlib import asynccontextmanager
-from functools import partial
-import secrets
-import time
-import concurrent
-
->>>>>>> 2468b420d894d5454434c02fe3fd90879184cc8f
 import discord
 from discord.ext import commands, tasks
 import aiosqlite
-import re
 import random
+import re
 import asyncio
 import logging
 from collections import deque
@@ -22,14 +11,15 @@ import json
 import os
 from pathlib import Path
 import emoji
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Any
 import nltk
-from nltk.tokenize import word_tokenize
+from nltk.tokenize import word_tokenize, sent_tokenize
 from nltk import pos_tag
+from nltk.corpus import stopwords
 from nltk.sentiment import SentimentIntensityAnalyzer
 from collections import Counter
 import math
-from langdetect import DetectorFactory
+from langdetect import detect, DetectorFactory
 
 # Ensure consistent language detection
 DetectorFactory.seed = 0
@@ -68,11 +58,9 @@ class EnhancedMarkovCog(commands.Cog):
         self.bot = bot
         self.db_path = "./genai/server_brain.db"
         self.state_file = "./genai/bot_state.json"
-        self._db_pool = []  # List of available connections
-        self._db_pool_lock = asyncio.Lock()
-        self._max_pool_size = 5
-        self.global_topics = {}
-        self.muted_channels = set()
+        
+        # --- NEW: Multilingual support ---
+        # Combine English and Hindi stopwords
         try:
             from nltk.corpus import stopwords
             self.stop_words = set(stopwords.words('english'))
@@ -107,32 +95,17 @@ class EnhancedMarkovCog(commands.Cog):
         self.user_cache = {}
         self.user_id_map = {}
         
-        self.nltk_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-        self.nltk_lock = asyncio.Lock()
-        self.recent_topic_boost = {}  # {word: boost_factor}
-        self.recent_topic_decay = 0.8  # Decay factor per generation
-        self.query_cache = {}
-        self.cache_ttl = 300  # 5 minutes
-        # Question detection map for dynamic temperature
-        self.qa_map = {
-            # English question words
-            'what', 'why', 'how', 'when', 'who', 'where', 'which', 'whose', 'whom',
-            # Hinglish question words
-            'kya', 'kaise', 'kyun', 'kab', 'kahan', 'kaun', 'kisne', 'kisko', 'kiski',
-            'kitna', 'kitni', 'kitne', 'kisliye', 'kyon'
-        }
-        
-        # Time-aware greetings (IST)
-        self.time_greetings = {
-            'morning': ['good morning', 'subh prabhat', 'shubhodaya', 'gm', 'goodmorning', 'uth'],
-            'afternoon': ['good afternoon', 'namaste', 'hello', 'hi'],
-            'evening': ['good evening', 'shubh sandhya', 'namaste', 'hello'],
-            'night': ['good night', 'shubh ratri', 'gn', 'goodnight', 'soja', 'so jao']
-        }
         # --- MODIFIED: Initialize NLP Models for multilingual support ---
         self.nlp = None  # We'll disable spaCy for now since it's English-only
         logger.info("SpaCy disabled for Hinglish support (English-only model)")
         
+        # Alternative: Use textblob for language detection and basic processing
+        try:
+            from textblob import TextBlob
+            self.textblob_available = True
+        except:
+            self.textblob_available = False
+            logger.warning("TextBlob not available. Install with: pip install textblob")
         
         # Initialize sentiment analyzer (VADER works well with English in Hinglish)
         self.sentiment_analyzer = SentimentIntensityAnalyzer()
@@ -142,7 +115,7 @@ class EnhancedMarkovCog(commands.Cog):
         self.MIN_HINDI_WORD_LENGTH = 2  # Hindi words can be shorter
         
         # --- NEW: Satellite View Buffer ---
-        self.conversation_context = deque(maxlen=200)  # Last 50 messages for topic modeling
+        self.conversation_context = deque(maxlen=50)  # Last 50 messages for topic modeling
         self.current_topic_keywords = []
         self.conversation_sentiment = 0.0  # Running average sentiment
         
@@ -183,7 +156,7 @@ class EnhancedMarkovCog(commands.Cog):
         
         # ANTI-SPAM PROTECTION
         self.MIN_MESSAGE_INTERVAL = 0.5
-        self.MAX_MESSAGES_PER_MINUTE = 45
+        self.MAX_MESSAGES_PER_MINUTE = 80
         self.SPAM_BURST_WINDOW = 10
         self.SPAM_BURST_LIMIT = 5
         
@@ -195,7 +168,7 @@ class EnhancedMarkovCog(commands.Cog):
         
         # --- OPTIMIZED PARAMETERS for Hinglish ---
         self.MIN_TRIPLETS_FOR_REPLY = 500
-        self.REPLY_CHANCE = 0.02
+        self.REPLY_CHANCE = 0.015
         self.REPLY_COOLDOWN = 10
         self.TYPING_MIN_SECONDS = 0.3
         self.TYPING_MAX_SECONDS = 0.8
@@ -204,7 +177,7 @@ class EnhancedMarkovCog(commands.Cog):
         self.MIN_MESSAGE_WORDS = 2  # Reduced for Hinglish
         
         # --- MODIFIED: NLP ENHANCEMENT PARAMETERS for Hinglish ---
-        self.GRAMMAR_ENFORCEMENT = True  # Disable for Hinglish (mixed grammar rules)
+        self.GRAMMAR_ENFORCEMENT = False  # Disable for Hinglish (mixed grammar rules)
         self.SENTIMENT_MATCHING = True   # Keep sentiment matching
         self.TOPIC_COHERENCE = True      # Keep topic coherence
         self.LEMMATIZATION_ENABLED = True  # Enable Hinglish lemmatization
@@ -229,75 +202,8 @@ class EnhancedMarkovCog(commands.Cog):
         self.periodic_tasks.start()
         self.cleanup_rate_limits.start()
         self.update_topic_model.start()
+
     # --- MODIFIED: Enhanced Hinglish Lemmatizer ---
-
-    @asynccontextmanager
-    async def get_db(self):
-        """Get database connection from pool with proper function registration"""
-        db = None
-        try:
-            async with self._db_pool_lock:
-                if self._db_pool:
-                    db = self._db_pool.pop()
-            
-            # FIX: If pool is empty, we MUST create a new connection
-            if not db:
-                db = await aiosqlite.connect(self.db_path)
-                # Register the REGEXP function only on brand new connections
-                try:
-                    await db.create_function("REGEXP", 2, self.regexp)
-                except:
-                    pass 
-            
-            if db is None:
-                raise Exception("Database connection could not be established")
-                
-            yield db
-            
-        except Exception as e:
-            logger.error(f"Database connection error: {e}")
-            if db:
-                await db.close()
-            raise
-        finally:
-            if db:
-                async with self._db_pool_lock:
-                    if len(self._db_pool) < self._max_pool_size:
-                        self._db_pool.append(db)
-                    else:
-                        await db.close()
-
-    
-    async def get_cached_query(self, query_key: str, query_func, *args):
-        """Cache database query results"""
-        now = time.time()
-        
-        if query_key in self.query_cache:
-            result, timestamp = self.query_cache[query_key]
-            if now - timestamp < self.cache_ttl:
-                return result
-        
-        # Execute and cache
-        result = await query_func(*args)
-        self.query_cache[query_key] = (result, now)
-        
-        # Clean old cache entries
-        if len(self.query_cache) > 1000:
-            self.clean_cache()
-        
-        return result
-
-    def clean_cache(self):
-        """Remove old cache entries"""
-        now = time.time()
-        to_remove = []
-        
-        for key, (_, timestamp) in self.query_cache.items():
-            if now - timestamp > self.cache_ttl:
-                to_remove.append(key)
-        
-        for key in to_remove:
-            del self.query_cache[key]
     
     def lemmatize_text(self, text: str) -> str:
         """Reduce words to their root form for Hinglish (Hindi-English)"""
@@ -563,150 +469,6 @@ class EnhancedMarkovCog(commands.Cog):
         
         return ' '.join(lemmatized_words)
     
-    def is_question(self, text: str) -> bool:
-        """Check if text is a question for dynamic temperature adjustment."""
-        if not text:
-            return False
-        
-        # Check for question marks
-        if '?' in text:
-            return True
-        
-        # Check for question words
-        words = text.lower().split()
-        for word in words:
-            if word in self.qa_map:
-                return True
-        
-        # Check for question patterns in Hinglish
-        hinglish_patterns = [
-            r'kya.*hai', r'kaise.*ho', r'kyun.*hai', r'kab.*aayega',
-            r'kaun.*hai', r'kahan.*hai', r'kitna.*hai'
-        ]
-        
-        for pattern in hinglish_patterns:
-            if re.search(pattern, text.lower()):
-                return True
-        
-        return False
-    
-    
-    
-    def humanize_response(self, text: str, sentiment: float) -> str:
-        """
-        Apply human-like quirks to the generated response.
-        
-        Features:
-        1. Typing quirks: 15% chance to lowercase everything (casual vibe)
-        2. Lazy punctuation: 30% chance to remove final punctuation
-        3. Vocal fry: 5% chance to elongate last vowel for positive sentiment
-        4. Hinglish flair: Add common Hinglish fillers
-        """
-        if not text:
-            return text
-        
-        result = text
-        
-        # 1. Typing quirks (15% chance)
-        if secrets.SystemRandom().random() < 0.15:
-            result = result.lower()
-        
-        # 2. Lazy punctuation (30% chance)
-        if secrets.SystemRandom().random() < 0.30 and result and result[-1] in '.!?':
-            result = result[:-1]
-        
-        # 3. Vocal fry - elongate last vowel for positive sentiment (5% chance)
-        if secrets.SystemRandom().random() < 0.05 and sentiment > 0.1:
-            words = result.split()
-            if words:
-                last_word = words[-1].lower()
-                
-                # Check for vowel at end
-                vowels = {'a', 'e', 'i', 'o', 'u'}
-                if last_word and last_word[-1] in vowels:
-                    # Elongate based on sentiment intensity
-                    elongation = min(int(sentiment * 5) + 1, 4)
-                    words[-1] = last_word + last_word[-1] * elongation
-                    result = ' '.join(words)
-        
-        # 4. Hinglish flair - add common fillers (10% chance)
-        if secrets.SystemRandom().random() < 0.10:
-            hinglish_fillers = [
-                'yaar', 'bhai', 'dost', 'arey', 'oye', 'hmm', 'achaa',
-                'wah', 'wow', 'seriously', 'literally', 'bas'
-            ]
-            
-            # Add filler at beginning or end
-            if secrets.choice([True, False]):
-                result = f"{secrets.choice(hinglish_fillers)}... {result}"
-            else:
-                result = f"{result} {secrets.choice(hinglish_fillers)}"
-        
-        return result
-    
-    
-    def update_topic_boost(self, topics: List[str]):
-        """Update topic boost weights with decay."""
-        # Apply decay to existing boosts
-        for word in list(self.recent_topic_boost.keys()):
-            self.recent_topic_boost[word] *= self.recent_topic_decay
-            if self.recent_topic_boost[word] < 1.1:  # Remove insignificant boosts
-                del self.recent_topic_boost[word]
-        
-        # Add new topics
-        for topic in topics:
-            if topic in self.recent_topic_boost:
-                self.recent_topic_boost[topic] = min(2.5, self.recent_topic_boost[topic] + 0.5)
-            else:
-                self.recent_topic_boost[topic] = 2.0  # Initial boost
-    
-    def get_topic_boost(self, word: str) -> float:
-        """Get boost factor for a word based on recent topics."""
-        return self.recent_topic_boost.get(word.lower(), 1.0)
-    
-    def apply_dynamic_temperature(self, weights: List[float], temperature: float) -> List[float]:
-        """Apply temperature scaling to weights."""
-        if temperature <= 0:
-            return weights
-        
-        # Apply temperature scaling: weight^(1/temperature)
-        scaled_weights = []
-        for w in weights:
-            if w > 0:
-                # Add epsilon to avoid zero
-                scaled = w ** (1.0 / temperature)
-                scaled_weights.append(scaled)
-            else:
-                scaled_weights.append(0.0)
-        
-        # Normalize
-        total = sum(scaled_weights)
-        if total > 0:
-            return [w / total for w in scaled_weights]
-        return scaled_weights
-    
-    def extract_recent_topics(self, text: str) -> List[str]:
-        """Extract nouns and proper nouns from recent context for stickiness."""
-        if not text:
-            return []
-        
-        try:
-            # Get POS tags
-            pos_tags = self.get_pos_tags(text)
-            
-            # Extract nouns and proper nouns
-            topics = []
-            for word, tag in pos_tags:
-                if tag in ['NOUN', 'PROPN', 'NNP', 'NN']:
-                    # Clean the word
-                    clean_word = re.sub(r'[^\w\s]', '', word.lower())
-                    if len(clean_word) > 2 and clean_word not in self.stop_words:
-                        topics.append(clean_word)
-            
-            return topics[:5]  # Limit to top 5 topics
-        except:
-            return []
-    
     def is_hindi_word(self, word: str) -> bool:
         """Check if a word contains Devanagari script characters"""
         # Hindi Unicode range: \u0900-\u097F
@@ -772,34 +534,6 @@ class EnhancedMarkovCog(commands.Cog):
             'other': other_count / total
         }
 
-    def get_time_based_seed(self, seed_word: str) -> Optional[str]:
-        """Adjust seed word based on time of day (IST)."""
-        # Convert UTC to IST (UTC+5:30)
-        utc_now = datetime.utcnow()
-        ist_now = utc_now + timedelta(hours=5, minutes=30)
-        
-        # Get time of day
-        hour = ist_now.hour
-        
-        # Check if seed word relates to greetings
-        greeting_words = {'hi', 'hello', 'hey', 'namaste', 'gm', 'gn', 'good morning', 
-                         'good night', 'uth', 'soja', 'subah', 'raat'}
-        
-        if seed_word and seed_word.lower() in greeting_words:
-            if 5 <= hour < 12:
-                # Morning
-                return secrets.choice(self.time_greetings['morning'])
-            elif 12 <= hour < 17:
-                # Afternoon
-                return secrets.choice(self.time_greetings['afternoon'])
-            elif 17 <= hour < 21:
-                # Evening
-                return secrets.choice(self.time_greetings['evening'])
-            else:
-                # Night
-                return secrets.choice(self.time_greetings['night'])
-        
-        return seed_word
     
     def get_pos_tags(self, text: str) -> List[Tuple[str, str]]:
         """
@@ -860,9 +594,8 @@ class EnhancedMarkovCog(commands.Cog):
         negative_hindi = ['bura', 'kharab', 'bekar', 'ganda', 'bad', 'worst', 'buraa', 'ganda']
         
         text_lower = text.lower()
-        words = text_lower.split()
         for word in positive_hindi:
-            if word in words: # Exact word match
+            if word in text_lower:
                 scores['compound'] = min(1.0, scores['compound'] + 0.3)
         
         for word in negative_hindi:
@@ -947,40 +680,6 @@ class EnhancedMarkovCog(commands.Cog):
 
 
 
-    def is_valid_pos_transition(self, pos1: str, pos2: str) -> bool:
-            """
-            Enforce stricter grammar to prevent bad Hinglish mixing.
-            Example: Prevents "Main aaj khana play" (Noun -> Verb mismatch)
-            """
-            if not self.GRAMMAR_ENFORCEMENT:
-                return True
-
-            # Rule 1: Hindi Postpositions (ka/ke/ki/ko/mein/par) usually NOT followed by raw Verbs
-            # Bad: "kamra mein sleep" -> Good: "kamra mein so" or "kamra mein sleeping"
-            if pos1 == 'ADP': 
-                if pos2 == 'VERB': return False 
-                if pos2 == 'PRON': return True 
-                if pos2 == 'NOUN': return True
-                if pos2 == 'PROPN': return True
-                if pos2 == 'ADJ': return True
-
-            # Rule 2: Adjectives should usually precede Nouns
-            if pos1 == 'ADJ':
-                if pos2 == 'NOUN': return True
-                if pos2 == 'PROPN': return True
-                if pos2 == 'ADJ': return True # "bohot acha"
-                if pos2 == 'VERB': return False # "red run" -> Bad
-
-            # Rule 3: Pronouns (Main/Tum) usually followed by Noun, Adj, or Aux Verb
-            if pos1 == 'PRON':
-                if pos2 == 'VERB': return True 
-                if pos2 == 'NOUN': return True 
-                if pos2 == 'ADJ': return True 
-                if pos2 == 'ADP': return True # "mujh par"
-
-            return True
-    
-    
     def load_state(self):
         """Load bot state from file to survive restarts"""
         try:
@@ -988,24 +687,46 @@ class EnhancedMarkovCog(commands.Cog):
                 with open(self.state_file, 'r') as f:
                     state = json.load(f)
                 
-                # Load stats
+                # Safely update stats if they exist in state
                 if 'stats' in state:
-                    self.stats.update(state['stats'])
+                    for key, value in state['stats'].items():
+                        if key in self.stats:
+                            # Handle different types properly
+                            if isinstance(self.stats[key], int):
+                                self.stats[key] = int(value)
+                            elif isinstance(self.stats[key], str):
+                                self.stats[key] = str(value)
+                            else:
+                                self.stats[key] = value
                 
-                # Load cooldowns
+                # Load cooldowns with type safety
                 if 'reply_cooldowns' in state:
                     for k, v in state['reply_cooldowns'].items():
-                        self.reply_cooldowns[int(k)] = datetime.fromisoformat(v)
+                        try:
+                            channel_id = int(k)
+                            if isinstance(v, str):
+                                self.reply_cooldowns[channel_id] = datetime.fromisoformat(v)
+                        except (ValueError, TypeError) as e:
+                            logger.warning(f"Failed to load cooldown for channel {k}: {e}")
                 
-                # --- NEW: Load muted channels ---
-                if 'muted_channels' in state:
-                    self.muted_channels = set(state['muted_channels'])
-                
-                logger.info(f"Loaded state: {len(self.reply_cooldowns)} cooldowns, {len(self.muted_channels)} muted channels")
+                logger.info(f"Loaded state with {len(self.reply_cooldowns)} cooldowns")
                 
         except Exception as e:
             logger.error(f"Failed to load state: {e}")
+            # Don't fail completely, just log the error
 
+
+    def is_valid_pos_transition(self, pos1: str, pos2: str) -> bool:
+        """Check if POS transition follows simplified grammar rules"""
+        if not self.GRAMMAR_ENFORCEMENT:
+            return True
+        
+        if pos1 not in self.POS_TRANSITION_RULES:
+            return True
+        
+        return pos2 in self.POS_TRANSITION_RULES[pos1]
+    
+    
     def save_state(self):
         """Save bot state to file"""
         try:
@@ -1015,15 +736,16 @@ class EnhancedMarkovCog(commands.Cog):
                     str(k): v.isoformat() if isinstance(v, datetime) else v
                     for k, v in self.reply_cooldowns.items()
                 },
-                # --- NEW: Save muted channels ---
-                'muted_channels': list(self.muted_channels),
                 'last_saved': datetime.utcnow().isoformat()
             }
             
+            # Ensure directory exists
             os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
+            
             with open(self.state_file, 'w') as f:
                 json.dump(state, f, indent=2)
                 
+            logger.debug("State saved successfully")
         except Exception as e:
             logger.error(f"Failed to save state: {e}")
 
@@ -1032,42 +754,31 @@ class EnhancedMarkovCog(commands.Cog):
         await self.bot.wait_until_ready()
         
         try:
-            # 1. Resolve absolute path to prevent confusion
-            # If path is relative, make it absolute based on current working directory
-            base_path = Path.cwd()
-            full_path = (base_path / self.db_path).resolve()
-            self.db_path = str(full_path)
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
             
-            logger.info(f"📂 Database Path Resolved: {self.db_path}")
-
-            # 2. Force Create Directory
-            full_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # 3. Connect and Initialize
-            async with self._connect() as db:
-                logger.info("✅ Connected to database. setting up schema...")
-                
-                # Register regex
+            async with aiosqlite.connect(self.db_path) as db:
                 await db.create_function("REGEXP", 2, self.regexp)
-
-                # Optimizations
+                # Optimize SQLite settings
                 await db.execute('PRAGMA journal_mode=WAL;')
                 await db.execute('PRAGMA synchronous=NORMAL;')
+                await db.execute('PRAGMA cache_size=-10000;')
+                await db.execute('PRAGMA temp_store=DEFAULT;')
+                await db.execute('PRAGMA mmap_size=33554432;')
                 
-                # Create Tables
+                # --- UPDATED: Create tables with NLP columns ---
                 await db.execute('''
                     CREATE TABLE IF NOT EXISTS markov_chain (
                         word_a TEXT NOT NULL,
                         word_b TEXT NOT NULL,
                         next_word TEXT NOT NULL,
-                        lemma_a TEXT,
-                        lemma_b TEXT,
-                        lemma_next TEXT,
-                        pos_a TEXT,
-                        pos_b TEXT,
-                        pos_next TEXT,
-                        sentiment_score REAL DEFAULT 0.0,
-                        topic_weight REAL DEFAULT 1.0,
+                        lemma_a TEXT,           -- NEW: Lemmatized form
+                        lemma_b TEXT,           -- NEW: Lemmatized form
+                        lemma_next TEXT,        -- NEW: Lemmatized form
+                        pos_a TEXT,             -- NEW: Part of speech
+                        pos_b TEXT,             -- NEW: Part of speech
+                        pos_next TEXT,          -- NEW: Part of speech
+                        sentiment_score REAL DEFAULT 0.0,  -- NEW: Average sentiment
+                        topic_weight REAL DEFAULT 1.0,     -- NEW: Topic relevance
                         count INTEGER DEFAULT 1,
                         last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1076,6 +787,7 @@ class EnhancedMarkovCog(commands.Cog):
                     ) WITHOUT ROWID
                 ''')
                 
+                # Create message_log table (unchanged)
                 await db.execute('''
                     CREATE TABLE IF NOT EXISTS message_log (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1086,11 +798,12 @@ class EnhancedMarkovCog(commands.Cog):
                         processed BOOLEAN DEFAULT 0,
                         emoji_count INTEGER DEFAULT 0,
                         is_bot_reply BOOLEAN DEFAULT 0,
-                        sentiment REAL DEFAULT 0.0,
-                        cleaned_content TEXT
+                        sentiment REAL DEFAULT 0.0,  -- NEW: Message sentiment
+                        cleaned_content TEXT         -- NEW: Cleaned text for topic modeling
                     )
                 ''')
                 
+                # Create user_stats table (unchanged)
                 await db.execute('''
                     CREATE TABLE IF NOT EXISTS user_stats (
                         user_id INTEGER PRIMARY KEY,
@@ -1098,39 +811,69 @@ class EnhancedMarkovCog(commands.Cog):
                         message_count INTEGER DEFAULT 0,
                         last_seen TIMESTAMP,
                         emoji_usage INTEGER DEFAULT 0,
-                        avg_sentiment REAL DEFAULT 0.0
+                        avg_sentiment REAL DEFAULT 0.0  -- NEW: User's typical sentiment
                     )
                 ''')
                 
-                # Create Indexes
-                await db.execute('CREATE INDEX IF NOT EXISTS idx_markov_lemmas ON markov_chain(lemma_a, lemma_b, lemma_next)')
-                await db.execute('CREATE INDEX IF NOT EXISTS idx_markov_pos ON markov_chain(pos_a, pos_b, pos_next)')
-                await db.execute('CREATE INDEX IF NOT EXISTS idx_markov_sentiment ON markov_chain(sentiment_score)')
-                await db.execute('CREATE INDEX IF NOT EXISTS idx_markov_lookup ON markov_chain(word_a, word_b, count DESC)')
-                await db.execute('CREATE INDEX IF NOT EXISTS idx_markov_type ON markov_chain(word_type)')
-                await db.execute('CREATE INDEX IF NOT EXISTS idx_message_log_timestamp ON message_log(timestamp)')
-                await db.execute('CREATE INDEX IF NOT EXISTS idx_message_log_processed ON message_log(processed)')
+                # Create indexes for NLP columns
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_markov_lemmas 
+                    ON markov_chain(lemma_a, lemma_b, lemma_next)
+                ''')
+                
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_markov_pos 
+                    ON markov_chain(pos_a, pos_b, pos_next)
+                ''')
+                
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_markov_sentiment 
+                    ON markov_chain(sentiment_score)
+                ''')
+                
+                # Existing indexes...
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_markov_lookup 
+                    ON markov_chain(word_a, word_b, count DESC)
+                ''')
+                
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_markov_type 
+                    ON markov_chain(word_type)
+                ''')
+                
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_message_log_timestamp 
+                    ON message_log(timestamp)
+                ''')
+                
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_message_log_processed 
+                    ON message_log(processed)
+                ''')
                 
                 await db.commit()
                 
-                # Load Stats
+                # Get initial counts
                 async with db.execute("SELECT COUNT(*) FROM markov_chain") as cursor:
-                    res = await cursor.fetchone()
-                    self.stats['total_triplets'] = res[0] if res else 0
-
-                logger.info(f"✅ Database initialized successfully. ({self.stats['total_triplets']} triplets)")
+                    result = await cursor.fetchone()
+                    self.stats['total_triplets'] = result[0] if result else 0
                 
-                # 4. MARK AS READY
+                async with db.execute("SELECT COUNT(*) FROM message_log") as cursor:
+                    result = await cursor.fetchone()
+                    self.stats['total_messages'] = result[0] if result else 0
+                
+                async with db.execute("SELECT COUNT(DISTINCT author_id) FROM message_log") as cursor:
+                    result = await cursor.fetchone()
+                    self.stats['unique_users'] = result[0] if result else 0
+                
+                # Count lemmatized entries
+                async with db.execute("SELECT COUNT(*) FROM markov_chain WHERE lemma_a IS NOT NULL") as cursor:
+                    result = await cursor.fetchone()
+                    self.stats['lemmas_stored'] = result[0] if result else 0
+                
+                logger.info(f"Database initialized. Existing: {self.stats['total_triplets']} triplets, {self.stats['lemmas_stored']} lemmas from {self.stats['total_messages']} messages")
                 self.db_initialized = True
-
-        except Exception as e:
-            logger.error(f"❌ CRITICAL DATABASE ERROR: {e}")
-            # Do not set db_initialized to True so we don't spam errors
-                
-        except ValueError as e:
-            logger.error(f"Database connection failed (ValueError): {e}")
-            # Try to recover: If WAL mode fails, it might be a lock file issue
-            logger.warning("Attempting to recover database connection...")
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
             raise
@@ -1250,7 +993,7 @@ class EnhancedMarkovCog(commands.Cog):
 
             # 4. Update DB weights for these active topics
             if self.current_topic_keywords and self.TOPIC_COHERENCE:
-                async with self.get_db() as db: 
+                async with aiosqlite.connect(self.db_path) as db:
                     # Reset old topic weights first to prevent "topic drift"
                     await db.execute("UPDATE markov_chain SET topic_weight = 1.0 WHERE topic_weight > 1.0")
                     
@@ -1413,22 +1156,84 @@ class EnhancedMarkovCog(commands.Cog):
         word_count = len(content.split())
         return content if word_count >= self.MIN_MESSAGE_WORDS else ""
 
+    def extract_triplets(self, content: str) -> List[Tuple[str, str, str]]:
+        """Extract word triplets from content"""
+        words = content.split()
+        triplets = []
+        
+        if len(words) < 3:
+            return triplets
+        
+        # Use sliding window with step 1 for more coverage
+        for i in range(len(words) - 2):
+            word_a = words[i].strip()
+            word_b = words[i+1].strip()
+            word_c = words[i+2].strip()
+            
+            if word_a and word_b and word_c:
+                # Skip if too many emojis in sequence
+                emoji_count = sum(1 for w in [word_a, word_b, word_c] 
+                                if w.startswith(':emoji_') or w.startswith(':custom_emoji_'))
+                if emoji_count >= 2:
+                    continue
+                
+                triplets.append((word_a, word_b, word_c))
+        
+        return triplets
 
-    def classify_word_type(self, word: str, pos: str):
-        if word.startswith("<@"):
-            return "mention"
-        if word.startswith("<:"):
-            return "emoji"
-        if pos.startswith("NN"):
-            return "noun"
-        if pos.startswith("VB"):
-            return "verb"
-        if pos.startswith("JJ"):
-            return "adjective"
-        if pos.startswith("RB"):
-            return "adverb"
-        return "other"
 
+    def is_server_emoji(self, emoji_string: str, guild=None) -> bool:
+        """Check if an emoji exists on the server"""
+        # Parse the emoji string
+        match = re.match(r'^<(a?):([\w]+):(\d+)>$', emoji_string)
+        if not match:
+            return False
+        
+        anim, name, e_id = match.groups()
+        
+        if not guild:
+            # Can't check without guild context
+            return False
+        
+        # Check by ID first
+        emoji_by_id = discord.utils.get(guild.emojis, id=int(e_id))
+        if emoji_by_id:
+            return True
+        
+        # Check by name as fallback
+        emoji_by_name = discord.utils.get(guild.emojis, name=name)
+        return emoji_by_name is not None
+
+    def classify_word_type(self, word: str) -> str:
+        """Classify word type for better generation"""
+        # Check if it's a Discord custom emoji (animated or normal)
+        discord_emoji_match = re.match(r'^<(a?):([\w]+):(\d+)>$', word)
+        if discord_emoji_match:
+            # Verify it's a valid Discord emoji format
+            anim, name, e_id = discord_emoji_match.groups()
+            
+            # Basic validation: check if it looks like a proper emoji format
+            if name and e_id and e_id.isdigit():
+                return 'emoji'
+        
+        # Check if it's a Unicode emoji token
+        elif word.startswith(':emoji_'):
+            return 'emoji'
+        
+        # Check mentions
+        elif word.startswith('@USER_') or word.startswith('@user_') or word.startswith('@role_') or word.startswith('#channel_'):
+            return 'mention'
+        
+        # Check proper nouns
+        elif re.match(r'^[A-Z][a-z]*$', word) and len(word) > 1:
+            return 'proper_noun'
+        
+        # Check verb/adverb endings
+        elif word.endswith(('ing', 'ed', 'ly')):
+            return 'verb_or_adverb'
+        
+        else:
+            return 'normal'
 
     async def train_on_message(self, content: str, author_id: int, emoji_count: int = 0, message=None):
         """Train Markov chain for Hinglish"""
@@ -1440,27 +1245,19 @@ class EnhancedMarkovCog(commands.Cog):
         sentiment = self.analyze_sentiment(content)
         self.stats['sentiment_analyzed'] += 1
         
-        # Update context
+        # Update conversation context
         self.conversation_context.append({
             'content': clean_content,
             'sentiment': sentiment,
             'timestamp': datetime.utcnow()
         })
-        self.update_global_topics(clean_content)
-        # Update running sentiment
+        
+        # Update running sentiment average
         sentiments = [msg['sentiment'] for msg in self.conversation_context]
         self.conversation_sentiment = sum(sentiments) / len(sentiments) if sentiments else 0.0
         
+        # Process with Hinglish adaptations
         words = clean_content.split()
-        
-        # --- WIRE IN ASYNC NLP HERE ---
-        # Use the async wrapper you created to prevent blocking the event loop
-        pos_tags_list = await self.get_pos_tags_async(clean_content)
-        
-        # Fallback if alignment fails
-        if len(pos_tags_list) != len(words):
-            pos_tags_list = [(w, 'UNK') for w in words]
-
         triplets = []
         
         # Count Hindi words for stats
@@ -1481,56 +1278,38 @@ class EnhancedMarkovCog(commands.Cog):
             pos_b = self.get_pos_tags(word_b)[0][1] if self.get_pos_tags(word_b) else 'UNK'
             pos_c = self.get_pos_tags(word_c)[0][1] if self.get_pos_tags(word_c) else 'UNK'
             
-            lemma_a = self.lemmatize_text(word_a)
-            lemma_b = self.lemmatize_text(word_b)
-            lemma_c = self.lemmatize_text(word_c)
-
             triplets.append((
-                word_a, word_b, word_c,
-                lemma_a, lemma_b, lemma_c,
-                pos_a, pos_b, pos_c,
-                sentiment
+                word_a, word_b, word_c,  # Original words
+                word_a, word_b, word_c,  # Lemmas (same for now)
+                pos_a, pos_b, pos_c,     # POS tags
+                sentiment                # Message sentiment
             ))
         
         if not triplets:
             return 0
         
         try:
-            async with self.get_db() as db: 
-                
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 # Batch insert with Hinglish information
-                batch_data = []
-                
                 for triplet in triplets:
                     (word_a, word_b, word_c, lemma_a, lemma_b, lemma_c, 
-                    pos_a, pos_b, pos_c, sent) = triplet
+                     pos_a, pos_b, pos_c, sent) = triplet
                     
-                    # Calculate word type purely in Python first
-                    word_type = self.classify_word_type(word_a, pos_a)
+                    word_type = self.classify_word_type(word_a)
                     
-                    # Append 12 parameters matching the 12 placeholders below
-                    batch_data.append((
-                        word_a, word_b, word_c,          # 1, 2, 3
-                        lemma_a, lemma_b, lemma_c,       # 4, 5, 6
-                        pos_a, pos_b, pos_c,             # 7, 8, 9
-                        sent,                            # 10 (Initial sentiment)
-                        word_type,                       # 11 (Word type)
-                        sent                             # 12 (Update sentiment value)
-                    ))
-                
-                # Execute single bulk operation (massive speedup)
-                if batch_data:
-                    await db.executemany('''
+                    await db.execute('''
                         INSERT INTO markov_chain 
                         (word_a, word_b, next_word, lemma_a, lemma_b, lemma_next,
-                        pos_a, pos_b, pos_next, sentiment_score, count, word_type)
+                         pos_a, pos_b, pos_next, sentiment_score, count, word_type)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                         ON CONFLICT(word_a, word_b, next_word) 
                         DO UPDATE SET 
                             count = count + 1,
                             last_used = CURRENT_TIMESTAMP,
-                            sentiment_score = ((sentiment_score * count) + ?) / (count + 1)
-                    ''', batch_data)
+                            sentiment_score = ((sentiment_score * (count - 1)) + ?) / count
+                    ''', (word_a, word_b, word_c, lemma_a, lemma_b, lemma_c,
+                          pos_a, pos_b, pos_c, sent, word_type, sent))
                 
                 # Update user stats
                 await db.execute('''
@@ -1550,6 +1329,7 @@ class EnhancedMarkovCog(commands.Cog):
                         WHERE user_id = ? AND (username IS NULL OR username != ?)
                     ''', (str(message.author), author_id, str(message.author)))
                 
+                # Store message
                 await db.execute('''
                     INSERT INTO message_log (content, author_id, channel_id, timestamp, 
                                            emoji_count, sentiment, cleaned_content)
@@ -1568,303 +1348,134 @@ class EnhancedMarkovCog(commands.Cog):
             logger.error(f"Training error: {e}")
             return 0
 
-    from functools import partial
-
-
-
-    def weighted_choice(self, items, temperature=1.0):
-        """
-        items: List of (value, count)
-        """
-        if temperature <= 0:
-            return max(items, key=lambda x: x[1])[0]
-
-        weights = [math.pow(count, 1 / temperature) for _, count in items]
-        total = sum(weights)
-
-        secure_gen = secrets.SystemRandom()
-        r = secure_gen.uniform(0, total)
-        upto = 0
-
-        for (value, _), w in zip(items, weights):
-            upto += w
-            if upto >= r:
-                return value
-
-        return items[-1][0]
-
-    # Update get_pos_tags to use async version
-    async def get_pos_tags_async(self, text: str) -> List[Tuple[str, str]]:
-        """Async version of POS tagging"""
-        if not text:
-            return []
-        
-        try:
-            tokens = await asyncio.get_event_loop().run_in_executor(
-                self.nltk_executor, word_tokenize, text
-            )
-            nltk_tags = await asyncio.get_event_loop().run_in_executor(
-                self.nltk_executor, partial(pos_tag, tokens, tagset='universal')
-            )
-            
-            # Apply Hinglish overrides (synchronous part is fast)
-            final_tags = []
-            for word, tag in nltk_tags:
-                word_lower = word.lower()
-                
-                # Your existing Hinglish overrides...
-                if word_lower in ['mein', 'main', 'mujhe', 'tumhe']:
-                    final_tags.append((word, 'PRON'))
-                elif word_lower in ['nahi', 'na', 'mat']:
-                    final_tags.append((word, 'PART'))
-                elif word_lower in ['hai', 'hain', 'tha', 'thi']:
-                    final_tags.append((word, 'VERB'))
-                elif word_lower.endswith(('ka', 'ki', 'ke', 'ko')):
-                    final_tags.append((word, 'ADP'))
-                elif word_lower in ['acha', 'bura', 'sahi']:
-                    final_tags.append((word, 'ADJ'))
-                elif word_lower in ['kyu', 'kyun', 'kab']:
-                    final_tags.append((word, 'ADV'))
-                else:
-                    final_tags.append((word, tag))
-            
-            return final_tags
-        except Exception as e:
-            logger.error(f"Async POS tagging error: {e}")
-            return [(w, 'UNK') for w in text.split()]
-
-    def entropy(self, counts):
-        total = sum(counts)
-        return -sum((c/total) * math.log(c/total + 1e-9) for c in counts)
-
-
-    def update_global_topics(self, text: str):
-            """Update global topics that persist for hours (Long-Term Memory)"""
-            # Extract nouns/proper nouns
-            try:
-                pos_tags = self.get_pos_tags(text)
-                for word, tag in pos_tags:
-                    if tag in ['NOUN', 'PROPN'] and len(word) > 3:
-                        # Clean word
-                        w = word.lower()
-                        if w in self.stop_words: continue
-                        
-                        # Add or refresh topic
-                        # We use a timestamp to allow decay over time (e.g., 4 hours)
-                        self.global_topics[w] = datetime.utcnow().isoformat()
-            except:
-                pass
-                
-            # Cleanup old topics (> 4 hours)
-            now = datetime.utcnow()
-            to_remove = []
-            for topic, timestamp_str in self.global_topics.items():
-                ts = datetime.fromisoformat(timestamp_str)
-                if (now - ts).total_seconds() > 14400:  # 4 hours
-                    to_remove.append(topic)
-            
-            for t in to_remove:
-                del self.global_topics[t]
-            
-    @staticmethod
-    def regexp(expr, item):
-        """Static regex function for SQLite to avoid thread safety issues"""
-        try:
-            if item is None:
-                return False
-            reg = re.compile(expr, re.IGNORECASE)
-            return reg.search(str(item)) is not None
-        except Exception:
-            return False    
-            
-    async def generate_sentence(self, seed_word: Optional[str] = None, 
-                              context_message: Optional[str] = None) -> Optional[str]:
-        """Generate sentence with smart backoff, dynamic temperature, context awareness, entropy filtering, and caching."""
+    async def generate_sentence(self, seed_word: Optional[str] = None,context_message: Optional[str] = None) -> Optional[str]:
+        """Generate sentence for Hinglish"""
         if not await self.can_generate_reply():
             return None
         
-        # --- 1. MERGED TEMPERATURE LOGIC ---
-        # Base temperature on sentiment
-        temperature = 0.8
-        if self.conversation_sentiment > 0.4:
-            temperature = 1.1   # Energetic
-        elif self.conversation_sentiment < -0.3:
-            temperature = 0.6   # Safer/Calmer
-            
-        # Overwrite if context implies a question (needs precision)
-        if context_message and self.is_question(context_message):
-            temperature = 0.5
-        
         try:
-            async with self.get_db() as db: 
-                
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 db.row_factory = aiosqlite.Row
                 
                 # Get current context
                 current_sentiment = self.conversation_sentiment
                 topic_keywords = [kw for kw, _ in self.current_topic_keywords]
                 
-                # === 2. TIME-AWARE CONTEXT ===
-                adjusted_seed_word = self.get_time_based_seed(seed_word) if seed_word else None
+                # Get starting pair
+                start_pair = None
                 
-                # === 3. CONTEXT STICKINESS ===
-                recent_topics = []
-                if context_message:
-                    recent_topics = self.extract_recent_topics(context_message)
-                    self.update_topic_boost(recent_topics)
-                
-                # === ENHANCED HELPER FUNCTION WITH CACHING ===
-                async def fetch_rows(sql, params):
-                    async with db.execute(sql, params) as cursor:
-                        return await cursor.fetchall()
-                
-                # Helper function for smart backoff query with CACHING
-                async def query_next_words(w1: Optional[str] = None, 
-                                         w2: Optional[str] = None,
-                                         w3: Optional[str] = None) -> List[aiosqlite.Row]:
-                    """Query for next words using smart backoff strategy with caching."""
-                    queries = []
-                    
-                    # Try tri-gram first (most specific)
-                    if w1 and w2 and w3:
-                        sql = '''
-                            SELECT next_word, lemma_next, pos_next, count, word_type,
-                                sentiment_score, topic_weight FROM markov_chain 
-                            WHERE word_a = ? AND word_b = ? AND next_word = ?
-                        '''
-                        queries.append((sql, [w1, w2, w3]))
-                    
-                    # Try bi-gram (fallback)
-                    if w2 and w3:
-                        sql = '''
-                            SELECT next_word, lemma_next, pos_next, count, word_type,
-                                sentiment_score, topic_weight FROM markov_chain 
-                            WHERE word_a = ? AND word_b = ?
-                        '''
-                        queries.append((sql, [w2, w3]))
-                    
-                    # Try uni-gram with topic weighting (loosest)
-                    if w3:
-                        sql = '''
-                            SELECT next_word, lemma_next, pos_next, count, word_type,
-                                sentiment_score, topic_weight FROM markov_chain 
-                            WHERE word_b = ?
-                            ORDER BY (count * COALESCE(topic_weight, 1)) DESC
-                            LIMIT 20
-                        '''
-                        queries.append((sql, [w3]))
-                    
-                    # Execute queries in order with caching
-                    for sql, params in queries:
-                        # Use caching for database queries
-                        cache_key = f"query_next_{sql}_{'_'.join(str(p) for p in params)}"
-                        results = await self.get_cached_query(cache_key, fetch_rows, sql, params)
-                        if results:
-                            return results
-                    
-                    return []
-                
-                # Get starting sequence
-                start_sequence = None
-                
-                if adjusted_seed_word:
-                    # Try to find starting sequence with seed word
-                    sql = '''
-                        SELECT word_a, word_b, next_word, lemma_a, lemma_b, lemma_next,
-                            pos_a, pos_b, pos_next, count, sentiment_score, topic_weight 
-                        FROM markov_chain 
+                if seed_word and len(seed_word) >= self.SEED_WORD_MIN_LENGTH:
+                    # Try with seed word
+                    query = '''
+                        SELECT word_a, word_b, lemma_a, lemma_b, pos_a, pos_b, count, 
+                            sentiment_score, topic_weight FROM markov_chain 
                         WHERE (LOWER(word_a) = LOWER(?) OR LOWER(word_b) = LOWER(?))
                         AND word_type != 'emoji'
-                        ORDER BY (count * COALESCE(topic_weight, 1)) DESC
-                        LIMIT 5
                     '''
                     
-                    # Use caching for seed lookup
-                    cache_key = f"seed_{adjusted_seed_word}"
-                    candidates = await self.get_cached_query(cache_key, fetch_rows, sql, [adjusted_seed_word, adjusted_seed_word])
+                    if self.TOPIC_COHERENCE and topic_keywords:
+                        topic_condition = " OR ".join([f"word_a LIKE ? OR word_b LIKE ?" 
+                                                    for _ in topic_keywords])
+                        query += f" AND ({topic_condition})"
+                        params = [seed_word, seed_word]
+                        for kw in topic_keywords:
+                            params.extend([f"%{kw}%", f"%{kw}%"])
+                    else:
+                        params = [seed_word, seed_word]
                     
-                    if candidates:
-                        weights = []
-                        for row in candidates:
-                            weight = row['count']
-                            
-                            # Apply sentiment matching
-                            if self.SENTIMENT_MATCHING:
-                                sentiment_diff = abs(row['sentiment_score'] - current_sentiment)
-                                sentiment_factor = 1.0 - min(sentiment_diff, 1.0)
-                                weight *= sentiment_factor
-                            
-                            # Apply topic coherence
-                            if self.TOPIC_COHERENCE and row['topic_weight']:
-                                weight *= row['topic_weight']
-                            
-                            # Apply context stickiness boost
-                            for topic in recent_topics:
-                                if (topic in row['word_a'].lower() or 
-                                    topic in row['word_b'].lower() or
-                                    topic in row['next_word'].lower()):
-                                    weight *= self.get_topic_boost(topic)
-                            
-                            weights.append(weight)
+                    query += " ORDER BY (count * COALESCE(topic_weight, 1)) DESC LIMIT 10"
+                    
+                    async with db.execute(query, params) as cursor:
+                        candidates = await cursor.fetchall()
                         
-                        # Apply temperature to starting selection
-                        if sum(weights) > 0:
-                            scaled_weights = self.apply_dynamic_temperature(weights, temperature)
-                            start_sequence = secrets.choices(candidates, weights=scaled_weights)[0]
+                        if candidates:
+                            weights = []
+                            for row in candidates:
+                                weight = row['count']
+                                
+                                if self.SENTIMENT_MATCHING:
+                                    sentiment_diff = abs(row['sentiment_score'] - current_sentiment)
+                                    sentiment_factor = 1.0 - min(sentiment_diff, 1.0)
+                                    weight *= sentiment_factor
+                                
+                                if self.TOPIC_COHERENCE and row['topic_weight']:
+                                    weight *= row['topic_weight']
+                                
+                                weights.append(weight)
+                            
+                            if sum(weights) > 0:
+                                start_pair = random.choices(candidates, weights=weights)[0]
                 
-                if not start_sequence and context_message:
-                    # Extract context words for fallback
+                if not start_pair and context_message:
+                    # Extract meaningful words from context
                     clean_context = re.sub(r'[^\w\s@#:]', ' ', context_message)
                     words = clean_context.lower().split()
                     
                     context_words = [w for w in words 
-                                    if len(w) >= 2  # Shorter for Hinglish
-                                    and not w.startswith(('@', '#', ':'))
-                                    and w not in self.stop_words]
+                                if len(w) >= 3  # Reduced for Hindi
+                                and not w.startswith(('@', '#', ':'))
+                                and not re.match(r'^\d+$', w)
+                                and w not in self.stop_words]
                     
-                    for context_word in context_words[:3]:
-                        sql = '''
-                            SELECT word_a, word_b, next_word, lemma_a, lemma_b, lemma_next,
-                                pos_a, pos_b, pos_next, count, sentiment_score, topic_weight 
-                            FROM markov_chain 
+                    # Try context words
+                    for context_word in context_words[:5]:
+                        query = '''
+                            SELECT word_a, word_b, lemma_a, lemma_b, pos_a, pos_b, count,
+                                sentiment_score, topic_weight FROM markov_chain 
                             WHERE (LOWER(word_a) = LOWER(?) OR LOWER(word_b) = LOWER(?))
                             AND word_type != 'emoji'
-                            ORDER BY count DESC LIMIT 3
                         '''
                         
-                        cache_key = f"context_{context_word}"
-                        candidates = await self.get_cached_query(cache_key, fetch_rows, sql, [context_word, context_word])
-                        if candidates:
-                            start_sequence = secrets.choice(candidates)
-                            break
+                        if self.TOPIC_COHERENCE and topic_keywords:
+                            topic_condition = " OR ".join([f"word_a LIKE ? OR word_b LIKE ?" 
+                                                        for _ in topic_keywords])
+                            query += f" AND ({topic_condition})"
+                            params = [context_word, context_word]
+                            for kw in topic_keywords:
+                                params.extend([f"%{kw}%", f"%{kw}%"])
+                        else:
+                            params = [context_word, context_word]
+                        
+                        query += " ORDER BY count DESC LIMIT 5"
+                        
+                        async with db.execute(query, params) as cursor:
+                            candidates = await cursor.fetchall()
+                            if candidates:
+                                start_pair = random.choice(candidates)
+                                break
                 
-                if not start_sequence:
-                    # Fallback to random weighted by sentiment
-                    sql = '''
-                        SELECT word_a, word_b, next_word, lemma_a, lemma_b, lemma_next,
-                            pos_a, pos_b, pos_next, count, sentiment_score, topic_weight 
-                        FROM markov_chain 
+                if not start_pair:
+                    # Get random starting pair
+                    query = '''
+                        SELECT word_a, word_b, lemma_a, lemma_b, pos_a, pos_b, count,
+                            sentiment_score, topic_weight FROM markov_chain 
                         WHERE word_type != 'emoji'
                         AND LENGTH(word_a) > 1 AND LENGTH(word_b) > 1
-                        ORDER BY ABS(sentiment_score - ?) ASC, RANDOM()
-                        LIMIT 10
                     '''
                     
-                    cache_key = f"random_fallback_{current_sentiment}"
-                    candidates = await self.get_cached_query(cache_key, fetch_rows, sql, [current_sentiment])
-                    if candidates:
-                        weights = [row['count'] for row in candidates]
-                        if sum(weights) > 0:
-                            start_sequence = random.choices(candidates, weights=weights)[0]
+                    params = []
+                    if self.SENTIMENT_MATCHING:
+                        query += " ORDER BY ABS(sentiment_score - ?) ASC, RANDOM()"
+                        params.append(current_sentiment)
+                    else:
+                        query += " ORDER BY RANDOM()"
+                    
+                    query += " LIMIT 10"
+                    
+                    async with db.execute(query, params) as cursor:
+                        candidates = await cursor.fetchall()
+                        if candidates:
+                            weights = [row['count'] for row in candidates]
+                            if sum(weights) > 0:
+                                start_pair = random.choices(candidates, weights=weights)[0]
                 
-                if not start_sequence:
+                if not start_pair:
                     return None
                 
-                # Start building sentence
-                sentence_words = [start_sequence['word_a'], start_sequence['word_b'], start_sequence['next_word']]
-                sentence_pos = [start_sequence['pos_a'], start_sequence['pos_b'], start_sequence['pos_next']]
-                
-                # SMART BACKOFF LOOP WITH ENTROPY FILTERING
+                # Build sentence
+                sentence_words = [start_pair['word_a'], start_pair['word_b']]
+                sentence_pos = [start_pair['pos_a'], start_pair['pos_b']]
                 emoji_count = 0
                 max_attempts = self.SENTENCE_MAX_WORDS * 3
                 
@@ -1872,37 +1483,55 @@ class EnhancedMarkovCog(commands.Cog):
                     if len(sentence_words) >= self.SENTENCE_MAX_WORDS:
                         break
                     
-                    # Get the last 3 words for backoff
-                    w1 = sentence_words[-3] if len(sentence_words) >= 3 else None
-                    w2 = sentence_words[-2] if len(sentence_words) >= 2 else None
-                    w3 = sentence_words[-1]
-                    pos3 = sentence_pos[-1]
+                    w1, w2 = sentence_words[-2], sentence_words[-1]
+                    pos2 = sentence_pos[-1]
                     
-                    # Get next word options using smart backoff with caching
-                    options = await query_next_words(w1, w2, w3)
+                    # Get next word options
+                    query = '''
+                        SELECT next_word, lemma_next, pos_next, count, word_type,
+                            sentiment_score, topic_weight FROM markov_chain 
+                        WHERE word_a = ? AND word_b = ?
+                    '''
+                    
+                    params = [w1, w2]
+                    
+                    if self.GRAMMAR_ENFORCEMENT:
+                        allowed_pos = self.POS_TRANSITION_RULES.get(pos2, [])
+                        if allowed_pos:
+                            placeholders = ','.join(['?'] * len(allowed_pos))
+                            query += f" AND pos_next IN ({placeholders})"
+                            params.extend(allowed_pos)
+                    
+                    query += " ORDER BY (count * COALESCE(topic_weight, 1)) DESC LIMIT 15"
+                    
+                    async with db.execute(query, params) as cursor:
+                        options = await cursor.fetchall()
+                    
+                    if not options:
+                        # Fallback
+                        query = '''
+                            SELECT next_word, lemma_next, pos_next, count, word_type,
+                                sentiment_score, topic_weight FROM markov_chain 
+                            WHERE word_b = ?
+                        '''
+                        params = [w2]
+                        
+                        if self.GRAMMAR_ENFORCEMENT and allowed_pos:
+                            placeholders = ','.join(['?'] * len(allowed_pos))
+                            query += f" AND pos_next IN ({placeholders})"
+                            params.extend(allowed_pos)
+                        
+                        query += " ORDER BY count DESC LIMIT 10"
+                        
+                        async with db.execute(query, params) as cursor:
+                            options = await cursor.fetchall()
                     
                     if not options:
                         break
                     
-                    # === ENTROPY-BASED TEMPERATURE ADJUSTMENT ===
-                    counts = [row['count'] for row in options]
-                    current_entropy = self.entropy(counts)
-                    
-                    # Adjust temperature based on entropy
-                    # Low entropy = one word dominating = risk of loop = INCREASE TEMP
-                    if current_entropy < 0.5: 
-                        temp_modifier = 1.5
-                    # High entropy = confusing options = risk of nonsense = DECREASE TEMP
-                    elif current_entropy > 2.5:
-                        temp_modifier = 0.7
-                    else:
-                        temp_modifier = 1.0
-                        
-                    adjusted_temp = temperature * temp_modifier
-                    
                     # Filter and weight options
                     filtered_options = []
-                    base_weights = []
+                    weights = []
                     
                     for option in options:
                         word_type = option['word_type']
@@ -1920,66 +1549,52 @@ class EnhancedMarkovCog(commands.Cog):
                         
                         weight = option['count']
                         
-                        # Apply sentiment matching
                         if self.SENTIMENT_MATCHING:
                             sentiment_diff = abs(option['sentiment_score'] - current_sentiment)
                             sentiment_factor = 1.0 - min(sentiment_diff, 1.0)
                             weight *= sentiment_factor
                         
-                        # Apply topic coherence
                         if self.TOPIC_COHERENCE and option['topic_weight']:
                             weight *= option['topic_weight']
                         
-                        # Apply context stickiness boost
-                        for topic in recent_topics:
-                            if topic in next_word.lower():
-                                weight *= self.get_topic_boost(topic)
-                            if next_word.lower() in self.global_topics:
-                                weight *= 1.2
-                        
-                        # Apply grammar rules if enabled
                         if self.GRAMMAR_ENFORCEMENT:
-                            if not self.is_valid_pos_transition(pos3, next_pos):
+                            if not self.is_valid_pos_transition(pos2, next_pos):
                                 weight *= 0.5
                         
                         filtered_options.append(option)
-                        base_weights.append(weight)
+                        weights.append(weight)
                     
                     if not filtered_options:
-                        break
+                        filtered_options = options[:3]
+                        weights = [opt['count'] for opt in filtered_options]
                     
-                    # Apply dynamic temperature to weights (with entropy adjustment)
-                    if sum(base_weights) > 0:
-                        final_weights = self.apply_dynamic_temperature(base_weights, adjusted_temp)
-                        next_choice = secrets.choices(filtered_options, weights=final_weights)[0]
+                    # Weighted random selection
+                    if sum(weights) == 0:
+                        next_choice = random.choice(filtered_options)
                     else:
-                        next_choice = secrets.choice(filtered_options)
+                        next_choice = random.choices(filtered_options, weights=weights)[0]
                     
-                    # Track emojis
                     if next_choice['word_type'] == 'emoji':
                         emoji_count += 1
                     
-                    # Add to sentence
                     sentence_words.append(next_choice['next_word'])
                     sentence_pos.append(next_choice['pos_next'])
                     
-                    # Natural stopping conditions
-                    last_word = next_choice['next_word']
-                    
-                    # End on punctuation
-                    if last_word.endswith(('.', '!', '?')):
-                        if len(sentence_words) >= 5 and secrets.SystemRandom().random() < 0.7:
+                    # Check for natural ending (punctuation)
+                    if next_choice['next_word'].endswith(('.', '!', '?')):
+                        if len(sentence_words) >= 5 and random.random() < 0.6:
                             break
-                    
-                    # End on emoji with decent length
+                    # Also check if next word is an emoji and consider ending there
                     elif next_choice['word_type'] == 'emoji':
-                        if len(sentence_words) >= 4 and secrets.SystemRandom().random() < 0.4:
+                        # If we have a decent length and last word is emoji, maybe end
+                        if len(sentence_words) >= 4 and random.random() < 0.3:
                             break
                     
-                    # Length-based stopping with temperature influence
-                    # Higher temperature = longer sentences (more creative)
-                    min_length_for_stop = max(5, int(8 * adjusted_temp))
-                    if len(sentence_words) >= min_length_for_stop and secrets.SystemRandom().random() < 0.3:
+                    # Length-based stopping
+                    if len(sentence_words) >= 8 and random.random() < 0.3:
+                        break
+                    
+                    if len(sentence_words) >= self.SENTENCE_MAX_WORDS:
                         break
                 
                 # Convert to readable text
@@ -1989,12 +1604,14 @@ class EnhancedMarkovCog(commands.Cog):
                     if word.startswith(':emoji_'):
                         emoji_name = word[7:-1] if word.endswith(':') else word[7:]
                         try:
+                            # Unicode emojis: Add a trailing space inside the token
                             emoji_char = emoji.emojize(f":{emoji_name}:", language='alias')
                             readable_sentence.append(emoji_char)
                         except:
                             readable_sentence.append(f":{emoji_name}:")
                     
                     elif word.startswith('<:') and word.endswith('>'):
+                        # This is our stored custom emoji tag - KEEP AS-IS
                         readable_sentence.append(word)
                     
                     elif word.startswith('@USER_'):
@@ -2006,22 +1623,27 @@ class EnhancedMarkovCog(commands.Cog):
                             word = word[0].upper() + word[1:]
                         readable_sentence.append(word)
                 
-                # Assemble final sentence
+                # Assemble final sentence with FORCED space after emojis
                 result = ''
                 for i, token in enumerate(readable_sentence):
                     if i == 0:
                         result = token
                     else:
                         prev_token = readable_sentence[i-1]
+                        
+                        # Determine if previous token was an emoji
+                        # Checks for Discord tags <:name:id> or Unicode emojis
                         is_prev_emoji = (
                             (prev_token.startswith('<:') and prev_token.endswith('>')) or
                             any(char in emoji.EMOJI_DATA for char in prev_token)
                         )
-                        
+
                         if is_prev_emoji:
+                            # ALWAYS add space after emoji
                             result += ' ' + token
                         elif token in ['.', ',', '!', '?', ':', ';']:
-                            result += token
+                            # Keep punctuation attached to normal words
+                            result += token 
                         else:
                             result += ' ' + token
                 
@@ -2029,53 +1651,73 @@ class EnhancedMarkovCog(commands.Cog):
                 result = re.sub(r'\s+', ' ', result).strip()
                 result = re.sub(r'(<@\d+>|:[a-zA-Z0-9_]+:)([a-zA-Z])', r'\1 \2', result)
                 
-                # Capitalize first letter
                 if result and result[0].islower():
                     result = result[0].upper() + result[1:]
                 
-                # Add appropriate punctuation
-                if result and not result[-1] in '.!?;':
-                    # Check for question patterns
-                    last_words = result.lower().split()[-2:]
-                    question_detected = any(
-                        word in last_words for word in 
-                        ['what', 'why', 'how', 'when', 'who', 'where', 'which',
-                         'kya', 'kaise', 'kyun', 'kab', 'kahan', 'kaun']
-                    )
+                # Helper function to check if text ends with emoji
+                def ends_with_emoji(text: str) -> bool:
+                    """Check if text ends with an emoji"""
+                    if not text:
+                        return False
                     
-                    if question_detected:
+                    text = text.strip()
+                    
+                    # Check for Discord emoji at the end
+                    if text.endswith('>'):
+                        discord_match = re.search(r'<a?:[\w]+:\d+>$', text)
+                        if discord_match:
+                            return True
+                    
+                    # Check for Unicode emoji at the end
+                    if text:
+                        last_char = text[-1]
+                        if last_char in emoji.EMOJI_DATA:
+                            return True
+                    
+                    return False
+                
+                # Add punctuation (but NOT if message ends with an emoji)
+                if result and not result[-1] in '.!?;' and not ends_with_emoji(result):
+                    last_words = result.lower().split()[-2:]
+                    
+                    question_words = ['what', 'why', 'how', 'when', 'who', 'where', 'which', 'whose',
+                                    'kya', 'kaise', 'kyun', 'kab', 'kahan', 'kaun']  # Hindi question words
+                    
+                    if any(word in last_words for word in question_words):
                         result += '?'
-                    elif current_sentiment > 0.3 or any(word in last_words for word in 
-                                                      ['wow', 'awesome', 'acha', 'badhiya', 'mast']):
+                    elif (any(word in last_words for word in ['wow', 'awesome', 'amazing', 'great', 'yes',
+                                                            'acha', 'badhiya', 'mast', 'nice', 'good', 'sahi']) or
+                        current_sentiment > 0.3):
                         result += '!'
                     else:
                         result += '.'
                 
                 # Final validation
                 words_in_result = result.split()
-                if len(words_in_result) < 2:  # Allow shorter responses with emojis
-                    emoji_in_result = any(
-                        (word.startswith('<:') and word.endswith('>')) or 
-                        (word in emoji.EMOJI_DATA)
-                        for word in words_in_result
-                    )
-                    if not emoji_in_result:
+                if len(words_in_result) < 3:
+                    # Check if it has emojis - emoji-only messages can be shorter
+                    emoji_count = 0
+                    for word in words_in_result:
+                        if (word.startswith('<:') and word.endswith('>')) or (word in emoji.EMOJI_DATA):
+                            emoji_count += 1
+                    
+                    # Allow messages with emojis to be shorter
+                    if emoji_count == 0:
+                        return None
+                    elif len(words_in_result) < 2:  # At least 2 items if mostly emojis
                         return None
                 
-                # === APPLY HUMANIZATION ===
-                result = self.humanize_response(result, current_sentiment)
-                
-                # Final clean punctuation
                 result = re.sub(r'(?<![:>])\s+([.!?,;])', r'\1', result)
                 
                 return result
                 
         except Exception as e:
-            logger.error(f"Enhanced generation error: {e}")
+            logger.error(f"Generation error: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return None
-        
+
+
     async def can_generate_reply(self):
         """Check if we have enough data"""
         return self.stats['total_triplets'] >= self.MIN_TRIPLETS_FOR_REPLY
@@ -2107,10 +1749,6 @@ class EnhancedMarkovCog(commands.Cog):
                 pass
         
         should_reply = is_mentioned or is_reply_to_me
-        
-        if message.channel.id in self.muted_channels and not should_reply:
-            return
-        
         chance = 1.0 if should_reply else self.REPLY_CHANCE
         
         # Check rate limits BEFORE generating reply
@@ -2135,7 +1773,7 @@ class EnhancedMarkovCog(commands.Cog):
                 return
         
         # Determine if we should reply
-        if secrets.SystemRandom().random() < chance or should_reply:
+        if random.random() < chance or should_reply:
             if not await self.can_generate_reply():
                 if should_reply:
                     async with message.channel.typing():
@@ -2153,8 +1791,7 @@ class EnhancedMarkovCog(commands.Cog):
             
             if reply:
                 async with message.channel.typing():
-                    secure_gen = secrets.SystemRandom()
-                    thinking_time = secure_gen.uniform(self.TYPING_MIN_SECONDS, self.TYPING_MAX_SECONDS)
+                    thinking_time = random.uniform(self.TYPING_MIN_SECONDS, self.TYPING_MAX_SECONDS)
                     await asyncio.sleep(thinking_time)
                     try:
                         await message.channel.send(
@@ -2170,8 +1807,8 @@ class EnhancedMarkovCog(commands.Cog):
                         self.save_state()
                         
                         # Log bot reply
-                        async with self.get_db() as db: 
-                            
+                        async with aiosqlite.connect(self.db_path) as db:
+                            await db.create_function("REGEXP", 2, self.regexp)
                             await db.execute('''
                                 INSERT INTO message_log (content, author_id, channel_id, timestamp, is_bot_reply)
                                 VALUES (?, ?, ?, ?, 1)
@@ -2197,24 +1834,14 @@ class EnhancedMarkovCog(commands.Cog):
                 async with message.channel.typing():
                     await asyncio.sleep(0.5)
                     await message.channel.send(
-                        secrets.choice(fallbacks),
+                        random.choice(fallbacks),
                         reference=message,
                         mention_author=False
                     )
                     self.record_bot_message(message.channel.id)
 
-
-    def _connect(self):
-        """Helper to create a configured connection"""
-        # Ensure directory exists before every connection attempt
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        return aiosqlite.connect(self.db_path, timeout=10)
-    
-    
     async def buffer_message(self, message):
         """Buffer message for processing"""
-        if not self.db_initialized:
-            return
         try:
             # Count Unicode emojis
             emoji_list = list(emoji.emoji_list(message.content))
@@ -2228,8 +1855,8 @@ class EnhancedMarkovCog(commands.Cog):
                 emoji_count = self.MAX_EMOJIS_PER_MESSAGE
             
             # Save to database
-            async with self.get_db() as db: 
-                
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 await db.execute('''
                     INSERT INTO message_log (content, author_id, channel_id, timestamp, emoji_count)
                     VALUES (?, ?, ?, ?, ?)
@@ -2285,8 +1912,8 @@ class EnhancedMarkovCog(commands.Cog):
     async def cleanup_old_data(self):
         """Clean up old data periodically"""
         try:
-            async with self.get_db() as db: 
-                
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 # 1. Perform deletions first
                 cutoff_date = (datetime.utcnow() - timedelta(days=self.RAW_MESSAGE_RETENTION_DAYS)).isoformat()
                 await db.execute('DELETE FROM message_log WHERE timestamp < ?', (cutoff_date,))
@@ -2296,8 +1923,8 @@ class EnhancedMarkovCog(commands.Cog):
                 await db.commit() # End the transaction here
 
             # 2. VACUUM must happen on a "fresh" connection outside a transaction
-            async with self.get_db() as db: 
-                
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 await db.execute('PRAGMA vacuum;') # Use PRAGMA for explicit control
                 logger.info("Database VACUUM completed successfully.")
                 
@@ -2307,8 +1934,8 @@ class EnhancedMarkovCog(commands.Cog):
     async def update_stats(self):
         """Update statistics from database"""
         try:
-            async with self.get_db() as db: 
-                
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 async with db.execute("SELECT COUNT(*) FROM markov_chain") as cursor:
                     result = await cursor.fetchone()
                     self.stats['total_triplets'] = result[0] if result else 0
@@ -2337,9 +1964,9 @@ class EnhancedMarkovCog(commands.Cog):
     async def hinglish_stats(self, ctx):
         """Show Hinglish-specific statistics with fixed Regex"""
         try:
-            async with self.get_db() as db: 
+            async with aiosqlite.connect(self.db_path) as db:
                 # Register the regex function for this connection
-                
+                await db.create_function("REGEXP", 2, self.regexp)
                 db.row_factory = aiosqlite.Row
                 
                 # Hindi Regex: Matches Devanagari characters
@@ -2413,8 +2040,8 @@ class EnhancedMarkovCog(commands.Cog):
     async def brain_stats(self, ctx):
         """Show enhanced statistics with NLP info"""
         try:
-            async with self.get_db() as db: 
-                
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 db.row_factory = aiosqlite.Row
                 
                 # Get comprehensive stats
@@ -2626,8 +2253,8 @@ class EnhancedMarkovCog(commands.Cog):
     async def emoji_stats(self, ctx):
         """Show emoji usage statistics"""
         try:
-            async with self.get_db() as db: 
-                
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 db.row_factory = aiosqlite.Row
                 
                 # Get emoji stats - UPDATED QUERY
@@ -2713,8 +2340,8 @@ class EnhancedMarkovCog(commands.Cog):
     async def export_brain(self, ctx):
         """Export brain data"""
         try:
-            async with self.get_db() as db: 
-                
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 async with db.execute("""
                     SELECT word_a, word_b, next_word, count 
                     FROM markov_chain 
@@ -2800,155 +2427,6 @@ class EnhancedMarkovCog(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ Health check failed: {e}")
 
-# --- NEW INGEST COMMAND ---
-    @commands.command(name="ingest")
-    @commands.has_permissions(administrator=True)
-    async def ingest_file(self, ctx):
-        """
-        Ingest a .txt file attached to the command to train the bot.
-        Provides live progress updates via Embed.
-        """
-        # 1. Validation
-        if not ctx.message.attachments:
-            await ctx.send("❌ Please attach a .txt file to ingest!")
-            return
-
-        attachment = ctx.message.attachments[0]
-        if not attachment.filename.endswith('.txt'):
-            await ctx.send("❌ Only .txt files are supported.")
-            return
-
-        # 2. Setup Dashboard
-        start_time = datetime.utcnow()
-        status_embed = discord.Embed(
-            title="📥 Data Ingestion Initialized",
-            description="Reading file...",
-            color=discord.Color.blue()
-        )
-        status_embed.add_field(name="File", value=attachment.filename, inline=True)
-        status_embed.add_field(name="Status", value="⬇️ Downloading...", inline=True)
-        
-        status_msg = await ctx.send(embed=status_embed)
-
-        try:
-            # 3. Read File
-            file_bytes = await attachment.read()
-            try:
-                # Attempt UTF-8 first, fallback to latin-1 if it fails
-                content = file_bytes.decode('utf-8')
-            except UnicodeDecodeError:
-                content = file_bytes.decode('latin-1')
-
-            lines = [line.strip() for line in content.split('\n') if line.strip()]
-            total_lines = len(lines)
-            
-            if total_lines == 0:
-                await status_msg.edit(content="❌ File is empty.")
-                return
-
-            # 4. Processing Loop
-            triplets_added = 0
-            processed_lines = 0
-            errors = 0
-            
-            # Update frequency (don't edit embed too often to avoid rate limits)
-            UPDATE_INTERVAL = 25  # Update every 25 lines
-            last_update_time = time.time()
-
-            # Initial update before loop
-            status_embed.title = "🧠 Ingesting Knowledge..."
-            status_embed.color = discord.Color.orange()
-            status_embed.set_field_at(1, name="Status", value="⚙️ Processing...", inline=True)
-            status_embed.add_field(name="Progress", value="0%", inline=False)
-            await status_msg.edit(embed=status_embed)
-
-            for line in lines:
-                # Sanitize and Train
-                # We pass ctx.message so it uses the current channel/guild context for emojis
-                try:
-                    # Calculate approximate emoji count (simple scan)
-                    emoji_count = len(list(emoji.emoji_list(line))) + len(re.findall(r'<a?:(\w+):\d+>', line))
-                    
-                    # Train
-                    new_triplets = await self.train_on_message(
-                        content=line, 
-                        author_id=ctx.author.id, 
-                        emoji_count=emoji_count,
-                        message=ctx.message
-                    )
-                    
-                    if new_triplets > 0:
-                        triplets_added += new_triplets
-                    
-                    processed_lines += 1
-
-                except Exception as e:
-                    errors += 1
-                    logger.error(f"Ingest error on line: {line[:20]}... : {e}")
-
-                # Live Update Logic
-                current_time = time.time()
-                if processed_lines % UPDATE_INTERVAL == 0 or (current_time - last_update_time) > 2.0:
-                    last_update_time = current_time
-                    
-                    # Calculate Progress
-                    percent = (processed_lines / total_lines) * 100
-                    bar_length = 20
-                    filled_length = int(bar_length * processed_lines // total_lines)
-                    bar = "█" * filled_length + "░" * (bar_length - filled_length)
-                    
-                    # Calculate ETR
-                    elapsed = (datetime.utcnow() - start_time).total_seconds()
-                    rate = processed_lines / elapsed if elapsed > 0 else 0
-                    etr = (total_lines - processed_lines) / rate if rate > 0 else 0
-                    
-                    status_embed.description = f"**{attachment.filename}**"
-                    status_embed.set_field_at(1, name="Status", value=f"Processing {processed_lines}/{total_lines}", inline=True)
-                    
-                    # Update Progress Field
-                    status_embed.set_field_at(2, name="Progress", value=f"`{bar}` {percent:.1f}%", inline=False)
-                    
-                    # Add/Update Stats Field
-                    stats_text = (f"Learned: **{triplets_added}** triplets\n"
-                                  f"Rate: **{rate:.1f}** lines/s\n"
-                                  f"ETR: **{int(etr)}s**")
-                    
-                    # Check if stats field exists (index 3), if not add it, else update it
-                    if len(status_embed.fields) < 4:
-                        status_embed.add_field(name="Statistics", value=stats_text, inline=False)
-                    else:
-                        status_embed.set_field_at(3, name="Statistics", value=stats_text, inline=False)
-
-                    await status_msg.edit(embed=status_embed)
-                    
-                    # Yield control to event loop to prevent bot freezing
-                    await asyncio.sleep(0.01)
-
-            # 5. Final Success Message
-            total_time = (datetime.utcnow() - start_time).total_seconds()
-            
-            final_embed = discord.Embed(
-                title="✅ Ingestion Complete",
-                description=f"Successfully processed **{attachment.filename}**",
-                color=discord.Color.green(),
-                timestamp=datetime.utcnow()
-            )
-            final_embed.add_field(name="Lines Processed", value=f"{processed_lines:,}", inline=True)
-            final_embed.add_field(name="Triplets Learned", value=f"{triplets_added:,}", inline=True)
-            final_embed.add_field(name="Time Taken", value=f"{total_time:.2f}s", inline=True)
-            
-            if errors > 0:
-                final_embed.set_footer(text=f"Completed with {errors} errors (checked logs)")
-            
-            await status_msg.edit(embed=final_embed)
-            
-            # Force save the state
-            self.save_state()
-
-        except Exception as e:
-            logger.error(f"Critical Ingest Error: {e}")
-            await status_msg.edit(content=f"❌ Critical Error: {str(e)[:100]}")
-
     @commands.command(name="forcelearn")
     @commands.has_permissions(administrator=True)
     async def force_learn(self, ctx, limit: int = 100):
@@ -2959,8 +2437,8 @@ class EnhancedMarkovCog(commands.Cog):
         await ctx.send(f"⏳ Learning from last {limit} messages...")
         
         try:
-            async with self.get_db() as db: 
-                
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 async with db.execute('''
                     SELECT content, author_id FROM message_log 
                     WHERE processed = 0 
@@ -2983,127 +2461,6 @@ class EnhancedMarkovCog(commands.Cog):
         except Exception as e:
             logger.error(f"Force learn error: {e}")
             await ctx.send(f"❌ Error: {e}")
-            
-            
-    @commands.command(name="ingest")
-    @commands.has_permissions(administrator=True)
-    async def ingest_file(self, ctx):
-        """Upload a .txt file to train the bot with a live progress bar"""
-        if not ctx.message.attachments:
-            await ctx.send("❌ Please upload a `.txt` file with the command.")
-            return
 
-        attachment = ctx.message.attachments[0]
-        if not attachment.filename.endswith('.txt'):
-            await ctx.send("❌ File must be a text file.")
-            return
-
-        # Send initial message
-        status_msg = await ctx.send("⏳ **Downloading and preparing file...**")
-        
-        try:
-            # 1. Read and Prep Data
-            content = await attachment.read()
-            text_data = content.decode('utf-8', errors='ignore')
-            
-            # Pre-filter lines to get accurate total count for the progress bar
-            raw_lines = text_data.split('\n')
-            lines_to_process = [line.strip() for line in raw_lines if len(line.strip()) >= 5]
-            total_lines = len(lines_to_process)
-
-            if total_lines == 0:
-                await status_msg.edit(content="❌ File was empty or contained no valid lines (>5 chars).")
-                return
-
-            # 2. Create Initial Embed
-            embed = discord.Embed(
-                title="📥 Ingesting Knowledge",
-                description=f"Processing **{attachment.filename}**...",
-                color=discord.Color.blue()
-            )
-            embed.add_field(name="Progress", value="0%", inline=True)
-            embed.add_field(name="Lines", value=f"0 / {total_lines}", inline=True)
-            embed.add_field(name="Status", value="Starting...", inline=False)
-            embed.set_footer(text="Please do not restart the bot.")
-            
-            await status_msg.edit(content=None, embed=embed)
-
-            # 3. Processing Loop
-            count = 0
-            start_time = time.time()
-            last_update_time = start_time
-            
-            # We use a copy of the list to iterate
-            for line in lines_to_process:
-                # Train
-                await self.train_on_message(line, self.bot.user.id)
-                count += 1
-                
-                # Update status every 50 lines OR every 5 seconds (to avoid rate limits)
-                current_time = time.time()
-                if count % 50 == 0 and (current_time - last_update_time) > 4.0:
-                    # Calculate percentage
-                    percent = int((count / total_lines) * 100)
-                    
-                    # Create progress bar (e.g., [████░░░░░░])
-                    bar_length = 10
-                    filled_length = int(bar_length * count // total_lines)
-                    bar = "█" * filled_length + "░" * (bar_length - filled_length)
-                    
-                    # Update Embed
-                    embed.color = discord.Color.orange()
-                    embed.set_field_at(0, name="Progress", value=f"**{percent}%**", inline=True)
-                    embed.set_field_at(1, name="Lines", value=f"{count} / {total_lines}", inline=True)
-                    embed.set_field_at(2, name="Status", value=f"[`{bar}`] Processing...", inline=False)
-                    
-                    await status_msg.edit(embed=embed)
-                    last_update_time = current_time
-                    
-                    # Yield to event loop to keep bot responsive
-                    await asyncio.sleep(0)
-
-            # 4. Final Success Update
-            self.save_state()
-            elapsed = time.time() - start_time
-            
-            embed.color = discord.Color.green()
-            embed.title = "✅ Ingestion Complete"
-            embed.description = f"Finished processing **{attachment.filename}** in {elapsed:.1f}s"
-            
-            embed.set_field_at(0, name="Progress", value="**100%**", inline=True)
-            embed.set_field_at(1, name="Lines", value=f"{total_lines} / {total_lines}", inline=True)
-            embed.set_field_at(2, name="Status", value="[`██████████`] Done", inline=False)
-            
-            await status_msg.edit(embed=embed)
-            
-        except Exception as e:
-            logger.error(f"Ingest error: {e}")
-            await status_msg.edit(content=f"❌ **Error processing file:**\n`{str(e)[:100]}`", embed=None)
-
-
-    @commands.command(name="toggle")
-    @commands.has_permissions(manage_messages=True)
-    async def toggle_speech(self, ctx):
-        """
-        Toggle whether the bot speaks in this channel.
-        It will ALWAYS listen and learn, even if muted.
-        """
-        channel_id = ctx.channel.id
-        
-        if channel_id in self.muted_channels:
-            self.muted_channels.remove(channel_id)
-            embed = discord.Embed(
-                description="🔊 **I will now speak freely in this channel.**",
-                color=discord.Color.green()
-            )
-        else:
-            self.muted_channels.add(channel_id)
-            embed = discord.Embed(
-                description="🤐 **I will stay quiet here.**\n*(I am still listening and learning from messages)*",
-                color=discord.Color.orange()
-            )
-            
-        self.save_state()
-        await ctx.send(embed=embed)
 async def setup(bot):
     await bot.add_cog(EnhancedMarkovCog(bot))
