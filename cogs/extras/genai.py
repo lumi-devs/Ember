@@ -46,7 +46,34 @@ class EnhancedMarkovCog(commands.Cog):
         self.state_file = "./genai/bot_state.json"
         self.stop_words = set(stopwords.words('english'))
         
-        # Load saved state on startup
+        # INITIALIZATION FLAGS - MUST BE DEFINED BEFORE load_state()
+        self.db_initialized = False
+        self.user_cache = {}
+        self.user_id_map = {}
+        
+        # Initialize stats FIRST
+        self.stats = {
+            'messages_processed': 0,
+            'triplets_stored_today': 0,
+            'replies_generated': 0,
+            'last_flush': datetime.utcnow().isoformat(),
+            'total_triplets': 0,
+            'total_messages': 0,
+            'startup_time': datetime.utcnow().isoformat(),
+            'unique_users': 0,
+            'emojis_learned': 0,
+            'rate_limited': 0,
+            'spam_blocked': 0
+        }
+        
+        # Initialize other tracking dictionaries
+        self.message_timestamps = {}
+        self.last_bot_message = {}
+        self.reply_cooldowns = {}
+        self.message_buffer = deque(maxlen=1000)
+        self.recent_messages = deque(maxlen=5000)
+        
+        # NOW load saved state (which will update stats if they exist)
         self.load_state()
         
         # Enhanced limits with emoji control
@@ -58,10 +85,6 @@ class EnhancedMarkovCog(commands.Cog):
         self.MAX_MESSAGES_PER_MINUTE = 80  # Max 3 messages per minute per channel
         self.SPAM_BURST_WINDOW = 10       # Time window for burst detection (seconds)
         self.SPAM_BURST_LIMIT = 2         # Max messages in burst window
-        
-        # Rate limiting tracking
-        self.message_timestamps = {}  # channel_id -> deque of timestamps
-        self.last_bot_message = {}    # channel_id -> last message time
         
         # Limits optimized for high traffic (17k/day)
         self.MAX_RAW_MESSAGES = 2_000_000
@@ -82,35 +105,6 @@ class EnhancedMarkovCog(commands.Cog):
         # Emoji reply control
         self.MAX_REPLY_EMOJIS = 2
         self.EMOJI_REPLY_CHANCE = 0.1  # 10% chance to include emoji in reply
-        
-        # Persistent buffers
-        self.message_buffer = deque(maxlen=1000)
-        self.recent_messages = deque(maxlen=5000)
-        
-        
-        
-        self.db_initialized = False
-        self.user_cache = {}  # ADD THIS
-        self.user_id_map = {}  # ADD THIS
-        
-        
-        # Cooldown tracking
-        self.reply_cooldowns = {}
-        
-        # Statistics
-        self.stats = {
-            'messages_processed': 0,
-            'triplets_stored_today': 0,
-            'replies_generated': 0,
-            'last_flush': datetime.utcnow().isoformat(),
-            'total_triplets': 0,
-            'total_messages': 0,
-            'startup_time': datetime.utcnow().isoformat(),
-            'unique_users': 0,
-            'emojis_learned': 0,
-            'rate_limited': 0,
-            'spam_blocked': 0
-        }
         
         self.FLUSH_THRESHOLD = 50
         
@@ -158,37 +152,59 @@ class EnhancedMarkovCog(commands.Cog):
                     triplets.append((word_a, word_b, word_c))
         
         return triplets
+    
+    
     def load_state(self):
         """Load bot state from file to survive restarts"""
         try:
             if os.path.exists(self.state_file):
                 with open(self.state_file, 'r') as f:
                     state = json.load(f)
+                    
+                # Safely load cooldowns
+                if 'reply_cooldowns' in state:
                     self.reply_cooldowns = {
                         int(k): datetime.fromisoformat(v) 
                         for k, v in state.get('reply_cooldowns', {}).items()
                     }
-                    if 'stats' in state:
-                        self.stats.update(state['stats'])
-                    logger.info(f"Loaded state with {len(self.reply_cooldowns)} cooldowns")
+                
+                # Safely update stats if they exist in state
+                if 'stats' in state:
+                    for key, value in state['stats'].items():
+                        if key in self.stats:
+                            self.stats[key] = value
+                
+                logger.info(f"Loaded state with {len(self.reply_cooldowns)} cooldowns")
+                
         except Exception as e:
             logger.error(f"Failed to load state: {e}")
+            # Don't fail completely, just log the error
 
-    def save_state(self):
-        """Save bot state to file"""
+    def load_state(self):
+        """Load bot state from file to survive restarts"""
         try:
-            state = {
-                'reply_cooldowns': {
-                    str(k): v.isoformat() 
-                    for k, v in self.reply_cooldowns.items()
-                },
-                'stats': self.stats,
-                'saved_at': datetime.utcnow().isoformat()
-            }
-            with open(self.state_file, 'w') as f:
-                json.dump(state, f, indent=2)
+            if os.path.exists(self.state_file):
+                with open(self.state_file, 'r') as f:
+                    state = json.load(f)
+                    
+                # Safely load cooldowns
+                if 'reply_cooldowns' in state:
+                    self.reply_cooldowns = {
+                        int(k): datetime.fromisoformat(v) 
+                        for k, v in state.get('reply_cooldowns', {}).items()
+                    }
+                
+                # Safely update stats if they exist in state
+                if 'stats' in state:
+                    for key, value in state['stats'].items():
+                        if key in self.stats:
+                            self.stats[key] = value
+                
+                logger.info(f"Loaded state with {len(self.reply_cooldowns)} cooldowns")
+                
         except Exception as e:
-            logger.error(f"Failed to save state: {e}")
+            logger.error(f"Failed to load state: {e}")
+            # Don't fail completely, just log the error
 
     async def initialize_database(self):
         """Initialize database with connection pool"""
