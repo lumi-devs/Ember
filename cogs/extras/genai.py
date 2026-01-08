@@ -49,7 +49,7 @@ class OptimizedMarkovCog(commands.Cog):
         self.TYPING_MAX_SECONDS = 0.8
         self.SENTENCE_MAX_WORDS = 30
         self.SEED_WORD_MIN_LENGTH = 3
-        self.MIN_MESSAGE_WORDS = 2              # Reduced from 3
+        self.MIN_MESSAGE_WORDS = 3              # Reduced from 3
         
         # Persistent buffer with file backup
         self.message_buffer = deque(maxlen=1000)
@@ -268,28 +268,39 @@ class OptimizedMarkovCog(commands.Cog):
 
     # --- MESSAGE PROCESSING ---
     def sanitize_message(self, content):
-        """Clean message for training - less aggressive filtering"""
-        if not content or len(content.strip()) < 3:  # Reduced from 5
+        """Clean message for training"""
+        if not content or len(content.strip()) < 3:
             return ""
-            
-        # Skip commands
-        command_prefixes = ('.', '!', '/', '?', '~', '$', '&', '*')
-        if content.startswith(command_prefixes):
+        
+        # Remove bot commands
+        if content.startswith(('.', '!', '/', '?', '~')):
             return ""
-            
-        # Remove URLs but keep other content
+        
+        # Remove URLs
         content = re.sub(r'https?://\S+|www\.\S+', '', content)
         
-        # Keep mentions as words but remove the <@> wrapper
-        content = re.sub(r'<@!?(\d+)>', r'@user\1', content)
+        # Remove mentions but keep as placeholder
+        content = re.sub(r'<@!?(\d+)>', r'@user', content)
         
-        # Remove excessive whitespace and normalize
-        content = ' '.join(content.split())
+        # Remove ALL emojis (Unicode + custom)
+        # Unicode emojis range
+        emoji_pattern = re.compile(
+            "["
+            u"\U0001F600-\U0001F64F"  # emoticons
+            u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+            u"\U0001F680-\U0001F6FF"  # transport & map symbols
+            u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
+            u"\U00002702-\U000027B0"  # dingbats
+            u"\U000024C2-\U0001F251"  # enclosed characters
+            "]+", flags=re.UNICODE
+        )
+        content = emoji_pattern.sub('', content)
         
-        # Keep original case for better variety
-        # Only convert to lowercase for very short messages
-        if len(content) < 20:
-            content = content.lower()
+        # Remove custom Discord emojis :emoji_name:
+        content = re.sub(r':[^:\s]+:', '', content)
+        
+        # Remove excessive whitespace
+        content = ' '.join(content.split()).strip()
         
         return content if len(content.split()) >= self.MIN_MESSAGE_WORDS else ""
 
