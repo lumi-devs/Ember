@@ -74,7 +74,7 @@ class OptimizedMarkovCog(commands.Cog):
         
         # Start background tasks
         self.bot.loop.create_task(self.initialize_database())
-        self.bot.loop.create_task(self.restore_buffer())
+        #self.bot.loop.create_task(self.restore_buffer())
         self.periodic_tasks.start()
 
     def load_state(self):
@@ -184,7 +184,7 @@ class OptimizedMarkovCog(commands.Cog):
                     self.stats['total_messages'] = row[0] if row else 0
                 
                 logger.info(f"Database initialized. Existing: {self.stats['total_triplets']} triplets, {self.stats['total_messages']} messages")
-                
+                await self.restore_buffer()
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
             raise
