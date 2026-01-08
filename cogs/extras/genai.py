@@ -146,7 +146,7 @@ class EnhancedMarkovCog(commands.Cog):
         self.server_emoji_cache = {}
         self.message_buffer = deque(maxlen=1000)
         self.recent_messages = deque(maxlen=5000)
-        
+        self.muted_channels = set()
         # NOW load saved state (which will update stats if they exist)
         self.load_state()
         
@@ -708,7 +708,9 @@ class EnhancedMarkovCog(commands.Cog):
                                 self.reply_cooldowns[channel_id] = datetime.fromisoformat(v)
                         except (ValueError, TypeError) as e:
                             logger.warning(f"Failed to load cooldown for channel {k}: {e}")
-                
+                if 'muted_channels' in state:
+                    self.muted_channels = set(state['muted_channels'])
+                    
                 logger.info(f"Loaded state with {len(self.reply_cooldowns)} cooldowns")
                 
         except Exception as e:
@@ -736,9 +738,10 @@ class EnhancedMarkovCog(commands.Cog):
                     str(k): v.isoformat() if isinstance(v, datetime) else v
                     for k, v in self.reply_cooldowns.items()
                 },
+                'muted_channels': list(self.muted_channels),
                 'last_saved': datetime.utcnow().isoformat()
             }
-            
+
             # Ensure directory exists
             os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
             
@@ -1747,7 +1750,8 @@ class EnhancedMarkovCog(commands.Cog):
                     is_reply_to_me = True
             except:
                 pass
-        
+        if message.channel.id in self.muted_channels and not should_reply:
+            return
         should_reply = is_mentioned or is_reply_to_me
         chance = 1.0 if should_reply else self.REPLY_CHANCE
         
@@ -2461,6 +2465,141 @@ class EnhancedMarkovCog(commands.Cog):
         except Exception as e:
             logger.error(f"Force learn error: {e}")
             await ctx.send(f"❌ Error: {e}")
+            
+            
+    @commands.command(name="toggle")
+    @commands.has_permissions(manage_messages=True)
+    async def toggle_channel(self, ctx):
+        """
+        Toggle the bot's speaking in this channel.
+        It will ALWAYS listen/learn, but only speak if toggled ON.
+        """
+        channel_id = ctx.channel.id
+        
+        if channel_id in self.muted_channels:
+            self.muted_channels.remove(channel_id)
+            status = "🔊 **Enabled**"
+            desc = "I will now reply randomly in this channel."
+            color = discord.Color.green()
+        else:
+            self.muted_channels.add(channel_id)
+            status = "🤐 **Disabled**"
+            desc = "I will stay quiet in this channel (but I'm still learning from your messages!)."
+            color = discord.Color.orange()
+            
+        self.save_state()
+        
+        embed = discord.Embed(title=f"Chat Generation {status}", description=desc, color=color)
+        await ctx.send(embed=embed)
+        
+    @commands.command(name="ingest")
+    @commands.has_permissions(administrator=True)
+    async def ingest_file(self, ctx):
+        """
+        Ingest a .txt file attached to the message.
+        Provides live updates via Embed.
+        """
+        # 1. Validation
+        if not ctx.message.attachments:
+            await ctx.send("❌ Please attach a `.txt` file to your message.")
+            return
+
+        attachment = ctx.message.attachments[0]
+        if not attachment.filename.endswith('.txt'):
+            await ctx.send("❌ Only `.txt` files are supported.")
+            return
+
+        # 2. Setup Embed
+        start_time = time.time()
+        status_embed = discord.Embed(
+            title="🧠 Brain Ingestion Process",
+            description=f"Processing **{attachment.filename}**...",
+            color=discord.Color.blue()
+        )
+        status_embed.add_field(name="Status", value="⬇️ Downloading...", inline=True)
+        status_msg = await ctx.send(embed=status_embed)
+
+        try:
+            # 3. Read File
+            file_bytes = await attachment.read()
+            try:
+                # Try UTF-8, fallback to latin-1 for older logs
+                text = file_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                text = file_bytes.decode('latin-1')
+
+            lines = [line.strip() for line in text.split('\n') if len(line.strip()) > 2]
+            total_lines = len(lines)
+            
+            if total_lines == 0:
+                await status_msg.edit(content="❌ File appears empty or has no valid text.")
+                return
+
+            # 4. Process Loop
+            processed = 0
+            triplets_added = 0
+            last_update = time.time()
+            
+            status_embed.set_field_at(0, name="Status", value="⚙️ Learning...", inline=True)
+            status_embed.add_field(name="Progress", value="0%", inline=False)
+            status_embed.add_field(name="Stats", value="Waiting...", inline=False)
+            await status_msg.edit(embed=status_embed)
+
+            for line in lines:
+                # Use existing training logic
+                # We count emojis loosely here for speed
+                emoji_count = len(re.findall(r'<a?:\w+:\d+>', line))
+                
+                # Train (using 0 as generic author ID for ingested content)
+                learned = await self.train_on_message(
+                    content=line, 
+                    author_id=0, 
+                    emoji_count=emoji_count, 
+                    message=ctx.message # Pass context for server-specific emoji validation
+                )
+                
+                if learned > 0:
+                    triplets_added += learned
+                
+                processed += 1
+
+                # Update Embed every 2 seconds (to avoid rate limits)
+                if time.time() - last_update > 2.0:
+                    last_update = time.time()
+                    
+                    # Calculate Stats
+                    percent = (processed / total_lines)
+                    bar_len = 15
+                    filled = int(bar_len * percent)
+                    bar = "█" * filled + "░" * (bar_len - filled)
+                    
+                    elapsed = time.time() - start_time
+                    rate = processed / elapsed if elapsed > 0 else 0
+                    eta = (total_lines - processed) / rate if rate > 0 else 0
+                    
+                    status_embed.color = discord.Color.orange()
+                    status_embed.set_field_at(1, name="Progress", value=f"`{bar}` {percent:.1%}", inline=False)
+                    status_embed.set_field_at(2, name="Stats", value=f"Lines: {processed:,}/{total_lines:,}\nTriplets: {triplets_added:,}\nETA: {int(eta)}s", inline=False)
+                    
+                    await status_msg.edit(embed=status_embed)
+                
+                # Yield control to event loop so bot doesn't freeze
+                await asyncio.sleep(0.01) 
+
+            # 5. Final Update
+            total_time = time.time() - start_time
+            status_embed.title = "✅ Ingestion Complete"
+            status_embed.color = discord.Color.green()
+            status_embed.description = f"Finished processing **{attachment.filename}**"
+            status_embed.clear_fields()
+            status_embed.add_field(name="Summary", value=f"**Lines:** {total_lines:,}\n**New Patterns:** {triplets_added:,}\n**Time:** {total_time:.2f}s")
+            
+            await status_msg.edit(embed=status_embed)
+            self.save_state()
+
+        except Exception as e:
+            logger.error(f"Ingest failed: {e}")
+            await status_msg.edit(content=f"❌ **Ingestion Failed:** {str(e)[:100]}")
 
 async def setup(bot):
     await bot.add_cog(EnhancedMarkovCog(bot))
