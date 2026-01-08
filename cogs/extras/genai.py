@@ -1028,25 +1028,29 @@ class EnhancedMarkovCog(commands.Cog):
         await self.bot.wait_until_ready()
         
         try:
-            # 1. Resolve absolute path to prevent CWD issues
-            resolved_path = Path(self.db_path).resolve()
-            self.db_path = str(resolved_path)
+            # 1. Resolve absolute path to prevent confusion
+            # If path is relative, make it absolute based on current working directory
+            base_path = Path.cwd()
+            full_path = (base_path / self.db_path).resolve()
+            self.db_path = str(full_path)
             
-            # Ensure directory exists
-            resolved_path.parent.mkdir(parents=True, exist_ok=True)
-            logger.info(f"Initializing database at: {self.db_path}")
-            
-            async with aiosqlite.connect(self.db_path) as db:
-                # 2. Run PRAGMAs FIRST (Critical for stability)
+            logger.info(f"📂 Database Path Resolved: {self.db_path}")
+
+            # 2. Force Create Directory
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # 3. Connect and Initialize
+            async with self._connect() as db:
+                logger.info("✅ Connected to database. setting up schema...")
+                
+                # Register regex
+                await db.create_function("REGEXP", 2, self.regexp)
+
+                # Optimizations
                 await db.execute('PRAGMA journal_mode=WAL;')
                 await db.execute('PRAGMA synchronous=NORMAL;')
-                await db.execute('PRAGMA cache_size=-10000;')
-                await db.execute('PRAGMA temp_store=DEFAULT;')
                 
-                # 3. Register function AFTER pragmas
-                await db.create_function("REGEXP", 2, self.regexp)
-                
-                # --- Create Tables ---
+                # Create Tables
                 await db.execute('''
                     CREATE TABLE IF NOT EXISTS markov_chain (
                         word_a TEXT NOT NULL,
@@ -1094,7 +1098,7 @@ class EnhancedMarkovCog(commands.Cog):
                     )
                 ''')
                 
-                # --- Indexes ---
+                # Create Indexes
                 await db.execute('CREATE INDEX IF NOT EXISTS idx_markov_lemmas ON markov_chain(lemma_a, lemma_b, lemma_next)')
                 await db.execute('CREATE INDEX IF NOT EXISTS idx_markov_pos ON markov_chain(pos_a, pos_b, pos_next)')
                 await db.execute('CREATE INDEX IF NOT EXISTS idx_markov_sentiment ON markov_chain(sentiment_score)')
@@ -1105,25 +1109,19 @@ class EnhancedMarkovCog(commands.Cog):
                 
                 await db.commit()
                 
-                # --- Initial Stats Load ---
+                # Load Stats
                 async with db.execute("SELECT COUNT(*) FROM markov_chain") as cursor:
-                    result = await cursor.fetchone()
-                    self.stats['total_triplets'] = result[0] if result else 0
+                    res = await cursor.fetchone()
+                    self.stats['total_triplets'] = res[0] if res else 0
+
+                logger.info(f"✅ Database initialized successfully. ({self.stats['total_triplets']} triplets)")
                 
-                async with db.execute("SELECT COUNT(*) FROM message_log") as cursor:
-                    result = await cursor.fetchone()
-                    self.stats['total_messages'] = result[0] if result else 0
-                
-                async with db.execute("SELECT COUNT(DISTINCT author_id) FROM message_log") as cursor:
-                    result = await cursor.fetchone()
-                    self.stats['unique_users'] = result[0] if result else 0
-                
-                async with db.execute("SELECT COUNT(*) FROM markov_chain WHERE lemma_a IS NOT NULL") as cursor:
-                    result = await cursor.fetchone()
-                    self.stats['lemmas_stored'] = result[0] if result else 0
-                
-                logger.info(f"Database initialized. Existing: {self.stats['total_triplets']} triplets.")
+                # 4. MARK AS READY
                 self.db_initialized = True
+
+        except Exception as e:
+            logger.error(f"❌ CRITICAL DATABASE ERROR: {e}")
+            # Do not set db_initialized to True so we don't spam errors
                 
         except ValueError as e:
             logger.error(f"Database connection failed (ValueError): {e}")
@@ -2201,8 +2199,18 @@ class EnhancedMarkovCog(commands.Cog):
                     )
                     self.record_bot_message(message.channel.id)
 
+
+    def _connect(self):
+        """Helper to create a configured connection"""
+        # Ensure directory exists before every connection attempt
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        return aiosqlite.connect(self.db_path, timeout=10)
+    
+    
     async def buffer_message(self, message):
         """Buffer message for processing"""
+        if not self.db_initialized:
+            return
         try:
             # Count Unicode emojis
             emoji_list = list(emoji.emoji_list(message.content))
