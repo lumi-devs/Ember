@@ -1,3 +1,4 @@
+import time
 import discord
 from discord.ext import commands, tasks
 import aiosqlite
@@ -162,7 +163,7 @@ class EnhancedMarkovCog(commands.Cog):
         self.MIN_MESSAGE_WORDS = 2  # Reduced for Hinglish
         
         # --- MODIFIED: NLP ENHANCEMENT PARAMETERS for Hinglish ---
-        self.GRAMMAR_ENFORCEMENT = False  # Disable for Hinglish (mixed grammar rules)
+        self.GRAMMAR_ENFORCEMENT = True  # Disable for Hinglish (mixed grammar rules)
         self.SENTIMENT_MATCHING = True   # Keep sentiment matching
         self.TOPIC_COHERENCE = True      # Keep topic coherence
         self.LEMMATIZATION_ENABLED = True  # Enable Hinglish lemmatization
@@ -2378,6 +2379,155 @@ class EnhancedMarkovCog(commands.Cog):
                 
         except Exception as e:
             await ctx.send(f"❌ Health check failed: {e}")
+
+# --- NEW INGEST COMMAND ---
+    @commands.command(name="ingest")
+    @commands.has_permissions(administrator=True)
+    async def ingest_file(self, ctx):
+        """
+        Ingest a .txt file attached to the command to train the bot.
+        Provides live progress updates via Embed.
+        """
+        # 1. Validation
+        if not ctx.message.attachments:
+            await ctx.send("❌ Please attach a .txt file to ingest!")
+            return
+
+        attachment = ctx.message.attachments[0]
+        if not attachment.filename.endswith('.txt'):
+            await ctx.send("❌ Only .txt files are supported.")
+            return
+
+        # 2. Setup Dashboard
+        start_time = datetime.utcnow()
+        status_embed = discord.Embed(
+            title="📥 Data Ingestion Initialized",
+            description="Reading file...",
+            color=discord.Color.blue()
+        )
+        status_embed.add_field(name="File", value=attachment.filename, inline=True)
+        status_embed.add_field(name="Status", value="⬇️ Downloading...", inline=True)
+        
+        status_msg = await ctx.send(embed=status_embed)
+
+        try:
+            # 3. Read File
+            file_bytes = await attachment.read()
+            try:
+                # Attempt UTF-8 first, fallback to latin-1 if it fails
+                content = file_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                content = file_bytes.decode('latin-1')
+
+            lines = [line.strip() for line in content.split('\n') if line.strip()]
+            total_lines = len(lines)
+            
+            if total_lines == 0:
+                await status_msg.edit(content="❌ File is empty.")
+                return
+
+            # 4. Processing Loop
+            triplets_added = 0
+            processed_lines = 0
+            errors = 0
+            
+            # Update frequency (don't edit embed too often to avoid rate limits)
+            UPDATE_INTERVAL = 25  # Update every 25 lines
+            last_update_time = time.time()
+
+            # Initial update before loop
+            status_embed.title = "🧠 Ingesting Knowledge..."
+            status_embed.color = discord.Color.orange()
+            status_embed.set_field_at(1, name="Status", value="⚙️ Processing...", inline=True)
+            status_embed.add_field(name="Progress", value="0%", inline=False)
+            await status_msg.edit(embed=status_embed)
+
+            for line in lines:
+                # Sanitize and Train
+                # We pass ctx.message so it uses the current channel/guild context for emojis
+                try:
+                    # Calculate approximate emoji count (simple scan)
+                    emoji_count = len(list(emoji.emoji_list(line))) + len(re.findall(r'<a?:(\w+):\d+>', line))
+                    
+                    # Train
+                    new_triplets = await self.train_on_message(
+                        content=line, 
+                        author_id=ctx.author.id, 
+                        emoji_count=emoji_count,
+                        message=ctx.message
+                    )
+                    
+                    if new_triplets > 0:
+                        triplets_added += new_triplets
+                    
+                    processed_lines += 1
+
+                except Exception as e:
+                    errors += 1
+                    logger.error(f"Ingest error on line: {line[:20]}... : {e}")
+
+                # Live Update Logic
+                current_time = time.time()
+                if processed_lines % UPDATE_INTERVAL == 0 or (current_time - last_update_time) > 2.0:
+                    last_update_time = current_time
+                    
+                    # Calculate Progress
+                    percent = (processed_lines / total_lines) * 100
+                    bar_length = 20
+                    filled_length = int(bar_length * processed_lines // total_lines)
+                    bar = "█" * filled_length + "░" * (bar_length - filled_length)
+                    
+                    # Calculate ETR
+                    elapsed = (datetime.utcnow() - start_time).total_seconds()
+                    rate = processed_lines / elapsed if elapsed > 0 else 0
+                    etr = (total_lines - processed_lines) / rate if rate > 0 else 0
+                    
+                    status_embed.description = f"**{attachment.filename}**"
+                    status_embed.set_field_at(1, name="Status", value=f"Processing {processed_lines}/{total_lines}", inline=True)
+                    
+                    # Update Progress Field
+                    status_embed.set_field_at(2, name="Progress", value=f"`{bar}` {percent:.1f}%", inline=False)
+                    
+                    # Add/Update Stats Field
+                    stats_text = (f"Learned: **{triplets_added}** triplets\n"
+                                  f"Rate: **{rate:.1f}** lines/s\n"
+                                  f"ETR: **{int(etr)}s**")
+                    
+                    # Check if stats field exists (index 3), if not add it, else update it
+                    if len(status_embed.fields) < 4:
+                        status_embed.add_field(name="Statistics", value=stats_text, inline=False)
+                    else:
+                        status_embed.set_field_at(3, name="Statistics", value=stats_text, inline=False)
+
+                    await status_msg.edit(embed=status_embed)
+                    
+                    # Yield control to event loop to prevent bot freezing
+                    await asyncio.sleep(0.01)
+
+            # 5. Final Success Message
+            total_time = (datetime.utcnow() - start_time).total_seconds()
+            
+            final_embed = discord.Embed(
+                title="✅ Ingestion Complete",
+                description=f"Successfully processed **{attachment.filename}**",
+                color=discord.Color.green(),
+                timestamp=datetime.utcnow()
+            )
+            final_embed.add_field(name="Lines Processed", value=f"{processed_lines:,}", inline=True)
+            final_embed.add_field(name="Triplets Learned", value=f"{triplets_added:,}", inline=True)
+            final_embed.add_field(name="Time Taken", value=f"{total_time:.2f}s", inline=True)
+            
+            if errors > 0:
+                final_embed.set_footer(text=f"Completed with {errors} errors (checked logs)")
+            
+            await status_msg.edit(embed=final_embed)
+            
+            # Force save the state
+            self.save_state()
+
+        except Exception as e:
+            logger.error(f"Critical Ingest Error: {e}")
+            await status_msg.edit(content=f"❌ Critical Error: {str(e)[:100]}")
 
     @commands.command(name="forcelearn")
     @commands.has_permissions(administrator=True)
