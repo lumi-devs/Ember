@@ -351,7 +351,7 @@ class EnhancedMarkovCog(commands.Cog):
 
     # --- ENHANCED MESSAGE PROCESSING WITH NLP ---
     def sanitize_message(self, content: str, message=None) -> str:
-        """Clean message with proper username handling"""
+        """Clean message with proper username handling and Server-Only Emoji validation"""
         if not content or len(content.strip()) < 3:
             return ""
         
@@ -404,12 +404,30 @@ class EnhancedMarkovCog(commands.Cog):
         # Remove @everyone and @here
         content = re.sub(r'@everyone|@here', '', content, flags=re.IGNORECASE)
         
-        # Count and limit emojis
+        # --- EMOJI VALIDATION LOGIC ---
         emoji_list = list(emoji.emoji_list(content))
         
-        # Extract Discord emojis (both <:name:id> and <a:name:id>)
-        custom_emoji_matches = re.findall(r'<a?:(\w+):(\d+)>', content)
-        custom_emojis = [name for name, _ in custom_emoji_matches]
+        # 1. Find all raw emoji strings first
+        raw_custom_matches = re.findall(r'<a?:(\w+):(\d+)>', content)
+        
+        # 2. Filter: Only keep emojis that exist in THIS server
+        valid_custom_emojis = []
+        server_emoji_ids = set()
+        
+        if message and message.guild:
+            server_emoji_ids = {str(e.id) for e in message.guild.emojis}
+            
+        for name, e_id in raw_custom_matches:
+            if str(e_id) in server_emoji_ids:
+                valid_custom_emojis.append((name, e_id))
+            else:
+                # If it's an external/nitro emoji, remove it from content immediately
+                # so we don't learn broken links or external emotes
+                pattern = fr'<a?:{re.escape(name)}:{e_id}>'
+                content = re.sub(pattern, '', content)
+
+        # Combine valid lists for density check
+        custom_emojis = [name for name, _ in valid_custom_emojis]
         all_emojis = emoji_list + [{'emoji': f':{e}:'} for e in custom_emojis]
         
         # Calculate emoji density
@@ -425,7 +443,7 @@ class EnhancedMarkovCog(commands.Cog):
             for e in emoji_list:
                 content = content.replace(e['emoji'], ' ')
             
-            # Remove all Discord emojis
+            # Remove all Discord emojis (remaining valid ones)
             content = re.sub(r'<a?:\w+:\d+>', ' ', content)
             
             # Add back limited emojis as special tokens
@@ -435,16 +453,17 @@ class EnhancedMarkovCog(commands.Cog):
                         emoji_name = emoji.demojize(e['emoji'])[1:-1]
                         content += f" :emoji_{emoji_name}:"
                     else:  # Custom emoji name
-                        content += f" :custom_emoji_{e}:"
+                        # Since we already filtered external ones, these are safe
+                        clean_name = e['emoji'].replace(':', '')
+                        content += f" :custom_emoji_{clean_name}:"
         else:
             # Convert Unicode emojis to tokens for learning
             for e in emoji_list:
                 emoji_name = emoji.demojize(e['emoji'])[1:-1]
                 content = content.replace(e['emoji'], f' :emoji_{emoji_name}: ')
             
-            # Convert Discord emojis to tokens
-            for emoji_name, emoji_id in custom_emoji_matches:
-                # Replace this specific emoji with token
+            # Convert Valid Discord emojis to tokens
+            for emoji_name, emoji_id in valid_custom_emojis:
                 pattern = fr'<a?:{re.escape(emoji_name)}:{emoji_id}>'
                 content = re.sub(
                     pattern,
@@ -809,12 +828,12 @@ class EnhancedMarkovCog(commands.Cog):
                     # Question detection
                     question_words = ['what', 'why', 'how', 'when', 'who', 'where', 'which', 'whose']
                     if any(word in last_words for word in question_words):
-                        result += '?'
+                        result += ' ?'
                     # Exclamation detection
                     elif any(word in last_words for word in ['wow', 'awesome', 'amazing', 'great', 'yes', 'no']):
-                        result += '!'
+                        result += ' !'
                     else:
-                        result += '.'
+                        result += ' .'
                 
                 # Final validation
                 words_in_result = result.split()
@@ -1318,7 +1337,7 @@ class EnhancedMarkovCog(commands.Cog):
                         emoji_name = emoji_row['next_word'].replace(':emoji_', '').replace(':custom_emoji_', '').rstrip(':')
                         try:
                             # Try to show actual emoji
-                            emoji_char = emoji.emojize(f":{emoji_name}:", language='alias')
+                            emoji_char = emoji.emojize(f":{emoji_name}: ", language='alias')
                             emoji_list.append(f"{emoji_char}: {emoji_row['usage_count']:,}")
                         except:
                             emoji_list.append(f":{emoji_name}: {emoji_row['usage_count']:,}")
