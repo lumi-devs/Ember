@@ -2850,7 +2850,7 @@ class EnhancedMarkovCog(commands.Cog):
     @commands.command(name="ingest")
     @commands.has_permissions(administrator=True)
     async def ingest_file(self, ctx):
-        """Upload a .txt file to train the bot on Hinglish data"""
+        """Upload a .txt file to train the bot with a live progress bar"""
         if not ctx.message.attachments:
             await ctx.send("❌ Please upload a `.txt` file with the command.")
             return
@@ -2860,32 +2860,87 @@ class EnhancedMarkovCog(commands.Cog):
             await ctx.send("❌ File must be a text file.")
             return
 
-        await ctx.send("⏳ Downloading and processing... This may take a moment.")
+        # Send initial message
+        status_msg = await ctx.send("⏳ **Downloading and preparing file...**")
         
         try:
+            # 1. Read and Prep Data
             content = await attachment.read()
             text_data = content.decode('utf-8', errors='ignore')
-            lines = text_data.split('\n')
             
+            # Pre-filter lines to get accurate total count for the progress bar
+            raw_lines = text_data.split('\n')
+            lines_to_process = [line.strip() for line in raw_lines if len(line.strip()) >= 5]
+            total_lines = len(lines_to_process)
+
+            if total_lines == 0:
+                await status_msg.edit(content="❌ File was empty or contained no valid lines (>5 chars).")
+                return
+
+            # 2. Create Initial Embed
+            embed = discord.Embed(
+                title="📥 Ingesting Knowledge",
+                description=f"Processing **{attachment.filename}**...",
+                color=discord.Color.blue()
+            )
+            embed.add_field(name="Progress", value="0%", inline=True)
+            embed.add_field(name="Lines", value=f"0 / {total_lines}", inline=True)
+            embed.add_field(name="Status", value="Starting...", inline=False)
+            embed.set_footer(text="Please do not restart the bot.")
+            
+            await status_msg.edit(content=None, embed=embed)
+
+            # 3. Processing Loop
             count = 0
-            async with ctx.typing():
-                for line in lines:
-                    line = line.strip()
-                    if len(line) < 5: continue
+            start_time = time.time()
+            last_update_time = start_time
+            
+            # We use a copy of the list to iterate
+            for line in lines_to_process:
+                # Train
+                await self.train_on_message(line, self.bot.user.id)
+                count += 1
+                
+                # Update status every 50 lines OR every 5 seconds (to avoid rate limits)
+                current_time = time.time()
+                if count % 50 == 0 and (current_time - last_update_time) > 4.0:
+                    # Calculate percentage
+                    percent = int((count / total_lines) * 100)
                     
-                    # Train
-                    await self.train_on_message(line, self.bot.user.id)
-                    count += 1
+                    # Create progress bar (e.g., [████░░░░░░])
+                    bar_length = 10
+                    filled_length = int(bar_length * count // total_lines)
+                    bar = "█" * filled_length + "░" * (bar_length - filled_length)
                     
-                    # Yield to event loop every 100 lines
-                    if count % 100 == 0:
-                        await asyncio.sleep(0)
-                        
+                    # Update Embed
+                    embed.color = discord.Color.orange()
+                    embed.set_field_at(0, name="Progress", value=f"**{percent}%**", inline=True)
+                    embed.set_field_at(1, name="Lines", value=f"{count} / {total_lines}", inline=True)
+                    embed.set_field_at(2, name="Status", value=f"[`{bar}`] Processing...", inline=False)
+                    
+                    await status_msg.edit(embed=embed)
+                    last_update_time = current_time
+                    
+                    # Yield to event loop to keep bot responsive
+                    await asyncio.sleep(0)
+
+            # 4. Final Success Update
             self.save_state()
-            await ctx.send(f"✅ Successfully ingested **{count}** lines of training data!")
+            elapsed = time.time() - start_time
+            
+            embed.color = discord.Color.green()
+            embed.title = "✅ Ingestion Complete"
+            embed.description = f"Finished processing **{attachment.filename}** in {elapsed:.1f}s"
+            
+            embed.set_field_at(0, name="Progress", value="**100%**", inline=True)
+            embed.set_field_at(1, name="Lines", value=f"{total_lines} / {total_lines}", inline=True)
+            embed.set_field_at(2, name="Status", value="[`██████████`] Done", inline=False)
+            
+            await status_msg.edit(embed=embed)
             
         except Exception as e:
-            await ctx.send(f"❌ Error processing file: {e}")
+            logger.error(f"Ingest error: {e}")
+            await status_msg.edit(content=f"❌ **Error processing file:**\n`{str(e)[:100]}`", embed=None)
 
 async def setup(bot):
     await bot.add_cog(EnhancedMarkovCog(bot))
