@@ -87,6 +87,13 @@ class EnhancedMarkovCog(commands.Cog):
         self.message_buffer = deque(maxlen=1000)
         self.recent_messages = deque(maxlen=5000)
         
+        
+        
+        self.db_initialized = False
+        self.user_cache = {}  # ADD THIS
+        self.user_id_map = {}  # ADD THIS
+        
+        
         # Cooldown tracking
         self.reply_cooldowns = {}
         
@@ -260,7 +267,7 @@ class EnhancedMarkovCog(commands.Cog):
                     self.stats['unique_users'] = (await cursor.fetchone())[0] or 0
                 
                 logger.info(f"Database initialized. Existing: {self.stats['total_triplets']} triplets, {self.stats['total_messages']} messages from {self.stats['unique_users']} users")
-                
+                self.db_initialized = True
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
             raise
@@ -1032,6 +1039,9 @@ class EnhancedMarkovCog(commands.Cog):
     @tasks.loop(minutes=5)
     async def periodic_tasks(self):
         """Run periodic maintenance tasks"""
+        if not self.db_initialized:
+            return  # Skip if database not ready
+        
         try:
             await self.cleanup_old_data()
             self.save_state()
