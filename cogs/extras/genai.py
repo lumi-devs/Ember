@@ -195,7 +195,7 @@ class EnhancedMarkovCog(commands.Cog):
         self.MIN_MESSAGE_WORDS = 2  # Reduced for Hinglish
         
         # --- MODIFIED: NLP ENHANCEMENT PARAMETERS for Hinglish ---
-        self.GRAMMAR_ENFORCEMENT = True  # Disable for Hinglish (mixed grammar rules)
+        self.GRAMMAR_ENFORCEMENT = False  # Disable for Hinglish (mixed grammar rules)
         self.SENTIMENT_MATCHING = True   # Keep sentiment matching
         self.TOPIC_COHERENCE = True      # Keep topic coherence
         self.LEMMATIZATION_ENABLED = True  # Enable Hinglish lemmatization
