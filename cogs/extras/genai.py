@@ -46,7 +46,7 @@ class EnhancedMarkovCog(commands.Cog):
         self.state_file = "./genai/bot_state.json"
         self.stop_words = set(stopwords.words('english'))
         
-        # INITIALIZATION FLAGS - MUST BE DEFINED BEFORE load_state()
+        # INITIALIZATION FLAGS
         self.db_initialized = False
         self.user_cache = {}
         self.user_id_map = {}
@@ -82,9 +82,9 @@ class EnhancedMarkovCog(commands.Cog):
         
         # ANTI-SPAM PROTECTION
         self.MIN_MESSAGE_INTERVAL = 0.5  # Minimum 0.5 seconds between bot messages in same channel
-        self.MAX_MESSAGES_PER_MINUTE = 80  # Max 3 messages per minute per channel
+        self.MAX_MESSAGES_PER_MINUTE = 80  # Max 80 messages per minute per channel
         self.SPAM_BURST_WINDOW = 10       # Time window for burst detection (seconds)
-        self.SPAM_BURST_LIMIT = 2         # Max messages in burst window
+        self.SPAM_BURST_LIMIT = 5         # Max messages in burst window (increased from 2)
         
         # Limits optimized for high traffic (17k/day)
         self.MAX_RAW_MESSAGES = 2_000_000
@@ -113,66 +113,34 @@ class EnhancedMarkovCog(commands.Cog):
         self.periodic_tasks.start()
         self.cleanup_rate_limits.start()
 
-
-
-
-    def extract_triplets_with_nlp(self, content: str) -> List[Tuple[str, str, str]]:
-        """Extract word triplets with NLP-enhanced processing"""
-        # Use NLTK sentence tokenization for better boundaries
-        sentences = sent_tokenize(content)
-        triplets = []
-        
-        for sentence in sentences:
-            # Tokenize with NLTK for better word splitting
-            words = word_tokenize(sentence.lower())
-            
-            # Filter out punctuation and very short words
-            words = [w for w in words 
-                    if w not in string.punctuation 
-                    and len(w) > 1 
-                    and w not in self.stop_words]
-            
-            if len(words) < 3:
-                continue
-            
-            # Use POS tagging for smarter filtering
-            pos_tags = pos_tag(words)
-            
-            # Create triplets with POS information
-            for i in range(len(words) - 2):
-                word_a = words[i]
-                word_b = words[i+1]
-                word_c = words[i+2]
-                
-                # Skip triplets with too many function words
-                pos_a, pos_b, pos_c = pos_tags[i][1], pos_tags[i+1][1], pos_tags[i+2][1]
-                
-                # Only store if at least one content word (noun, verb, adjective, adverb)
-                if any(pos.startswith(('NN', 'VB', 'JJ', 'RB')) for pos in [pos_a, pos_b, pos_c]):
-                    triplets.append((word_a, word_b, word_c))
-        
-        return triplets
-    
-    
     def load_state(self):
         """Load bot state from file to survive restarts"""
         try:
             if os.path.exists(self.state_file):
                 with open(self.state_file, 'r') as f:
                     state = json.load(f)
-                    
-                # Safely load cooldowns
-                if 'reply_cooldowns' in state:
-                    self.reply_cooldowns = {
-                        int(k): datetime.fromisoformat(v) 
-                        for k, v in state.get('reply_cooldowns', {}).items()
-                    }
                 
                 # Safely update stats if they exist in state
                 if 'stats' in state:
                     for key, value in state['stats'].items():
                         if key in self.stats:
-                            self.stats[key] = value
+                            # Handle different types properly
+                            if isinstance(self.stats[key], int):
+                                self.stats[key] = int(value)
+                            elif isinstance(self.stats[key], str):
+                                self.stats[key] = str(value)
+                            else:
+                                self.stats[key] = value
+                
+                # Load cooldowns with type safety
+                if 'reply_cooldowns' in state:
+                    for k, v in state['reply_cooldowns'].items():
+                        try:
+                            channel_id = int(k)
+                            if isinstance(v, str):
+                                self.reply_cooldowns[channel_id] = datetime.fromisoformat(v)
+                        except (ValueError, TypeError) as e:
+                            logger.warning(f"Failed to load cooldown for channel {k}: {e}")
                 
                 logger.info(f"Loaded state with {len(self.reply_cooldowns)} cooldowns")
                 
@@ -180,31 +148,27 @@ class EnhancedMarkovCog(commands.Cog):
             logger.error(f"Failed to load state: {e}")
             # Don't fail completely, just log the error
 
-    def load_state(self):
-        """Load bot state from file to survive restarts"""
+    def save_state(self):
+        """Save bot state to file"""
         try:
-            if os.path.exists(self.state_file):
-                with open(self.state_file, 'r') as f:
-                    state = json.load(f)
-                    
-                # Safely load cooldowns
-                if 'reply_cooldowns' in state:
-                    self.reply_cooldowns = {
-                        int(k): datetime.fromisoformat(v) 
-                        for k, v in state.get('reply_cooldowns', {}).items()
-                    }
+            state = {
+                'stats': self.stats,
+                'reply_cooldowns': {
+                    str(k): v.isoformat() if isinstance(v, datetime) else v
+                    for k, v in self.reply_cooldowns.items()
+                },
+                'last_saved': datetime.utcnow().isoformat()
+            }
+            
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
+            
+            with open(self.state_file, 'w') as f:
+                json.dump(state, f, indent=2)
                 
-                # Safely update stats if they exist in state
-                if 'stats' in state:
-                    for key, value in state['stats'].items():
-                        if key in self.stats:
-                            self.stats[key] = value
-                
-                logger.info(f"Loaded state with {len(self.reply_cooldowns)} cooldowns")
-                
+            logger.debug("State saved successfully")
         except Exception as e:
-            logger.error(f"Failed to load state: {e}")
-            # Don't fail completely, just log the error
+            logger.error(f"Failed to save state: {e}")
 
     async def initialize_database(self):
         """Initialize database with connection pool"""
@@ -231,7 +195,7 @@ class EnhancedMarkovCog(commands.Cog):
                         count INTEGER DEFAULT 1,
                         last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        word_type TEXT DEFAULT 'normal',  -- 'normal', 'emoji', 'mention'
+                        word_type TEXT DEFAULT 'normal',
                         PRIMARY KEY (word_a, word_b, next_word)
                     ) WITHOUT ROWID
                 ''')
@@ -270,17 +234,30 @@ class EnhancedMarkovCog(commands.Cog):
                     ON markov_chain(word_type)
                 ''')
                 
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_message_log_timestamp 
+                    ON message_log(timestamp)
+                ''')
+                
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_message_log_processed 
+                    ON message_log(processed)
+                ''')
+                
                 await db.commit()
                 
                 # Get initial counts
                 async with db.execute("SELECT COUNT(*) FROM markov_chain") as cursor:
-                    self.stats['total_triplets'] = (await cursor.fetchone())[0] or 0
+                    result = await cursor.fetchone()
+                    self.stats['total_triplets'] = result[0] if result else 0
                 
                 async with db.execute("SELECT COUNT(*) FROM message_log") as cursor:
-                    self.stats['total_messages'] = (await cursor.fetchone())[0] or 0
+                    result = await cursor.fetchone()
+                    self.stats['total_messages'] = result[0] if result else 0
                 
                 async with db.execute("SELECT COUNT(DISTINCT author_id) FROM message_log") as cursor:
-                    self.stats['unique_users'] = (await cursor.fetchone())[0] or 0
+                    result = await cursor.fetchone()
+                    self.stats['unique_users'] = result[0] if result else 0
                 
                 logger.info(f"Database initialized. Existing: {self.stats['total_triplets']} triplets, {self.stats['total_messages']} messages from {self.stats['unique_users']} users")
                 self.db_initialized = True
@@ -332,33 +309,46 @@ class EnhancedMarkovCog(commands.Cog):
         """Record that bot sent a message"""
         now = datetime.utcnow()
         self.last_bot_message[channel_id] = now
+        if channel_id not in self.message_timestamps:
+            self.message_timestamps[channel_id] = deque(maxlen=self.MAX_MESSAGES_PER_MINUTE * 2)
         self.message_timestamps[channel_id].append(now)
 
     @tasks.loop(minutes=5)
     async def cleanup_rate_limits(self):
         """Clean up old rate limiting data"""
-        now = datetime.utcnow()
-        cutoff = now - timedelta(minutes=10)
-        
-        # Clean message timestamps
-        for channel_id in list(self.message_timestamps.keys()):
-            # Remove old timestamps
-            self.message_timestamps[channel_id] = deque(
-                (ts for ts in self.message_timestamps[channel_id] 
-                 if ts > cutoff),
-                maxlen=self.MAX_MESSAGES_PER_MINUTE * 2
-            )
+        try:
+            now = datetime.utcnow()
+            cutoff = now - timedelta(minutes=10)
             
-            # Remove empty deques
-            if not self.message_timestamps[channel_id]:
-                del self.message_timestamps[channel_id]
-        
-        # Clean last bot message if too old
-        for channel_id in list(self.last_bot_message.keys()):
-            if self.last_bot_message[channel_id] < cutoff:
-                del self.last_bot_message[channel_id]
-        
-        logger.debug("Cleaned up rate limit data")
+            # Clean message timestamps
+            channels_to_remove = []
+            for channel_id in list(self.message_timestamps.keys()):
+                # Remove old timestamps
+                self.message_timestamps[channel_id] = deque(
+                    (ts for ts in self.message_timestamps[channel_id] 
+                     if ts > cutoff),
+                    maxlen=self.MAX_MESSAGES_PER_MINUTE * 2
+                )
+                
+                # Remove empty deques
+                if not self.message_timestamps[channel_id]:
+                    channels_to_remove.append(channel_id)
+            
+            for channel_id in channels_to_remove:
+                self.message_timestamps.pop(channel_id, None)
+            
+            # Clean last bot message if too old
+            channels_to_remove = []
+            for channel_id in list(self.last_bot_message.keys()):
+                if self.last_bot_message[channel_id] < cutoff:
+                    channels_to_remove.append(channel_id)
+            
+            for channel_id in channels_to_remove:
+                self.last_bot_message.pop(channel_id, None)
+            
+            logger.debug("Cleaned up rate limit data")
+        except Exception as e:
+            logger.error(f"Error in cleanup_rate_limits: {e}")
 
     # --- ENHANCED MESSAGE PROCESSING WITH NLP ---
     def sanitize_message(self, content: str, message=None) -> str:
@@ -376,7 +366,6 @@ class EnhancedMarkovCog(commands.Cog):
         # Remove URLs
         content = re.sub(r'https?://\S+|www\.\S+', '', content)
         
-        # --- FIXED USERNAME HANDLING ---
         # Replace user mentions with readable names and store mapping
         def replace_mention(match):
             user_id = int(match.group(1))
@@ -419,8 +408,7 @@ class EnhancedMarkovCog(commands.Cog):
         # Count and limit emojis
         emoji_list = list(emoji.emoji_list(content))
         
-        # FIXED: Extract Discord emojis (both <:name:id> and <a:name:id>)
-        # We need to extract both name and ID for proper replacement
+        # Extract Discord emojis (both <:name:id> and <a:name:id>)
         custom_emoji_matches = re.findall(r'<a?:(\w+):(\d+)>', content)
         custom_emojis = [name for name, _ in custom_emoji_matches]
         all_emojis = emoji_list + [{'emoji': f':{e}:'} for e in custom_emojis]
@@ -438,7 +426,7 @@ class EnhancedMarkovCog(commands.Cog):
             for e in emoji_list:
                 content = content.replace(e['emoji'], ' ')
             
-            # FIXED: Remove all Discord emojis (using raw string)
+            # Remove all Discord emojis
             content = re.sub(r'<a?:\w+:\d+>', ' ', content)
             
             # Add back limited emojis as special tokens
@@ -455,13 +443,12 @@ class EnhancedMarkovCog(commands.Cog):
                 emoji_name = emoji.demojize(e['emoji'])[1:-1]
                 content = content.replace(e['emoji'], f' :emoji_{emoji_name}: ')
             
-            # FIXED: Convert Discord emojis to tokens (using raw strings)
+            # Convert Discord emojis to tokens
             for emoji_name, emoji_id in custom_emoji_matches:
-                # Escape special regex characters in emoji name
-                escaped_name = re.escape(emoji_name)
                 # Replace this specific emoji with token
+                pattern = fr'<a?:{re.escape(emoji_name)}:{emoji_id}>'
                 content = re.sub(
-                    fr'<a?:{escaped_name}:{emoji_id}>',
+                    pattern,
                     f' :custom_emoji_{emoji_name}: ',
                     content
                 )
@@ -472,12 +459,12 @@ class EnhancedMarkovCog(commands.Cog):
         # Remove excessive whitespace
         content = ' '.join(content.split()).strip()
         
-        # FIXED: Only return if we have enough words
+        # Only return if we have enough words
         word_count = len(content.split())
         return content if word_count >= self.MIN_MESSAGE_WORDS else ""
 
-    def extract_triplets_with_nlp(self, content: str) -> List[Tuple[str, str, str]]:
-        """Extract word triplets with NLP-enhanced processing"""
+    def extract_triplets(self, content: str) -> List[Tuple[str, str, str]]:
+        """Extract word triplets from content"""
         words = content.split()
         triplets = []
         
@@ -491,11 +478,6 @@ class EnhancedMarkovCog(commands.Cog):
             word_c = words[i+2].strip()
             
             if word_a and word_b and word_c:
-                # Classify word types
-                word_type_a = self.classify_word_type(word_a)
-                word_type_b = self.classify_word_type(word_b)
-                word_type_c = self.classify_word_type(word_c)
-                
                 # Skip if too many emojis in sequence
                 emoji_count = sum(1 for w in [word_a, word_b, word_c] 
                                 if w.startswith(':emoji_') or w.startswith(':custom_emoji_'))
@@ -510,9 +492,9 @@ class EnhancedMarkovCog(commands.Cog):
         """Classify word type for better generation"""
         if word.startswith(':emoji_') or word.startswith(':custom_emoji_'):
             return 'emoji'
-        elif word.startswith('@user_') or word.startswith('@role_') or word.startswith('#channel_'):
+        elif word.startswith('@USER_') or word.startswith('@user_') or word.startswith('@role_') or word.startswith('#channel_'):
             return 'mention'
-        elif re.match(r'^[A-Z][a-z]*$', word):
+        elif re.match(r'^[A-Z][a-z]*$', word) and len(word) > 1:
             return 'proper_noun'
         elif word.endswith(('ing', 'ed', 'ly')):
             return 'verb_or_adverb'
@@ -521,11 +503,11 @@ class EnhancedMarkovCog(commands.Cog):
 
     async def train_on_message(self, content: str, author_id: int, emoji_count: int = 0, message=None):
         """Train Markov chain with batch processing"""
-        clean_content = self.sanitize_message(content, message)  # PASS MESSAGE OBJECT
+        clean_content = self.sanitize_message(content, message)
         if not clean_content:
             return 0
         
-        triplets = self.extract_triplets_with_nlp(clean_content)
+        triplets = self.extract_triplets(clean_content)
         if not triplets:
             return 0
         
@@ -553,20 +535,21 @@ class EnhancedMarkovCog(commands.Cog):
                 
                 # Update user stats
                 await db.execute('''
-                    INSERT OR REPLACE INTO user_stats (user_id, message_count, last_seen, emoji_usage)
-                    VALUES (?, 
-                            COALESCE((SELECT message_count FROM user_stats WHERE user_id = ?), 0) + 1,
-                            CURRENT_TIMESTAMP,
-                            COALESCE((SELECT emoji_usage FROM user_stats WHERE user_id = ?), 0) + ?)
-                ''', (author_id, author_id, author_id, emoji_count))
+                    INSERT INTO user_stats (user_id, message_count, last_seen, emoji_usage)
+                    VALUES (?, 1, CURRENT_TIMESTAMP, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        message_count = message_count + 1,
+                        last_seen = CURRENT_TIMESTAMP,
+                        emoji_usage = emoji_usage + ?
+                ''', (author_id, emoji_count, emoji_count))
                 
-                # Mark message as processed
-                await db.execute('''
-                    UPDATE message_log 
-                    SET processed = 1 
-                    WHERE content = ? AND author_id = ? AND processed = 0
-                    LIMIT 1
-                ''', (content, author_id))
+                # Update username if available
+                if message and message.author:
+                    await db.execute('''
+                        UPDATE user_stats 
+                        SET username = ? 
+                        WHERE user_id = ? AND (username IS NULL OR username != ?)
+                    ''', (str(message.author), author_id, str(message.author)))
                 
                 await db.commit()
                 
@@ -577,28 +560,6 @@ class EnhancedMarkovCog(commands.Cog):
         except Exception as e:
             logger.error(f"Training error: {e}")
             return 0
-
-    @tasks.loop(hours=1)
-    async def update_user_cache(self):
-        """Update user cache from database"""
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                async with db.execute("SELECT DISTINCT author_id FROM message_log") as cursor:
-                    user_ids = [row[0] for row in await cursor.fetchall()]
-                
-                # Update cache for users we know about
-                for user_id in user_ids:
-                    if user_id not in self.user_cache:
-                        # Try to fetch user from Discord
-                        try:
-                            user = await self.bot.fetch_user(user_id)
-                            if user:
-                                self.user_cache[user_id] = user.name
-                        except:
-                            pass
-        except Exception as e:
-            logger.error(f"User cache update error: {e}")
-
 
     # --- REPLY GENERATION WITH ANTI-SPAM ---
     async def generate_sentence(self, seed_word: Optional[str] = None, context_message: Optional[str] = None) -> Optional[str]:
@@ -614,56 +575,65 @@ class EnhancedMarkovCog(commands.Cog):
                 start_pair = None
                 
                 if seed_word and len(seed_word) >= self.SEED_WORD_MIN_LENGTH:
-                    # FIXED: Use parameterized query with exact match or word boundary
+                    # Try to find a starting pair with the seed word
                     async with db.execute('''
-                        SELECT word_a, word_b FROM markov_chain 
+                        SELECT word_a, word_b, count FROM markov_chain 
                         WHERE (LOWER(word_a) = LOWER(?) OR LOWER(word_b) = LOWER(?))
                         AND word_type != 'emoji'
                         ORDER BY count DESC
-                        LIMIT 1
+                        LIMIT 10
                     ''', (seed_word, seed_word)) as cursor:
-                        start_pair = await cursor.fetchone()
+                        candidates = await cursor.fetchall()
+                        if candidates:
+                            # Weighted random selection
+                            total_weight = sum(row['count'] for row in candidates)
+                            if total_weight > 0:
+                                rand = random.random() * total_weight
+                                cumulative = 0
+                                for row in candidates:
+                                    cumulative += row['count']
+                                    if cumulative >= rand:
+                                        start_pair = row
+                                        break
                 
                 if not start_pair and context_message:
-                    # FIXED: Better context word extraction using NLTK if available
-                    context_words = []
-                    if context_message:
-                        # Remove non-alphabetic characters and split
-                        clean_context = re.sub(r'[^\w\s@#]', ' ', context_message)
-                        words = clean_context.lower().split()
-                        
-                        # Filter for meaningful words (not using stopwords since we want context)
-                        context_words = [w for w in words 
-                                    if len(w) >= 4 
-                                    and not w.startswith(('@', '#', ':'))
-                                    and not re.match(r'^\d+$', w)]
+                    # Extract words from context
+                    clean_context = re.sub(r'[^\w\s@#:]', ' ', context_message)
+                    words = clean_context.lower().split()
                     
-                    if context_words:
-                        # FIXED: Try multiple context words, not just random one
-                        for context_word in context_words[:5]:  # Try first few context words
-                            async with db.execute('''
-                                SELECT word_a, word_b FROM markov_chain 
-                                WHERE (LOWER(word_a) = LOWER(?) OR LOWER(word_b) = LOWER(?))
-                                AND word_type != 'emoji'
-                                ORDER BY count DESC
-                                LIMIT 1
-                            ''', (context_word, context_word)) as cursor:
-                                start_pair = await cursor.fetchone()
-                            if start_pair:
+                    # Filter for meaningful words
+                    context_words = [w for w in words 
+                                   if len(w) >= 4 
+                                   and not w.startswith(('@', '#', ':'))
+                                   and not re.match(r'^\d+$', w)]
+                    
+                    # Try context words
+                    for context_word in context_words[:5]:
+                        async with db.execute('''
+                            SELECT word_a, word_b, count FROM markov_chain 
+                            WHERE (LOWER(word_a) = LOWER(?) OR LOWER(word_b) = LOWER(?))
+                            AND word_type != 'emoji'
+                            ORDER BY count DESC
+                            LIMIT 5
+                        ''', (context_word, context_word)) as cursor:
+                            candidates = await cursor.fetchall()
+                            if candidates:
+                                # Pick random from candidates
+                                start_pair = random.choice(candidates)
                                 break
                 
                 if not start_pair:
-                    # FIXED: Better random starting with weight normalization
+                    # Get random starting pair
                     async with db.execute('''
                         SELECT word_a, word_b, count FROM markov_chain 
                         WHERE word_type != 'emoji'
                         AND LENGTH(word_a) > 1 AND LENGTH(word_b) > 1
-                        ORDER BY (count * (0.5 + RANDOM())) DESC 
-                        LIMIT 5
+                        ORDER BY RANDOM()
+                        LIMIT 10
                     ''') as cursor:
                         candidates = await cursor.fetchall()
                         if candidates:
-                            # Weighted random selection among top candidates
+                            # Weighted selection
                             total_weight = sum(row['count'] for row in candidates)
                             if total_weight > 0:
                                 rand = random.random() * total_weight
@@ -682,7 +652,7 @@ class EnhancedMarkovCog(commands.Cog):
                 # Build sentence with emoji control
                 sentence = [start_pair['word_a'], start_pair['word_b']]
                 emoji_count = 0
-                max_attempts = self.SENTENCE_MAX_WORDS * 3  # Increased for better completion
+                max_attempts = self.SENTENCE_MAX_WORDS * 3
                 
                 for attempt in range(max_attempts):
                     if len(sentence) >= self.SENTENCE_MAX_WORDS:
@@ -690,14 +660,13 @@ class EnhancedMarkovCog(commands.Cog):
                     
                     w1, w2 = sentence[-2], sentence[-1]
                     
-                    # FIXED: Better query to get diverse options
+                    # Get next word options
                     async with db.execute('''
                         SELECT next_word, count, word_type FROM markov_chain 
                         WHERE word_a = ? AND word_b = ?
-                        AND (word_type != 'emoji' OR ? < ?)  # Only include emojis if we have room
                         ORDER BY count DESC 
-                        LIMIT 25
-                    ''', (w1, w2, emoji_count, self.MAX_REPLY_EMOJIS)) as cursor:
+                        LIMIT 15
+                    ''', (w1, w2)) as cursor:
                         options = await cursor.fetchall()
                     
                     if not options:
@@ -713,98 +682,71 @@ class EnhancedMarkovCog(commands.Cog):
                     if not options:
                         break
                     
-                    # FIXED: Better filtering with emoji chance calculation
+                    # Filter options
                     filtered_options = []
-                    emoji_options = []
-                    
                     for option in options:
                         word_type = option['word_type']
                         next_word = option['next_word']
                         
-                        # Skip problematic words
                         if not next_word or len(next_word.strip()) == 0:
                             continue
                         
-                        if word_type == 'emoji':
-                            emoji_options.append(option)
-                        else:
-                            # Filter out duplicate consecutive words
-                            if len(sentence) >= 1 and next_word == sentence[-1]:
-                                continue
-                            filtered_options.append(option)
-                    
-                    # FIXED: More nuanced emoji inclusion
-                    if emoji_options and emoji_count < self.MAX_REPLY_EMOJIS:
-                        # Calculate actual chance based on sentence length
-                        emoji_chance = self.EMOJI_REPLY_CHANCE * (1.0 - (emoji_count / self.MAX_REPLY_EMOJIS))
-                        if random.random() < emoji_chance:
-                            # Prefer emojis that match the context
-                            top_emojis = emoji_options[:min(5, len(emoji_options))]
-                            selected = random.choice(top_emojis)
-                            # Insert with higher weight for emoji
-                            selected_weighted = (selected['next_word'], selected['count'] * 2, selected['word_type'])
-                            filtered_options.insert(0, dict(zip(['next_word', 'count', 'word_type'], selected_weighted)))
+                        # Skip emojis if we have too many
+                        if word_type == 'emoji' and emoji_count >= self.MAX_REPLY_EMOJIS:
+                            continue
+                        
+                        # Skip duplicate consecutive words
+                        if len(sentence) >= 1 and next_word == sentence[-1]:
+                            continue
+                        
+                        filtered_options.append(option)
                     
                     if not filtered_options:
-                        filtered_options = options[:3]  # Fallback to fewer options
+                        filtered_options = options[:3]
                     
-                    # Weighted random selection with temperature
-                    total_weight = sum(opt['count'] ** 0.7 for opt in filtered_options)  # Temperature of 0.7
+                    # Weighted random selection
+                    total_weight = sum(opt['count'] for opt in filtered_options)
                     if total_weight == 0:
                         next_word = random.choice(filtered_options)['next_word']
                     else:
                         rand = random.random() * total_weight
                         cumulative = 0
                         for opt in filtered_options:
-                            cumulative += opt['count'] ** 0.7
+                            cumulative += opt['count']
                             if cumulative >= rand:
                                 next_word = opt['next_word']
                                 break
                         else:
                             next_word = filtered_options[0]['next_word']
                     
-                    # FIXED: Prevent infinite loops and repetition
-                    if len(sentence) > 3 and next_word in [sentence[-1], sentence[-2]]:
-                        # Skip this word to avoid repetition
-                        continue
+                    # Track emojis
+                    if self.classify_word_type(next_word) == 'emoji':
+                        emoji_count += 1
                     
                     sentence.append(next_word)
                     
-                    # Track emojis
-                    if next_word.startswith(':emoji_') or next_word.startswith(':custom_emoji_'):
-                        emoji_count += 1
-                    
-                    # FIXED: Better stopping conditions
-                    current_length = len(sentence)
-                    
                     # Check for natural ending
                     if next_word.endswith(('.', '!', '?')):
-                        # Base chance on sentence completeness
-                        completion_ratio = current_length / self.SENTENCE_MAX_WORDS
-                        stop_chance = 0.4 + (completion_ratio * 0.5)  # 40-90% chance to stop
-                        if random.random() < stop_chance and current_length >= 5:
+                        if len(sentence) >= 5 and random.random() < 0.6:
                             break
                     
                     # Length-based stopping
-                    if current_length >= 8 and random.random() < 0.2:
+                    if len(sentence) >= 8 and random.random() < 0.3:
                         break
                     
-                    if current_length >= 12 and random.random() < 0.4:
-                        break
-                    
-                    if current_length >= self.SENTENCE_MAX_WORDS:
+                    if len(sentence) >= self.SENTENCE_MAX_WORDS:
                         break
                 
-                # FIXED: Better token conversion with proper handling
+                # Convert tokens to readable text
                 readable_sentence = []
-                used_mentions = set()  # Track used mentions to avoid duplicates
+                used_mentions = set()
                 
-                for word in sentence:
+                for i, word in enumerate(sentence):
                     # Handle Unicode emojis
                     if word.startswith(':emoji_'):
                         emoji_name = word[7:-1] if word.endswith(':') else word[7:]
                         try:
-                            emoji_char = emoji.emojize(f":{emoji_name}:")
+                            emoji_char = emoji.emojize(f":{emoji_name}:", language='alias')
                             readable_sentence.append(emoji_char)
                         except:
                             readable_sentence.append(f":{emoji_name}:")
@@ -812,7 +754,6 @@ class EnhancedMarkovCog(commands.Cog):
                     # Handle custom Discord emojis
                     elif word.startswith(':custom_emoji_'):
                         emoji_name = word[14:-1] if word.endswith(':') else word[14:]
-                        # Format as Discord emoji if we know the ID, otherwise as text
                         readable_sentence.append(f":{emoji_name}:")
                     
                     # Handle username mentions
@@ -824,19 +765,6 @@ class EnhancedMarkovCog(commands.Cog):
                         else:
                             readable_sentence.append(f"@{user_id}")
                     
-                    # Handle old format for backward compatibility
-                    elif word.startswith('@user_'):
-                        match = re.search(r'\d+', word)
-                        if match:
-                            user_id = match.group(0)
-                            if user_id not in used_mentions:
-                                readable_sentence.append(f"<@{user_id}>")
-                                used_mentions.add(user_id)
-                            else:
-                                readable_sentence.append("@user")
-                        else:
-                            readable_sentence.append("@user")
-                    
                     # Handle other mentions
                     elif word in ['#channel_mention', '@role_mention']:
                         readable_sentence.append(word)
@@ -844,14 +772,13 @@ class EnhancedMarkovCog(commands.Cog):
                     # Regular words - ensure proper case
                     else:
                         # Capitalize first word of sentence
-                        if len(readable_sentence) == 0 and word[0].islower():
+                        if i == 0 and word[0].islower():
                             word = word[0].upper() + word[1:]
                         readable_sentence.append(word)
                 
-                # FIXED: Better sentence assembly
+                # Assemble final sentence
                 result = ''
                 for i, token in enumerate(readable_sentence):
-                    # Add space before token unless it's an emoji or mention at start
                     if i == 0:
                         result = token
                     else:
@@ -876,36 +803,24 @@ class EnhancedMarkovCog(commands.Cog):
                 if result and result[0].islower():
                     result = result[0].upper() + result[1:]
                 
-                # Add punctuation if missing (with better logic)
+                # Add punctuation if missing
                 if result and not result[-1] in '.!?;':
-                    last_chars = result[-10:].lower() if len(result) >= 10 else result.lower()
+                    last_words = result.lower().split()[-2:]
                     
                     # Question detection
                     question_words = ['what', 'why', 'how', 'when', 'who', 'where', 'which', 'whose']
-                    if any(word in last_chars.split()[-2:] for word in question_words):
+                    if any(word in last_words for word in question_words):
                         result += '?'
                     # Exclamation detection
-                    elif any(word in last_chars.split()[-1] for word in ['wow', 'awesome', 'amazing', 'great', 'yes', 'no']):
-                        result += '!'
-                    # Natural stopping based on sentence mood
-                    elif random.random() < 0.1:
-                        result += '?'
-                    elif random.random() < 0.15:
+                    elif any(word in last_words for word in ['wow', 'awesome', 'amazing', 'great', 'yes', 'no']):
                         result += '!'
                     else:
                         result += '.'
                 
-                # FIXED: Final validation
+                # Final validation
                 words_in_result = result.split()
                 if len(words_in_result) < 3:
-                    # Try to salvage very short sentences
-                    if len(words_in_result) >= 1:
-                        # Add filler words if too short
-                        fillers = ['indeed', 'really', 'though', 'maybe', 'perhaps']
-                        if random.random() < 0.5:
-                            result = f"{result} {random.choice(fillers)}."
-                    else:
-                        return None
+                    return None
                 
                 # Remove any trailing spaces before punctuation
                 result = re.sub(r'\s+([.!?,;])', r'\1', result)
@@ -917,6 +832,10 @@ class EnhancedMarkovCog(commands.Cog):
             import traceback
             logger.error(traceback.format_exc())
             return None
+
+    async def can_generate_reply(self):
+        """Check if we have enough data"""
+        return self.stats['total_triplets'] >= self.MIN_TRIPLETS_FOR_REPLY
 
     # --- DISCORD EVENT HANDLERS WITH ANTI-SPAM ---
     @commands.Cog.listener()
@@ -1016,7 +935,7 @@ class EnhancedMarkovCog(commands.Cog):
                             logger.warning(f"Discord rate limit hit: {e}")
                             self.stats['rate_limited'] += 1
                         else:
-                            raise
+                            logger.error(f"Failed to send message: {e}")
             
             elif should_reply:
                 # If we should reply but couldn't generate, send fallback
@@ -1042,7 +961,7 @@ class EnhancedMarkovCog(commands.Cog):
             # Count Unicode emojis
             emoji_list = list(emoji.emoji_list(message.content))
             
-            # FIXED: Count ALL Discord emojis (both <:name:id> and <a:name:id>)
+            # Count Discord emojis
             custom_emojis = re.findall(r'<a?:(\w+):\d+>', message.content)
             emoji_count = len(emoji_list) + len(custom_emojis)
             
@@ -1059,17 +978,22 @@ class EnhancedMarkovCog(commands.Cog):
                     message.created_at.isoformat(), emoji_count))
                 await db.commit()
             
-            # Add to in-memory buffers WITH PROPER SANITIZATION
+            # Add to in-memory buffers
             clean = self.sanitize_message(message.content, message)
             if clean:
                 self.recent_messages.append(clean)
             
             self.stats['messages_processed'] += 1
+            self.stats['total_messages'] += 1
             
             # Train immediately
             trained = await self.train_on_message(message.content, message.author.id, emoji_count, message)
             if trained > 0:
-                logger.debug(f"Trained on message: {trained} triplets")
+                self.stats['total_triplets'] += trained
+            
+            # Periodic save
+            if self.stats['messages_processed'] % self.FLUSH_THRESHOLD == 0:
+                self.save_state()
             
         except Exception as e:
             logger.error(f"Buffering error: {e}")
@@ -1079,12 +1003,12 @@ class EnhancedMarkovCog(commands.Cog):
     async def periodic_tasks(self):
         """Run periodic maintenance tasks"""
         if not self.db_initialized:
-            return  # Skip if database not ready
+            return
         
         try:
             await self.cleanup_old_data()
-            self.save_state()
             await self.update_stats()
+            self.save_state()
             logger.debug("Periodic tasks completed")
         except Exception as e:
             logger.error(f"Periodic task error: {e}")
@@ -1101,6 +1025,9 @@ class EnhancedMarkovCog(commands.Cog):
                 old_cutoff = (datetime.utcnow() - timedelta(days=self.PRUNE_OLD_TRIPLETS_AFTER_DAYS)).isoformat()
                 await db.execute('DELETE FROM markov_chain WHERE last_used < ? AND count < 2', (old_cutoff,))
                 
+                # Vacuum database
+                await db.execute('VACUUM')
+                
                 await db.commit()
                 logger.debug("Cleanup completed")
                 
@@ -1112,24 +1039,25 @@ class EnhancedMarkovCog(commands.Cog):
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 async with db.execute("SELECT COUNT(*) FROM markov_chain") as cursor:
-                    self.stats['total_triplets'] = (await cursor.fetchone())[0] or 0
+                    result = await cursor.fetchone()
+                    self.stats['total_triplets'] = result[0] if result else 0
                 
                 async with db.execute("SELECT COUNT(*) FROM message_log") as cursor:
-                    self.stats['total_messages'] = (await cursor.fetchone())[0] or 0
+                    result = await cursor.fetchone()
+                    self.stats['total_messages'] = result[0] if result else 0
                 
                 async with db.execute("SELECT COUNT(DISTINCT author_id) FROM message_log") as cursor:
-                    self.stats['unique_users'] = (await cursor.fetchone())[0] or 0
-                
-                # Update emoji stats
-                async with db.execute("SELECT SUM(emoji_count) FROM message_log") as cursor:
                     result = await cursor.fetchone()
-                    self.stats['emojis_learned'] = result[0] or 0
+                    self.stats['unique_users'] = result[0] if result else 0
+                
+                # Update today's messages count
+                today = datetime.utcnow().date().isoformat()
+                async with db.execute("SELECT COUNT(*) FROM message_log WHERE DATE(timestamp) = DATE('now')") as cursor:
+                    result = await cursor.fetchone()
+                    self.stats['today_messages'] = result[0] if result else 0
+                
         except Exception as e:
             logger.error(f"Stats update error: {e}")
-
-    async def can_generate_reply(self):
-        """Check if we have enough data"""
-        return self.stats['total_triplets'] >= self.MIN_TRIPLETS_FOR_REPLY
 
     # --- COMMANDS WITH ENHANCED STATS ---
     @commands.command(name="brainstats")
@@ -1161,11 +1089,12 @@ class EnhancedMarkovCog(commands.Cog):
                     top_users = await cursor.fetchall()
                 
                 # Update instance stats
-                self.stats.update({
-                    'total_triplets': row['triplets'],
-                    'total_messages': row['messages'],
-                    'unique_users': row['unique_users']
-                })
+                if row:
+                    self.stats.update({
+                        'total_triplets': row['triplets'],
+                        'total_messages': row['messages'],
+                        'unique_users': row['unique_users']
+                    })
                 
                 embed = discord.Embed(
                     title="🧠 Enhanced Brain Statistics",
@@ -1173,29 +1102,33 @@ class EnhancedMarkovCog(commands.Cog):
                     timestamp=datetime.utcnow()
                 )
                 
-                embed.add_field(
-                    name="Knowledge Base",
-                    value=f"**{row['triplets']:,}** total triplets\n"
-                          f"**{row['emoji_triplets']:,}** emoji patterns\n"
-                          f"**{row['mention_triplets']:,}** mention patterns",
-                    inline=False
-                )
-                
-                embed.add_field(
-                    name="Activity",
-                    value=f"**{row['messages']:,}** total messages\n"
-                          f"**{row['today_messages']}** messages today\n"
-                          f"**{row['unique_users']}** unique users\n"
-                          f"**{self.stats['replies_generated']}** replies sent",
-                    inline=False
-                )
+                if row:
+                    embed.add_field(
+                        name="Knowledge Base",
+                        value=f"**{row['triplets']:,}** total triplets\n"
+                              f"**{row['emoji_triplets']:,}** emoji patterns\n"
+                              f"**{row['mention_triplets']:,}** mention patterns",
+                        inline=False
+                    )
+                    
+                    embed.add_field(
+                        name="Activity",
+                        value=f"**{row['messages']:,}** total messages\n"
+                              f"**{row['today_messages']}** messages today\n"
+                              f"**{row['unique_users']}** unique users\n"
+                              f"**{self.stats['replies_generated']}** replies sent",
+                        inline=False
+                    )
+                else:
+                    embed.add_field(name="Error", value="Could not fetch statistics", inline=False)
                 
                 # Top users
-                top_users_text = "\n".join(
-                    f"{user['username'] or 'Unknown'}: {user['message_count']:,} msgs ({user['emoji_usage']} emojis)"
-                    for user in top_users
-                )
-                embed.add_field(name="Top Contributors", value=top_users_text or "No data", inline=False)
+                if top_users:
+                    top_users_text = "\n".join(
+                        f"{user['username'] or 'Unknown'}: {user['message_count']:,} msgs ({user['emoji_usage']} emojis)"
+                        for user in top_users
+                    )
+                    embed.add_field(name="Top Contributors", value=top_users_text, inline=False)
                 
                 # Anti-spam stats
                 embed.add_field(
@@ -1207,20 +1140,36 @@ class EnhancedMarkovCog(commands.Cog):
                 )
                 
                 # Status
-                if row['triplets'] < self.MIN_TRIPLETS_FOR_REPLY:
-                    status = f"Learning... ({row['triplets']}/{self.MIN_TRIPLETS_FOR_REPLY} triplets)"
+                if self.stats['total_triplets'] < self.MIN_TRIPLETS_FOR_REPLY:
+                    status = f"Learning... ({self.stats['total_triplets']}/{self.MIN_TRIPLETS_FOR_REPLY} triplets)"
                     embed.color = discord.Color.orange()
                 else:
                     status = "✅ Ready to generate!"
                     embed.color = discord.Color.green()
                 
-                embed.set_footer(text=f"{status} | Min interval: {self.MIN_MESSAGE_INTERVAL}s")
+                embed.set_footer(text=f"{status} | Uptime: {self.get_uptime()}")
                 
                 await ctx.send(embed=embed)
                 
         except Exception as e:
             logger.error(f"Brainstats error: {e}")
             await ctx.send(f"❌ Error: {str(e)[:100]}")
+
+    def get_uptime(self):
+        """Get formatted uptime"""
+        try:
+            startup = datetime.fromisoformat(self.stats['startup_time'])
+            uptime = datetime.utcnow() - startup
+            days = uptime.days
+            hours, remainder = divmod(uptime.seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            
+            if days > 0:
+                return f"{days}d {hours}h {minutes}m"
+            else:
+                return f"{hours}h {minutes}m {seconds}s"
+        except:
+            return "Unknown"
 
     @commands.command(name="generate")
     async def force_generate(self, ctx, *, seed_word=None):
@@ -1312,16 +1261,20 @@ class EnhancedMarkovCog(commands.Cog):
                 async with db.execute("""
                     SELECT 
                         COUNT(*) as total_emojis,
-                        COUNT(DISTINCT next_word) as unique_emojis,
-                        AVG(emoji_count) as avg_per_message
-                    FROM (
-                        SELECT next_word, COUNT(*) as emoji_count 
-                        FROM markov_chain 
-                        WHERE word_type = 'emoji' 
-                        GROUP BY next_word
-                    )
+                        COUNT(DISTINCT next_word) as unique_emojis
+                    FROM markov_chain 
+                    WHERE word_type = 'emoji'
                 """) as cursor:
                     emoji_stats = await cursor.fetchone()
+                
+                # Get average emojis per message
+                async with db.execute("""
+                    SELECT AVG(emoji_count) as avg_per_message
+                    FROM message_log
+                    WHERE emoji_count > 0
+                """) as cursor:
+                    avg_result = await cursor.fetchone()
+                    avg_per_message = avg_result['avg_per_message'] if avg_result and avg_result['avg_per_message'] else 0
                 
                 # Get most common emojis
                 async with db.execute("""
@@ -1340,22 +1293,28 @@ class EnhancedMarkovCog(commands.Cog):
                     timestamp=datetime.utcnow()
                 )
                 
-                embed.add_field(
-                    name="Overview",
-                    value=f"**{emoji_stats['total_emojis']:,}** total emoji usages\n"
-                          f"**{emoji_stats['unique_emojis']}** unique emojis\n"
-                          f"**{emoji_stats['avg_per_message']:.1f}** avg emojis per message\n"
-                          f"**{self.MAX_EMOJIS_PER_MESSAGE}** max learned per message\n"
-                          f"**{self.MAX_REPLY_EMOJIS}** max in replies",
-                    inline=False
-                )
+                if emoji_stats:
+                    embed.add_field(
+                        name="Overview",
+                        value=f"**{emoji_stats['total_emojis']:,}** total emoji usages\n"
+                              f"**{emoji_stats['unique_emojis']}** unique emojis\n"
+                              f"**{avg_per_message:.1f}** avg emojis per message\n"
+                              f"**{self.MAX_EMOJIS_PER_MESSAGE}** max learned per message\n"
+                              f"**{self.MAX_REPLY_EMOJIS}** max in replies",
+                        inline=False
+                    )
                 
                 # Top emojis
                 if top_emojis:
                     emoji_list = []
                     for emoji_row in top_emojis:
                         emoji_name = emoji_row['next_word'].replace(':emoji_', '').replace(':custom_emoji_', '').rstrip(':')
-                        emoji_list.append(f"{emoji_name}: {emoji_row['usage_count']:,}")
+                        try:
+                            # Try to show actual emoji
+                            emoji_char = emoji.emojize(f":{emoji_name}:", language='alias')
+                            emoji_list.append(f"{emoji_char}: {emoji_row['usage_count']:,}")
+                        except:
+                            emoji_list.append(f":{emoji_name}: {emoji_row['usage_count']:,}")
                     
                     embed.add_field(
                         name="Most Used Emojis",
@@ -1367,6 +1326,7 @@ class EnhancedMarkovCog(commands.Cog):
                 await ctx.send(embed=embed)
                 
         except Exception as e:
+            logger.error(f"Emoji stats error: {e}")
             await ctx.send(f"❌ Error: {str(e)[:100]}")
 
     @commands.command(name="clearcooldown")
@@ -1415,6 +1375,7 @@ class EnhancedMarkovCog(commands.Cog):
                 )
                 
         except Exception as e:
+            logger.error(f"Export error: {e}")
             await ctx.send(f"Error exporting: {str(e)}")
 
     @commands.command(name="resetdaily")
@@ -1429,39 +1390,40 @@ class EnhancedMarkovCog(commands.Cog):
     async def health_check(self, ctx):
         """Check bot health"""
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                # Check database health
-                await db.execute("PRAGMA integrity_check")
-                await db.execute("PRAGMA optimize")
-                
-                embed = discord.Embed(
-                    title="🤖 Bot Health Check",
-                    color=discord.Color.green(),
-                    timestamp=datetime.utcnow()
-                )
-                
-                uptime = datetime.utcnow() - datetime.fromisoformat(self.stats['startup_time'])
-                hours, remainder = divmod(int(uptime.total_seconds()), 3600)
-                minutes, seconds = divmod(remainder, 60)
-                
-                embed.add_field(
-                    name="System Status",
-                    value=f"✅ **Online**\n"
-                          f"Uptime: {hours}h {minutes}m {seconds}s\n"
-                          f"Database: ✅ Healthy\n"
-                          f"State: ✅ Saved",
-                    inline=False
-                )
-                
-                embed.add_field(
-                    name="Memory",
-                    value=f"Recent messages: {len(self.recent_messages)}/5000\n"
-                          f"Buffer: {self.stats['messages_processed'] % self.FLUSH_THRESHOLD}/{self.FLUSH_THRESHOLD}\n"
-                          f"Cooldowns: {len(self.reply_cooldowns)} active",
-                    inline=False
-                )
-                
-                await ctx.send(embed=embed)
+            embed = discord.Embed(
+                title="🤖 Bot Health Check",
+                color=discord.Color.green(),
+                timestamp=datetime.utcnow()
+            )
+            
+            uptime = self.get_uptime()
+            
+            embed.add_field(
+                name="System Status",
+                value=f"✅ **Online**\n"
+                      f"Uptime: {uptime}\n"
+                      f"Database: {'✅ Healthy' if self.db_initialized else '❌ Not ready'}\n"
+                      f"State: ✅ Saved",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="Memory",
+                value=f"Recent messages: {len(self.recent_messages)}/5000\n"
+                      f"Cooldowns: {len(self.reply_cooldowns)} active\n"
+                      f"User cache: {len(self.user_cache)} users",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="Performance",
+                value=f"Triplets: {self.stats['total_triplets']:,}\n"
+                      f"Messages processed: {self.stats['messages_processed']:,}\n"
+                      f"Replies generated: {self.stats['replies_generated']:,}",
+                inline=False
+            )
+            
+            await ctx.send(embed=embed)
                 
         except Exception as e:
             await ctx.send(f"❌ Health check failed: {e}")
@@ -1470,12 +1432,15 @@ class EnhancedMarkovCog(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def force_learn(self, ctx, limit: int = 100):
         """Force learning from recent messages"""
+        if limit > 1000:
+            limit = 1000
+            
         await ctx.send(f"⏳ Learning from last {limit} messages...")
         
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 async with db.execute('''
-                    SELECT content FROM message_log 
+                    SELECT content, author_id FROM message_log 
                     WHERE processed = 0 
                     ORDER BY timestamp DESC 
                     LIMIT ?
@@ -1483,13 +1448,19 @@ class EnhancedMarkovCog(commands.Cog):
                     rows = await cursor.fetchall()
                     
                 learned = 0
-                for row in rows:
-                    learned += await self.train_on_message(row[0])
+                for content, author_id in rows:
+                    # Count emojis
+                    emoji_list = list(emoji.emoji_list(content))
+                    custom_emojis = re.findall(r'<a?:(\w+):\d+>', content)
+                    emoji_count = len(emoji_list) + len(custom_emojis)
                     
+                    learned += await self.train_on_message(content, author_id, emoji_count)
+                
                 await ctx.send(f"✅ Learned {learned} new triplets from {len(rows)} messages!")
                 
         except Exception as e:
+            logger.error(f"Force learn error: {e}")
             await ctx.send(f"❌ Error: {e}")
 
 async def setup(bot):
-    await bot.add_cog(EnhancedMarkovCog(bot))
+    await bot.add_cog(EnhancedMarkovCog(bot)).
