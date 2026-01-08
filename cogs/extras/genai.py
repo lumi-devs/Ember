@@ -1570,7 +1570,7 @@ class EnhancedMarkovCog(commands.Cog):
                 if len(words_in_result) < 3:
                     return None
                 
-                result = re.sub(r'\s+([.!?,;])', r'\1', result)
+                result = re.sub(r'(?<![:>])\s+([.!?,;])', r'\1', result)
                 
                 return result
                 
