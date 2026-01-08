@@ -226,24 +226,39 @@ class EnhancedMarkovCog(commands.Cog):
 
     @asynccontextmanager
     async def get_db(self):
-            """Get database connection from pool with proper function registration"""
-            db = None
-            try:
+        """Get database connection from pool with proper function registration"""
+        db = None
+        try:
+            async with self._db_pool_lock:
+                if self._db_pool:
+                    db = self._db_pool.pop()
+            
+            # FIX: If pool is empty, we MUST create a new connection
+            if not db:
+                db = await aiosqlite.connect(self.db_path)
+                # Register the REGEXP function only on brand new connections
+                try:
+                    await db.create_function("REGEXP", 2, self.regexp)
+                except:
+                    pass 
+            
+            if db is None:
+                raise Exception("Database connection could not be established")
+                
+            yield db
+            
+        except Exception as e:
+            logger.error(f"Database connection error: {e}")
+            if db:
+                await db.close()
+            raise
+        finally:
+            if db:
                 async with self._db_pool_lock:
-                    if self._db_pool:
-                        db = self._db_pool.pop()
-                
-
-                    
-                yield db
-                
-            finally:
-                if db:
-                    async with self._db_pool_lock:
-                        if len(self._db_pool) < self._max_pool_size:
-                            self._db_pool.append(db)
-                        else:
-                            await db.close()
+                    if len(self._db_pool) < self._max_pool_size:
+                        self._db_pool.append(db)
+                    else:
+                        await db.close()
 
     
     async def get_cached_query(self, query_key: str, query_func, *args):
@@ -838,8 +853,9 @@ class EnhancedMarkovCog(commands.Cog):
         negative_hindi = ['bura', 'kharab', 'bekar', 'ganda', 'bad', 'worst', 'buraa', 'ganda']
         
         text_lower = text.lower()
+        words = text_lower.split()
         for word in positive_hindi:
-            if word in text_lower:
+            if word in words: # Exact word match
                 scores['compound'] = min(1.0, scores['compound'] + 0.3)
         
         for word in negative_hindi:
@@ -1118,9 +1134,18 @@ class EnhancedMarkovCog(commands.Cog):
                     CREATE INDEX IF NOT EXISTS idx_message_log_processed 
                     ON message_log(processed)
                 ''')
+            
                 
                 await db.commit()
                 
+                async with db.execute("PRAGMA table_info(markov_chain)") as cursor:
+                    columns = [row[1] for row in await cursor.fetchall()]
+                    if 'lemma_a' not in columns:
+                        logger.info("Migrating database schema...")
+                        await db.execute("ALTER TABLE markov_chain ADD COLUMN lemma_a TEXT")
+                        await db.execute("ALTER TABLE markov_chain ADD COLUMN lemma_b TEXT")
+                        await db.execute("ALTER TABLE markov_chain ADD COLUMN lemma_next TEXT")
+                    
                 # Get initial counts
                 async with db.execute("SELECT COUNT(*) FROM markov_chain") as cursor:
                     result = await cursor.fetchone()
@@ -1509,24 +1534,38 @@ class EnhancedMarkovCog(commands.Cog):
             async with self.get_db() as db: 
                 
                 # Batch insert with Hinglish information
+                batch_data = []
+                
                 for triplet in triplets:
                     (word_a, word_b, word_c, lemma_a, lemma_b, lemma_c, 
-                     pos_a, pos_b, pos_c, sent) = triplet
+                    pos_a, pos_b, pos_c, sent) = triplet
                     
+                    # Calculate word type purely in Python first
                     word_type = self.classify_word_type(word_a, pos_a)
                     
-                    await db.execute('''
+                    # Append 12 parameters matching the 12 placeholders below
+                    batch_data.append((
+                        word_a, word_b, word_c,          # 1, 2, 3
+                        lemma_a, lemma_b, lemma_c,       # 4, 5, 6
+                        pos_a, pos_b, pos_c,             # 7, 8, 9
+                        sent,                            # 10 (Initial sentiment)
+                        word_type,                       # 11 (Word type)
+                        sent                             # 12 (Update sentiment value)
+                    ))
+                
+                # Execute single bulk operation (massive speedup)
+                if batch_data:
+                    await db.executemany('''
                         INSERT INTO markov_chain 
                         (word_a, word_b, next_word, lemma_a, lemma_b, lemma_next,
-                         pos_a, pos_b, pos_next, sentiment_score, count, word_type)
+                        pos_a, pos_b, pos_next, sentiment_score, count, word_type)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                         ON CONFLICT(word_a, word_b, next_word) 
                         DO UPDATE SET 
                             count = count + 1,
                             last_used = CURRENT_TIMESTAMP,
-                            sentiment_score = ((sentiment_score * (count - 1)) + ?) / count
-                    ''', (word_a, word_b, word_c, lemma_a, lemma_b, lemma_c,
-                          pos_a, pos_b, pos_c, sent, word_type, sent))
+                            sentiment_score = ((sentiment_score * count) + ?) / (count + 1)
+                    ''', batch_data)
                 
                 # Update user stats
                 await db.execute('''
@@ -1564,28 +1603,8 @@ class EnhancedMarkovCog(commands.Cog):
             logger.error(f"Training error: {e}")
             return 0
 
-
-    # Add to imports
-    import concurrent.futures
     from functools import partial
 
-
-    # New async wrapper methods:
-    async def nltk_pos_tag_async(self, text: str) -> List[Tuple[str, str]]:
-        """Run POS tagging in thread pool"""
-        if not text:
-            return []
-        
-        loop = asyncio.get_event_loop()
-        try:
-            # Use a partial function to pass arguments
-            func = partial(pos_tag, word_tokenize(text), tagset='universal')
-            result = await loop.run_in_executor(self.nltk_executor, func)
-            return result
-        except Exception as e:
-            logger.warning(f"NLTK POS tagging failed: {e}")
-            # Fallback to simple tokenization
-            return [(word, 'UNK') for word in text.split()]
 
 
     def weighted_choice(self, items, temperature=1.0):
