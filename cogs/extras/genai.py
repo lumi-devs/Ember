@@ -1,12 +1,10 @@
-<<<<<<< HEAD
 import time
-=======
 from contextlib import asynccontextmanager
 from functools import partial
 import secrets
 import time
 import concurrent
->>>>>>> f2ca25446086316234df846fdb428b2732c3f7e5
+
 import discord
 from discord.ext import commands, tasks
 import aiosqlite
