@@ -1798,8 +1798,7 @@ class EnhancedMarkovCog(commands.Cog):
                 
                 # Get language mix stats
                 total_messages = self.stats['total_messages']
-                hinglish_percentage = (self.stats['hinglish_messages'] / total_messages * 100) if total_messages > 0 else 0
-                
+                hinglish_percentage = (self.stats['hinglish_messages'] / total_messages * 100) if total_messages > 0 else 0                
                 # Get unique Hindi words
                 async with db.execute("""
                     SELECT COUNT(DISTINCT next_word) as unique_hindi_words
@@ -1927,48 +1926,58 @@ class EnhancedMarkovCog(commands.Cog):
                 
                 # Update instance stats
                 if row:
-                    self.stats.update({
-                        'total_triplets': row['triplets'],
-                        'total_messages': row['messages'],
-                        'unique_users': row['unique_users'],
-                        'lemmas_stored': row['lemmatized_triplets']
-                    })
-                
-                embed = discord.Embed(
-                    title="🧠 Enhanced Brain Statistics (NLP)",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.utcnow()
-                )
-                
-                if row:
+                    # Safe formatting helpers
+                    triplets = row['triplets'] or 0
+                    lemmas = row['lemmatized_triplets'] or 0
+                    emoji_triplets = row['emoji_triplets'] or 0
+                    mention_triplets = row['mention_triplets'] or 0
+                    messages = row['messages'] or 0
+                    today = row['today_messages'] or 0
+                    users = row['unique_users'] or 0
+                    
+                    # Handle float potentially being None
+                    avg_sent = row['avg_sentiment']
+                    avg_sent_str = f"{avg_sent:+.2f}" if avg_sent is not None else "0.00"
+                    
+                    embed = discord.Embed(
+                        title="🧠 Enhanced Brain Statistics (NLP)",
+                        color=discord.Color.blue(),
+                        timestamp=datetime.utcnow()
+                    )
                     embed.add_field(
                         name="Knowledge Base",
-                        value=f"**{row['triplets']:,}** total triplets\n"
-                              f"**{row['lemmatized_triplets']:,}** lemmatized\n"
-                              f"**{row['emoji_triplets']:,}** emoji patterns\n"
-                              f"**{row['mention_triplets']:,}** mention patterns",
+                        value=f"**{triplets:,}** total triplets\n"
+                              f"**{lemmas:,}** lemmatized\n"
+                              f"**{emoji_triplets:,}** emoji patterns\n"
+                              f"**{mention_triplets:,}** mention patterns",
                         inline=False
                     )
                     
                     embed.add_field(
                         name="Activity & Sentiment",
-                        value=f"**{row['messages']:,}** total messages\n"
-                              f"**{row['today_messages']}** messages today\n"
-                              f"**{row['unique_users']}** unique users\n"
-                              f"**{row['avg_sentiment']:+.2f}** avg sentiment\n"
+                        value=f"**{messages:,}** total messages\n"
+                              f"**{today}** messages today\n"
+                              f"**{users}** unique users\n"
+                              f"**{avg_sent_str}** avg sentiment\n"
                               f"**{self.conversation_sentiment:+.2f}** current sentiment",
                         inline=False
                     )
+                    
                 else:
                     embed.add_field(name="Error", value="Could not fetch statistics", inline=False)
                 
                 # Top users with sentiment
                 if top_users:
-                    top_users_text = "\n".join(
-                        f"<@{user['user_id']}>: {user['message_count']:,} msgs "
-                        f"(sentiment: {user['avg_sentiment']:+.2f})"
-                        for user in top_users
-                    )
+                    lines = []
+                    for user in top_users:
+                        u_id = user['user_id']
+                        cnt = user['message_count'] or 0
+                        # Safe sentiment formatting
+                        sent = user['avg_sentiment']
+                        sent_str = f"{sent:+.2f}" if sent is not None else "0.00"
+                        lines.append(f"<@{u_id}>: {cnt:,} msgs (sentiment: {sent_str})")
+                    
+                    top_users_text = "\n".join(lines)
                     embed.add_field(name="Top Contributors", value=top_users_text, inline=False)
                 
                 # Current topics
