@@ -181,10 +181,9 @@ class EnhancedMarkovCog(commands.Cog):
                 # Optimize SQLite settings
                 await db.execute('PRAGMA journal_mode=WAL;')
                 await db.execute('PRAGMA synchronous=NORMAL;')
-                await db.execute('PRAGMA cache_size=-10000;')
-                await db.execute('PRAGMA temp_store=MEMORY;')
-                await db.execute('PRAGMA mmap_size=268435456;')
-                await db.execute('PRAGMA optimize;')
+                await db.execute('PRAGMA cache_size=-10000;')      # Keeps 10MB cache (Safe)
+                await db.execute('PRAGMA temp_store=DEFAULT;')     # <--- CHANGE: Uses Disk instead of RAM for temp files
+                await db.execute('PRAGMA mmap_size=33554432;')     # <--- CHANGE: Limits memory map to 32MB
                 
                 # Create tables
                 await db.execute('''
@@ -998,7 +997,7 @@ class EnhancedMarkovCog(commands.Cog):
         except Exception as e:
             logger.error(f"Buffering error: {e}")
 
-    # --- PERIODIC TASKS ---
+# --- PERIODIC TASKS ---
     @tasks.loop(minutes=5)
     async def periodic_tasks(self):
         """Run periodic maintenance tasks"""
@@ -1008,6 +1007,15 @@ class EnhancedMarkovCog(commands.Cog):
         try:
             await self.cleanup_old_data()
             await self.update_stats()
+            
+            # --- PATCH: MEMORY LEAK PROTECTION ---
+            # Clear user caches if they get too large (over 1000 items)
+            if len(self.user_cache) > 1000:
+                self.user_cache.clear()
+                self.user_id_map.clear()
+                logger.info("Cleared user cache to free RAM")
+            # -------------------------------------
+            
             self.save_state()
             logger.debug("Periodic tasks completed")
         except Exception as e:
@@ -1017,19 +1025,18 @@ class EnhancedMarkovCog(commands.Cog):
         """Clean up old data periodically"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
-                # Archive old raw messages
+                # 1. Perform deletions first
                 cutoff_date = (datetime.utcnow() - timedelta(days=self.RAW_MESSAGE_RETENTION_DAYS)).isoformat()
                 await db.execute('DELETE FROM message_log WHERE timestamp < ?', (cutoff_date,))
                 
-                # Archive old triplets
                 old_cutoff = (datetime.utcnow() - timedelta(days=self.PRUNE_OLD_TRIPLETS_AFTER_DAYS)).isoformat()
                 await db.execute('DELETE FROM markov_chain WHERE last_used < ? AND count < 2', (old_cutoff,))
-                
-                # Vacuum database
-                await db.execute('VACUUM')
-                
-                await db.commit()
-                logger.debug("Cleanup completed")
+                await db.commit() # End the transaction here
+
+            # 2. VACUUM must happen on a "fresh" connection outside a transaction
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute('PRAGMA vacuum;') # Use PRAGMA for explicit control
+                logger.info("Database VACUUM completed successfully.")
                 
         except Exception as e:
             logger.error(f"Cleanup error: {e}")
@@ -1081,7 +1088,7 @@ class EnhancedMarkovCog(commands.Cog):
                 
                 # Get top users
                 async with db.execute("""
-                    SELECT username, message_count, emoji_usage 
+                    SELECT user_id, username, message_count, emoji_usage 
                     FROM user_stats 
                     ORDER BY message_count DESC 
                     LIMIT 5
@@ -1125,7 +1132,7 @@ class EnhancedMarkovCog(commands.Cog):
                 # Top users
                 if top_users:
                     top_users_text = "\n".join(
-                        f"{user['username'] or 'Unknown'}: {user['message_count']:,} msgs ({user['emoji_usage']} emojis)"
+                        f"<@{user['user_id']}>: {user['message_count']:,} msgs ({user['emoji_usage']} emojis)"
                         for user in top_users
                     )
                     embed.add_field(name="Top Contributors", value=top_users_text, inline=False)
