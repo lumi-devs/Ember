@@ -1,11 +1,11 @@
 from contextlib import asynccontextmanager
 from functools import partial
+import secrets
 import time
 import concurrent
 import discord
 from discord.ext import commands, tasks
 import aiosqlite
-import random
 import re
 import asyncio
 import logging
@@ -64,6 +64,7 @@ class EnhancedMarkovCog(commands.Cog):
         self._db_pool = []  # List of available connections
         self._db_pool_lock = asyncio.Lock()
         self._max_pool_size = 5
+        self.global_topics = {}
         try:
             from nltk.corpus import stopwords
             self.stop_words = set(stopwords.words('english'))
@@ -195,7 +196,7 @@ class EnhancedMarkovCog(commands.Cog):
         self.MIN_MESSAGE_WORDS = 2  # Reduced for Hinglish
         
         # --- MODIFIED: NLP ENHANCEMENT PARAMETERS for Hinglish ---
-        self.GRAMMAR_ENFORCEMENT = False  # Disable for Hinglish (mixed grammar rules)
+        self.GRAMMAR_ENFORCEMENT = True  # Disable for Hinglish (mixed grammar rules)
         self.SENTIMENT_MATCHING = True   # Keep sentiment matching
         self.TOPIC_COHERENCE = True      # Keep topic coherence
         self.LEMMATIZATION_ENABLED = True  # Enable Hinglish lemmatization
@@ -236,33 +237,17 @@ class EnhancedMarkovCog(commands.Cog):
             if not db:
                 db = await aiosqlite.connect(self.db_path)
                 await db.create_function("REGEXP", 2, self.regexp)
-            
+                
             yield db
             
         finally:
             # Return to pool
-            if db:
-                # Check if connection is still valid by attempting a simple query
-                # or checking internal state
-                try:
-                    # aiosqlite connections don't have a .closed attribute
-                    # We can check by seeing if we can execute a simple statement
-                    async with db.execute("SELECT 1") as cursor:
-                        await cursor.fetchone()
-                    
-                    # Connection is valid, return to pool
-                    async with self._db_pool_lock:
-                        if len(self._db_pool) < self._max_pool_size:
-                            self._db_pool.append(db)
-                        else:
-                            await db.close()
-                            
-                except (aiosqlite.Error, AttributeError):
-                    # Connection is invalid, close it
-                    try:
+            if db and not db.closed:
+                async with self._db_pool_lock:
+                    if len(self._db_pool) < self._max_pool_size:
+                        self._db_pool.append(db)
+                    else:
                         await db.close()
-                    except:
-                        pass
 
     
     async def get_cached_query(self, query_key: str, query_func, *args):
@@ -605,15 +590,15 @@ class EnhancedMarkovCog(commands.Cog):
         result = text
         
         # 1. Typing quirks (15% chance)
-        if random.random() < 0.15:
+        if secrets.SystemRandom().random() < 0.15:
             result = result.lower()
         
         # 2. Lazy punctuation (30% chance)
-        if random.random() < 0.30 and result and result[-1] in '.!?':
+        if secrets.SystemRandom().random() < 0.30 and result and result[-1] in '.!?':
             result = result[:-1]
         
         # 3. Vocal fry - elongate last vowel for positive sentiment (5% chance)
-        if random.random() < 0.05 and sentiment > 0.1:
+        if secrets.SystemRandom().random() < 0.05 and sentiment > 0.1:
             words = result.split()
             if words:
                 last_word = words[-1].lower()
@@ -627,27 +612,17 @@ class EnhancedMarkovCog(commands.Cog):
                     result = ' '.join(words)
         
         # 4. Hinglish flair - add common fillers (10% chance)
-        if random.random() < 0.10:
+        if secrets.SystemRandom().random() < 0.10:
             hinglish_fillers = [
                 'yaar', 'bhai', 'dost', 'arey', 'oye', 'hmm', 'achaa',
                 'wah', 'wow', 'seriously', 'literally', 'bas'
             ]
             
             # Add filler at beginning or end
-            if random.choice([True, False]):
-                result = f"{random.choice(hinglish_fillers)}... {result}"
+            if secrets.choice([True, False]):
+                result = f"{secrets.choice(hinglish_fillers)}... {result}"
             else:
-                result = f"{result} {random.choice(hinglish_fillers)}"
-        
-        # 5. Casual spacing (20% chance)
-        if random.random() < 0.20:
-            # Replace some spaces with extra spaces for casual vibe
-            words = result.split()
-            if len(words) > 2:
-                # Randomly add extra spaces
-                idx = random.randint(0, len(words) - 2)
-                words[idx] = words[idx] + '  '
-                result = ' '.join(words)
+                result = f"{result} {secrets.choice(hinglish_fillers)}"
         
         return result
     
@@ -795,16 +770,16 @@ class EnhancedMarkovCog(commands.Cog):
         if seed_word and seed_word.lower() in greeting_words:
             if 5 <= hour < 12:
                 # Morning
-                return random.choice(self.time_greetings['morning'])
+                return secrets.choice(self.time_greetings['morning'])
             elif 12 <= hour < 17:
                 # Afternoon
-                return random.choice(self.time_greetings['afternoon'])
+                return secrets.choice(self.time_greetings['afternoon'])
             elif 17 <= hour < 21:
                 # Evening
-                return random.choice(self.time_greetings['evening'])
+                return secrets.choice(self.time_greetings['evening'])
             else:
                 # Night
-                return random.choice(self.time_greetings['night'])
+                return secrets.choice(self.time_greetings['night'])
         
         return seed_word
     
@@ -990,14 +965,37 @@ class EnhancedMarkovCog(commands.Cog):
 
 
     def is_valid_pos_transition(self, pos1: str, pos2: str) -> bool:
-        """Check if POS transition follows simplified grammar rules"""
-        if not self.GRAMMAR_ENFORCEMENT:
+            """
+            Enforce stricter grammar to prevent bad Hinglish mixing.
+            Example: Prevents "Main aaj khana play" (Noun -> Verb mismatch)
+            """
+            if not self.GRAMMAR_ENFORCEMENT:
+                return True
+
+            # Rule 1: Hindi Postpositions (ka/ke/ki/ko/mein/par) usually NOT followed by raw Verbs
+            # Bad: "kamra mein sleep" -> Good: "kamra mein so" or "kamra mein sleeping"
+            if pos1 == 'ADP': 
+                if pos2 == 'VERB': return False 
+                if pos2 == 'PRON': return True 
+                if pos2 == 'NOUN': return True
+                if pos2 == 'PROPN': return True
+                if pos2 == 'ADJ': return True
+
+            # Rule 2: Adjectives should usually precede Nouns
+            if pos1 == 'ADJ':
+                if pos2 == 'NOUN': return True
+                if pos2 == 'PROPN': return True
+                if pos2 == 'ADJ': return True # "bohot acha"
+                if pos2 == 'VERB': return False # "red run" -> Bad
+
+            # Rule 3: Pronouns (Main/Tum) usually followed by Noun, Adj, or Aux Verb
+            if pos1 == 'PRON':
+                if pos2 == 'VERB': return True 
+                if pos2 == 'NOUN': return True 
+                if pos2 == 'ADJ': return True 
+                if pos2 == 'ADP': return True # "mujh par"
+
             return True
-        
-        if pos1 not in self.POS_TRANSITION_RULES:
-            return True
-        
-        return pos2 in self.POS_TRANSITION_RULES[pos1]
     
     
     def save_state(self):
@@ -1462,7 +1460,7 @@ class EnhancedMarkovCog(commands.Cog):
             'sentiment': sentiment,
             'timestamp': datetime.utcnow()
         })
-        
+        self.update_global_topics(clean_content)
         # Update running sentiment
         sentiments = [msg['sentiment'] for msg in self.conversation_context]
         self.conversation_sentiment = sum(sentiments) / len(sentiments) if sentiments else 0.0
@@ -1604,7 +1602,8 @@ class EnhancedMarkovCog(commands.Cog):
         weights = [math.pow(count, 1 / temperature) for _, count in items]
         total = sum(weights)
 
-        r = random.uniform(0, total)
+        secure_gen = secrets.SystemRandom()
+        r = secure_gen.uniform(0, total)
         upto = 0
 
         for (value, _), w in zip(items, weights):
@@ -1658,6 +1657,36 @@ class EnhancedMarkovCog(commands.Cog):
         total = sum(counts)
         return -sum((c/total) * math.log(c/total + 1e-9) for c in counts)
 
+
+def update_global_topics(self, text: str):
+        """Update global topics that persist for hours (Long-Term Memory)"""
+        # Extract nouns/proper nouns
+        try:
+            pos_tags = self.get_pos_tags(text)
+            for word, tag in pos_tags:
+                if tag in ['NOUN', 'PROPN'] and len(word) > 3:
+                    # Clean word
+                    w = word.lower()
+                    if w in self.stop_words: continue
+                    
+                    # Add or refresh topic
+                    # We use a timestamp to allow decay over time (e.g., 4 hours)
+                    self.global_topics[w] = datetime.utcnow().isoformat()
+        except:
+            pass
+            
+        # Cleanup old topics (> 4 hours)
+        now = datetime.utcnow()
+        to_remove = []
+        for topic, timestamp_str in self.global_topics.items():
+            ts = datetime.fromisoformat(timestamp_str)
+            if (now - ts).total_seconds() > 14400:  # 4 hours
+                to_remove.append(topic)
+        
+        for t in to_remove:
+            del self.global_topics[t]
+            
+            
     async def generate_sentence(self, seed_word: Optional[str] = None, 
                               context_message: Optional[str] = None) -> Optional[str]:
         """Generate sentence with smart backoff, dynamic temperature, context awareness, entropy filtering, and caching."""
@@ -1791,7 +1820,7 @@ class EnhancedMarkovCog(commands.Cog):
                         # Apply temperature to starting selection
                         if sum(weights) > 0:
                             scaled_weights = self.apply_dynamic_temperature(weights, temperature)
-                            start_sequence = random.choices(candidates, weights=scaled_weights)[0]
+                            start_sequence = secrets.choices(candidates, weights=scaled_weights)[0]
                 
                 if not start_sequence and context_message:
                     # Extract context words for fallback
@@ -1816,7 +1845,7 @@ class EnhancedMarkovCog(commands.Cog):
                         cache_key = f"context_{context_word}"
                         candidates = await self.get_cached_query(cache_key, fetch_rows, sql, [context_word, context_word])
                         if candidates:
-                            start_sequence = random.choice(candidates)
+                            start_sequence = secrets.choice(candidates)
                             break
                 
                 if not start_sequence:
@@ -1836,7 +1865,7 @@ class EnhancedMarkovCog(commands.Cog):
                     if candidates:
                         weights = [row['count'] for row in candidates]
                         if sum(weights) > 0:
-                            start_sequence = random.choices(candidates, weights=weights)[0]
+                            start_sequence = secrets.choices(candidates, weights=weights)[0]
                 
                 if not start_sequence:
                     return None
@@ -1915,6 +1944,8 @@ class EnhancedMarkovCog(commands.Cog):
                         for topic in recent_topics:
                             if topic in next_word.lower():
                                 weight *= self.get_topic_boost(topic)
+                            if next_word.lower() in self.global_topics:
+                                weight *= 1.2
                         
                         # Apply grammar rules if enabled
                         if self.GRAMMAR_ENFORCEMENT:
@@ -1930,9 +1961,9 @@ class EnhancedMarkovCog(commands.Cog):
                     # Apply dynamic temperature to weights (with entropy adjustment)
                     if sum(base_weights) > 0:
                         final_weights = self.apply_dynamic_temperature(base_weights, adjusted_temp)
-                        next_choice = random.choices(filtered_options, weights=final_weights)[0]
+                        next_choice = secrets.choices(filtered_options, weights=final_weights)[0]
                     else:
-                        next_choice = random.choice(filtered_options)
+                        next_choice = secrets.choice(filtered_options)
                     
                     # Track emojis
                     if next_choice['word_type'] == 'emoji':
@@ -1947,18 +1978,18 @@ class EnhancedMarkovCog(commands.Cog):
                     
                     # End on punctuation
                     if last_word.endswith(('.', '!', '?')):
-                        if len(sentence_words) >= 5 and random.random() < 0.7:
+                        if len(sentence_words) >= 5 and secrets.SystemRandom().random() < 0.7:
                             break
                     
                     # End on emoji with decent length
                     elif next_choice['word_type'] == 'emoji':
-                        if len(sentence_words) >= 4 and random.random() < 0.4:
+                        if len(sentence_words) >= 4 and secrets.SystemRandom().random() < 0.4:
                             break
                     
                     # Length-based stopping with temperature influence
                     # Higher temperature = longer sentences (more creative)
                     min_length_for_stop = max(5, int(8 * adjusted_temp))
-                    if len(sentence_words) >= min_length_for_stop and random.random() < 0.3:
+                    if len(sentence_words) >= min_length_for_stop and secrets.SystemRandom().random() < 0.3:
                         break
                 
                 # Convert to readable text
@@ -2110,7 +2141,7 @@ class EnhancedMarkovCog(commands.Cog):
                 return
         
         # Determine if we should reply
-        if random.random() < chance or should_reply:
+        if secrets.SystemRandom().random() < chance or should_reply:
             if not await self.can_generate_reply():
                 if should_reply:
                     async with message.channel.typing():
@@ -2128,7 +2159,8 @@ class EnhancedMarkovCog(commands.Cog):
             
             if reply:
                 async with message.channel.typing():
-                    thinking_time = random.uniform(self.TYPING_MIN_SECONDS, self.TYPING_MAX_SECONDS)
+                    secure_gen = secrets.SystemRandom()
+                    thinking_time = secure_gen.uniform(self.TYPING_MIN_SECONDS, self.TYPING_MAX_SECONDS)
                     await asyncio.sleep(thinking_time)
                     try:
                         await message.channel.send(
@@ -2171,7 +2203,7 @@ class EnhancedMarkovCog(commands.Cog):
                 async with message.channel.typing():
                     await asyncio.sleep(0.5)
                     await message.channel.send(
-                        random.choice(fallbacks),
+                        secrets.choice(fallbacks),
                         reference=message,
                         mention_author=False
                     )
@@ -2798,6 +2830,47 @@ class EnhancedMarkovCog(commands.Cog):
         except Exception as e:
             logger.error(f"Force learn error: {e}")
             await ctx.send(f"❌ Error: {e}")
+            
+            
+    @commands.command(name="ingest")
+    @commands.has_permissions(administrator=True)
+    async def ingest_file(self, ctx):
+        """Upload a .txt file to train the bot on Hinglish data"""
+        if not ctx.message.attachments:
+            await ctx.send("❌ Please upload a `.txt` file with the command.")
+            return
+
+        attachment = ctx.message.attachments[0]
+        if not attachment.filename.endswith('.txt'):
+            await ctx.send("❌ File must be a text file.")
+            return
+
+        await ctx.send("⏳ Downloading and processing... This may take a moment.")
+        
+        try:
+            content = await attachment.read()
+            text_data = content.decode('utf-8', errors='ignore')
+            lines = text_data.split('\n')
+            
+            count = 0
+            async with ctx.typing():
+                for line in lines:
+                    line = line.strip()
+                    if len(line) < 5: continue
+                    
+                    # Train
+                    await self.train_on_message(line, self.bot.user.id)
+                    count += 1
+                    
+                    # Yield to event loop every 100 lines
+                    if count % 100 == 0:
+                        await asyncio.sleep(0)
+                        
+            self.save_state()
+            await ctx.send(f"✅ Successfully ingested **{count}** lines of training data!")
+            
+        except Exception as e:
+            await ctx.send(f"❌ Error processing file: {e}")
 
 async def setup(bot):
     await bot.add_cog(EnhancedMarkovCog(bot))
