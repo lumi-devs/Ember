@@ -17,25 +17,25 @@ from nltk.tokenize import word_tokenize, sent_tokenize
 from nltk import pos_tag
 from nltk.corpus import stopwords
 from nltk.sentiment import SentimentIntensityAnalyzer
-import string
-import spacy
 from collections import Counter
 import math
-import langdetect
 from langdetect import detect, DetectorFactory
 
 # Ensure consistent language detection
 DetectorFactory.seed = 0
 
 # Try to download NLTK data
+# Try to download NLTK data
 try:
     nltk.data.find('tokenizers/punkt')
-    nltk.data.find('tagger/averaged_perceptron_tagger')
+    nltk.data.find('taggers/averaged_perceptron_tagger')
+    nltk.data.find('taggers/universal_tagset')  # <--- ADD THIS LINE
     nltk.data.find('corpora/stopwords')
     nltk.data.find('sentiment/vader_lexicon')
 except LookupError:
     nltk.download('punkt', quiet=True)
     nltk.download('averaged_perceptron_tagger', quiet=True)
+    nltk.download('universal_tagset', quiet=True) # <--- ADD THIS LINE
     nltk.download('stopwords', quiet=True)
     nltk.download('vader_lexicon', quiet=True)
 
@@ -515,28 +515,52 @@ class EnhancedMarkovCog(commands.Cog):
 
     
     def get_pos_tags(self, text: str) -> List[Tuple[str, str]]:
-        """Simple POS tagging for Hinglish (approximate)"""
-        words = text.split()
-        pos_tags = []
+        """
+        Hybrid POS tagging: Uses NLTK for English structure + Custom overrides for Hinglish.
+        """
+        if not text:
+            return []
+
+        # 1. Use NLTK for smart tagging (handles English & basic morphology)
+        # We use tagset='universal' to get simple tags like VERB, NOUN, ADJ
+        try:
+            tokens = word_tokenize(text)
+            nltk_tags = pos_tag(tokens, tagset='universal')
+        except Exception as e:
+            logger.error(f"NLTK tagging error: {e}")
+            # Fallback to simple split if NLTK fails
+            return [(w, 'UNK') for w in text.split()]
+
+        final_tags = []
         
-        for word in words:
-            # Simplified POS detection for Hinglish
-            if word.lower() in ['the', 'a', 'an', 'is', 'are', 'was', 'were']:
-                pos_tags.append((word, 'VERB' if word in ['is', 'are', 'was', 'were'] else 'DET'))
-            elif word.lower() in ['mein', 'main', 'mujhe', 'tumhe', 'usko', 'unko']:
-                pos_tags.append((word, 'PRON'))
-            elif word.lower() in ['nahi', 'na', 'mat']:
-                pos_tags.append((word, 'PART'))
-            elif word.lower().endswith(('na', 'ta', 'ti', 'te')):
-                pos_tags.append((word, 'VERB'))
-            elif word.lower().endswith(('ka', 'ki', 'ke')):
-                pos_tags.append((word, 'DET'))
-            elif self.is_hindi_word(word):
-                pos_tags.append((word, 'NOUN'))  # Default for Hindi words
+        # 2. Apply Hinglish Patch (Override NLTK errors for Hindi words)
+        for word, tag in nltk_tags:
+            word_lower = word.lower()
+            
+            # Manual overrides for common Hinglish words
+            if word_lower in ['mein', 'main', 'mujhe', 'tumhe', 'usko', 'unko', 'hum', 'tum']:
+                final_tags.append((word, 'PRON'))
+            
+            elif word_lower in ['nahi', 'na', 'mat', 'nhi', 'haan', 'han']:
+                final_tags.append((word, 'PART')) # Particle (Negation/Affirmation)
+                
+            elif word_lower in ['hai', 'hain', 'tha', 'thi', 'the', 'hoga', 'raha', 'rahi']:
+                final_tags.append((word, 'VERB'))
+                
+            elif word_lower.endswith(['ka', 'ki', 'ke', 'ko', 'se', 'par', 'pe', 'me']):
+                final_tags.append((word, 'ADP')) # Adposition (Prepositions)
+                
+            elif word_lower in ['acha', 'bura', 'sahi', 'galat', 'thik', 'badhiya']:
+                final_tags.append((word, 'ADJ'))
+                
+            elif word_lower in ['kyu', 'kyun', 'kab', 'kahan', 'kaise']:
+                final_tags.append((word, 'ADV'))
+                
             else:
-                pos_tags.append((word, 'UNK'))
-        
-        return pos_tags
+                # Trust NLTK for everything else (English words, Proper Nouns, etc.)
+                final_tags.append((word, tag))
+
+        return final_tags
     
     def analyze_sentiment(self, text: str) -> float:
         """Get sentiment score for Hinglish text"""
