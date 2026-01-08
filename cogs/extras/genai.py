@@ -1658,33 +1658,33 @@ class EnhancedMarkovCog(commands.Cog):
         return -sum((c/total) * math.log(c/total + 1e-9) for c in counts)
 
 
-def update_global_topics(self, text: str):
-        """Update global topics that persist for hours (Long-Term Memory)"""
-        # Extract nouns/proper nouns
-        try:
-            pos_tags = self.get_pos_tags(text)
-            for word, tag in pos_tags:
-                if tag in ['NOUN', 'PROPN'] and len(word) > 3:
-                    # Clean word
-                    w = word.lower()
-                    if w in self.stop_words: continue
-                    
-                    # Add or refresh topic
-                    # We use a timestamp to allow decay over time (e.g., 4 hours)
-                    self.global_topics[w] = datetime.utcnow().isoformat()
-        except:
-            pass
+    def update_global_topics(self, text: str):
+            """Update global topics that persist for hours (Long-Term Memory)"""
+            # Extract nouns/proper nouns
+            try:
+                pos_tags = self.get_pos_tags(text)
+                for word, tag in pos_tags:
+                    if tag in ['NOUN', 'PROPN'] and len(word) > 3:
+                        # Clean word
+                        w = word.lower()
+                        if w in self.stop_words: continue
+                        
+                        # Add or refresh topic
+                        # We use a timestamp to allow decay over time (e.g., 4 hours)
+                        self.global_topics[w] = datetime.utcnow().isoformat()
+            except:
+                pass
+                
+            # Cleanup old topics (> 4 hours)
+            now = datetime.utcnow()
+            to_remove = []
+            for topic, timestamp_str in self.global_topics.items():
+                ts = datetime.fromisoformat(timestamp_str)
+                if (now - ts).total_seconds() > 14400:  # 4 hours
+                    to_remove.append(topic)
             
-        # Cleanup old topics (> 4 hours)
-        now = datetime.utcnow()
-        to_remove = []
-        for topic, timestamp_str in self.global_topics.items():
-            ts = datetime.fromisoformat(timestamp_str)
-            if (now - ts).total_seconds() > 14400:  # 4 hours
-                to_remove.append(topic)
-        
-        for t in to_remove:
-            del self.global_topics[t]
+            for t in to_remove:
+                del self.global_topics[t]
             
             
     async def generate_sentence(self, seed_word: Optional[str] = None, 
