@@ -1523,11 +1523,22 @@ class EnhancedMarkovCog(commands.Cog):
                         result = token
                     else:
                         prev_token = readable_sentence[i-1]
-                        if (prev_token.endswith(('>', ':')) and 
+                        
+                        # Check if the previous token was an emoji (Unicode or Custom)
+                        # Custom emojis often end with a space in your readable_sentence list
+                        is_prev_emoji = (
+                            prev_token.startswith(':custom_emoji_') or 
+                            prev_token.startswith(':emoji_') or
+                            any(char in emoji.EMOJI_DATA for char in prev_token)
+                        )
+
+                        if is_prev_emoji:
+                            result += ' ' + token
+                        elif (prev_token.endswith(('>', ':')) and 
                             token in ['.', ',', '!', '?', ':', ';']):
                             result += f" {token}"
                         elif token in ['.', ',', '!', '?', ':', ';']:
-                            result += token
+                            result += token # Keeps punctuation attached to normal words
                         else:
                             result += ' ' + token
                 
