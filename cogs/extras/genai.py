@@ -400,10 +400,13 @@ class EnhancedMarkovCog(commands.Cog):
         # Remove @everyone and @here
         content = re.sub(r'@everyone|@here', '', content, flags=re.IGNORECASE)
         
-        # FIX: MOVE THE RETURN STATEMENT TO THE END
         # Count and limit emojis
         emoji_list = list(emoji.emoji_list(content))
-        custom_emojis = re.findall(r'<a?:(\w+):\d+>', content)
+        
+        # FIXED: Extract Discord emojis (both <:name:id> and <a:name:id>)
+        # We need to extract both name and ID for proper replacement
+        custom_emoji_matches = re.findall(r'<a?:(\w+):(\d+)>', content)
+        custom_emojis = [name for name, _ in custom_emoji_matches]
         all_emojis = emoji_list + [{'emoji': f':{e}:'} for e in custom_emojis]
         
         # Calculate emoji density
@@ -414,21 +417,38 @@ class EnhancedMarkovCog(commands.Cog):
         if emoji_density > self.MAX_EMOJI_DENSITY:
             # Keep only first few emojis
             kept_emojis = all_emojis[:self.MAX_EMOJIS_PER_MESSAGE]
-            # Remove all emojis then add back limited ones
+            
+            # Remove all Unicode emojis
             for e in emoji_list:
                 content = content.replace(e['emoji'], ' ')
-            for e in custom_emojis:
-                content = re.sub(f'<a?:{e}:\d+>', ' ', content)
+            
+            # FIXED: Remove all Discord emojis (using raw string)
+            content = re.sub(r'<a?:\w+:\d+>', ' ', content)
+            
             # Add back limited emojis as special tokens
             for i, e in enumerate(kept_emojis):
                 if i < self.MAX_EMOJIS_PER_MESSAGE:
-                    content += f" :emoji_{i}:"
+                    if isinstance(e, dict):  # Unicode emoji
+                        emoji_name = emoji.demojize(e['emoji'])[1:-1]
+                        content += f" :emoji_{emoji_name}:"
+                    else:  # Custom emoji name
+                        content += f" :custom_emoji_{e}:"
         else:
-            # Convert emojis to tokens for learning
+            # Convert Unicode emojis to tokens for learning
             for e in emoji_list:
-                content = content.replace(e['emoji'], f' :emoji_{emoji.demojize(e["emoji"])[1:-1]}: ')
-            for e in custom_emojis:
-                content = re.sub(f'<a?:{e}:\d+>', f' :custom_emoji_{e}: ', content)
+                emoji_name = emoji.demojize(e['emoji'])[1:-1]
+                content = content.replace(e['emoji'], f' :emoji_{emoji_name}: ')
+            
+            # FIXED: Convert Discord emojis to tokens (using raw strings)
+            for emoji_name, emoji_id in custom_emoji_matches:
+                # Escape special regex characters in emoji name
+                escaped_name = re.escape(emoji_name)
+                # Replace this specific emoji with token
+                content = re.sub(
+                    fr'<a?:{escaped_name}:{emoji_id}>',
+                    f' :custom_emoji_{emoji_name}: ',
+                    content
+                )
         
         # Clean up punctuation
         content = re.sub(r'([!?.]){2,}', r'\1', content)  # Reduce multiple punctuation
@@ -436,7 +456,9 @@ class EnhancedMarkovCog(commands.Cog):
         # Remove excessive whitespace
         content = ' '.join(content.split()).strip()
         
-        return content if len(content.split()) >= self.MIN_MESSAGE_WORDS else ""
+        # FIXED: Only return if we have enough words
+        word_count = len(content.split())
+        return content if word_count >= self.MIN_MESSAGE_WORDS else ""
 
     def extract_triplets_with_nlp(self, content: str) -> List[Tuple[str, str, str]]:
         """Extract word triplets with NLP-enhanced processing"""
@@ -1001,8 +1023,10 @@ class EnhancedMarkovCog(commands.Cog):
     async def buffer_message(self, message):
         """Buffer message for processing"""
         try:
-            # Count emojis in message
+            # Count Unicode emojis
             emoji_list = list(emoji.emoji_list(message.content))
+            
+            # FIXED: Count ALL Discord emojis (both <:name:id> and <a:name:id>)
             custom_emojis = re.findall(r'<a?:(\w+):\d+>', message.content)
             emoji_count = len(emoji_list) + len(custom_emojis)
             
@@ -1016,18 +1040,18 @@ class EnhancedMarkovCog(commands.Cog):
                     INSERT INTO message_log (content, author_id, channel_id, timestamp, emoji_count)
                     VALUES (?, ?, ?, ?, ?)
                 ''', (message.content, message.author.id, message.channel.id, 
-                      message.created_at.isoformat(), emoji_count))
+                    message.created_at.isoformat(), emoji_count))
                 await db.commit()
             
             # Add to in-memory buffers WITH PROPER SANITIZATION
-            clean = self.sanitize_message(message.content, message)  # PASS MESSAGE OBJECT
+            clean = self.sanitize_message(message.content, message)
             if clean:
                 self.recent_messages.append(clean)
             
             self.stats['messages_processed'] += 1
             
             # Train immediately
-            trained = await self.train_on_message(message.content, message.author.id, emoji_count)
+            trained = await self.train_on_message(message.content, message.author.id, emoji_count, message)
             if trained > 0:
                 logger.debug(f"Trained on message: {trained} triplets")
             
