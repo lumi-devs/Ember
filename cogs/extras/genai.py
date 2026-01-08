@@ -40,7 +40,7 @@ except LookupError:
     nltk.download('universal_tagset', quiet=True)
     nltk.download('stopwords', quiet=True)
     nltk.download('vader_lexicon', quiet=True)
-    ntlk.download('averaged_perceptron_tagger_eng')
+    nltk.download('averaged_perceptron_tagger_eng')
 
 # Set up logging
 logging.basicConfig(
