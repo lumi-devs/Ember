@@ -68,6 +68,7 @@ class EnhancedMarkovCog(commands.Cog):
         self._db_pool_lock = asyncio.Lock()
         self._max_pool_size = 5
         self.global_topics = {}
+        self.muted_channels = set()
         try:
             from nltk.corpus import stopwords
             self.stop_words = set(stopwords.words('english'))
@@ -942,42 +943,6 @@ class EnhancedMarkovCog(commands.Cog):
 
 
 
-    def load_state(self):
-        """Load bot state from file to survive restarts"""
-        try:
-            if os.path.exists(self.state_file):
-                with open(self.state_file, 'r') as f:
-                    state = json.load(f)
-                
-                # Safely update stats if they exist in state
-                if 'stats' in state:
-                    for key, value in state['stats'].items():
-                        if key in self.stats:
-                            # Handle different types properly
-                            if isinstance(self.stats[key], int):
-                                self.stats[key] = int(value)
-                            elif isinstance(self.stats[key], str):
-                                self.stats[key] = str(value)
-                            else:
-                                self.stats[key] = value
-                
-                # Load cooldowns with type safety
-                if 'reply_cooldowns' in state:
-                    for k, v in state['reply_cooldowns'].items():
-                        try:
-                            channel_id = int(k)
-                            if isinstance(v, str):
-                                self.reply_cooldowns[channel_id] = datetime.fromisoformat(v)
-                        except (ValueError, TypeError) as e:
-                            logger.warning(f"Failed to load cooldown for channel {k}: {e}")
-                
-                logger.info(f"Loaded state with {len(self.reply_cooldowns)} cooldowns")
-                
-        except Exception as e:
-            logger.error(f"Failed to load state: {e}")
-            # Don't fail completely, just log the error
-
-
     def is_valid_pos_transition(self, pos1: str, pos2: str) -> bool:
             """
             Enforce stricter grammar to prevent bad Hinglish mixing.
@@ -1012,6 +977,31 @@ class EnhancedMarkovCog(commands.Cog):
             return True
     
     
+    def load_state(self):
+        """Load bot state from file to survive restarts"""
+        try:
+            if os.path.exists(self.state_file):
+                with open(self.state_file, 'r') as f:
+                    state = json.load(f)
+                
+                # Load stats
+                if 'stats' in state:
+                    self.stats.update(state['stats'])
+                
+                # Load cooldowns
+                if 'reply_cooldowns' in state:
+                    for k, v in state['reply_cooldowns'].items():
+                        self.reply_cooldowns[int(k)] = datetime.fromisoformat(v)
+                
+                # --- NEW: Load muted channels ---
+                if 'muted_channels' in state:
+                    self.muted_channels = set(state['muted_channels'])
+                
+                logger.info(f"Loaded state: {len(self.reply_cooldowns)} cooldowns, {len(self.muted_channels)} muted channels")
+                
+        except Exception as e:
+            logger.error(f"Failed to load state: {e}")
+
     def save_state(self):
         """Save bot state to file"""
         try:
@@ -1021,16 +1011,15 @@ class EnhancedMarkovCog(commands.Cog):
                     str(k): v.isoformat() if isinstance(v, datetime) else v
                     for k, v in self.reply_cooldowns.items()
                 },
+                # --- NEW: Save muted channels ---
+                'muted_channels': list(self.muted_channels),
                 'last_saved': datetime.utcnow().isoformat()
             }
             
-            # Ensure directory exists
             os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
-            
             with open(self.state_file, 'w') as f:
                 json.dump(state, f, indent=2)
                 
-            logger.debug("State saved successfully")
         except Exception as e:
             logger.error(f"Failed to save state: {e}")
 
@@ -2134,6 +2123,10 @@ class EnhancedMarkovCog(commands.Cog):
                 pass
         
         should_reply = is_mentioned or is_reply_to_me
+        
+        if message.channel.id in self.muted_channels and not should_reply:
+            return
+        
         chance = 1.0 if should_reply else self.REPLY_CHANCE
         
         # Check rate limits BEFORE generating reply
@@ -3093,5 +3086,30 @@ class EnhancedMarkovCog(commands.Cog):
             logger.error(f"Ingest error: {e}")
             await status_msg.edit(content=f"❌ **Error processing file:**\n`{str(e)[:100]}`", embed=None)
 
+
+    @commands.command(name="toggle")
+    @commands.has_permissions(manage_messages=True)
+    async def toggle_speech(self, ctx):
+        """
+        Toggle whether the bot speaks in this channel.
+        It will ALWAYS listen and learn, even if muted.
+        """
+        channel_id = ctx.channel.id
+        
+        if channel_id in self.muted_channels:
+            self.muted_channels.remove(channel_id)
+            embed = discord.Embed(
+                description="🔊 **I will now speak freely in this channel.**",
+                color=discord.Color.green()
+            )
+        else:
+            self.muted_channels.add(channel_id)
+            embed = discord.Embed(
+                description="🤐 **I will stay quiet here.**\n*(I am still listening and learning from messages)*",
+                color=discord.Color.orange()
+            )
+            
+        self.save_state()
+        await ctx.send(embed=embed)
 async def setup(bot):
     await bot.add_cog(EnhancedMarkovCog(bot))
