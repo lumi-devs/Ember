@@ -11,22 +11,33 @@ import json
 import os
 from pathlib import Path
 import emoji
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 import nltk
 from nltk.tokenize import word_tokenize, sent_tokenize
 from nltk import pos_tag
 from nltk.corpus import stopwords
+from nltk.sentiment import SentimentIntensityAnalyzer
 import string
+import spacy
+from collections import Counter
+import math
+import langdetect
+from langdetect import detect, DetectorFactory
+
+# Ensure consistent language detection
+DetectorFactory.seed = 0
 
 # Try to download NLTK data
 try:
     nltk.data.find('tokenizers/punkt')
-    nltk.data.find('taggers/averaged_perceptron_tagger')
+    nltk.data.find('tagger/averaged_perceptron_tagger')
     nltk.data.find('corpora/stopwords')
+    nltk.data.find('sentiment/vader_lexicon')
 except LookupError:
     nltk.download('punkt', quiet=True)
     nltk.download('averaged_perceptron_tagger', quiet=True)
     nltk.download('stopwords', quiet=True)
+    nltk.download('vader_lexicon', quiet=True)
 
 # Set up logging
 logging.basicConfig(
@@ -44,14 +55,53 @@ class EnhancedMarkovCog(commands.Cog):
         self.bot = bot
         self.db_path = "./genai/server_brain.db"
         self.state_file = "./genai/bot_state.json"
-        self.stop_words = set(stopwords.words('english'))
+        
+        # --- NEW: Multilingual support ---
+        # Combine English and Hindi stopwords
+        try:
+            from nltk.corpus import stopwords
+            self.stop_words = set(stopwords.words('english'))
+            # Add common Hindi stopwords manually since NLTK doesn't have them
+            hindi_stopwords = {
+                'hai', 'hain', 'ho', 'hoga', 'hogaya', 'hogayi', 'hue', 'huye', 'kar', 'kara', 'karne', 'karna',
+                'karo', 'ki', 'ko', 'lekin', 'liye', 'mai', 'main', 'mein', 'mujhe', 'na', 'nahi', 'ne', 'par',
+                'se', 'tha', 'thi', 'tho', 'toh', 'tum', 'un', 'unhe', 'unka', 'unki', 'unko', 'ye', 'yeh'
+            }
+            self.stop_words = self.stop_words.union(hindi_stopwords)
+            logger.info(f"Loaded {len(self.stop_words)} stopwords (English + Hindi)")
+        except:
+            self.stop_words = set()
         
         # INITIALIZATION FLAGS
         self.db_initialized = False
         self.user_cache = {}
         self.user_id_map = {}
         
-        # Initialize stats FIRST
+        # --- MODIFIED: Initialize NLP Models for multilingual support ---
+        self.nlp = None  # We'll disable spaCy for now since it's English-only
+        logger.info("SpaCy disabled for Hinglish support (English-only model)")
+        
+        # Alternative: Use textblob for language detection and basic processing
+        try:
+            from textblob import TextBlob
+            self.textblob_available = True
+        except:
+            self.textblob_available = False
+            logger.warning("TextBlob not available. Install with: pip install textblob")
+        
+        # Initialize sentiment analyzer (VADER works well with English in Hinglish)
+        self.sentiment_analyzer = SentimentIntensityAnalyzer()
+        
+        # --- NEW: Hinglish-specific parameters ---
+        self.HINGLISH_MODE = True  # Enable Hinglish-specific processing
+        self.MIN_HINDI_WORD_LENGTH = 2  # Hindi words can be shorter
+        
+        # --- NEW: Satellite View Buffer ---
+        self.conversation_context = deque(maxlen=50)  # Last 50 messages for topic modeling
+        self.current_topic_keywords = []
+        self.conversation_sentiment = 0.0  # Running average sentiment
+        
+        # Initialize stats with Hinglish-specific metrics
         self.stats = {
             'messages_processed': 0,
             'triplets_stored_today': 0,
@@ -63,7 +113,12 @@ class EnhancedMarkovCog(commands.Cog):
             'unique_users': 0,
             'emojis_learned': 0,
             'rate_limited': 0,
-            'spam_blocked': 0
+            'spam_blocked': 0,
+            'sentiment_analyzed': 0,
+            'topics_detected': 0,
+            'lemmas_stored': 0,
+            'hinglish_messages': 0,  # NEW: Track Hinglish messages
+            'hindi_words_learned': 0,  # NEW: Track Hindi vocabulary
         }
         
         # Initialize other tracking dictionaries
@@ -77,14 +132,14 @@ class EnhancedMarkovCog(commands.Cog):
         self.load_state()
         
         # Enhanced limits with emoji control
-        self.MAX_EMOJIS_PER_MESSAGE = 3  # Limit emojis learned per message
-        self.MAX_EMOJI_DENSITY = 0.3     # Max 30% of message can be emojis
+        self.MAX_EMOJIS_PER_MESSAGE = 3
+        self.MAX_EMOJI_DENSITY = 0.3
         
         # ANTI-SPAM PROTECTION
-        self.MIN_MESSAGE_INTERVAL = 0.5  # Minimum 0.5 seconds between bot messages in same channel
-        self.MAX_MESSAGES_PER_MINUTE = 80  # Max 80 messages per minute per channel
-        self.SPAM_BURST_WINDOW = 10       # Time window for burst detection (seconds)
-        self.SPAM_BURST_LIMIT = 5         # Max messages in burst window (increased from 2)
+        self.MIN_MESSAGE_INTERVAL = 0.5
+        self.MAX_MESSAGES_PER_MINUTE = 80
+        self.SPAM_BURST_WINDOW = 10
+        self.SPAM_BURST_LIMIT = 5
         
         # Limits optimized for high traffic (17k/day)
         self.MAX_RAW_MESSAGES = 2_000_000
@@ -92,19 +147,34 @@ class EnhancedMarkovCog(commands.Cog):
         self.RAW_MESSAGE_RETENTION_DAYS = 120
         self.PRUNE_OLD_TRIPLETS_AFTER_DAYS = 365
         
-        # --- OPTIMIZED PARAMETERS ---
+        # --- OPTIMIZED PARAMETERS for Hinglish ---
         self.MIN_TRIPLETS_FOR_REPLY = 500
         self.REPLY_CHANCE = 0.015
         self.REPLY_COOLDOWN = 10
         self.TYPING_MIN_SECONDS = 0.3
         self.TYPING_MAX_SECONDS = 0.8
         self.SENTENCE_MAX_WORDS = 30
-        self.SEED_WORD_MIN_LENGTH = 3
-        self.MIN_MESSAGE_WORDS = 3
+        self.SEED_WORD_MIN_LENGTH = 2  # Reduced for Hindi words
+        self.MIN_MESSAGE_WORDS = 2  # Reduced for Hinglish
+        
+        # --- MODIFIED: NLP ENHANCEMENT PARAMETERS for Hinglish ---
+        self.GRAMMAR_ENFORCEMENT = False  # Disable for Hinglish (mixed grammar rules)
+        self.SENTIMENT_MATCHING = True   # Keep sentiment matching
+        self.TOPIC_COHERENCE = True      # Keep topic coherence
+        self.LEMMATIZATION_ENABLED = True  # Enable Hinglish lemmatization
+        
+        # Grammar rules simplified for Hinglish
+        self.POS_TRANSITION_RULES = {
+            'DET': ['ADJ', 'NOUN', 'PROPN'],
+            'ADJ': ['NOUN', 'ADJ'],
+            'NOUN': ['VERB', 'ADP', 'AUX', 'PUNCT'],
+            'VERB': ['ADV', 'ADP', 'NOUN', 'PUNCT'],
+            'ADV': ['VERB', 'ADJ'],
+        }
         
         # Emoji reply control
         self.MAX_REPLY_EMOJIS = 2
-        self.EMOJI_REPLY_CHANCE = 0.1  # 10% chance to include emoji in reply
+        self.EMOJI_REPLY_CHANCE = 0.1
         
         self.FLUSH_THRESHOLD = 50
         
@@ -112,6 +182,431 @@ class EnhancedMarkovCog(commands.Cog):
         self.bot.loop.create_task(self.initialize_database())
         self.periodic_tasks.start()
         self.cleanup_rate_limits.start()
+        self.update_topic_model.start()
+
+    # --- MODIFIED: Enhanced Hinglish Lemmatizer ---
+    
+    def lemmatize_text(self, text: str) -> str:
+        """Reduce words to their root form for Hinglish (Hindi-English)"""
+        if not text:
+            return text
+        
+        # Skip lemmatization for mentions, emojis, and URLs
+        if any(prefix in text for prefix in ['@', '#', ':emoji_', ':custom_emoji_', 'http']):
+            return text
+        
+        words = text.split()
+        lemmatized_words = []
+        
+        # Comprehensive Hinglish lemmatization rules
+        hindi_verb_map = {
+            # Common Hindi verb conjugations (Romanized)
+            'bolta': 'bol', 'bolti': 'bol', 'bolte': 'bol', 'bolna': 'bol', 'bolne': 'bol',
+            'boli': 'bol', 'bolkar': 'bol', 'bolke': 'bol', 'bolo': 'bol', 'boltaa': 'bol',
+            
+            'karta': 'kar', 'karti': 'kar', 'karte': 'kar', 'karna': 'kar', 'karne': 'kar',
+            'kari': 'kar', 'karke': 'kar', 'karo': 'kar', 'kartaa': 'kar', 'karle': 'kar',
+            
+            'hota': 'ho', 'hoti': 'ho', 'hote': 'ho', 'hona': 'ho', 'hone': 'ho',
+            'hoon': 'ho', 'hai': 'ho', 'hain': 'ho', 'hoa': 'ho', 'hoi': 'ho',
+            
+            'dekhta': 'dekh', 'dekhti': 'dekh', 'dekhte': 'dekh', 'dekhna': 'dekh',
+            'dekhne': 'dekh', 'dekhi': 'dekh', 'dekho': 'dekh', 'dekhkar': 'dekh',
+            
+            'sochta': 'soch', 'sochti': 'soch', 'sochte': 'soch', 'sochna': 'soch',
+            'sochne': 'soch', 'sochi': 'soch', 'socho': 'soch', 'sochkar': 'soch',
+            
+            'jaata': 'ja', 'jaati': 'ja', 'jaate': 'ja', 'jaana': 'ja', 'jaane': 'ja',
+            'gaya': 'ja', 'gayi': 'ja', 'gaye': 'ja', 'jao': 'ja', 'jaakar': 'ja',
+            
+            'aata': 'aa', 'aati': 'aa', 'aate': 'aa', 'aana': 'aa', 'aane': 'aa',
+            'aaya': 'aa', 'aayi': 'aa', 'aaye': 'aa', 'aao': 'aa', 'aakar': 'aa',
+            
+            'likhta': 'likh', 'likhti': 'likh', 'likhte': 'likh', 'likhna': 'likh',
+            'likhne': 'likh', 'likhi': 'likh', 'likho': 'likh', 'likhkar': 'likh',
+            
+            'padhta': 'padh', 'padhti': 'padh', 'padhte': 'padh', 'padhna': 'padh',
+            'padhne': 'padh', 'padhi': 'padh', 'padho': 'padh', 'padhkar': 'padh',
+            
+            # Additional common verbs
+            'marta': 'mar', 'marti': 'mar', 'marte': 'mar', 'marna': 'mar',
+            'rota': 'ro', 'roti': 'ro', 'rote': 'ro', 'rona': 'ro',
+            'hasata': 'has', 'hasati': 'has', 'hasate': 'has', 'hasna': 'has',
+            'samajhta': 'samajh', 'samajhti': 'samajh', 'samajhte': 'samajh', 'samajhna': 'samajh',
+            'laata': 'la', 'laati': 'la', 'laate': 'la', 'laana': 'la',
+            'leata': 'le', 'leati': 'le', 'leate': 'le', 'leana': 'le',
+            'deta': 'de', 'deti': 'de', 'dete': 'de', 'dena': 'de',
+            'leta': 'le', 'leti': 'le', 'lete': 'le', 'lena': 'le',
+        }
+        
+        # English verb lemmatization (basic)
+        english_verb_suffixes = {
+            'ing': '',  # running -> run
+            'ed': '',   # walked -> walk
+            'es': '',   # goes -> go
+            's': '',    # runs -> run
+        }
+        
+        # Common English irregular verbs
+        english_irregular_verbs = {
+            'am': 'be', 'is': 'be', 'are': 'be', 'was': 'be', 'were': 'be', 'been': 'be',
+            'has': 'have', 'have': 'have', 'had': 'have',
+            'does': 'do', 'did': 'do', 'done': 'do',
+            'goes': 'go', 'went': 'go', 'gone': 'go',
+            'gets': 'get', 'got': 'get', 'gotten': 'get',
+            'makes': 'make', 'made': 'make',
+            'knows': 'know', 'knew': 'know', 'known': 'know',
+            'thinks': 'think', 'thought': 'think',
+            'says': 'say', 'said': 'say',
+            'comes': 'come', 'came': 'come', 'come': 'come',
+            'looks': 'look', 'looked': 'look',
+            'wants': 'want', 'wanted': 'want',
+            'finds': 'find', 'found': 'find',
+            'gives': 'give', 'gave': 'give', 'given': 'give',
+            'tells': 'tell', 'told': 'tell',
+            'works': 'work', 'worked': 'work',
+            'calls': 'call', 'called': 'call',
+            'tries': 'try', 'tried': 'try',
+            'asks': 'ask', 'asked': 'ask',
+            'needs': 'need', 'needed': 'need',
+            'feels': 'feel', 'felt': 'feel',
+            'becomes': 'become', 'became': 'become', 'become': 'become',
+            'leaves': 'leave', 'left': 'leave',
+            'puts': 'put', 'put': 'put',
+            'means': 'mean', 'meant': 'mean',
+            'keeps': 'keep', 'kept': 'keep',
+            'lets': 'let', 'let': 'let',
+            'begins': 'begin', 'began': 'begin', 'begun': 'begin',
+            'seems': 'seem', 'seemed': 'seem',
+            'helps': 'help', 'helped': 'help',
+            'talks': 'talk', 'talked': 'talk',
+            'turns': 'turn', 'turned': 'turn',
+            'starts': 'start', 'started': 'start',
+            'shows': 'show', 'showed': 'show', 'shown': 'show',
+            'hears': 'hear', 'heard': 'hear',
+            'plays': 'play', 'played': 'play',
+            'runs': 'run', 'ran': 'run', 'run': 'run',
+            'moves': 'move', 'moved': 'move',
+            'lives': 'live', 'lived': 'live',
+            'believes': 'believe', 'believed': 'believe',
+            'brings': 'bring', 'brought': 'bring',
+            'happens': 'happen', 'happened': 'happen',
+            'writes': 'write', 'wrote': 'write', 'written': 'write',
+            'provides': 'provide', 'provided': 'provide',
+            'sits': 'sit', 'sat': 'sit',
+            'stands': 'stand', 'stood': 'stand',
+            'loses': 'lose', 'lost': 'lose',
+            'pays': 'pay', 'paid': 'pay',
+            'meets': 'meet', 'met': 'meet',
+            'includes': 'include', 'included': 'include',
+            'continues': 'continue', 'continued': 'continue',
+        }
+        
+        # Hindi adjective/noun variations
+        hindi_adjective_map = {
+            'achaa': 'acha', 'ache': 'acha', 'achi': 'acha',  # good
+            'buraa': 'bura', 'bure': 'bura', 'buri': 'bura',  # bad
+            'chotaa': 'chota', 'chote': 'chota', 'choti': 'chota',  # small
+            'lambaa': 'lamba', 'lambe': 'lamba', 'lambi': 'lamba',  # long/tall
+            'badaa': 'bada', 'bade': 'bada', 'badi': 'bada',  # big
+            'pyaraa': 'pyara', 'pyare': 'pyara', 'pyari': 'pyara',  # lovely
+            'sundar': 'sundar', 'sundari': 'sundar',  # beautiful
+            'garib': 'garib', 'garibo': 'garib',  # poor
+            'amir': 'amir', 'amiro': 'amir',  # rich
+        }
+        
+        # Common Hinglish nouns (plural forms)
+        hinglish_noun_map = {
+            'bhaiyo': 'bhai', 'bhaiyon': 'bhai',  # brothers
+            'beheno': 'behen', 'behenon': 'behen',  # sisters
+            'dosto': 'dost', 'doston': 'dost',  # friends
+            'yaaro': 'yaar', 'yaaron': 'yaar',  # friends
+            'ladko': 'ladka', 'ladkon': 'ladka',  # boys
+            'ladkiyo': 'ladki', 'ladkiyon': 'ladki',  # girls
+            'log': 'aadmi', 'logo': 'aadmi', 'logon': 'aadmi',  # people
+            'baccho': 'bacha', 'bachon': 'bacha',  # children
+            'gharo': 'ghar', 'gharon': 'ghar',  # houses
+            'gaadiyo': 'gaadi', 'gaadiyon': 'gaadi',  # vehicles
+            'kitabo': 'kitab', 'kitabon': 'kitab',  # books
+            'mobile': 'phone', 'mobiles': 'phone',  # phones
+        }
+        
+        # Common Hinglish word normalizations
+        hinglish_normalizations = {
+            'nahi': 'nahi', 'nahin': 'nahi', 'naheen': 'nahi', 'na': 'nahi', 'nah': 'nahi', 'nhi': 'nahi',
+            'haan': 'haan', 'han': 'haan', 'ha': 'haan', 'hmm': 'haan', 'hm': 'haan', 'hmmm': 'haan', 'yes': 'haan', 'yep': 'haan', 'yeah': 'haan',
+            'acha': 'acha', 'accha': 'acha', 'achha': 'acha', 'acchha': 'acha',
+            'theek': 'theek', 'thik': 'theek', 'thik hai': 'theek', 'thikh': 'theek',
+            'kya': 'kya', 'kaise': 'kaise', 'kyun': 'kyun', 'kab': 'kab', 'kahan': 'kahan', 'kaun': 'kaun',
+            'bhai': 'bhai', 'bhaiya': 'bhai', 'bro': 'bhai', 'brother': 'bhai',
+            'yaar': 'yaar', 'dost': 'dost', 'friend': 'dost', 'mitr': 'dost',
+            'hai': 'hai', 'hain': 'hai', 'ho': 'hai',
+            'main': 'main', 'mein': 'main', 'mai': 'main',
+            'tum': 'tum', 'tu': 'tum', 'aap': 'aap', 'you': 'tum',
+            'mera': 'mera', 'meri': 'mera', 'mere': 'mera', 'my': 'mera',
+            'tera': 'tera', 'teri': 'tera', 'tere': 'tera', 'your': 'tera',
+            'hum': 'hum', 'ham': 'hum', 'we': 'hum',
+            'woh': 'woh', 'vo': 'woh', 'us': 'woh', 'he': 'woh', 'she': 'woh', 'they': 'woh',
+            'koi': 'koi', 'kuch': 'kuch', 'some': 'kuch',
+            'yahan': 'yahan', 'yahaan': 'yahan', 'idhar': 'yahan', 'here': 'yahan',
+            'wahan': 'wahan', 'wahaan': 'wahan', 'udhar': 'wahan', 'there': 'wahan',
+            'abhi': 'abhi', 'now': 'abhi',
+            'phir': 'phir', 'fir': 'phir', 'then': 'phir',
+            'lekin': 'lekin', 'magar': 'lekin', 'but': 'lekin',
+            'aur': 'aur', 'and': 'aur',
+            'ya': 'ya', 'or': 'ya',
+            'par': 'par', 'on': 'par',
+            'se': 'se', 'from': 'se', 'with': 'se',
+            'ke': 'ke', 'of': 'ke', 'ki': 'ke', 'ka': 'ke',
+            'me': 'me', 'in': 'me',
+            'pe': 'pe', 'on': 'pe',
+            'tak': 'tak', 'until': 'tak',
+            'bhi': 'bhi', 'too': 'bhi', 'also': 'bhi',
+            'toh': 'toh', 'so': 'toh',
+            'kyunki': 'kyunki', 'because': 'kyunki',
+            'agar': 'agar', 'if': 'agar',
+            'to': 'to', 'then': 'to',
+            'jo': 'jo', 'that': 'jo',
+            'ki': 'ki', 'that': 'ki',
+            'jab': 'jab', 'when': 'jab',
+            'jahan': 'jahan', 'where': 'jahan',
+            'jitna': 'jitna', 'as much': 'jitna',
+            'waisa': 'waisa', 'like that': 'waisa',
+            'aisa': 'aisa', 'like this': 'aisa',
+            'waise': 'waise', 'that way': 'waise',
+            'aise': 'aise', 'this way': 'aise',
+        }
+        
+        # Common Hinglish filler words to keep as-is
+        common_hinglish_fillers = [
+            'wow', 'awesome', 'mast', 'badhiya', 'zabardast', 'super', 'great', 'nice',
+            'arey', 'oye', 'hello', 'hi', 'hey', 'bye', 'goodbye',
+            'ok', 'okay', 'fine', 'alright', 'cool',
+            'sorry', 'excuse', 'please', 'thank', 'thanks', 'welcome',
+            'haha', 'lol', 'lmao', 'rofl', 'hehe', 'hihi',
+            'umm', 'uhh', 'ahem', 'well',
+        ]
+        
+        for word in words:
+            lower_word = word.lower()
+            original_word = word
+            
+            # Check if word is already in Devanagari (Hindi script)
+            # We typically don't lemmatize Devanagari without proper tools
+            if re.search(r'[\u0900-\u097F]', word):
+                lemmatized_words.append(word)
+                continue
+            
+            # 1. Check Hinglish normalizations first (most common)
+            if lower_word in hinglish_normalizations:
+                lemmatized_words.append(hinglish_normalizations[lower_word])
+                continue
+            
+            # 2. Check Hindi verb map
+            if lower_word in hindi_verb_map:
+                lemmatized_words.append(hindi_verb_map[lower_word])
+                continue
+            
+            # 3. Check English irregular verbs
+            if lower_word in english_irregular_verbs:
+                lemmatized_words.append(english_irregular_verbs[lower_word])
+                continue
+            
+            # 4. Check Hindi adjective variations
+            if lower_word in hindi_adjective_map:
+                lemmatized_words.append(hindi_adjective_map[lower_word])
+                continue
+            
+            # 5. Check Hinglish noun variations
+            if lower_word in hinglish_noun_map:
+                lemmatized_words.append(hinglish_noun_map[lower_word])
+                continue
+            
+            # 6. Apply English suffix rules (if word looks English)
+            if re.match(r'^[a-z]+$', lower_word):  # Only English letters
+                matched = False
+                for suffix, replacement in english_verb_suffixes.items():
+                    if lower_word.endswith(suffix):
+                        # Check if removing suffix leaves at least 2 characters
+                        stem = lower_word[:-len(suffix)]
+                        if len(stem) >= 2:
+                            # Check if the stem is itself a word (avoid over-stemming)
+                            lemmatized_words.append(stem + replacement)
+                            matched = True
+                            break
+                if matched:
+                    continue
+            
+            # 7. Check if it's a common filler word
+            if lower_word in common_hinglish_fillers:
+                lemmatized_words.append(lower_word)
+                continue
+            
+            # 8. Default: keep the original word (preserve case for proper nouns)
+            if word[0].isupper() and len(word) > 1:  # Likely a proper noun
+                lemmatized_words.append(word)
+            else:
+                lemmatized_words.append(lower_word)
+        
+        return ' '.join(lemmatized_words)
+    
+    def is_hindi_word(self, word: str) -> bool:
+        """Check if a word contains Devanagari script characters"""
+        # Hindi Unicode range: \u0900-\u097F
+        return bool(re.search(r'[\u0900-\u097F]', word))
+    
+    def is_english_word(self, word: str) -> bool:
+        """Check if a word contains only English characters"""
+        return bool(re.match(r'^[a-zA-Z]+$', word))
+    
+    def is_hinglish_word(self, word: str) -> bool:
+        """Check if word is Hinglish (mix of scripts or Romanized Hindi)"""
+        # Remove mentions, emojis, etc.
+        if word.startswith(('@', '#', ':')):
+            return False
+        
+        # Check for Romanized Hindi patterns (common in Hinglish)
+        hinglish_patterns = [
+            r'^[a-z]+na$',  # Hindi verbs ending with 'na'
+            r'^[a-z]+i$',   # Hindi feminine forms
+            r'^[a-z]+e$',   # Hindi plural forms
+            r'^[a-z]+o$',   # Hindi vocative forms
+            r'^acha$', '^thik$', '^kya$', '^kaise$', '^kyun$',  # Common Romanized Hindi
+            r'^bhai$', '^yaar$', '^dost$', '^sahi$', '^theek$',
+        ]
+        
+        word_lower = word.lower()
+        for pattern in hinglish_patterns:
+            if re.match(pattern, word_lower):
+                return True
+        
+        return False
+    
+
+    
+    def detect_language_mix(self, text: str) -> Dict[str, float]:
+        """Detect language mix in text (English vs Hindi vs Hinglish)"""
+        words = text.split()
+        if not words:
+            return {'english': 0, 'hindi': 0, 'hinglish': 0}
+        
+        english_count = 0
+        hindi_count = 0
+        hinglish_count = 0
+        other_count = 0
+        
+        for word in words:
+            if self.is_hindi_word(word):
+                hindi_count += 1
+            elif self.is_english_word(word):
+                english_count += 1
+            elif self.is_hinglish_word(word):
+                hinglish_count += 1
+            else:
+                other_count += 1
+        
+        total = len(words)
+        return {
+            'english': english_count / total,
+            'hindi': hindi_count / total,
+            'hinglish': hinglish_count / total,
+            'other': other_count / total
+        }
+
+    
+    def get_pos_tags(self, text: str) -> List[Tuple[str, str]]:
+        """Simple POS tagging for Hinglish (approximate)"""
+        words = text.split()
+        pos_tags = []
+        
+        for word in words:
+            # Simplified POS detection for Hinglish
+            if word.lower() in ['the', 'a', 'an', 'is', 'are', 'was', 'were']:
+                pos_tags.append((word, 'VERB' if word in ['is', 'are', 'was', 'were'] else 'DET'))
+            elif word.lower() in ['mein', 'main', 'mujhe', 'tumhe', 'usko', 'unko']:
+                pos_tags.append((word, 'PRON'))
+            elif word.lower() in ['nahi', 'na', 'mat']:
+                pos_tags.append((word, 'PART'))
+            elif word.lower().endswith(('na', 'ta', 'ti', 'te')):
+                pos_tags.append((word, 'VERB'))
+            elif word.lower().endswith(('ka', 'ki', 'ke')):
+                pos_tags.append((word, 'DET'))
+            elif self.is_hindi_word(word):
+                pos_tags.append((word, 'NOUN'))  # Default for Hindi words
+            else:
+                pos_tags.append((word, 'UNK'))
+        
+        return pos_tags
+    
+    def analyze_sentiment(self, text: str) -> float:
+        """Get sentiment score for Hinglish text"""
+        # VADER works with English, so we'll focus on English sentiment
+        # For Hindi sentiment, we'd need a different model
+        scores = self.sentiment_analyzer.polarity_scores(text)
+        
+        # Adjust for common Hinglish sentiment words
+        positive_hindi = ['acha', 'sahi', 'theek', 'badhiya', 'mast', 'awesome', 'good', 'nice', 'khoob', 'badiya']
+        negative_hindi = ['bura', 'kharab', 'bekar', 'ganda', 'bad', 'worst', 'buraa', 'ganda']
+        
+        text_lower = text.lower()
+        for word in positive_hindi:
+            if word in text_lower:
+                scores['compound'] = min(1.0, scores['compound'] + 0.3)
+        
+        for word in negative_hindi:
+            if word in text_lower:
+                scores['compound'] = max(-1.0, scores['compound'] - 0.3)
+        
+        return scores['compound']
+    
+    def extract_tfidf_keywords(self, messages: List[str], top_n: int = 10) -> List[Tuple[str, float]]:
+        """Extract important keywords for Hinglish"""
+        if not messages:
+            return []
+        
+        # Build vocabulary with Hinglish considerations
+        all_words = []
+        for msg in messages:
+            words = [w.lower() for w in msg.split() 
+                    if len(w) >= self.MIN_HINDI_WORD_LENGTH  # Shorter for Hindi
+                    and w.lower() not in self.stop_words
+                    and not w.startswith(('@', '#', ':'))]
+            all_words.extend(words)
+        
+        if not all_words:
+            return []
+        
+        # Term Frequency (TF)
+        word_counts = Counter(all_words)
+        total_words = len(all_words)
+        
+        # Document Frequency (DF) - count messages containing each word
+        doc_freq = Counter()
+        for msg in messages:
+            words_in_msg = set(w.lower() for w in msg.split() 
+                             if len(w) >= self.MIN_HINDI_WORD_LENGTH 
+                             and w.lower() not in self.stop_words)
+            for word in words_in_msg:
+                doc_freq[word] += 1
+        
+        # Calculate TF-IDF with Hinglish adjustments
+        tfidf_scores = {}
+        for word, count in word_counts.items():
+            tf = count / total_words
+            df = doc_freq.get(word, 1)
+            idf = math.log(len(messages) / (df + 1)) + 1
+            
+            # Boost Hindi/Hinglish words slightly
+            if self.is_hindi_word(word) or self.is_hinglish_word(word):
+                idf *= 1.2  # Slight boost for non-English words
+            
+            tfidf_scores[word] = tf * idf
+        
+        # Return top keywords
+        return sorted(tfidf_scores.items(), key=lambda x: x[1], reverse=True)[:top_n]
+    
+
+
 
     def load_state(self):
         """Load bot state from file to survive restarts"""
@@ -148,6 +643,18 @@ class EnhancedMarkovCog(commands.Cog):
             logger.error(f"Failed to load state: {e}")
             # Don't fail completely, just log the error
 
+
+    def is_valid_pos_transition(self, pos1: str, pos2: str) -> bool:
+        """Check if POS transition follows simplified grammar rules"""
+        if not self.GRAMMAR_ENFORCEMENT:
+            return True
+        
+        if pos1 not in self.POS_TRANSITION_RULES:
+            return True
+        
+        return pos2 in self.POS_TRANSITION_RULES[pos1]
+    
+    
     def save_state(self):
         """Save bot state to file"""
         try:
@@ -171,7 +678,7 @@ class EnhancedMarkovCog(commands.Cog):
             logger.error(f"Failed to save state: {e}")
 
     async def initialize_database(self):
-        """Initialize database with connection pool"""
+        """Initialize database with connection pool and NLP columns"""
         await self.bot.wait_until_ready()
         
         try:
@@ -181,16 +688,24 @@ class EnhancedMarkovCog(commands.Cog):
                 # Optimize SQLite settings
                 await db.execute('PRAGMA journal_mode=WAL;')
                 await db.execute('PRAGMA synchronous=NORMAL;')
-                await db.execute('PRAGMA cache_size=-10000;')      # Keeps 10MB cache (Safe)
-                await db.execute('PRAGMA temp_store=DEFAULT;')     # <--- CHANGE: Uses Disk instead of RAM for temp files
-                await db.execute('PRAGMA mmap_size=33554432;')     # <--- CHANGE: Limits memory map to 32MB
+                await db.execute('PRAGMA cache_size=-10000;')
+                await db.execute('PRAGMA temp_store=DEFAULT;')
+                await db.execute('PRAGMA mmap_size=33554432;')
                 
-                # Create tables
+                # --- UPDATED: Create tables with NLP columns ---
                 await db.execute('''
                     CREATE TABLE IF NOT EXISTS markov_chain (
                         word_a TEXT NOT NULL,
                         word_b TEXT NOT NULL,
                         next_word TEXT NOT NULL,
+                        lemma_a TEXT,           -- NEW: Lemmatized form
+                        lemma_b TEXT,           -- NEW: Lemmatized form
+                        lemma_next TEXT,        -- NEW: Lemmatized form
+                        pos_a TEXT,             -- NEW: Part of speech
+                        pos_b TEXT,             -- NEW: Part of speech
+                        pos_next TEXT,          -- NEW: Part of speech
+                        sentiment_score REAL DEFAULT 0.0,  -- NEW: Average sentiment
+                        topic_weight REAL DEFAULT 1.0,     -- NEW: Topic relevance
                         count INTEGER DEFAULT 1,
                         last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -199,6 +714,7 @@ class EnhancedMarkovCog(commands.Cog):
                     ) WITHOUT ROWID
                 ''')
                 
+                # Create message_log table (unchanged)
                 await db.execute('''
                     CREATE TABLE IF NOT EXISTS message_log (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -208,21 +724,41 @@ class EnhancedMarkovCog(commands.Cog):
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                         processed BOOLEAN DEFAULT 0,
                         emoji_count INTEGER DEFAULT 0,
-                        is_bot_reply BOOLEAN DEFAULT 0
+                        is_bot_reply BOOLEAN DEFAULT 0,
+                        sentiment REAL DEFAULT 0.0,  -- NEW: Message sentiment
+                        cleaned_content TEXT         -- NEW: Cleaned text for topic modeling
                     )
                 ''')
                 
+                # Create user_stats table (unchanged)
                 await db.execute('''
                     CREATE TABLE IF NOT EXISTS user_stats (
                         user_id INTEGER PRIMARY KEY,
                         username TEXT,
                         message_count INTEGER DEFAULT 0,
                         last_seen TIMESTAMP,
-                        emoji_usage INTEGER DEFAULT 0
+                        emoji_usage INTEGER DEFAULT 0,
+                        avg_sentiment REAL DEFAULT 0.0  -- NEW: User's typical sentiment
                     )
                 ''')
                 
-                # Create indexes
+                # Create indexes for NLP columns
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_markov_lemmas 
+                    ON markov_chain(lemma_a, lemma_b, lemma_next)
+                ''')
+                
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_markov_pos 
+                    ON markov_chain(pos_a, pos_b, pos_next)
+                ''')
+                
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_markov_sentiment 
+                    ON markov_chain(sentiment_score)
+                ''')
+                
+                # Existing indexes...
                 await db.execute('''
                     CREATE INDEX IF NOT EXISTS idx_markov_lookup 
                     ON markov_chain(word_a, word_b, count DESC)
@@ -258,7 +794,12 @@ class EnhancedMarkovCog(commands.Cog):
                     result = await cursor.fetchone()
                     self.stats['unique_users'] = result[0] if result else 0
                 
-                logger.info(f"Database initialized. Existing: {self.stats['total_triplets']} triplets, {self.stats['total_messages']} messages from {self.stats['unique_users']} users")
+                # Count lemmatized entries
+                async with db.execute("SELECT COUNT(*) FROM markov_chain WHERE lemma_a IS NOT NULL") as cursor:
+                    result = await cursor.fetchone()
+                    self.stats['lemmas_stored'] = result[0] if result else 0
+                
+                logger.info(f"Database initialized. Existing: {self.stats['total_triplets']} triplets, {self.stats['lemmas_stored']} lemmas from {self.stats['total_messages']} messages")
                 self.db_initialized = True
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
@@ -348,11 +889,44 @@ class EnhancedMarkovCog(commands.Cog):
             logger.debug("Cleaned up rate limit data")
         except Exception as e:
             logger.error(f"Error in cleanup_rate_limits: {e}")
+            
+    @tasks.loop(minutes=3)
+    async def update_topic_model(self):
+        """Update topic keywords from recent conversation"""
+        try:
+            # Get recent messages for topic modeling
+            recent_contents = []
+            for msg in self.conversation_context:
+                if 'content' in msg and msg['content']:
+                    recent_contents.append(msg['content'])
+            
+            if recent_contents:
+                keywords = self.extract_tfidf_keywords(recent_contents, top_n=8)
+                self.current_topic_keywords = keywords
+                
+                # Update topic weights in database
+                if keywords and self.TOPIC_COHERENCE:
+                    async with aiosqlite.connect(self.db_path) as db:
+                        for keyword, weight in keywords:
+                            # Boost weight for words containing keywords
+                            await db.execute('''
+                                UPDATE markov_chain 
+                                SET topic_weight = 1.5 
+                                WHERE (word_a LIKE ? OR word_b LIKE ? OR next_word LIKE ?)
+                                AND topic_weight < 1.5
+                            ''', (f"%{keyword}%", f"%{keyword}%", f"%{keyword}%"))
+                        await db.commit()
+                
+                self.stats['topics_detected'] += 1
+                logger.debug(f"Updated topics: {keywords}")
+                
+        except Exception as e:
+            logger.error(f"Topic update error: {e}")
 
     # --- ENHANCED MESSAGE PROCESSING WITH NLP ---
     def sanitize_message(self, content: str, message=None) -> str:
-        """Clean message with proper username handling and Server-Only Emoji validation"""
-        if not content or len(content.strip()) < 3:
+        """Clean message for Hinglish"""
+        if not content or len(content.strip()) < 2:  # Reduced minimum length
             return ""
         
         # Remove bot commands
@@ -365,38 +939,30 @@ class EnhancedMarkovCog(commands.Cog):
         # Remove URLs
         content = re.sub(r'https?://\S+|www\.\S+', '', content)
         
-        # Replace user mentions with readable names and store mapping
+        # Replace user mentions with readable names
         def replace_mention(match):
             user_id = int(match.group(1))
             
-            # Try to get username from cache
             if user_id in self.user_cache:
                 username = self.user_cache[user_id]
             elif message and message.guild:
-                # Try to get from guild
                 member = message.guild.get_member(user_id)
                 if member:
                     username = member.display_name
                     self.user_cache[user_id] = username
                 else:
-                    # Fallback to user ID placeholder
                     username = f"user_{user_id % 1000}"
             else:
                 username = f"user_{user_id % 1000}"
             
-            # Create placeholder that can be converted back
             placeholder = f"@USER_{user_id}"
             self.user_id_map[placeholder] = user_id
             return placeholder
         
         content = re.sub(r'<@!?(\d+)>', replace_mention, content)
         
-        # Preserve channel mentions as readable names
-        def replace_channel(match):
-            channel_id = int(match.group(1))
-            return "#channel_mention"
-        
-        content = re.sub(r'<#(\d+)>', replace_channel, content)
+        # Preserve channel mentions
+        content = re.sub(r'<#(\d+)>', '#channel_mention', content)
         
         # Preserve role mentions
         content = re.sub(r'<@&(\d+)>', '@role_mention', content)
@@ -404,13 +970,11 @@ class EnhancedMarkovCog(commands.Cog):
         # Remove @everyone and @here
         content = re.sub(r'@everyone|@here', '', content, flags=re.IGNORECASE)
         
-        # --- EMOJI VALIDATION LOGIC ---
+        # Handle emojis (same as before but keep more for Hinglish)
         emoji_list = list(emoji.emoji_list(content))
-        
-        # 1. Find all raw emoji strings first
         raw_custom_matches = re.findall(r'<a?:(\w+):(\d+)>', content)
         
-        # 2. Filter: Only keep emojis that exist in THIS server
+        # Filter server emojis
         valid_custom_emojis = []
         server_emoji_ids = set()
         
@@ -421,12 +985,9 @@ class EnhancedMarkovCog(commands.Cog):
             if str(e_id) in server_emoji_ids:
                 valid_custom_emojis.append((name, e_id))
             else:
-                # If it's an external/nitro emoji, remove it from content immediately
-                # so we don't learn broken links or external emotes
                 pattern = fr'<a?:{re.escape(name)}:{e_id}>'
                 content = re.sub(pattern, '', content)
 
-        # Combine valid lists for density check
         custom_emojis = [name for name, _ in valid_custom_emojis]
         all_emojis = emoji_list + [{'emoji': f':{e}:'} for e in custom_emojis]
         
@@ -436,28 +997,26 @@ class EnhancedMarkovCog(commands.Cog):
         emoji_density = emoji_chars / total_chars if total_chars > 0 else 0
         
         if emoji_density > self.MAX_EMOJI_DENSITY:
-            # Keep only first few emojis
             kept_emojis = all_emojis[:self.MAX_EMOJIS_PER_MESSAGE]
             
             # Remove all Unicode emojis
             for e in emoji_list:
                 content = content.replace(e['emoji'], ' ')
             
-            # Remove all Discord emojis (remaining valid ones)
+            # Remove all Discord emojis
             content = re.sub(r'<a?:\w+:\d+>', ' ', content)
             
-            # Add back limited emojis as special tokens
+            # Add back limited emojis
             for i, e in enumerate(kept_emojis):
                 if i < self.MAX_EMOJIS_PER_MESSAGE:
-                    if isinstance(e, dict):  # Unicode emoji
+                    if isinstance(e, dict):
                         emoji_name = emoji.demojize(e['emoji'])[1:-1]
                         content += f" :emoji_{emoji_name}:"
-                    else:  # Custom emoji name
-                        # Since we already filtered external ones, these are safe
+                    else:
                         clean_name = e['emoji'].replace(':', '')
                         content += f" :custom_emoji_{clean_name}:"
         else:
-            # Convert Unicode emojis to tokens for learning
+            # Convert Unicode emojis to tokens
             for e in emoji_list:
                 emoji_name = emoji.demojize(e['emoji'])[1:-1]
                 content = content.replace(e['emoji'], f' :emoji_{emoji_name}: ')
@@ -471,13 +1030,19 @@ class EnhancedMarkovCog(commands.Cog):
                     content
                 )
         
-        # Clean up punctuation
-        content = re.sub(r'([!?.]){2,}', r'\1', content)  # Reduce multiple punctuation
+        # Clean up punctuation (more lenient for Hinglish)
+        content = re.sub(r'([!?.]){3,}', r'\1', content)  # Reduce excessive punctuation
         
         # Remove excessive whitespace
         content = ' '.join(content.split()).strip()
         
-        # Only return if we have enough words
+        # Track Hinglish usage
+        if content:
+            lang_mix = self.detect_language_mix(content)
+            if lang_mix['hindi'] > 0.1 or lang_mix['hinglish'] > 0.1:
+                self.stats['hinglish_messages'] += 1
+        
+        # Return if we have enough words (reduced threshold)
         word_count = len(content.split())
         return content if word_count >= self.MIN_MESSAGE_WORDS else ""
 
@@ -520,54 +1085,106 @@ class EnhancedMarkovCog(commands.Cog):
             return 'normal'
 
     async def train_on_message(self, content: str, author_id: int, emoji_count: int = 0, message=None):
-        """Train Markov chain with batch processing"""
+        """Train Markov chain for Hinglish"""
         clean_content = self.sanitize_message(content, message)
         if not clean_content:
             return 0
         
-        triplets = self.extract_triplets(clean_content)
+        # Analyze sentiment
+        sentiment = self.analyze_sentiment(content)
+        self.stats['sentiment_analyzed'] += 1
+        
+        # Update conversation context
+        self.conversation_context.append({
+            'content': clean_content,
+            'sentiment': sentiment,
+            'timestamp': datetime.utcnow()
+        })
+        
+        # Update running sentiment average
+        sentiments = [msg['sentiment'] for msg in self.conversation_context]
+        self.conversation_sentiment = sum(sentiments) / len(sentiments) if sentiments else 0.0
+        
+        # Process with Hinglish adaptations
+        words = clean_content.split()
+        triplets = []
+        
+        # Count Hindi words for stats
+        hindi_word_count = sum(1 for word in words if self.is_hindi_word(word))
+        self.stats['hindi_words_learned'] += hindi_word_count
+        
+        for i in range(len(words) - 2):
+            word_a, word_b, word_c = words[i], words[i+1], words[i+2]
+            
+            # Skip if too many emojis in sequence
+            emoji_count_seq = sum(1 for w in [word_a, word_b, word_c] 
+                                if w.startswith(':emoji_') or w.startswith(':custom_emoji_'))
+            if emoji_count_seq >= 2:
+                continue
+            
+            # Simple POS approximation for Hinglish
+            pos_a = self.get_pos_tags(word_a)[0][1] if self.get_pos_tags(word_a) else 'UNK'
+            pos_b = self.get_pos_tags(word_b)[0][1] if self.get_pos_tags(word_b) else 'UNK'
+            pos_c = self.get_pos_tags(word_c)[0][1] if self.get_pos_tags(word_c) else 'UNK'
+            
+            triplets.append((
+                word_a, word_b, word_c,  # Original words
+                word_a, word_b, word_c,  # Lemmas (same for now)
+                pos_a, pos_b, pos_c,     # POS tags
+                sentiment                # Message sentiment
+            ))
+        
         if not triplets:
             return 0
         
         try:
             async with aiosqlite.connect(self.db_path) as db:
-                # Batch insert with word type classification
-                for word_a, word_b, word_c in triplets:
-                    word_type_a = self.classify_word_type(word_a)
-                    word_type_b = self.classify_word_type(word_b)
-                    word_type_c = self.classify_word_type(word_c)
+                # Batch insert with Hinglish information
+                for triplet in triplets:
+                    (word_a, word_b, word_c, lemma_a, lemma_b, lemma_c, 
+                     pos_a, pos_b, pos_c, sent) = triplet
                     
-                    # Use most specific type
-                    word_type = 'emoji' if 'emoji' in [word_type_a, word_type_b, word_type_c] \
-                              else 'mention' if 'mention' in [word_type_a, word_type_b, word_type_c] \
-                              else 'normal'
+                    word_type = self.classify_word_type(word_a)
                     
                     await db.execute('''
-                        INSERT INTO markov_chain (word_a, word_b, next_word, count, last_used, word_type)
-                        VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP, ?)
+                        INSERT INTO markov_chain 
+                        (word_a, word_b, next_word, lemma_a, lemma_b, lemma_next,
+                         pos_a, pos_b, pos_next, sentiment_score, count, word_type)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                         ON CONFLICT(word_a, word_b, next_word) 
                         DO UPDATE SET 
                             count = count + 1,
-                            last_used = CURRENT_TIMESTAMP
-                    ''', (word_a, word_b, word_c, word_type))
+                            last_used = CURRENT_TIMESTAMP,
+                            sentiment_score = ((sentiment_score * (count - 1)) + ?) / count
+                    ''', (word_a, word_b, word_c, lemma_a, lemma_b, lemma_c,
+                          pos_a, pos_b, pos_c, sent, word_type, sent))
                 
                 # Update user stats
                 await db.execute('''
-                    INSERT INTO user_stats (user_id, message_count, last_seen, emoji_usage)
-                    VALUES (?, 1, CURRENT_TIMESTAMP, ?)
+                    INSERT INTO user_stats (user_id, message_count, last_seen, emoji_usage, avg_sentiment)
+                    VALUES (?, 1, CURRENT_TIMESTAMP, ?, ?)
                     ON CONFLICT(user_id) DO UPDATE SET
                         message_count = message_count + 1,
                         last_seen = CURRENT_TIMESTAMP,
-                        emoji_usage = emoji_usage + ?
-                ''', (author_id, emoji_count, emoji_count))
+                        emoji_usage = emoji_usage + ?,
+                        avg_sentiment = ((avg_sentiment * (message_count - 1)) + ?) / message_count
+                ''', (author_id, emoji_count, sentiment, emoji_count, sentiment))
                 
-                # Update username if available
                 if message and message.author:
                     await db.execute('''
                         UPDATE user_stats 
                         SET username = ? 
                         WHERE user_id = ? AND (username IS NULL OR username != ?)
                     ''', (str(message.author), author_id, str(message.author)))
+                
+                # Store message
+                await db.execute('''
+                    INSERT INTO message_log (content, author_id, channel_id, timestamp, 
+                                           emoji_count, sentiment, cleaned_content)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (content, author_id, message.channel.id if message else 0,
+                     message.created_at.isoformat() if message else datetime.utcnow().isoformat(),
+                     emoji_count, sentiment, clean_content))
                 
                 await db.commit()
                 
@@ -580,8 +1197,9 @@ class EnhancedMarkovCog(commands.Cog):
             return 0
 
     # --- REPLY GENERATION WITH ANTI-SPAM ---
-    async def generate_sentence(self, seed_word: Optional[str] = None, context_message: Optional[str] = None) -> Optional[str]:
-        """Generate sentence with enhanced NLP and controlled emojis"""
+    async def generate_sentence(self, seed_word: Optional[str] = None, 
+                               context_message: Optional[str] = None) -> Optional[str]:
+        """Generate sentence for Hinglish"""
         if not await self.can_generate_reply():
             return None
         
@@ -589,178 +1207,245 @@ class EnhancedMarkovCog(commands.Cog):
             async with aiosqlite.connect(self.db_path) as db:
                 db.row_factory = aiosqlite.Row
                 
-                # Get starting pair with context consideration
+                # Get current context
+                current_sentiment = self.conversation_sentiment
+                topic_keywords = [kw for kw, _ in self.current_topic_keywords]
+                
+                # Get starting pair
                 start_pair = None
                 
                 if seed_word and len(seed_word) >= self.SEED_WORD_MIN_LENGTH:
-                    # Try to find a starting pair with the seed word
-                    async with db.execute('''
-                        SELECT word_a, word_b, count FROM markov_chain 
+                    # Try with seed word
+                    query = '''
+                        SELECT word_a, word_b, lemma_a, lemma_b, pos_a, pos_b, count, 
+                               sentiment_score, topic_weight FROM markov_chain 
                         WHERE (LOWER(word_a) = LOWER(?) OR LOWER(word_b) = LOWER(?))
                         AND word_type != 'emoji'
-                        ORDER BY count DESC
-                        LIMIT 10
-                    ''', (seed_word, seed_word)) as cursor:
+                    '''
+                    
+                    if self.TOPIC_COHERENCE and topic_keywords:
+                        topic_condition = " OR ".join([f"word_a LIKE ? OR word_b LIKE ?" 
+                                                      for _ in topic_keywords])
+                        query += f" AND ({topic_condition})"
+                        params = [seed_word, seed_word]
+                        for kw in topic_keywords:
+                            params.extend([f"%{kw}%", f"%{kw}%"])
+                    else:
+                        params = [seed_word, seed_word]
+                    
+                    query += " ORDER BY (count * COALESCE(topic_weight, 1)) DESC LIMIT 10"
+                    
+                    async with db.execute(query, params) as cursor:
                         candidates = await cursor.fetchall()
+                        
                         if candidates:
-                            # Weighted random selection
-                            total_weight = sum(row['count'] for row in candidates)
-                            if total_weight > 0:
-                                rand = random.random() * total_weight
-                                cumulative = 0
-                                for row in candidates:
-                                    cumulative += row['count']
-                                    if cumulative >= rand:
-                                        start_pair = row
-                                        break
+                            weights = []
+                            for row in candidates:
+                                weight = row['count']
+                                
+                                if self.SENTIMENT_MATCHING:
+                                    sentiment_diff = abs(row['sentiment_score'] - current_sentiment)
+                                    sentiment_factor = 1.0 - min(sentiment_diff, 1.0)
+                                    weight *= sentiment_factor
+                                
+                                if self.TOPIC_COHERENCE and row['topic_weight']:
+                                    weight *= row['topic_weight']
+                                
+                                weights.append(weight)
+                            
+                            if sum(weights) > 0:
+                                start_pair = random.choices(candidates, weights=weights)[0]
                 
                 if not start_pair and context_message:
-                    # Extract words from context
+                    # Extract meaningful words from context
                     clean_context = re.sub(r'[^\w\s@#:]', ' ', context_message)
                     words = clean_context.lower().split()
                     
-                    # Filter for meaningful words
                     context_words = [w for w in words 
-                                   if len(w) >= 4 
+                                   if len(w) >= 3  # Reduced for Hindi
                                    and not w.startswith(('@', '#', ':'))
-                                   and not re.match(r'^\d+$', w)]
+                                   and not re.match(r'^\d+$', w)
+                                   and w not in self.stop_words]
                     
                     # Try context words
                     for context_word in context_words[:5]:
-                        async with db.execute('''
-                            SELECT word_a, word_b, count FROM markov_chain 
+                        query = '''
+                            SELECT word_a, word_b, lemma_a, lemma_b, pos_a, pos_b, count,
+                                   sentiment_score, topic_weight FROM markov_chain 
                             WHERE (LOWER(word_a) = LOWER(?) OR LOWER(word_b) = LOWER(?))
                             AND word_type != 'emoji'
-                            ORDER BY count DESC
-                            LIMIT 5
-                        ''', (context_word, context_word)) as cursor:
+                        '''
+                        
+                        if self.TOPIC_COHERENCE and topic_keywords:
+                            topic_condition = " OR ".join([f"word_a LIKE ? OR word_b LIKE ?" 
+                                                          for _ in topic_keywords])
+                            query += f" AND ({topic_condition})"
+                            params = [context_word, context_word]
+                            for kw in topic_keywords:
+                                params.extend([f"%{kw}%", f"%{kw}%"])
+                        else:
+                            params = [context_word, context_word]
+                        
+                        query += " ORDER BY count DESC LIMIT 5"
+                        
+                        async with db.execute(query, params) as cursor:
                             candidates = await cursor.fetchall()
                             if candidates:
-                                # Pick random from candidates
                                 start_pair = random.choice(candidates)
                                 break
                 
                 if not start_pair:
                     # Get random starting pair
-                    async with db.execute('''
-                        SELECT word_a, word_b, count FROM markov_chain 
+                    query = '''
+                        SELECT word_a, word_b, lemma_a, lemma_b, pos_a, pos_b, count,
+                               sentiment_score, topic_weight FROM markov_chain 
                         WHERE word_type != 'emoji'
                         AND LENGTH(word_a) > 1 AND LENGTH(word_b) > 1
-                        ORDER BY RANDOM()
-                        LIMIT 10
-                    ''') as cursor:
+                    '''
+                    
+                    params = []
+                    if self.SENTIMENT_MATCHING:
+                        query += " ORDER BY ABS(sentiment_score - ?) ASC, RANDOM()"
+                        params.append(current_sentiment)
+                    else:
+                        query += " ORDER BY RANDOM()"
+                    
+                    query += " LIMIT 10"
+                    
+                    async with db.execute(query, params) as cursor:
                         candidates = await cursor.fetchall()
                         if candidates:
-                            # Weighted selection
-                            total_weight = sum(row['count'] for row in candidates)
-                            if total_weight > 0:
-                                rand = random.random() * total_weight
-                                cumulative = 0
-                                for row in candidates:
-                                    cumulative += row['count']
-                                    if cumulative >= rand:
-                                        start_pair = row
-                                        break
-                            else:
-                                start_pair = candidates[0]
+                            weights = [row['count'] for row in candidates]
+                            if sum(weights) > 0:
+                                start_pair = random.choices(candidates, weights=weights)[0]
                 
                 if not start_pair:
                     return None
                 
-                # Build sentence with emoji control
-                sentence = [start_pair['word_a'], start_pair['word_b']]
+                # Build sentence
+                sentence_words = [start_pair['word_a'], start_pair['word_b']]
+                sentence_pos = [start_pair['pos_a'], start_pair['pos_b']]
                 emoji_count = 0
                 max_attempts = self.SENTENCE_MAX_WORDS * 3
                 
                 for attempt in range(max_attempts):
-                    if len(sentence) >= self.SENTENCE_MAX_WORDS:
+                    if len(sentence_words) >= self.SENTENCE_MAX_WORDS:
                         break
                     
-                    w1, w2 = sentence[-2], sentence[-1]
+                    w1, w2 = sentence_words[-2], sentence_words[-1]
+                    pos2 = sentence_pos[-1]
                     
                     # Get next word options
-                    async with db.execute('''
-                        SELECT next_word, count, word_type FROM markov_chain 
+                    query = '''
+                        SELECT next_word, lemma_next, pos_next, count, word_type,
+                               sentiment_score, topic_weight FROM markov_chain 
                         WHERE word_a = ? AND word_b = ?
-                        ORDER BY count DESC 
-                        LIMIT 15
-                    ''', (w1, w2)) as cursor:
+                    '''
+                    
+                    params = [w1, w2]
+                    
+                    if self.GRAMMAR_ENFORCEMENT:
+                        allowed_pos = self.POS_TRANSITION_RULES.get(pos2, [])
+                        if allowed_pos:
+                            placeholders = ','.join(['?'] * len(allowed_pos))
+                            query += f" AND pos_next IN ({placeholders})"
+                            params.extend(allowed_pos)
+                    
+                    query += " ORDER BY (count * COALESCE(topic_weight, 1)) DESC LIMIT 15"
+                    
+                    async with db.execute(query, params) as cursor:
                         options = await cursor.fetchall()
                     
                     if not options:
-                        # Try with just word_b as fallback
-                        async with db.execute('''
-                            SELECT next_word, count, word_type FROM markov_chain 
+                        # Fallback
+                        query = '''
+                            SELECT next_word, lemma_next, pos_next, count, word_type,
+                                   sentiment_score, topic_weight FROM markov_chain 
                             WHERE word_b = ?
-                            ORDER BY count DESC 
-                            LIMIT 10
-                        ''', (w2,)) as cursor:
+                        '''
+                        params = [w2]
+                        
+                        if self.GRAMMAR_ENFORCEMENT and allowed_pos:
+                            placeholders = ','.join(['?'] * len(allowed_pos))
+                            query += f" AND pos_next IN ({placeholders})"
+                            params.extend(allowed_pos)
+                        
+                        query += " ORDER BY count DESC LIMIT 10"
+                        
+                        async with db.execute(query, params) as cursor:
                             options = await cursor.fetchall()
                     
                     if not options:
                         break
                     
-                    # Filter options
+                    # Filter and weight options
                     filtered_options = []
+                    weights = []
+                    
                     for option in options:
                         word_type = option['word_type']
                         next_word = option['next_word']
+                        next_pos = option['pos_next']
                         
                         if not next_word or len(next_word.strip()) == 0:
                             continue
                         
-                        # Skip emojis if we have too many
                         if word_type == 'emoji' and emoji_count >= self.MAX_REPLY_EMOJIS:
                             continue
                         
-                        # Skip duplicate consecutive words
-                        if len(sentence) >= 1 and next_word == sentence[-1]:
+                        if len(sentence_words) >= 1 and next_word == sentence_words[-1]:
                             continue
                         
+                        weight = option['count']
+                        
+                        if self.SENTIMENT_MATCHING:
+                            sentiment_diff = abs(option['sentiment_score'] - current_sentiment)
+                            sentiment_factor = 1.0 - min(sentiment_diff, 1.0)
+                            weight *= sentiment_factor
+                        
+                        if self.TOPIC_COHERENCE and option['topic_weight']:
+                            weight *= option['topic_weight']
+                        
+                        if self.GRAMMAR_ENFORCEMENT:
+                            if not self.is_valid_pos_transition(pos2, next_pos):
+                                weight *= 0.5
+                        
                         filtered_options.append(option)
+                        weights.append(weight)
                     
                     if not filtered_options:
                         filtered_options = options[:3]
+                        weights = [opt['count'] for opt in filtered_options]
                     
                     # Weighted random selection
-                    total_weight = sum(opt['count'] for opt in filtered_options)
-                    if total_weight == 0:
-                        next_word = random.choice(filtered_options)['next_word']
+                    if sum(weights) == 0:
+                        next_choice = random.choice(filtered_options)
                     else:
-                        rand = random.random() * total_weight
-                        cumulative = 0
-                        for opt in filtered_options:
-                            cumulative += opt['count']
-                            if cumulative >= rand:
-                                next_word = opt['next_word']
-                                break
-                        else:
-                            next_word = filtered_options[0]['next_word']
+                        next_choice = random.choices(filtered_options, weights=weights)[0]
                     
-                    # Track emojis
-                    if self.classify_word_type(next_word) == 'emoji':
+                    if next_choice['word_type'] == 'emoji':
                         emoji_count += 1
                     
-                    sentence.append(next_word)
+                    sentence_words.append(next_choice['next_word'])
+                    sentence_pos.append(next_choice['pos_next'])
                     
                     # Check for natural ending
-                    if next_word.endswith(('.', '!', '?')):
-                        if len(sentence) >= 5 and random.random() < 0.6:
+                    if next_choice['next_word'].endswith(('.', '!', '?')):
+                        if len(sentence_words) >= 5 and random.random() < 0.6:
                             break
                     
                     # Length-based stopping
-                    if len(sentence) >= 8 and random.random() < 0.3:
+                    if len(sentence_words) >= 8 and random.random() < 0.3:
                         break
                     
-                    if len(sentence) >= self.SENTENCE_MAX_WORDS:
+                    if len(sentence_words) >= self.SENTENCE_MAX_WORDS:
                         break
                 
-                # Convert tokens to readable text
+                # Convert to readable text
                 readable_sentence = []
                 used_mentions = set()
                 
-                for i, word in enumerate(sentence):
-                    # Handle Unicode emojis
+                for i, word in enumerate(sentence_words):
                     if word.startswith(':emoji_'):
                         emoji_name = word[7:-1] if word.endswith(':') else word[7:]
                         try:
@@ -769,12 +1454,10 @@ class EnhancedMarkovCog(commands.Cog):
                         except:
                             readable_sentence.append(f":{emoji_name}: ")
                     
-                    # Handle custom Discord emojis
                     elif word.startswith(':custom_emoji_'):
                         emoji_name = word[14:-1] if word.endswith(':') else word[14:]
                         readable_sentence.append(f":{emoji_name}: ")
                     
-                    # Handle username mentions
                     elif word.startswith('@USER_'):
                         user_id = word[6:]
                         if user_id.isdigit() and user_id not in used_mentions:
@@ -783,13 +1466,10 @@ class EnhancedMarkovCog(commands.Cog):
                         else:
                             readable_sentence.append(f"@{user_id}")
                     
-                    # Handle other mentions
                     elif word in ['#channel_mention', '@role_mention']:
                         readable_sentence.append(word)
                     
-                    # Regular words - ensure proper case
                     else:
-                        # Capitalize first word of sentence
                         if i == 0 and word[0].islower():
                             word = word[0].upper() + word[1:]
                         readable_sentence.append(word)
@@ -801,36 +1481,33 @@ class EnhancedMarkovCog(commands.Cog):
                         result = token
                     else:
                         prev_token = readable_sentence[i-1]
-                        # Don't add space between mention/emoji and punctuation
                         if (prev_token.endswith(('>', ':')) and 
                             token in ['.', ',', '!', '?', ':', ';']):
                             result += f" {token}"
-                        # Don't add space before some punctuation
                         elif token in ['.', ',', '!', '?', ':', ';']:
                             result += token
                         else:
                             result += ' ' + token
                 
-                # Clean up multiple spaces
+                # Clean up
                 result = re.sub(r'\s+', ' ', result).strip()
-                
-                # Ensure proper spacing after mentions/emojis
                 result = re.sub(r'(<@\d+>|:[a-zA-Z0-9_]+:)([a-zA-Z])', r'\1 \2', result)
                 
-                # Capitalize first letter if not already
                 if result and result[0].islower():
                     result = result[0].upper() + result[1:]
                 
-                # Add punctuation if missing
+                # Add punctuation
                 if result and not result[-1] in '.!?;':
                     last_words = result.lower().split()[-2:]
                     
-                    # Question detection
-                    question_words = ['what', 'why', 'how', 'when', 'who', 'where', 'which', 'whose']
+                    question_words = ['what', 'why', 'how', 'when', 'who', 'where', 'which', 'whose',
+                                     'kya', 'kaise', 'kyun']  # Added Hindi question words
+                    
                     if any(word in last_words for word in question_words):
                         result += ' ?'
-                    # Exclamation detection
-                    elif any(word in last_words for word in ['wow', 'awesome', 'amazing', 'great', 'yes', 'no']):
+                    elif (any(word in last_words for word in ['wow', 'awesome', 'amazing', 'great', 'yes',
+                                                            'acha', 'badhiya', 'mast']) or
+                          current_sentiment > 0.3):
                         result += ' !'
                     else:
                         result += ' .'
@@ -840,7 +1517,6 @@ class EnhancedMarkovCog(commands.Cog):
                 if len(words_in_result) < 3:
                     return None
                 
-                # Remove any trailing spaces before punctuation
                 result = re.sub(r'\s+([.!?,;])', r'\1', result)
                 
                 return result
@@ -850,6 +1526,7 @@ class EnhancedMarkovCog(commands.Cog):
             import traceback
             logger.error(traceback.format_exc())
             return None
+
 
     async def can_generate_reply(self):
         """Check if we have enough data"""
@@ -1086,9 +1763,117 @@ class EnhancedMarkovCog(commands.Cog):
             logger.error(f"Stats update error: {e}")
 
     # --- COMMANDS WITH ENHANCED STATS ---
+    
+    
+    @commands.command(name="hinglishstats")
+    async def hinglish_stats(self, ctx):
+        """Show Hinglish-specific statistics"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                
+                # Get language mix stats
+                total_messages = self.stats['total_messages']
+                hinglish_percentage = (self.stats['hinglish_messages'] / total_messages * 100) if total_messages > 0 else 0
+                
+                # Get unique Hindi words
+                async with db.execute("""
+                    SELECT COUNT(DISTINCT next_word) as unique_hindi_words
+                    FROM markov_chain 
+                    WHERE next_word REGEXP '[\\u0900-\\u097F]'
+                    OR LOWER(next_word) IN ('acha', 'thik', 'kya', 'kaise', 'kyun', 'bhai', 'yaar', 'dost', 'sahi', 'theek')
+                """) as cursor:
+                    hindi_words = await cursor.fetchone()
+                
+                embed = discord.Embed(
+                    title="🇮🇳 Hinglish Statistics",
+                    color=discord.Color.green(),
+                    timestamp=datetime.utcnow()
+                )
+                
+                embed.add_field(
+                    name="Language Usage",
+                    value=f"**Total messages:** {self.stats['total_messages']:,}\n"
+                          f"**Hinglish messages:** {self.stats['hinglish_messages']:,}\n"
+                          f"**Hinglish ratio:** {hinglish_percentage:.1f}%\n"
+                          f"**Hindi words learned:** {self.stats['hindi_words_learned']:,}",
+                    inline=False
+                )
+                
+                if hindi_words and hindi_words['unique_hindi_words']:
+                    embed.add_field(
+                        name="Hindi Vocabulary",
+                        value=f"**Unique Hindi words:** {hindi_words['unique_hindi_words']:,}",
+                        inline=False
+                    )
+                
+                # Get popular Hinglish words
+                async with db.execute("""
+                    SELECT next_word, COUNT(*) as usage_count 
+                    FROM markov_chain 
+                    WHERE LOWER(next_word) IN ('acha', 'thik', 'kya', 'kaise', 'kyun', 'bhai', 'yaar', 'dost', 'sahi', 'theek', 'haan', 'nahi')
+                    GROUP BY next_word 
+                    ORDER BY usage_count DESC 
+                    LIMIT 8
+                """) as cursor:
+                    hinglish_words = await cursor.fetchall()
+                
+                if hinglish_words:
+                    word_list = "\n".join([f"**{row['next_word']}**: {row['usage_count']:,}" 
+                                          for row in hinglish_words])
+                    embed.add_field(name="Popular Hinglish Words", value=word_list, inline=False)
+                
+                embed.set_footer(text="Supporting Hindi-English mix (Hinglish)")
+                await ctx.send(embed=embed)
+                
+        except Exception as e:
+            logger.error(f"Hinglish stats error: {e}")
+            await ctx.send(f"❌ Error: {str(e)[:100]}")
+    
+    @commands.command(name="nlpstatus")
+    async def nlp_status(self, ctx):
+        """Show NLP enhancement status"""
+        embed = discord.Embed(
+            title="🧠 NLP Enhancement Status",
+            color=discord.Color.purple(),
+            timestamp=datetime.utcnow()
+        )
+        
+        # Current settings
+        embed.add_field(
+            name="Active Features",
+            value=f"**Lemmatization:** {'✅' if self.LEMMATIZATION_ENABLED else '❌'}\n"
+                  f"**Grammar Rules:** {'✅' if self.GRAMMAR_ENFORCEMENT else '❌'}\n"
+                  f"**Sentiment Matching:** {'✅' if self.SENTIMENT_MATCHING else '❌'}\n"
+                  f"**Topic Coherence:** {'✅' if self.TOPIC_COHERENCE else '❌'}\n"
+                  f"**NLP Model:** {'✅ Loaded' if self.nlp else '❌ Not available'}",
+            inline=False
+        )
+        
+        # Current context
+        embed.add_field(
+            name="Current Conversation",
+            value=f"**Messages in context:** {len(self.conversation_context)}\n"
+                  f"**Sentiment:** {self.conversation_sentiment:+.2f}\n"
+                  f"**Current topics:** {', '.join([kw for kw, _ in self.current_topic_keywords[:3]]) or 'None'}",
+            inline=False
+        )
+        
+        # Stats
+        embed.add_field(
+            name="NLP Statistics",
+            value=f"**Sentiment analyzed:** {self.stats['sentiment_analyzed']}\n"
+                  f"**Topics detected:** {self.stats['topics_detected']}\n"
+                  f"**Lemmas stored:** {self.stats['lemmas_stored']:,}\n"
+                  f"**Grammar rules:** {len(self.POS_TRANSITION_RULES)}",
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
+    
     @commands.command(name="brainstats")
     async def brain_stats(self, ctx):
-        """Show enhanced statistics"""
+        """Show enhanced statistics with NLP info"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 db.row_factory = aiosqlite.Row
@@ -1101,13 +1886,15 @@ class EnhancedMarkovCog(commands.Cog):
                         (SELECT COUNT(*) FROM markov_chain WHERE word_type = 'mention') as mention_triplets,
                         (SELECT COUNT(*) FROM message_log) as messages,
                         (SELECT COUNT(*) FROM message_log WHERE DATE(timestamp) = DATE('now')) as today_messages,
-                        (SELECT COUNT(DISTINCT author_id) FROM message_log) as unique_users
+                        (SELECT COUNT(DISTINCT author_id) FROM message_log) as unique_users,
+                        (SELECT COUNT(*) FROM markov_chain WHERE lemma_a IS NOT NULL) as lemmatized_triplets,
+                        (SELECT AVG(sentiment) FROM message_log WHERE sentiment != 0) as avg_sentiment
                 """) as cursor:
                     row = await cursor.fetchone()
                 
                 # Get top users
                 async with db.execute("""
-                    SELECT user_id, username, message_count, emoji_usage 
+                    SELECT user_id, username, message_count, emoji_usage, avg_sentiment
                     FROM user_stats 
                     ORDER BY message_count DESC 
                     LIMIT 5
@@ -1119,11 +1906,12 @@ class EnhancedMarkovCog(commands.Cog):
                     self.stats.update({
                         'total_triplets': row['triplets'],
                         'total_messages': row['messages'],
-                        'unique_users': row['unique_users']
+                        'unique_users': row['unique_users'],
+                        'lemmas_stored': row['lemmatized_triplets']
                     })
                 
                 embed = discord.Embed(
-                    title="🧠 Enhanced Brain Statistics",
+                    title="🧠 Enhanced Brain Statistics (NLP)",
                     color=discord.Color.blue(),
                     timestamp=datetime.utcnow()
                 )
@@ -1132,36 +1920,45 @@ class EnhancedMarkovCog(commands.Cog):
                     embed.add_field(
                         name="Knowledge Base",
                         value=f"**{row['triplets']:,}** total triplets\n"
+                              f"**{row['lemmatized_triplets']:,}** lemmatized\n"
                               f"**{row['emoji_triplets']:,}** emoji patterns\n"
                               f"**{row['mention_triplets']:,}** mention patterns",
                         inline=False
                     )
                     
                     embed.add_field(
-                        name="Activity",
+                        name="Activity & Sentiment",
                         value=f"**{row['messages']:,}** total messages\n"
                               f"**{row['today_messages']}** messages today\n"
                               f"**{row['unique_users']}** unique users\n"
-                              f"**{self.stats['replies_generated']}** replies sent",
+                              f"**{row['avg_sentiment']:+.2f}** avg sentiment\n"
+                              f"**{self.conversation_sentiment:+.2f}** current sentiment",
                         inline=False
                     )
                 else:
                     embed.add_field(name="Error", value="Could not fetch statistics", inline=False)
                 
-                # Top users
+                # Top users with sentiment
                 if top_users:
                     top_users_text = "\n".join(
-                        f"<@{user['user_id']}>: {user['message_count']:,} msgs ({user['emoji_usage']} emojis)"
+                        f"<@{user['user_id']}>: {user['message_count']:,} msgs "
+                        f"(sentiment: {user['avg_sentiment']:+.2f})"
                         for user in top_users
                     )
                     embed.add_field(name="Top Contributors", value=top_users_text, inline=False)
                 
-                # Anti-spam stats
+                # Current topics
+                if self.current_topic_keywords:
+                    topics = ", ".join([f"`{kw}`" for kw, _ in self.current_topic_keywords[:5]])
+                    embed.add_field(name="Current Topics", value=topics, inline=False)
+                
+                # NLP Status
                 embed.add_field(
-                    name="Rate Limiting",
-                    value=f"**{self.stats['rate_limited']}** times rate-limited\n"
-                          f"**{self.stats['spam_blocked']}** spam bursts blocked\n"
-                          f"**{len(self.message_timestamps)}** channels tracked",
+                    name="NLP Features",
+                    value=f"**Lemmatization:** {'✅' if self.LEMMATIZATION_ENABLED else '❌'}\n"
+                          f"**Grammar:** {'✅' if self.GRAMMAR_ENFORCEMENT else '❌'}\n"
+                          f"**Sentiment:** {'✅' if self.SENTIMENT_MATCHING else '❌'}\n"
+                          f"**Topics:** {'✅' if self.TOPIC_COHERENCE else '❌'}",
                     inline=False
                 )
                 

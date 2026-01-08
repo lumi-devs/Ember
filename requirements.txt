@@ -14,3 +14,4 @@ aiosqlite
 markovify
 nltk
 emoji
+langdetect
