@@ -1028,31 +1028,38 @@ class EnhancedMarkovCog(commands.Cog):
         await self.bot.wait_until_ready()
         
         try:
-            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+            # 1. Resolve absolute path to prevent CWD issues
+            resolved_path = Path(self.db_path).resolve()
+            self.db_path = str(resolved_path)
             
-            async with self.get_db() as db: 
-                
-                # Optimize SQLite settings
+            # Ensure directory exists
+            resolved_path.parent.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Initializing database at: {self.db_path}")
+            
+            async with aiosqlite.connect(self.db_path) as db:
+                # 2. Run PRAGMAs FIRST (Critical for stability)
                 await db.execute('PRAGMA journal_mode=WAL;')
                 await db.execute('PRAGMA synchronous=NORMAL;')
                 await db.execute('PRAGMA cache_size=-10000;')
                 await db.execute('PRAGMA temp_store=DEFAULT;')
-                await db.execute('PRAGMA mmap_size=33554432;')
                 
-                # --- UPDATED: Create tables with NLP columns ---
+                # 3. Register function AFTER pragmas
+                await db.create_function("REGEXP", 2, self.regexp)
+                
+                # --- Create Tables ---
                 await db.execute('''
                     CREATE TABLE IF NOT EXISTS markov_chain (
                         word_a TEXT NOT NULL,
                         word_b TEXT NOT NULL,
                         next_word TEXT NOT NULL,
-                        lemma_a TEXT,           -- NEW: Lemmatized form
-                        lemma_b TEXT,           -- NEW: Lemmatized form
-                        lemma_next TEXT,        -- NEW: Lemmatized form
-                        pos_a TEXT,             -- NEW: Part of speech
-                        pos_b TEXT,             -- NEW: Part of speech
-                        pos_next TEXT,          -- NEW: Part of speech
-                        sentiment_score REAL DEFAULT 0.0,  -- NEW: Average sentiment
-                        topic_weight REAL DEFAULT 1.0,     -- NEW: Topic relevance
+                        lemma_a TEXT,
+                        lemma_b TEXT,
+                        lemma_next TEXT,
+                        pos_a TEXT,
+                        pos_b TEXT,
+                        pos_next TEXT,
+                        sentiment_score REAL DEFAULT 0.0,
+                        topic_weight REAL DEFAULT 1.0,
                         count INTEGER DEFAULT 1,
                         last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1061,7 +1068,6 @@ class EnhancedMarkovCog(commands.Cog):
                     ) WITHOUT ROWID
                 ''')
                 
-                # Create message_log table (unchanged)
                 await db.execute('''
                     CREATE TABLE IF NOT EXISTS message_log (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1072,12 +1078,11 @@ class EnhancedMarkovCog(commands.Cog):
                         processed BOOLEAN DEFAULT 0,
                         emoji_count INTEGER DEFAULT 0,
                         is_bot_reply BOOLEAN DEFAULT 0,
-                        sentiment REAL DEFAULT 0.0,  -- NEW: Message sentiment
-                        cleaned_content TEXT         -- NEW: Cleaned text for topic modeling
+                        sentiment REAL DEFAULT 0.0,
+                        cleaned_content TEXT
                     )
                 ''')
                 
-                # Create user_stats table (unchanged)
                 await db.execute('''
                     CREATE TABLE IF NOT EXISTS user_stats (
                         user_id INTEGER PRIMARY KEY,
@@ -1085,59 +1090,22 @@ class EnhancedMarkovCog(commands.Cog):
                         message_count INTEGER DEFAULT 0,
                         last_seen TIMESTAMP,
                         emoji_usage INTEGER DEFAULT 0,
-                        avg_sentiment REAL DEFAULT 0.0  -- NEW: User's typical sentiment
+                        avg_sentiment REAL DEFAULT 0.0
                     )
                 ''')
                 
-                # Create indexes for NLP columns
-                await db.execute('''
-                    CREATE INDEX IF NOT EXISTS idx_markov_lemmas 
-                    ON markov_chain(lemma_a, lemma_b, lemma_next)
-                ''')
-                
-                await db.execute('''
-                    CREATE INDEX IF NOT EXISTS idx_markov_pos 
-                    ON markov_chain(pos_a, pos_b, pos_next)
-                ''')
-                
-                await db.execute('''
-                    CREATE INDEX IF NOT EXISTS idx_markov_sentiment 
-                    ON markov_chain(sentiment_score)
-                ''')
-                
-                # Existing indexes...
-                await db.execute('''
-                    CREATE INDEX IF NOT EXISTS idx_markov_lookup 
-                    ON markov_chain(word_a, word_b, count DESC)
-                ''')
-                
-                await db.execute('''
-                    CREATE INDEX IF NOT EXISTS idx_markov_type 
-                    ON markov_chain(word_type)
-                ''')
-                
-                await db.execute('''
-                    CREATE INDEX IF NOT EXISTS idx_message_log_timestamp 
-                    ON message_log(timestamp)
-                ''')
-                
-                await db.execute('''
-                    CREATE INDEX IF NOT EXISTS idx_message_log_processed 
-                    ON message_log(processed)
-                ''')
-            
+                # --- Indexes ---
+                await db.execute('CREATE INDEX IF NOT EXISTS idx_markov_lemmas ON markov_chain(lemma_a, lemma_b, lemma_next)')
+                await db.execute('CREATE INDEX IF NOT EXISTS idx_markov_pos ON markov_chain(pos_a, pos_b, pos_next)')
+                await db.execute('CREATE INDEX IF NOT EXISTS idx_markov_sentiment ON markov_chain(sentiment_score)')
+                await db.execute('CREATE INDEX IF NOT EXISTS idx_markov_lookup ON markov_chain(word_a, word_b, count DESC)')
+                await db.execute('CREATE INDEX IF NOT EXISTS idx_markov_type ON markov_chain(word_type)')
+                await db.execute('CREATE INDEX IF NOT EXISTS idx_message_log_timestamp ON message_log(timestamp)')
+                await db.execute('CREATE INDEX IF NOT EXISTS idx_message_log_processed ON message_log(processed)')
                 
                 await db.commit()
                 
-                async with db.execute("PRAGMA table_info(markov_chain)") as cursor:
-                    columns = [row[1] for row in await cursor.fetchall()]
-                    if 'lemma_a' not in columns:
-                        logger.info("Migrating database schema...")
-                        await db.execute("ALTER TABLE markov_chain ADD COLUMN lemma_a TEXT")
-                        await db.execute("ALTER TABLE markov_chain ADD COLUMN lemma_b TEXT")
-                        await db.execute("ALTER TABLE markov_chain ADD COLUMN lemma_next TEXT")
-                    
-                # Get initial counts
+                # --- Initial Stats Load ---
                 async with db.execute("SELECT COUNT(*) FROM markov_chain") as cursor:
                     result = await cursor.fetchone()
                     self.stats['total_triplets'] = result[0] if result else 0
@@ -1150,13 +1118,17 @@ class EnhancedMarkovCog(commands.Cog):
                     result = await cursor.fetchone()
                     self.stats['unique_users'] = result[0] if result else 0
                 
-                # Count lemmatized entries
                 async with db.execute("SELECT COUNT(*) FROM markov_chain WHERE lemma_a IS NOT NULL") as cursor:
                     result = await cursor.fetchone()
                     self.stats['lemmas_stored'] = result[0] if result else 0
                 
-                logger.info(f"Database initialized. Existing: {self.stats['total_triplets']} triplets, {self.stats['lemmas_stored']} lemmas from {self.stats['total_messages']} messages")
+                logger.info(f"Database initialized. Existing: {self.stats['total_triplets']} triplets.")
                 self.db_initialized = True
+                
+        except ValueError as e:
+            logger.error(f"Database connection failed (ValueError): {e}")
+            # Try to recover: If WAL mode fails, it might be a lock file issue
+            logger.warning("Attempting to recover database connection...")
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
             raise
@@ -1691,7 +1663,17 @@ class EnhancedMarkovCog(commands.Cog):
             
             for t in to_remove:
                 del self.global_topics[t]
-                
+            
+    @staticmethod
+    def regexp(expr, item):
+        """Static regex function for SQLite to avoid thread safety issues"""
+        try:
+            if item is None:
+                return False
+            reg = re.compile(expr, re.IGNORECASE)
+            return reg.search(str(item)) is not None
+        except Exception:
+            return False    
             
     async def generate_sentence(self, seed_word: Optional[str] = None, 
                               context_message: Optional[str] = None) -> Optional[str]:
