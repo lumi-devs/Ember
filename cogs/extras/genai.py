@@ -764,15 +764,15 @@ class EnhancedMarkovCog(commands.Cog):
                     if word.startswith(':emoji_'):
                         emoji_name = word[7:-1] if word.endswith(':') else word[7:]
                         try:
-                            emoji_char = emoji.emojize(f":{emoji_name}:", language='alias')
+                            emoji_char = emoji.emojize(f":{emoji_name}: ", language='alias')
                             readable_sentence.append(emoji_char)
                         except:
-                            readable_sentence.append(f":{emoji_name}:")
+                            readable_sentence.append(f":{emoji_name}: ")
                     
                     # Handle custom Discord emojis
                     elif word.startswith(':custom_emoji_'):
                         emoji_name = word[14:-1] if word.endswith(':') else word[14:]
-                        readable_sentence.append(f":{emoji_name}:")
+                        readable_sentence.append(f":{emoji_name}: ")
                     
                     # Handle username mentions
                     elif word.startswith('@USER_'):
@@ -804,7 +804,7 @@ class EnhancedMarkovCog(commands.Cog):
                         # Don't add space between mention/emoji and punctuation
                         if (prev_token.endswith(('>', ':')) and 
                             token in ['.', ',', '!', '?', ':', ';']):
-                            result += token
+                            result += f" {token}"
                         # Don't add space before some punctuation
                         elif token in ['.', ',', '!', '?', ':', ';']:
                             result += token
