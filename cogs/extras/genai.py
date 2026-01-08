@@ -241,13 +241,25 @@ class EnhancedMarkovCog(commands.Cog):
             yield db
             
         finally:
-            # Return to pool
-            if db and not db.closed:
-                async with self._db_pool_lock:
-                    if len(self._db_pool) < self._max_pool_size:
-                        self._db_pool.append(db)
-                    else:
-                        await db.close()
+            # Return to pool or close connection
+            if db:
+                try:
+                    # Check if connection is closed differently for aiosqlite
+                    # We'll assume if we can execute a simple query, it's open
+                    async with self._db_pool_lock:
+                        if len(self._db_pool) < self._max_pool_size:
+                            # Try to use the connection to see if it's still valid
+                            try:
+                                await db.execute("SELECT 1")
+                                self._db_pool.append(db)
+                            except Exception:
+                                # Connection is bad, close it
+                                await db.close()
+                        else:
+                            await db.close()
+                except Exception as e:
+                    logger.error(f"Error returning db to pool: {e}")
+                    await db.close()
 
     
     async def get_cached_query(self, query_key: str, query_func, *args):
@@ -1685,7 +1697,7 @@ class EnhancedMarkovCog(commands.Cog):
             
             for t in to_remove:
                 del self.global_topics[t]
-            
+                
             
     async def generate_sentence(self, seed_word: Optional[str] = None, 
                               context_message: Optional[str] = None) -> Optional[str]:
@@ -1865,7 +1877,7 @@ class EnhancedMarkovCog(commands.Cog):
                     if candidates:
                         weights = [row['count'] for row in candidates]
                         if sum(weights) > 0:
-                            start_sequence = secrets.choices(candidates, weights=weights)[0]
+                            start_sequence = random.choices(candidates, weights=weights)[0]
                 
                 if not start_sequence:
                     return None
