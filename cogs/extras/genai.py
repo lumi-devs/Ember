@@ -25,17 +25,18 @@ from langdetect import detect, DetectorFactory
 DetectorFactory.seed = 0
 
 # Try to download NLTK data
-# Try to download NLTK data
 try:
     nltk.data.find('tokenizers/punkt')
+    nltk.data.find('tokenizers/punkt_tab') # <--- NEW REQUIREMENT
     nltk.data.find('taggers/averaged_perceptron_tagger')
-    nltk.data.find('taggers/universal_tagset')  # <--- ADD THIS LINE
+    nltk.data.find('taggers/universal_tagset')
     nltk.data.find('corpora/stopwords')
     nltk.data.find('sentiment/vader_lexicon')
 except LookupError:
     nltk.download('punkt', quiet=True)
+    nltk.download('punkt_tab', quiet=True) # <--- NEW REQUIREMENT
     nltk.download('averaged_perceptron_tagger', quiet=True)
-    nltk.download('universal_tagset', quiet=True) # <--- ADD THIS LINE
+    nltk.download('universal_tagset', quiet=True)
     nltk.download('stopwords', quiet=True)
     nltk.download('vader_lexicon', quiet=True)
 
