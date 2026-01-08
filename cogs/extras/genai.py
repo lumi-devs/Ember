@@ -485,7 +485,9 @@ class EnhancedMarkovCog(commands.Cog):
         
         return False
     
-
+    def regexp(self, expr, item):
+        reg = re.compile(expr, re.IGNORECASE)
+        return reg.search(item) is not None
     
     def detect_language_mix(self, text: str) -> Dict[str, float]:
         """Detect language mix in text (English vs Hindi vs Hinglish)"""
@@ -712,6 +714,7 @@ class EnhancedMarkovCog(commands.Cog):
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
             
             async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 # Optimize SQLite settings
                 await db.execute('PRAGMA journal_mode=WAL;')
                 await db.execute('PRAGMA synchronous=NORMAL;')
@@ -919,33 +922,43 @@ class EnhancedMarkovCog(commands.Cog):
             
     @tasks.loop(minutes=3)
     async def update_topic_model(self):
-        """Update topic keywords from recent conversation"""
+        """Enhanced Topic Identification using frequency and recency"""
         try:
-            # Get recent messages for topic modeling
-            recent_contents = []
-            for msg in self.conversation_context:
-                if 'content' in msg and msg['content']:
-                    recent_contents.append(msg['content'])
+            if not self.conversation_context:
+                return
+
+            # 1. Combine context but weight the last 10 messages 3x more
+            weighted_text = []
+            context_list = list(self.conversation_context)
+            for i, msg in enumerate(context_list):
+                multiplier = 3 if i > len(context_list) - 10 else 1
+                weighted_text.extend([msg['content']] * multiplier)
             
-            if recent_contents:
-                keywords = self.extract_tfidf_keywords(recent_contents, top_n=8)
-                self.current_topic_keywords = keywords
+            # 2. Extract keywords with better filtering
+            keywords = self.extract_tfidf_keywords(weighted_text, top_n=12)
+            
+            # 3. Filter for 'Meaningful' topics (Hinglish + English)
+            # Remove common conversational fillers from being topics
+            fillers = {'kya', 'hai', 'bhai', 'yaar', 'toh', 'aur', 'the', 'this', 'that'}
+            self.current_topic_keywords = [k for k in keywords if k[0].lower() not in fillers]
+
+            # 4. Update DB weights for these active topics
+            if self.current_topic_keywords and self.TOPIC_COHERENCE:
+                async with aiosqlite.connect(self.db_path) as db:
+                    # Reset old topic weights first to prevent "topic drift"
+                    await db.execute("UPDATE markov_chain SET topic_weight = 1.0 WHERE topic_weight > 1.0")
+                    
+                    for keyword, weight in self.current_topic_keywords:
+                        # Boost patterns that contain current topic keywords
+                        await db.execute('''
+                            UPDATE markov_chain 
+                            SET topic_weight = ? 
+                            WHERE (word_a = ? OR word_b = ? OR next_word = ?)
+                        ''', (1.5 + weight, keyword, keyword, keyword))
+                    await db.commit()
                 
-                # Update topic weights in database
-                if keywords and self.TOPIC_COHERENCE:
-                    async with aiosqlite.connect(self.db_path) as db:
-                        for keyword, weight in keywords:
-                            # Boost weight for words containing keywords
-                            await db.execute('''
-                                UPDATE markov_chain 
-                                SET topic_weight = 1.5 
-                                WHERE (word_a LIKE ? OR word_b LIKE ? OR next_word LIKE ?)
-                                AND topic_weight < 1.5
-                            ''', (f"%{keyword}%", f"%{keyword}%", f"%{keyword}%"))
-                        await db.commit()
-                
-                self.stats['topics_detected'] += 1
-                logger.debug(f"Updated topics: {keywords}")
+            self.stats['topics_detected'] += 1
+            logger.info(f"Top Active Topics: {[k[0] for k in self.current_topic_keywords[:5]]}")
                 
         except Exception as e:
             logger.error(f"Topic update error: {e}")
@@ -1166,6 +1179,7 @@ class EnhancedMarkovCog(commands.Cog):
         
         try:
             async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 # Batch insert with Hinglish information
                 for triplet in triplets:
                     (word_a, word_b, word_c, lemma_a, lemma_b, lemma_c, 
@@ -1232,6 +1246,7 @@ class EnhancedMarkovCog(commands.Cog):
         
         try:
             async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 db.row_factory = aiosqlite.Row
                 
                 # Get current context
@@ -1630,7 +1645,6 @@ class EnhancedMarkovCog(commands.Cog):
                 async with message.channel.typing():
                     thinking_time = random.uniform(self.TYPING_MIN_SECONDS, self.TYPING_MAX_SECONDS)
                     await asyncio.sleep(thinking_time)
-                    
                     try:
                         await message.channel.send(
                             reply,
@@ -1646,6 +1660,7 @@ class EnhancedMarkovCog(commands.Cog):
                         
                         # Log bot reply
                         async with aiosqlite.connect(self.db_path) as db:
+                            await db.create_function("REGEXP", 2, self.regexp)
                             await db.execute('''
                                 INSERT INTO message_log (content, author_id, channel_id, timestamp, is_bot_reply)
                                 VALUES (?, ?, ?, ?, 1)
@@ -1693,6 +1708,7 @@ class EnhancedMarkovCog(commands.Cog):
             
             # Save to database
             async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 await db.execute('''
                     INSERT INTO message_log (content, author_id, channel_id, timestamp, emoji_count)
                     VALUES (?, ?, ?, ?, ?)
@@ -1748,6 +1764,7 @@ class EnhancedMarkovCog(commands.Cog):
         """Clean up old data periodically"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 # 1. Perform deletions first
                 cutoff_date = (datetime.utcnow() - timedelta(days=self.RAW_MESSAGE_RETENTION_DAYS)).isoformat()
                 await db.execute('DELETE FROM message_log WHERE timestamp < ?', (cutoff_date,))
@@ -1758,6 +1775,7 @@ class EnhancedMarkovCog(commands.Cog):
 
             # 2. VACUUM must happen on a "fresh" connection outside a transaction
             async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 await db.execute('PRAGMA vacuum;') # Use PRAGMA for explicit control
                 logger.info("Database VACUUM completed successfully.")
                 
@@ -1768,6 +1786,7 @@ class EnhancedMarkovCog(commands.Cog):
         """Update statistics from database"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 async with db.execute("SELECT COUNT(*) FROM markov_chain") as cursor:
                     result = await cursor.fetchone()
                     self.stats['total_triplets'] = result[0] if result else 0
@@ -1794,63 +1813,34 @@ class EnhancedMarkovCog(commands.Cog):
     
     @commands.command(name="hinglishstats")
     async def hinglish_stats(self, ctx):
-        """Show Hinglish-specific statistics"""
+        """Show Hinglish-specific statistics with fixed Regex"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
+                # Register the regex function for this connection
+                await db.create_function("REGEXP", 2, self.regexp)
                 db.row_factory = aiosqlite.Row
                 
-                # Get language mix stats
-                total_messages = self.stats['total_messages']
-                hinglish_percentage = (self.stats['hinglish_messages'] / total_messages * 100) if total_messages > 0 else 0                
-                # Get unique Hindi words
-                async with db.execute("""
+                # Hindi Regex: Matches Devanagari characters
+                hindi_regex = r'[\u0900-\u097F]'
+                
+                async with db.execute(f"""
                     SELECT COUNT(DISTINCT next_word) as unique_hindi_words
                     FROM markov_chain 
-                    WHERE next_word REGEXP '[\\u0900-\\u097F]'
-                    OR LOWER(next_word) IN ('acha', 'thik', 'kya', 'kaise', 'kyun', 'bhai', 'yaar', 'dost', 'sahi', 'theek')
-                """) as cursor:
+                    WHERE next_word REGEXP ?
+                    OR LOWER(next_word) IN ('acha', 'thik', 'kya', 'kaise', 'kyun', 'bhai', 'yaar')
+                """, (hindi_regex,)) as cursor:
                     hindi_words = await cursor.fetchone()
                 
-                embed = discord.Embed(
-                    title="🇮🇳 Hinglish Statistics",
-                    color=discord.Color.green(),
-                    timestamp=datetime.utcnow()
-                )
+                # ... (rest of your embed code)
+                total_messages = self.stats['total_messages']
+                h_ratio = (self.stats['hinglish_messages'] / total_messages * 100) if total_messages > 0 else 0
                 
-                embed.add_field(
-                    name="Language Usage",
-                    value=f"**Total messages:** {self.stats['total_messages']:,}\n"
-                          f"**Hinglish messages:** {self.stats['hinglish_messages']:,}\n"
-                          f"**Hinglish ratio:** {hinglish_percentage:.1f}%\n"
-                          f"**Hindi words learned:** {self.stats['hindi_words_learned']:,}",
-                    inline=False
-                )
-                
-                if hindi_words and hindi_words['unique_hindi_words']:
-                    embed.add_field(
-                        name="Hindi Vocabulary",
-                        value=f"**Unique Hindi words:** {hindi_words['unique_hindi_words']:,}",
-                        inline=False
-                    )
-                
-                # Get popular Hinglish words
-                async with db.execute("""
-                    SELECT next_word, COUNT(*) as usage_count 
-                    FROM markov_chain 
-                    WHERE LOWER(next_word) IN ('acha', 'thik', 'kya', 'kaise', 'kyun', 'bhai', 'yaar', 'dost', 'sahi', 'theek', 'haan', 'nahi')
-                    GROUP BY next_word 
-                    ORDER BY usage_count DESC 
-                    LIMIT 8
-                """) as cursor:
-                    hinglish_words = await cursor.fetchall()
-                
-                if hinglish_words:
-                    word_list = "\n".join([f"**{row['next_word']}**: {row['usage_count']:,}" 
-                                          for row in hinglish_words])
-                    embed.add_field(name="Popular Hinglish Words", value=word_list, inline=False)
-                
-                embed.set_footer(text="Supporting Hindi-English mix (Hinglish)")
+                embed = discord.Embed(title="🇮🇳 Hinglish Statistics", color=0x2ecc71)
+                embed.add_field(name="Language Mix", value=f"Hinglish Ratio: {h_ratio:.1f}%\nHindi Words: {hindi_words['unique_hindi_words']:,}")
                 await ctx.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Hinglish stats error: {e}")
+            await ctx.send(f"❌ Error: {e}")
                 
         except Exception as e:
             logger.error(f"Hinglish stats error: {e}")
@@ -1902,6 +1892,7 @@ class EnhancedMarkovCog(commands.Cog):
         """Show enhanced statistics with NLP info"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 db.row_factory = aiosqlite.Row
                 
                 # Get comprehensive stats
@@ -2113,7 +2104,8 @@ class EnhancedMarkovCog(commands.Cog):
     async def emoji_stats(self, ctx):
         """Show emoji usage statistics"""
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+                        async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 db.row_factory = aiosqlite.Row
                 
                 # Get emoji stats
@@ -2201,7 +2193,8 @@ class EnhancedMarkovCog(commands.Cog):
     async def export_brain(self, ctx):
         """Export brain data"""
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+                        async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 async with db.execute("""
                     SELECT word_a, word_b, next_word, count 
                     FROM markov_chain 
@@ -2297,7 +2290,8 @@ class EnhancedMarkovCog(commands.Cog):
         await ctx.send(f"⏳ Learning from last {limit} messages...")
         
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+                        async with aiosqlite.connect(self.db_path) as db:
+                await db.create_function("REGEXP", 2, self.regexp)
                 async with db.execute('''
                     SELECT content, author_id FROM message_log 
                     WHERE processed = 0 
