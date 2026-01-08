@@ -236,17 +236,33 @@ class EnhancedMarkovCog(commands.Cog):
             if not db:
                 db = await aiosqlite.connect(self.db_path)
                 await db.create_function("REGEXP", 2, self.regexp)
-                
+            
             yield db
             
         finally:
             # Return to pool
-            if db and not db.closed:
-                async with self._db_pool_lock:
-                    if len(self._db_pool) < self._max_pool_size:
-                        self._db_pool.append(db)
-                    else:
+            if db:
+                # Check if connection is still valid by attempting a simple query
+                # or checking internal state
+                try:
+                    # aiosqlite connections don't have a .closed attribute
+                    # We can check by seeing if we can execute a simple statement
+                    async with db.execute("SELECT 1") as cursor:
+                        await cursor.fetchone()
+                    
+                    # Connection is valid, return to pool
+                    async with self._db_pool_lock:
+                        if len(self._db_pool) < self._max_pool_size:
+                            self._db_pool.append(db)
+                        else:
+                            await db.close()
+                            
+                except (aiosqlite.Error, AttributeError):
+                    # Connection is invalid, close it
+                    try:
                         await db.close()
+                    except:
+                        pass
 
     
     async def get_cached_query(self, query_key: str, query_func, *args):
