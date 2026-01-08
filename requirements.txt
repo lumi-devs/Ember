@@ -12,3 +12,5 @@ wget
 quart
 aiosqlite
 markovify
+nltk
+emoji
