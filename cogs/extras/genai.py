@@ -1300,9 +1300,7 @@ class EnhancedMarkovCog(commands.Cog):
             logger.error(f"Training error: {e}")
             return 0
 
-    # --- REPLY GENERATION WITH ANTI-SPAM ---
-    async def generate_sentence(self, seed_word: Optional[str] = None, 
-                               context_message: Optional[str] = None) -> Optional[str]:
+    async def generate_sentence(self, seed_word: Optional[str] = None,context_message: Optional[str] = None) -> Optional[str]:
         """Generate sentence for Hinglish"""
         if not await self.can_generate_reply():
             return None
@@ -1323,14 +1321,14 @@ class EnhancedMarkovCog(commands.Cog):
                     # Try with seed word
                     query = '''
                         SELECT word_a, word_b, lemma_a, lemma_b, pos_a, pos_b, count, 
-                               sentiment_score, topic_weight FROM markov_chain 
+                            sentiment_score, topic_weight FROM markov_chain 
                         WHERE (LOWER(word_a) = LOWER(?) OR LOWER(word_b) = LOWER(?))
                         AND word_type != 'emoji'
                     '''
                     
                     if self.TOPIC_COHERENCE and topic_keywords:
                         topic_condition = " OR ".join([f"word_a LIKE ? OR word_b LIKE ?" 
-                                                      for _ in topic_keywords])
+                                                    for _ in topic_keywords])
                         query += f" AND ({topic_condition})"
                         params = [seed_word, seed_word]
                         for kw in topic_keywords:
@@ -1367,23 +1365,23 @@ class EnhancedMarkovCog(commands.Cog):
                     words = clean_context.lower().split()
                     
                     context_words = [w for w in words 
-                                   if len(w) >= 3  # Reduced for Hindi
-                                   and not w.startswith(('@', '#', ':'))
-                                   and not re.match(r'^\d+$', w)
-                                   and w not in self.stop_words]
+                                if len(w) >= 3  # Reduced for Hindi
+                                and not w.startswith(('@', '#', ':'))
+                                and not re.match(r'^\d+$', w)
+                                and w not in self.stop_words]
                     
                     # Try context words
                     for context_word in context_words[:5]:
                         query = '''
                             SELECT word_a, word_b, lemma_a, lemma_b, pos_a, pos_b, count,
-                                   sentiment_score, topic_weight FROM markov_chain 
+                                sentiment_score, topic_weight FROM markov_chain 
                             WHERE (LOWER(word_a) = LOWER(?) OR LOWER(word_b) = LOWER(?))
                             AND word_type != 'emoji'
                         '''
                         
                         if self.TOPIC_COHERENCE and topic_keywords:
                             topic_condition = " OR ".join([f"word_a LIKE ? OR word_b LIKE ?" 
-                                                          for _ in topic_keywords])
+                                                        for _ in topic_keywords])
                             query += f" AND ({topic_condition})"
                             params = [context_word, context_word]
                             for kw in topic_keywords:
@@ -1403,7 +1401,7 @@ class EnhancedMarkovCog(commands.Cog):
                     # Get random starting pair
                     query = '''
                         SELECT word_a, word_b, lemma_a, lemma_b, pos_a, pos_b, count,
-                               sentiment_score, topic_weight FROM markov_chain 
+                            sentiment_score, topic_weight FROM markov_chain 
                         WHERE word_type != 'emoji'
                         AND LENGTH(word_a) > 1 AND LENGTH(word_b) > 1
                     '''
@@ -1443,7 +1441,7 @@ class EnhancedMarkovCog(commands.Cog):
                     # Get next word options
                     query = '''
                         SELECT next_word, lemma_next, pos_next, count, word_type,
-                               sentiment_score, topic_weight FROM markov_chain 
+                            sentiment_score, topic_weight FROM markov_chain 
                         WHERE word_a = ? AND word_b = ?
                     '''
                     
@@ -1465,7 +1463,7 @@ class EnhancedMarkovCog(commands.Cog):
                         # Fallback
                         query = '''
                             SELECT next_word, lemma_next, pos_next, count, word_type,
-                                   sentiment_score, topic_weight FROM markov_chain 
+                                sentiment_score, topic_weight FROM markov_chain 
                             WHERE word_b = ?
                         '''
                         params = [w2]
@@ -1534,9 +1532,14 @@ class EnhancedMarkovCog(commands.Cog):
                     sentence_words.append(next_choice['next_word'])
                     sentence_pos.append(next_choice['pos_next'])
                     
-                    # Check for natural ending
+                    # Check for natural ending (punctuation)
                     if next_choice['next_word'].endswith(('.', '!', '?')):
                         if len(sentence_words) >= 5 and random.random() < 0.6:
+                            break
+                    # Also check if next word is an emoji and consider ending there
+                    elif next_choice['word_type'] == 'emoji':
+                        # If we have a decent length and last word is emoji, maybe end
+                        if len(sentence_words) >= 4 and random.random() < 0.3:
                             break
                     
                     # Length-based stopping
@@ -1546,31 +1549,31 @@ class EnhancedMarkovCog(commands.Cog):
                     if len(sentence_words) >= self.SENTENCE_MAX_WORDS:
                         break
                 
-                    # Convert to readable text
-                    readable_sentence = []
-
-                    for i, word in enumerate(sentence_words):
-                        if word.startswith(':emoji_'):
-                            emoji_name = word[7:-1] if word.endswith(':') else word[7:]
-                            try:
-                                # Unicode emojis: Add a trailing space inside the token
-                                emoji_char = emoji.emojize(f":{emoji_name}:", language='alias')
-                                readable_sentence.append(emoji_char)
-                            except:
-                                readable_sentence.append(f":{emoji_name}:")
-                        
-                        elif word.startswith('<:') and word.endswith('>'):
-                            # This is our stored custom emoji tag - KEEP AS-IS
-                            readable_sentence.append(word)
-                        
-                        elif word.startswith('@USER_'):
-                            user_id = word[6:]
-                            readable_sentence.append(f"<@{user_id}>")
-                        
-                        else:
-                            if i == 0 and word[0].islower():
-                                word = word[0].upper() + word[1:]
-                            readable_sentence.append(word)
+                # Convert to readable text
+                readable_sentence = []
+                
+                for i, word in enumerate(sentence_words):
+                    if word.startswith(':emoji_'):
+                        emoji_name = word[7:-1] if word.endswith(':') else word[7:]
+                        try:
+                            # Unicode emojis: Add a trailing space inside the token
+                            emoji_char = emoji.emojize(f":{emoji_name}:", language='alias')
+                            readable_sentence.append(emoji_char)
+                        except:
+                            readable_sentence.append(f":{emoji_name}:")
+                    
+                    elif word.startswith('<:') and word.endswith('>'):
+                        # This is our stored custom emoji tag - KEEP AS-IS
+                        readable_sentence.append(word)
+                    
+                    elif word.startswith('@USER_'):
+                        user_id = word[6:]
+                        readable_sentence.append(f"<@{user_id}>")
+                    
+                    else:
+                        if i == 0 and word[0].islower():
+                            word = word[0].upper() + word[1:]
+                        readable_sentence.append(word)
                 
                 # Assemble final sentence with FORCED space after emojis
                 result = ''
@@ -1603,26 +1606,58 @@ class EnhancedMarkovCog(commands.Cog):
                 if result and result[0].islower():
                     result = result[0].upper() + result[1:]
                 
-                # Add punctuation
-                if result and not result[-1] in '.!?;':
+                # Helper function to check if text ends with emoji
+                def ends_with_emoji(text: str) -> bool:
+                    """Check if text ends with an emoji"""
+                    if not text:
+                        return False
+                    
+                    text = text.strip()
+                    
+                    # Check for Discord emoji at the end
+                    if text.endswith('>'):
+                        discord_match = re.search(r'<a?:[\w]+:\d+>$', text)
+                        if discord_match:
+                            return True
+                    
+                    # Check for Unicode emoji at the end
+                    if text:
+                        last_char = text[-1]
+                        if last_char in emoji.EMOJI_DATA:
+                            return True
+                    
+                    return False
+                
+                # Add punctuation (but NOT if message ends with an emoji)
+                if result and not result[-1] in '.!?;' and not ends_with_emoji(result):
                     last_words = result.lower().split()[-2:]
                     
                     question_words = ['what', 'why', 'how', 'when', 'who', 'where', 'which', 'whose',
-                                     'kya', 'kaise', 'kyun']  # Added Hindi question words
+                                    'kya', 'kaise', 'kyun', 'kab', 'kahan', 'kaun']  # Hindi question words
                     
                     if any(word in last_words for word in question_words):
-                        result += ' ?'
+                        result += '?'
                     elif (any(word in last_words for word in ['wow', 'awesome', 'amazing', 'great', 'yes',
-                                                            'acha', 'badhiya', 'mast']) or
-                          current_sentiment > 0.3):
-                        result += ' !'
+                                                            'acha', 'badhiya', 'mast', 'nice', 'good', 'sahi']) or
+                        current_sentiment > 0.3):
+                        result += '!'
                     else:
-                        result += ' .'
+                        result += '.'
                 
                 # Final validation
                 words_in_result = result.split()
                 if len(words_in_result) < 3:
-                    return None
+                    # Check if it has emojis - emoji-only messages can be shorter
+                    emoji_count = 0
+                    for word in words_in_result:
+                        if (word.startswith('<:') and word.endswith('>')) or (word in emoji.EMOJI_DATA):
+                            emoji_count += 1
+                    
+                    # Allow messages with emojis to be shorter
+                    if emoji_count == 0:
+                        return None
+                    elif len(words_in_result) < 2:  # At least 2 items if mostly emojis
+                        return None
                 
                 result = re.sub(r'(?<![:>])\s+([.!?,;])', r'\1', result)
                 
@@ -1802,7 +1837,7 @@ class EnhancedMarkovCog(commands.Cog):
             logger.error(f"Buffering error: {e}")
 
 # --- PERIODIC TASKS ---
-    @tasks.loop(minutes=5)
+    @tasks.loop(minutes=5) 
     async def periodic_tasks(self):
         """Run periodic maintenance tasks"""
         if not self.db_initialized:
