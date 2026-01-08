@@ -64,14 +64,29 @@ class EnhancedMarkovCog(commands.Cog):
         try:
             from nltk.corpus import stopwords
             self.stop_words = set(stopwords.words('english'))
-            # Add common Hindi stopwords manually since NLTK doesn't have them
-            hindi_stopwords = {
-                'hai', 'hain', 'ho', 'hoga', 'hogaya', 'hogayi', 'hue', 'huye', 'kar', 'kara', 'karne', 'karna',
-                'karo', 'ki', 'ko', 'lekin', 'liye', 'mai', 'main', 'mein', 'mujhe', 'na', 'nahi', 'ne', 'par',
-                'se', 'tha', 'thi', 'tho', 'toh', 'tum', 'un', 'unhe', 'unka', 'unki', 'unko', 'ye', 'yeh'
+            
+            # EXPANDED HINGLISH STOPWORDS (Grammar & Fillers)
+            hinglish_grammar = {
+                # Pronouns & Address
+                'mai', 'main', 'hum', 'tu', 'tum', 'aap', 'woh', 'yeh', 'ye', 'wo', 'uss', 'iss', 
+                'bhai', 'bro', 'yaar', 'dost', 'log', 'sab', 'kuch', 'koi', 
+                
+                # Verbs (Auxiliary)
+                'hai', 'hain', 'ho', 'hoga', 'hogi', 'honge', 'hu', 'hoon', 'tha', 'thi', 'the', 
+                'kar', 'kara', 'karne', 'karna', 'karo', 'raha', 'rahi', 'rahe',
+                
+                # Prepositions/Conjunctions/Particles
+                'ka', 'ki', 'ke', 'ko', 'ne', 'se', 'par', 'pe', 'me', 'mein', 'aur', 
+                'lekin', 'magar', 'kyunki', 'agar', 'to', 'toh', 'bhi', 'hi', 'mat', 'wala', 'wale',
+                
+                # Conversational Fillers / Yes/No
+                'na', 'nahi', 'nhi', 'haan', 'han', 'ha', 'ok', 'okay', 'accha', 'acha', 'sahi', 
+                'thik', 'theek', 'arey', 'abe', 'lol', 'lmao', 'ded', 'xd', 'nice', 'good', 'bad',
+                'pata', 'baat', 'msg', 'message', 'kya', 'kyu', 'kyun', 'kab', 'kaha', 'kaise'
             }
-            self.stop_words = self.stop_words.union(hindi_stopwords)
-            logger.info(f"Loaded {len(self.stop_words)} stopwords (English + Hindi)")
+            
+            self.stop_words = self.stop_words.union(hinglish_grammar)
+            logger.info(f"Loaded {len(self.stop_words)} stopwords (English + Extended Hinglish)")
         except:
             self.stop_words = set()
         
@@ -590,17 +605,35 @@ class EnhancedMarkovCog(commands.Cog):
         return scores['compound']
     
     def extract_tfidf_keywords(self, messages: List[str], top_n: int = 10) -> List[Tuple[str, float]]:
-        """Extract important keywords for Hinglish"""
+        """Extract important keywords for Hinglish (Fixing Emojis & Noise)"""
         if not messages:
             return []
         
-        # Build vocabulary with Hinglish considerations
+        # Build vocabulary
         all_words = []
         for msg in messages:
-            words = [w.lower() for w in msg.split() 
-                    if len(w) >= self.MIN_HINDI_WORD_LENGTH  # Shorter for Hindi
-                    and w.lower() not in self.stop_words
-                    and not w.startswith(('@', '#', ':'))]
+            # 1. Clean out Discord Emojis FIRST (<:name:id> or <a:name:id>)
+            # We replace them with space so they don't glue words together
+            clean_msg = re.sub(r'<a?:\w+:\d+>', ' ', msg)
+            
+            words = []
+            for w in clean_msg.split():
+                w_lower = w.lower()
+                
+                # 2. Strict Filtering
+                # - Must be longer than min length
+                # - Must NOT be in stop words
+                # - Must NOT start with special chars (@, #, :)
+                # - Must NOT be purely numeric
+                # - Must NOT be a single repeated char (e.g. "aaaa")
+                if (len(w) >= self.MIN_HINDI_WORD_LENGTH 
+                    and w_lower not in self.stop_words
+                    and not w.startswith(('@', '#', ':'))
+                    and not re.match(r'^\d+$', w)
+                    and not re.match(r'^(.)\1*$', w_lower)): # Skips 'hhhh', 'aaaa'
+                    
+                    words.append(w_lower)
+            
             all_words.extend(words)
         
         if not all_words:
@@ -610,31 +643,40 @@ class EnhancedMarkovCog(commands.Cog):
         word_counts = Counter(all_words)
         total_words = len(all_words)
         
-        # Document Frequency (DF) - count messages containing each word
+        # Document Frequency (DF)
         doc_freq = Counter()
         for msg in messages:
-            words_in_msg = set(w.lower() for w in msg.split() 
-                             if len(w) >= self.MIN_HINDI_WORD_LENGTH 
-                             and w.lower() not in self.stop_words)
+            # Clean emoji here too for consistency
+            clean_msg = re.sub(r'<a?:\w+:\d+>', ' ', msg)
+            
+            words_in_msg = set()
+            for w in clean_msg.split():
+                w_lower = w.lower()
+                if (len(w) >= self.MIN_HINDI_WORD_LENGTH 
+                    and w_lower not in self.stop_words
+                    and not w.startswith(('@', '#', ':'))):
+                    words_in_msg.add(w_lower)
+            
             for word in words_in_msg:
                 doc_freq[word] += 1
         
-        # Calculate TF-IDF with Hinglish adjustments
+        # Calculate TF-IDF
         tfidf_scores = {}
         for word, count in word_counts.items():
             tf = count / total_words
             df = doc_freq.get(word, 1)
+            # Add 1 to DF to avoid division by zero (smoothing)
             idf = math.log(len(messages) / (df + 1)) + 1
             
-            # Boost Hindi/Hinglish words slightly
-            if self.is_hindi_word(word) or self.is_hinglish_word(word):
-                idf *= 1.2  # Slight boost for non-English words
+            # Boost logic
+            score = tf * idf
             
-            tfidf_scores[word] = tf * idf
+            # Boost specific meaningful categories if needed
+            # (Optional: Boost Proper Nouns slightly if you had POS tagging here)
+            
+            tfidf_scores[word] = score
         
-        # Return top keywords
         return sorted(tfidf_scores.items(), key=lambda x: x[1], reverse=True)[:top_n]
-    
 
 
 
@@ -941,7 +983,13 @@ class EnhancedMarkovCog(commands.Cog):
             # 3. Filter for 'Meaningful' topics (Hinglish + English)
             # Remove common conversational fillers from being topics
             fillers = {'kya', 'hai', 'bhai', 'yaar', 'toh', 'aur', 'the', 'this', 'that'}
-            self.current_topic_keywords = [k for k in keywords if k[0].lower() not in fillers]
+            self.current_topic_keywords = [
+                k for k in keywords 
+                if k[0].lower() not in fillers              # Remove grammar/stop words
+                and not k[0].startswith('<')               # Ignore Discord custom emojis
+                and not k[0].startswith(':')               # Ignore Unicode emoji tokens
+                and len(k[0]) > 1                          # Ignore single characters
+            ]
 
             # 4. Update DB weights for these active topics
             if self.current_topic_keywords and self.TOPIC_COHERENCE:
