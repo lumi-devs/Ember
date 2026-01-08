@@ -32,6 +32,7 @@ try:
     nltk.data.find('taggers/universal_tagset')
     nltk.data.find('corpora/stopwords')
     nltk.data.find('sentiment/vader_lexicon')
+    nltk.data.find('averaged_perceptron_tagger_eng')
 except LookupError:
     nltk.download('punkt', quiet=True)
     nltk.download('punkt_tab', quiet=True) # <--- NEW REQUIREMENT
@@ -39,6 +40,7 @@ except LookupError:
     nltk.download('universal_tagset', quiet=True)
     nltk.download('stopwords', quiet=True)
     nltk.download('vader_lexicon', quiet=True)
+    ntlk.download('averaged_perceptron_tagger_eng')
 
 # Set up logging
 logging.basicConfig(
