@@ -17,7 +17,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('markov_bot.log'),
+        logging.FileHandler('./genai/markov_bot.log'),
         logging.StreamHandler()
     ]
 )
@@ -26,8 +26,8 @@ logger = logging.getLogger("OptimizedMarkovBot")
 class OptimizedMarkovCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = "./server_brain.db"
-        self.state_file = "./bot_state.json"
+        self.db_path = "./genai/server_brain.db"
+        self.state_file = "./genai/bot_state.json"
         
         # Load saved state on startup
         self.load_state()
