@@ -223,44 +223,27 @@ class EnhancedMarkovCog(commands.Cog):
         self.cleanup_rate_limits.start()
         self.update_topic_model.start()
     # --- MODIFIED: Enhanced Hinglish Lemmatizer ---
-    
+
     @asynccontextmanager
     async def get_db(self):
-        """Get database connection from pool"""
-        db = None
-        try:
-            # Try to get from pool
-            async with self._db_pool_lock:
-                if self._db_pool:
-                    db = self._db_pool.pop()
-            
-            # Create new if pool empty
-            if not db:
-                db = await aiosqlite.connect(self.db_path)
-                await db.create_function("REGEXP", 2, self.regexp)
+            """Get database connection from pool with proper function registration"""
+            db = None
+            try:
+                async with self._db_pool_lock:
+                    if self._db_pool:
+                        db = self._db_pool.pop()
                 
-            yield db
-            
-        finally:
-            # Return to pool or close connection
-            if db:
-                try:
-                    # Check if connection is closed differently for aiosqlite
-                    # We'll assume if we can execute a simple query, it's open
+
+                    
+                yield db
+                
+            finally:
+                if db:
                     async with self._db_pool_lock:
                         if len(self._db_pool) < self._max_pool_size:
-                            # Try to use the connection to see if it's still valid
-                            try:
-                                await db.execute("SELECT 1")
-                                self._db_pool.append(db)
-                            except Exception:
-                                # Connection is bad, close it
-                                await db.close()
+                            self._db_pool.append(db)
                         else:
                             await db.close()
-                except Exception as e:
-                    logger.error(f"Error returning db to pool: {e}")
-                    await db.close()
 
     
     async def get_cached_query(self, query_key: str, query_func, *args):
@@ -1041,7 +1024,7 @@ class EnhancedMarkovCog(commands.Cog):
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
             
             async with self.get_db() as db: 
-                await db.create_function("REGEXP", 2, self.regexp)
+                
                 # Optimize SQLite settings
                 await db.execute('PRAGMA journal_mode=WAL;')
                 await db.execute('PRAGMA synchronous=NORMAL;')
@@ -1524,7 +1507,7 @@ class EnhancedMarkovCog(commands.Cog):
         
         try:
             async with self.get_db() as db: 
-                await db.create_function("REGEXP", 2, self.regexp)
+                
                 # Batch insert with Hinglish information
                 for triplet in triplets:
                     (word_a, word_b, word_c, lemma_a, lemma_b, lemma_c, 
@@ -1720,7 +1703,7 @@ class EnhancedMarkovCog(commands.Cog):
         
         try:
             async with self.get_db() as db: 
-                await db.create_function("REGEXP", 2, self.regexp)
+                
                 db.row_factory = aiosqlite.Row
                 
                 # Get current context
@@ -2190,7 +2173,7 @@ class EnhancedMarkovCog(commands.Cog):
                         
                         # Log bot reply
                         async with self.get_db() as db: 
-                            await db.create_function("REGEXP", 2, self.regexp)
+                            
                             await db.execute('''
                                 INSERT INTO message_log (content, author_id, channel_id, timestamp, is_bot_reply)
                                 VALUES (?, ?, ?, ?, 1)
@@ -2238,7 +2221,7 @@ class EnhancedMarkovCog(commands.Cog):
             
             # Save to database
             async with self.get_db() as db: 
-                await db.create_function("REGEXP", 2, self.regexp)
+                
                 await db.execute('''
                     INSERT INTO message_log (content, author_id, channel_id, timestamp, emoji_count)
                     VALUES (?, ?, ?, ?, ?)
@@ -2295,7 +2278,7 @@ class EnhancedMarkovCog(commands.Cog):
         """Clean up old data periodically"""
         try:
             async with self.get_db() as db: 
-                await db.create_function("REGEXP", 2, self.regexp)
+                
                 # 1. Perform deletions first
                 cutoff_date = (datetime.utcnow() - timedelta(days=self.RAW_MESSAGE_RETENTION_DAYS)).isoformat()
                 await db.execute('DELETE FROM message_log WHERE timestamp < ?', (cutoff_date,))
@@ -2306,7 +2289,7 @@ class EnhancedMarkovCog(commands.Cog):
 
             # 2. VACUUM must happen on a "fresh" connection outside a transaction
             async with self.get_db() as db: 
-                await db.create_function("REGEXP", 2, self.regexp)
+                
                 await db.execute('PRAGMA vacuum;') # Use PRAGMA for explicit control
                 logger.info("Database VACUUM completed successfully.")
                 
@@ -2317,7 +2300,7 @@ class EnhancedMarkovCog(commands.Cog):
         """Update statistics from database"""
         try:
             async with self.get_db() as db: 
-                await db.create_function("REGEXP", 2, self.regexp)
+                
                 async with db.execute("SELECT COUNT(*) FROM markov_chain") as cursor:
                     result = await cursor.fetchone()
                     self.stats['total_triplets'] = result[0] if result else 0
@@ -2348,7 +2331,7 @@ class EnhancedMarkovCog(commands.Cog):
         try:
             async with self.get_db() as db: 
                 # Register the regex function for this connection
-                await db.create_function("REGEXP", 2, self.regexp)
+                
                 db.row_factory = aiosqlite.Row
                 
                 # Hindi Regex: Matches Devanagari characters
@@ -2423,7 +2406,7 @@ class EnhancedMarkovCog(commands.Cog):
         """Show enhanced statistics with NLP info"""
         try:
             async with self.get_db() as db: 
-                await db.create_function("REGEXP", 2, self.regexp)
+                
                 db.row_factory = aiosqlite.Row
                 
                 # Get comprehensive stats
@@ -2636,7 +2619,7 @@ class EnhancedMarkovCog(commands.Cog):
         """Show emoji usage statistics"""
         try:
             async with self.get_db() as db: 
-                await db.create_function("REGEXP", 2, self.regexp)
+                
                 db.row_factory = aiosqlite.Row
                 
                 # Get emoji stats - UPDATED QUERY
@@ -2723,7 +2706,7 @@ class EnhancedMarkovCog(commands.Cog):
         """Export brain data"""
         try:
             async with self.get_db() as db: 
-                await db.create_function("REGEXP", 2, self.regexp)
+                
                 async with db.execute("""
                     SELECT word_a, word_b, next_word, count 
                     FROM markov_chain 
@@ -2820,7 +2803,7 @@ class EnhancedMarkovCog(commands.Cog):
         
         try:
             async with self.get_db() as db: 
-                await db.create_function("REGEXP", 2, self.regexp)
+                
                 async with db.execute('''
                     SELECT content, author_id FROM message_log 
                     WHERE processed = 0 
