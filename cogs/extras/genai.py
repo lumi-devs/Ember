@@ -1023,10 +1023,16 @@ class EnhancedMarkovCog(commands.Cog):
             
         for name, e_id in raw_custom_matches:
             if str(e_id) in server_emoji_ids:
-                valid_custom_emojis.append((name, e_id))
+                # Store the full tag as the "token"
+                valid_custom_emojis.append(f"<:{name}:{e_id}>")
             else:
                 pattern = fr'<a?:{re.escape(name)}:{e_id}>'
                 content = re.sub(pattern, '', content)
+
+        # Convert Valid Discord emojis to tokens (keeping full tag)
+        for emoji_tag in valid_custom_emojis:
+            # Add spaces around it to ensure it's treated as a single word/token
+            content = content.replace(emoji_tag, f' {emoji_tag} ')
 
         custom_emojis = [name for name, _ in valid_custom_emojis]
         all_emojis = emoji_list + [{'emoji': f':{e}:'} for e in custom_emojis]
@@ -1485,38 +1491,31 @@ class EnhancedMarkovCog(commands.Cog):
                 
                 # Convert to readable text
                 readable_sentence = []
-                used_mentions = set()
                 
                 for i, word in enumerate(sentence_words):
                     if word.startswith(':emoji_'):
                         emoji_name = word[7:-1] if word.endswith(':') else word[7:]
                         try:
-                            emoji_char = emoji.emojize(f":{emoji_name}: ", language='alias')
+                            # Unicode emojis: Add a trailing space inside the token
+                            emoji_char = emoji.emojize(f":{emoji_name}:", language='alias')
                             readable_sentence.append(emoji_char)
                         except:
-                            readable_sentence.append(f":{emoji_name}: ")
+                            readable_sentence.append(f":{emoji_name}:")
                     
-                    elif word.startswith(':custom_emoji_'):
-                        emoji_name = word[14:-1] if word.endswith(':') else word[14:]
-                        readable_sentence.append(f":{emoji_name}: ")
+                    elif word.startswith('<:') and word.endswith('>'):
+                        # This is our stored custom emoji tag
+                        readable_sentence.append(word)
                     
                     elif word.startswith('@USER_'):
                         user_id = word[6:]
-                        if user_id.isdigit() and user_id not in used_mentions:
-                            readable_sentence.append(f"<@{user_id}>")
-                            used_mentions.add(user_id)
-                        else:
-                            readable_sentence.append(f"@{user_id}")
-                    
-                    elif word in ['#channel_mention', '@role_mention']:
-                        readable_sentence.append(word)
+                        readable_sentence.append(f"<@{user_id}>")
                     
                     else:
                         if i == 0 and word[0].islower():
                             word = word[0].upper() + word[1:]
                         readable_sentence.append(word)
                 
-                # Assemble final sentence
+                # Assemble final sentence with FORCED space after emojis
                 result = ''
                 for i, token in enumerate(readable_sentence):
                     if i == 0:
@@ -1524,21 +1523,19 @@ class EnhancedMarkovCog(commands.Cog):
                     else:
                         prev_token = readable_sentence[i-1]
                         
-                        # Check if the previous token was an emoji (Unicode or Custom)
-                        # Custom emojis often end with a space in your readable_sentence list
+                        # Determine if previous token was an emoji
+                        # Checks for Discord tags <:name:id> or Unicode emojis
                         is_prev_emoji = (
-                            prev_token.startswith(':custom_emoji_') or 
-                            prev_token.startswith(':emoji_') or
+                            (prev_token.startswith('<:') and prev_token.endswith('>')) or
                             any(char in emoji.EMOJI_DATA for char in prev_token)
                         )
 
                         if is_prev_emoji:
+                            # ALWAYS add space after emoji
                             result += ' ' + token
-                        elif (prev_token.endswith(('>', ':')) and 
-                            token in ['.', ',', '!', '?', ':', ';']):
-                            result += f" {token}"
                         elif token in ['.', ',', '!', '?', ':', ';']:
-                            result += token # Keeps punctuation attached to normal words
+                            # Keep punctuation attached to normal words
+                            result += token 
                         else:
                             result += ' ' + token
                 
