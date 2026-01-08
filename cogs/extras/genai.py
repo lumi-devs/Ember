@@ -280,24 +280,16 @@ class OptimizedMarkovCog(commands.Cog):
         content = re.sub(r'https?://\S+|www\.\S+', '', content)
         
         # Remove mentions but keep as placeholder
+        content = re.sub(r'<@&\d+>', '', content)
+        
+        # 2. Remove @everyone and @here
+        content = re.sub(r'@everyone|@here', '', content, flags=re.IGNORECASE)
+        
+        # 3. Convert user mentions to placeholder (KEEP THESE)
         content = re.sub(r'<@!?(\d+)>', r'@user', content)
         
         # Remove ALL emojis (Unicode + custom)
         # Unicode emojis range
-        emoji_pattern = re.compile(
-            "["
-            u"\U0001F600-\U0001F64F"  # emoticons
-            u"\U0001F300-\U0001F5FF"  # symbols & pictographs
-            u"\U0001F680-\U0001F6FF"  # transport & map symbols
-            u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
-            u"\U00002702-\U000027B0"  # dingbats
-            u"\U000024C2-\U0001F251"  # enclosed characters
-            "]+", flags=re.UNICODE
-        )
-        content = emoji_pattern.sub('', content)
-        
-        # Remove custom Discord emojis :emoji_name:
-        content = re.sub(r':[^:\s]+:', '', content)
         
         # Remove excessive whitespace
         content = ' '.join(content.split()).strip()
