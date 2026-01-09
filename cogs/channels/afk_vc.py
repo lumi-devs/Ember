@@ -7,7 +7,7 @@ class VCAFKManager(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.tracked_users = {}  
-        self.afk_minutes = 10    
+        self.afk_minutes = 30 
         self.check_afk.start()
         self.vc_name="lounge"
     

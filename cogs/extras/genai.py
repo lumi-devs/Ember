@@ -165,7 +165,7 @@ class EnhancedMarkovCog(commands.Cog):
         self.MAX_RAW_MESSAGES = 2_000_000
         self.MAX_TRIPLETS = 5_000_000
         self.RAW_MESSAGE_RETENTION_DAYS = 120
-        self.PRUNE_OLD_TRIPLETS_AFTER_DAYS = 365
+        self.PRUNE_OLD_TRIPLETS_AFTER_DAYS = 120
         
         # --- OPTIMIZED PARAMETERS for Hinglish ---
         self.MIN_TRIPLETS_FOR_REPLY = 500
@@ -205,6 +205,44 @@ class EnhancedMarkovCog(commands.Cog):
         self.update_topic_model.start()
 
     # --- MODIFIED: Enhanced Hinglish Lemmatizer ---
+    
+    def humanize_response(self, text: str, sentiment: float) -> str:
+        """Injects natural conversational fillers based on sentiment."""
+        if not text:
+            return text
+            
+        # 20% chance to lowercase everything (looks more casual)
+        if random.random() < 0.2:
+            text = text.lower()
+
+        # 15% chance to drop the last punctuation (very common in chat)
+        if random.random() < 0.15 and text[-1] in ['.', '!', '?']:
+            text = text[:-1]
+
+        # Only add fillers to sentences with 3+ words
+        if len(text.split()) < 3:
+            return text
+
+        # Define fillers based on vibe
+        fillers = {
+            'neutral': ['tbh', 'yaar', 'dekho', 'basically', 'arre', 'ngl', 'matlab'],
+            'positive': ['bhai sahi me', 'wow', 'mast', 'actually', 'lol'],
+            'negative': ['abe yaar', 'nahi but', 'listen', 'uff', 'bruh']
+        }
+
+        # 25% chance to prepend a filler
+        if random.random() < 0.25:
+            category = 'neutral'
+            if sentiment > 0.3: category = 'positive'
+            if sentiment < -0.3: category = 'negative'
+            
+            filler = random.choice(fillers[category])
+            
+            # Don't repeat if the sentence already starts with it
+            if not text.lower().startswith(filler):
+                text = f"{filler} {text}"
+                
+        return text
     
     def lemmatize_text(self, text: str) -> str:
         """Reduce words to their root form for Hinglish (Hindi-English)"""
@@ -764,6 +802,7 @@ class EnhancedMarkovCog(commands.Cog):
                 await db.create_function("REGEXP", 2, self.regexp)
                 # Optimize SQLite settings
                 await db.execute('PRAGMA journal_mode=WAL;')
+                await db.execute('PRAGMA auto_vacuum = INCREMENTAL;')
                 await db.execute('PRAGMA synchronous=NORMAL;')
                 await db.execute('PRAGMA cache_size=-10000;')
                 await db.execute('PRAGMA temp_store=DEFAULT;')
@@ -967,13 +1006,24 @@ class EnhancedMarkovCog(commands.Cog):
         except Exception as e:
             logger.error(f"Error in cleanup_rate_limits: {e}")
             
-    @tasks.loop(minutes=3)
+    @tasks.loop(minutes=5)
     async def update_topic_model(self):
         """Enhanced Topic Identification using frequency and recency"""
         try:
             if not self.conversation_context:
                 return
 
+            async with aiosqlite.connect(self.db_path) as db:
+                # Reduce all weights by 25%, but don't let them go below 1.0
+                await db.execute("""
+                    UPDATE markov_chain 
+                    SET topic_weight = MAX(1.0, topic_weight * 0.75) 
+                    WHERE topic_weight > 1.0
+                """)
+                await db.commit()
+
+            if not self.conversation_context:
+                return
             # 1. Combine context but weight the last 10 messages 3x more
             weighted_text = []
             context_list = list(self.conversation_context)
@@ -998,32 +1048,26 @@ class EnhancedMarkovCog(commands.Cog):
             # 4. Update DB weights for these active topics
             if self.current_topic_keywords and self.TOPIC_COHERENCE:
                 async with aiosqlite.connect(self.db_path) as db:
-                    # Reset old topic weights first to prevent "topic drift"
-                    await db.execute("UPDATE markov_chain SET topic_weight = 1.0 WHERE topic_weight > 1.0")
-                    
                     for keyword, weight in self.current_topic_keywords:
-                        # Boost patterns that contain current topic keywords
                         await db.execute('''
                             UPDATE markov_chain 
-                            SET topic_weight = ? 
-                            WHERE (word_a = ? OR word_b = ? OR next_word = ?)
-                        ''', (1.5 + weight, keyword, keyword, keyword))
+                            SET topic_weight = MIN(5.0, topic_weight + ?) 
+                            WHERE (word_a LIKE ? OR word_b LIKE ? OR next_word LIKE ?)
+                        ''', (0.5 + weight, f"%{keyword}%", f"%{keyword}%", f"%{keyword}%"))
                     await db.commit()
                 
             self.stats['topics_detected'] += 1
-            logger.info(f"Top Active Topics: {[k[0] for k in self.current_topic_keywords[:5]]}")
-                
+            logger.info(f"Decayed old topics & boosted new: {[k[0] for k in self.current_topic_keywords[:5]]}")
         except Exception as e:
             logger.error(f"Topic update error: {e}")
 
-    # --- ENHANCED MESSAGE PROCESSING WITH NLP ---
     def sanitize_message(self, content: str, message=None) -> str:
         """Clean message for Hinglish"""
         if not content or len(content.strip()) < 2:
             return ""
         
         # Remove bot commands
-        if content.startswith(('.', '!', '/', '?', '~')):
+        if content.startswith(('.', '!', '/', '?', '~', '(', ')', '-', 'owo')):
             return ""
         
         # Store original for emoji extraction
@@ -1358,6 +1402,22 @@ class EnhancedMarkovCog(commands.Cog):
             return None
         
         try:
+            
+            context_words = set()
+            if context_message:
+                # Simple clean and split
+                ignore_topics = {'lol', 'lmao', 'xd', 'ok', 'okay', 'ha', 'haha', 'hmm', 'accha', 'thik', 'han', 'yes', 'no', 'ded', 'rip'}
+                
+                if context_message:
+                    cleaned = re.sub(r'[^\w\s]', '', context_message.lower())
+                    words = cleaned.split()
+                    if len(words) > 1:
+                        potential_context = set(words) - self.stop_words
+                        if not potential_context.issubset(ignore_topics):
+                            context_words = potential_context
+                            
+                        
+                context_words -= self.stop_words
             async with aiosqlite.connect(self.db_path) as db:
                 await db.create_function("REGEXP", 2, self.regexp)
                 db.row_factory = aiosqlite.Row
@@ -1478,13 +1538,15 @@ class EnhancedMarkovCog(commands.Cog):
                     return None
                 
                 # Build sentence
+                
                 sentence_words = [start_pair['word_a'], start_pair['word_b']]
                 sentence_pos = [start_pair['pos_a'], start_pair['pos_b']]
                 emoji_count = 0
                 max_attempts = self.SENTENCE_MAX_WORDS * 3
-                
-                for attempt in range(max_attempts):
-                    if len(sentence_words) >= self.SENTENCE_MAX_WORDS:
+                input_len = len(context_message.split()) if context_message else 5
+                target_len = max(4, min(25, int(input_len * random.uniform(0.8, 1.5))))
+                for _ in range(max_attempts):
+                    if len(sentence_words) >= target_len and random.random() < 0.5:
                         break
                     
                     w1, w2 = sentence_words[-2], sentence_words[-1]
@@ -1564,6 +1626,18 @@ class EnhancedMarkovCog(commands.Cog):
                         if self.GRAMMAR_ENFORCEMENT:
                             if not self.is_valid_pos_transition(pos2, next_pos):
                                 weight *= 0.5
+                        
+                        is_short_input = len(context_message.split()) < 3 if context_message else True
+                        is_exact_echo = False
+                        if is_short_input and context_message:
+                            if option['next_word'].strip().lower() == context_message.strip().lower():
+                                is_exact_echo = True
+
+                        if option['next_word'].lower() in context_words:
+                            weight *= 3.0 
+                    
+                        if is_exact_echo:
+                            weight *= 0.05
                         
                         filtered_options.append(option)
                         weights.append(weight)
@@ -1712,7 +1786,7 @@ class EnhancedMarkovCog(commands.Cog):
                         return None
                 
                 result = re.sub(r'(?<![:>])\s+([.!?,;])', r'\1', result)
-                
+                result = self.humanize_response(result, current_sentiment)
                 return result
                 
         except Exception as e:
@@ -1754,7 +1828,9 @@ class EnhancedMarkovCog(commands.Cog):
         if message.channel.id in self.muted_channels and not should_reply:
             return
         should_reply = is_mentioned or is_reply_to_me
-        chance = 1.0 if should_reply else self.REPLY_CHANCE
+        is_thread = isinstance(message.channel, discord.Thread)
+        
+        chance = 1.0 if should_reply and not is_thread else self.REPLY_CHANCE
         
         # Check rate limits BEFORE generating reply
         if not self.check_rate_limit(message.channel.id):
@@ -1908,7 +1984,12 @@ class EnhancedMarkovCog(commands.Cog):
                 self.user_id_map.clear()
                 logger.info("Cleared user cache to free RAM")
             # -------------------------------------
-            
+            async with aiosqlite.connect(self.db_path) as db:
+                # Reduce topic weights by 20% every 5 minutes, keeping min at 1.0
+                # This simulates "forgetting" old topics naturally
+                await db.execute("UPDATE markov_chain SET topic_weight = MAX(1.0, topic_weight * 0.8) WHERE topic_weight > 1.0")
+                await db.commit()
+                logger.debug("Decayed topic weights")
             self.save_state()
             logger.debug("Periodic tasks completed")
         except Exception as e:
@@ -1926,12 +2007,6 @@ class EnhancedMarkovCog(commands.Cog):
                 old_cutoff = (datetime.utcnow() - timedelta(days=self.PRUNE_OLD_TRIPLETS_AFTER_DAYS)).isoformat()
                 await db.execute('DELETE FROM markov_chain WHERE last_used < ? AND count < 2', (old_cutoff,))
                 await db.commit() # End the transaction here
-
-            # 2. VACUUM must happen on a "fresh" connection outside a transaction
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.create_function("REGEXP", 2, self.regexp)
-                await db.execute('PRAGMA vacuum;') # Use PRAGMA for explicit control
-                logger.info("Database VACUUM completed successfully.")
                 
         except Exception as e:
             logger.error(f"Cleanup error: {e}")
