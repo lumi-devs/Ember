@@ -48,7 +48,7 @@ class VCAFKManager(commands.Cog):
                             embed = discord.Embed(
                                 title="Sorry for the interruption!",
                                 description=(
-                                    "**We saw that you were afk in the lounge for too long!**\n\n"
+                                    f"**We saw that you were afk in the lounge for {self.afk_minutes} minutes!**\n\n"
                                     "To keep the lounge available for all members, "
                                     "we kicked you to make space for others.\n\n",
                                     
