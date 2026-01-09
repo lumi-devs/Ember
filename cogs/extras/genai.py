@@ -1825,9 +1825,11 @@ class EnhancedMarkovCog(commands.Cog):
                     is_reply_to_me = True
             except:
                 pass
+            
+        should_reply = is_mentioned or is_reply_to_me
         if message.channel.id in self.muted_channels and not should_reply:
             return
-        should_reply = is_mentioned or is_reply_to_me
+
         is_thread = isinstance(message.channel, discord.Thread)
         
         chance = 1.0 if should_reply and not is_thread else self.REPLY_CHANCE
