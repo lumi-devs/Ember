@@ -157,7 +157,7 @@ class EnhancedMarkovCog(commands.Cog):
         
         # ANTI-SPAM PROTECTION
         self.MIN_MESSAGE_INTERVAL = 0.5
-        self.MAX_MESSAGES_PER_MINUTE = 80
+        self.MAX_MESSAGES_PER_MINUTE = 50
         self.SPAM_BURST_WINDOW = 10
         self.SPAM_BURST_LIMIT = 5
         
