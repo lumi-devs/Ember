@@ -1826,13 +1826,18 @@ class EnhancedMarkovCog(commands.Cog):
             except:
                 pass
             
-        should_reply = is_mentioned or is_reply_to_me
-        if message.channel.id in self.muted_channels and not should_reply:
+        is_thread = isinstance(message.channel, discord.Thread)
+
+        # 1. STRICT BLOCK
+        # If channel is muted OR it is a thread, stop immediately.
+        # We do not care if the bot was mentioned.
+        if message.channel.id in self.muted_channels or is_thread:
             return
 
-        is_thread = isinstance(message.channel, discord.Thread)
-        
-        chance = 1.0 if should_reply and not is_thread else self.REPLY_CHANCE
+        # 2. Standard Logic
+        # This only runs if we are in a normal, un-muted channel
+        should_reply = is_mentioned or is_reply_to_me
+        chance = 1.0 if should_reply else self.REPLY_CHANCE
         
         # Check rate limits BEFORE generating reply
         if not self.check_rate_limit(message.channel.id):
