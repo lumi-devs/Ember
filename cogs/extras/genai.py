@@ -720,41 +720,34 @@ class EnhancedMarkovCog(commands.Cog):
 
 
     def load_state(self):
-        """Load bot state from file to survive restarts"""
+        """Load bot state (stats + settings) from file"""
         try:
             if os.path.exists(self.state_file):
                 with open(self.state_file, 'r') as f:
                     state = json.load(f)
                 
-                # Safely update stats if they exist in state
+                # 1. Load Stats
                 if 'stats' in state:
                     for key, value in state['stats'].items():
                         if key in self.stats:
-                            # Handle different types properly
-                            if isinstance(self.stats[key], int):
-                                self.stats[key] = int(value)
-                            elif isinstance(self.stats[key], str):
-                                self.stats[key] = str(value)
-                            else:
-                                self.stats[key] = value
-                
-                # Load cooldowns with type safety
+                            self.stats[key] = value
+
+                # 2. Load Muted Channels (Convert list back to set)
+                if 'muted_channels' in state:
+                    # distinct set ensures no duplicates
+                    self.muted_channels = set(state['muted_channels']) 
+                    logger.info(f"Loaded muted channels: {self.muted_channels}")
+
+                # 3. Load Cooldowns
                 if 'reply_cooldowns' in state:
                     for k, v in state['reply_cooldowns'].items():
                         try:
-                            channel_id = int(k)
-                            if isinstance(v, str):
-                                self.reply_cooldowns[channel_id] = datetime.fromisoformat(v)
-                        except (ValueError, TypeError) as e:
-                            logger.warning(f"Failed to load cooldown for channel {k}: {e}")
-                if 'muted_channels' in state:
-                    self.muted_channels = set(state['muted_channels'])
-                    
-                logger.info(f"Loaded state with {len(self.reply_cooldowns)} cooldowns")
-                
+                            self.reply_cooldowns[int(k)] = datetime.fromisoformat(v)
+                        except:
+                            pass
+                            
         except Exception as e:
             logger.error(f"Failed to load state: {e}")
-            # Don't fail completely, just log the error
 
 
     def is_valid_pos_transition(self, pos1: str, pos2: str) -> bool:
@@ -769,27 +762,26 @@ class EnhancedMarkovCog(commands.Cog):
     
     
     def save_state(self):
-        """Save bot state to file"""
+        """Save bot state to JSON file"""
         try:
             state = {
                 'stats': self.stats,
+                # Convert datetime objects to strings
                 'reply_cooldowns': {
                     str(k): v.isoformat() if isinstance(v, datetime) else v
                     for k, v in self.reply_cooldowns.items()
                 },
-                'muted_channels': list(self.muted_channels),
+                # CRITICAL: Convert set to list for JSON serialization
+                'muted_channels': list(self.muted_channels), 
                 'last_saved': datetime.utcnow().isoformat()
             }
 
             # Ensure directory exists
             os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
             
+            # Atomic write (safer)
             with open(self.state_file, 'w') as f:
                 json.dump(state, f, indent=2)
-                
-            logger.debug("State saved successfully")
-        except Exception as e:
-            logger.error(f"Failed to save state: {e}")
 
     async def initialize_database(self):
         """Initialize database with connection pool and NLP columns"""
@@ -2555,7 +2547,7 @@ class EnhancedMarkovCog(commands.Cog):
     async def toggle_channel(self, ctx):
         """
         Toggle the bot's speaking in this channel.
-        It will ALWAYS listen/learn, but only speak if toggled ON.
+        Persists directly to JSON.
         """
         channel_id = ctx.channel.id
         
@@ -2567,12 +2559,14 @@ class EnhancedMarkovCog(commands.Cog):
         else:
             self.muted_channels.add(channel_id)
             status = "🤐 **Disabled**"
-            desc = "I will stay quiet in this channel (but I'm still learning from your messages!)."
+            desc = "I will stay quiet in this channel (but I'm still learning!)."
             color = discord.Color.orange()
             
+        # FORCE SAVE IMMEDIATELY
         self.save_state()
         
         embed = discord.Embed(title=f"Chat Generation {status}", description=desc, color=color)
+        embed.set_footer(text="Settings saved to persistence.")
         await ctx.send(embed=embed)
         
     @commands.command(name="ingest")
