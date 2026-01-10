@@ -782,6 +782,8 @@ class EnhancedMarkovCog(commands.Cog):
             # Atomic write (safer)
             with open(self.state_file, 'w') as f:
                 json.dump(state, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to load state: {e}")
 
     async def initialize_database(self):
         """Initialize database with connection pool and NLP columns"""
