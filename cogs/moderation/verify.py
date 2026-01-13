@@ -50,7 +50,6 @@ class Verification(commands.Cog):
     # --- HELPER TO SEND EMBEDS ---
     async def send_embed(self, ctx, message, color):
         embed = discord.Embed(description=message, color=color)
-        embed.set_footer(text="Madâme System")
         await ctx.send(embed=embed)
 
     @commands.command(name="verify")

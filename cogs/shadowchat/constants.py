@@ -71,7 +71,7 @@ COLOR_ERROR = 0xED4245      # Red
 COLOR_SUCCESS = 0x57F287    # Green
 
 # ==================== PATHS ====================
-DB_PATH = "data/shadowchat.db"
+DB_PATH = "shadowchat.db"
 
 
 # ==================== WEBHOOK CONFIG ====================
