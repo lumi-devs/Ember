@@ -3,9 +3,8 @@ from discord.ext import commands, tasks
 from discord.ui import View, Button, UserSelect
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
-import asyncio
 
 class DynamicMemberList(commands.Cog):
     def __init__(self, bot):
@@ -81,11 +80,8 @@ class DynamicMemberList(commands.Cog):
                     try:
                         channel = self.bot.get_channel(int(channel_id))
                         if channel:
-                            message_id = list_data.get('message_id')
-                            if message_id:
-                                message = await channel.fetch_message(int(message_id))
-                                if message:
-                                    await self.update_embed(message, list_data)
+                            # Update both messages
+                            await self.update_both_messages(channel, list_data)
                     except:
                         pass
         
@@ -123,20 +119,70 @@ class DynamicMemberList(commands.Cog):
                         # Save data
                         self.save_data()
                         
-                        # Update the embed
+                        # Update both messages
                         try:
                             channel = self.bot.get_channel(int(channel_id))
                             if channel:
-                                message_id = list_data.get('message_id')
-                                if message_id:
-                                    message = await channel.fetch_message(int(message_id))
-                                    if message:
-                                        await self.update_embed(message, list_data)
+                                await self.update_both_messages(channel, list_data)
                         except Exception as e:
                             print(f"Error updating list after member left: {e}")
         
         if removed_from_lists > 0:
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Removed {member.name} from {removed_from_lists} list(s) (left server)")
+    
+    # ------------------------------------------------------------
+    # Helper Methods for Dual Messages
+    # ------------------------------------------------------------
+    
+    async def update_both_messages(self, channel, list_data):
+        """Update both the embed message and plain text message"""
+        try:
+            # Update embed message
+            message_id = list_data.get('message_id')
+            if message_id:
+                message = await channel.fetch_message(int(message_id))
+                if message:
+                    await self.update_embed(message, list_data)
+            
+            # Update plain text message
+            plain_message_id = list_data.get('plain_message_id')
+            if plain_message_id:
+                plain_message = await channel.fetch_message(int(plain_message_id))
+                if plain_message:
+                    await self.update_plain_text(plain_message, list_data)
+        except Exception as e:
+            print(f"Error updating messages: {e}")
+    
+    async def update_plain_text(self, message, list_data):
+        """Update the plain text message with member list for copying"""
+        members = list_data['members']
+        
+        if members:
+            # Sort members by when they were added (oldest first)
+            sorted_members = sorted(
+                members.items(),
+                key=lambda x: datetime.fromisoformat(x[1]['added_at'])
+            )
+            
+            # Create plain text format for easy copying
+            plain_text = ""
+            
+            for member_id, member_data in sorted_members:
+                member = message.guild.get_member(int(member_id))
+                
+                if member:
+                    # Plain @mention format that users can copy
+                    plain_text += f"@{member.name} "
+            
+            if plain_text:
+                content = f"{plain_text}"
+            else:
+                content = "***No members in the list yet*\n*Add members using the buttons above*"
+        else:
+            content = "***No members in the list yet*\n*Add members using the buttons above*"
+        
+        # Update message
+        await message.edit(content=content)
     
     # ------------------------------------------------------------
     # Button Classes
@@ -317,8 +363,7 @@ class DynamicMemberList(commands.Cog):
             list_data = self.cog.member_lists[channel_id]
             
             try:
-                message = await channel.fetch_message(int(list_data['message_id']))
-                await self.cog.update_embed(message, list_data)
+                await self.cog.update_both_messages(channel, list_data)
                 await interaction.followup.send("✅ List refreshed!", ephemeral=True)
             except Exception as e:
                 await interaction.followup.send(f"❌ Error refreshing: {str(e)}", ephemeral=True)
@@ -476,8 +521,7 @@ class DynamicMemberList(commands.Cog):
                 self.cog.save_data()
                 
                 try:
-                    message = await interaction.channel.fetch_message(int(list_data['message_id']))
-                    await self.cog.update_embed(message, list_data)
+                    await self.cog.update_both_messages(interaction.channel, list_data)
                     
                     response_text = ""
                     if added_members:
@@ -531,8 +575,7 @@ class DynamicMemberList(commands.Cog):
                     self.cog.save_data()
                     
                     try:
-                        message = await interaction.channel.fetch_message(int(list_data['message_id']))
-                        await self.cog.update_embed(message, list_data)
+                        await self.cog.update_both_messages(interaction.channel, list_data)
                         
                         response_text = f"✅ **Removed {len(removed_members)} member(s):**\n"
                         for member in removed_members:
@@ -641,6 +684,7 @@ class DynamicMemberList(commands.Cog):
         # Create initial data
         list_data = {
             'message_id': None,
+            'plain_message_id': None,  # NEW: Store plain text message ID
             'members': {},
             'removed_members': [],
             'created_at': datetime.now(pytz.UTC).isoformat(),
@@ -648,7 +692,7 @@ class DynamicMemberList(commands.Cog):
             'guild_id': str(ctx.guild.id)
         }
         
-        # Create initial embed
+        # Create initial embed (buttons message)
         embed = discord.Embed(
             title="📋 Dynamic Member List",
             description="Use the buttons below to manage the member list.",
@@ -665,15 +709,19 @@ class DynamicMemberList(commands.Cog):
         # Create view with buttons
         view = self.MembersMainView(cog=self, channel=ctx.channel)
         
-        # Send message
+        # Send first message with buttons
         message = await ctx.send(embed=embed, view=view)
+        
+        # Send second message for plain text copy
+        plain_text_message = await ctx.send("***No members in the list yet*\n*Add members using the buttons above*")
         
         # Store data
         list_data['message_id'] = str(message.id)
+        list_data['plain_message_id'] = str(plain_text_message.id)  # NEW: Store plain text message ID
         self.member_lists[channel_id] = list_data
         self.save_data()
         
-        await ctx.send("✅ Dynamic member list created!", delete_after=5)
+        await ctx.send("✅ Dynamic member list created with copy-friendly display!", delete_after=5)
     
     @commands.command(name="deletelist")
     @commands.has_permissions(administrator=True)
@@ -685,14 +733,22 @@ class DynamicMemberList(commands.Cog):
             await ctx.send("❌ No member list exists in this channel!")
             return
         
-        # Try to delete the message
+        # Try to delete both messages
         list_data = self.member_lists[channel_id]
         message_id = list_data.get('message_id')
+        plain_message_id = list_data.get('plain_message_id')
         
         try:
             if message_id:
                 message = await ctx.channel.fetch_message(int(message_id))
                 await message.delete()
+        except:
+            pass
+        
+        try:
+            if plain_message_id:
+                plain_message = await ctx.channel.fetch_message(int(plain_message_id))
+                await plain_message.delete()
         except:
             pass
         
@@ -746,10 +802,9 @@ class DynamicMemberList(commands.Cog):
         
         self.save_data()
         
-        # Update embed
+        # Update both messages
         try:
-            message = await ctx.channel.fetch_message(int(list_data['message_id']))
-            await self.update_embed(message, list_data)
+            await self.update_both_messages(ctx.channel, list_data)
             await ctx.send(f"✅ Force removed **{member.display_name or member.name}** (@{member.name}) from the list.")
         except Exception as e:
             await ctx.send(f"❌ Error updating list: {str(e)}")

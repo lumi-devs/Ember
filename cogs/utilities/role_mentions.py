@@ -102,7 +102,7 @@ class RoleMentionTracker(commands.Cog):
         # Wait until 4 AM IST
         await discord.utils.sleep_until(target.astimezone(pytz.UTC))
     
-    async def log_role_mentions(self, message, mentioned_roles):
+    async def log_role_mentions(self, message: discord.Message, mentioned_roles):
         """Log role mentions to hardcoded channel"""
         # Get the hardcoded log channel
         log_channel = self.bot.get_channel(self.LOG_CHANNEL_ID)
@@ -209,10 +209,10 @@ class RoleMentionTracker(commands.Cog):
         embed.set_footer(text=f"Logged at")
         
         # Send the log message
-        await log_channel.send(embed=embed)
+        await log_channel.send(content=f"{message.author.mention}",embed=embed)
     
     @commands.Cog.listener()
-    async def on_message(self, message):
+    async def on_message(self, message: discord.Message):
         """Track role mentions in messages"""
         # Ignore bot messages
         if message.author.bot:
