@@ -172,7 +172,7 @@ class DynamicMemberList(commands.Cog):
                 
                 if member:
                     # Plain @mention format that users can copy
-                    plain_text += f"@{member.mention} "
+                    plain_text += f"{member.mention} "
             
             if plain_text:
                 content = f"{plain_text}"
