@@ -127,7 +127,7 @@ class Verification(commands.Cog):
     async def verify_error(self, ctx, error):
         """Handle errors for the verify command"""
         if isinstance(error, commands.MissingRequiredArgument):
-            await self.send_embed(ctx, "❌ **Usage:** `!verify @member`", discord.Color.red())
+            await self.send_embed(ctx, "❌ **Usage:** `.verify @member`", discord.Color.red())
         elif isinstance(error, commands.BadArgument):
             await self.send_embed(ctx, "❌ **Error:** Please mention a valid member.", discord.Color.red())
     
