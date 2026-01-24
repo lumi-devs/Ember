@@ -1,6 +1,8 @@
 import discord
 from discord.ext import commands
 import asyncio
+import io
+import traceback
 
 
 class ForumPostCog(commands.Cog):
@@ -396,27 +398,68 @@ class ForumPostCog(commands.Cog):
             await self.next_step(message)
         elif data["step"] == 5:  # Attachments
             if message.content.lower() == "skip":
-                data["data"]["attachments"] = []
+                data["data"]["attachments"] = []  # Store as list of file data
+                data["data"]["attachment_files"] = []  # Store as list of discord.File objects
                 await self.next_step(message)
             elif message.content.lower() == "done":
                 # Collect attachments from recent messages safely
-                attachments = []
+                attachments_data = []
+                attachment_files = []
+
                 try:
                     async for msg in message.channel.history(limit=10):
-                        if msg.author.id == user_id:
-                            # Safely check if attachments exist and are a list
-                            current_attachments = getattr(msg, 'attachments', None)
-                            if current_attachments:
-                                attachments.extend(current_attachments)
+                        if msg.author.id == user_id and msg.attachments:
+                            for attachment in msg.attachments:
+                                try:
+                                    # Download the file and store it
+                                    file_data = await attachment.read()
+                                    file_obj = discord.File(
+                                        io.BytesIO(file_data),
+                                        filename=attachment.filename
+                                    )
+
+                                    # Store both the data and file object
+                                    attachments_data.append({
+                                        "filename": attachment.filename,
+                                        "url": attachment.url,
+                                        "data": file_data
+                                    })
+                                    attachment_files.append(file_obj)
+
+                                    print(f"Downloaded attachment: {attachment.filename} ({len(file_data)} bytes)")
+
+                                except Exception as e:
+                                    print(f"Failed to download attachment {attachment.filename}: {e}")
+                                    await message.channel.send(
+                                        f"⚠️ Failed to download {attachment.filename}. It may be too large.",
+                                        delete_after=5
+                                    )
                 except Exception as e:
                     print(f"Error collecting attachments: {e}")
+                    await message.channel.send(
+                        "⚠️ Error collecting attachments. Please try uploading them again.",
+                        delete_after=5
+                    )
 
-                # Ensure we store a list, even if empty
-                data["data"]["attachments"] = attachments[:10] if attachments else []
+                # Limit to 10 attachments
+                data["data"]["attachments"] = attachments_data[:10]
+                data["data"]["attachment_files"] = attachment_files[:10]
+
+                if attachments_data:
+                    await message.channel.send(
+                        f"✅ Downloaded {len(attachments_data)} file(s) successfully.",
+                        delete_after=5
+                    )
+                else:
+                    await message.channel.send(
+                        "ℹ️ No attachments found. Continuing without attachments.",
+                        delete_after=5
+                    )
+
                 await self.next_step(message)
 
             elif message.attachments:
-                # User uploaded files - visual confirmation only
+                # User uploaded files - store them
                 await message.channel.send(
                     f"✅ Added {len(message.attachments)} file(s). Type `done` when finished or `skip` to continue without attachments.",
                     delete_after=5
@@ -651,23 +694,43 @@ class ForumPostCog(commands.Cog):
                 applied_tags=tags if tags else None  # Only apply tags if there are any
             )
 
-            # Add attachments if any
-            attachments_list = data["data"].get("attachments") or []  # Default to empty list if None
+            # Add attachments if any - using downloaded files
+            attachment_files = data["data"].get("attachment_files") or []
 
-            if attachments_list:
+            if attachment_files:
                 attachment_count = 0
-                # Iterate safely over the first 10 attachments
-                for attachment in attachments_list[:10]:
+                # Send each downloaded file
+                for file_obj in attachment_files[:10]:  # Limit to 10
                     try:
-                        if attachment:  # Ensure attachment object is valid
+                        if file_obj and hasattr(file_obj, 'fp') and file_obj.fp:
                             await thread.thread.send(
-                                f"📎 {attachment.filename}",
-                                file=await attachment.to_file()
+                                f"📎 {file_obj.filename}",
+                                file=file_obj
                             )
                             attachment_count += 1
                             await asyncio.sleep(1)  # Avoid rate limits
                     except Exception as e:
-                        print(f"Failed to upload attachment: {e}")
+                        print(f"Failed to upload attachment {getattr(file_obj, 'filename', 'unknown')}: {e}")
+                        # Try to recreate the file from stored data
+                        try:
+                            # Find the corresponding data
+                            attachments_data = data["data"].get("attachments", [])
+                            for att_data in attachments_data:
+                                if att_data.get("filename") == getattr(file_obj, 'filename', ''):
+                                    # Recreate file from stored bytes
+                                    new_file = discord.File(
+                                        io.BytesIO(att_data["data"]),
+                                        filename=att_data["filename"]
+                                    )
+                                    await thread.thread.send(
+                                        f"📎 {att_data['filename']}",
+                                        file=new_file
+                                    )
+                                    attachment_count += 1
+                                    await asyncio.sleep(1)
+                                    break
+                        except Exception as e2:
+                            print(f"Failed to recreate file: {e2}")
 
                 if attachment_count > 0:
                     await thread.thread.send(f"📁 **{attachment_count} attachment(s) uploaded**")
@@ -710,16 +773,19 @@ class ForumPostCog(commands.Cog):
 
         except Exception as e:
             error_msg = f"❌ Failed to create forum post: {str(e)}"
+            print(f"Forum post creation error: {traceback.format_exc()}")
+
             # Give more specific error messages
             if "Maximum number of tags" in str(e):
                 error_msg = "❌ Too many tags! Discord allows maximum 5 tags per post."
             elif "Maximum length" in str(e):
                 error_msg = "❌ Title too long! Maximum 100 characters."
+            elif "NoneType" in str(e):
+                error_msg = "❌ Error with attachments. Please try again without attachments or with smaller files."
 
             await message.channel.send(error_msg)
             await self.cleanup_creation(user_id)
 
-            
     async def finish_multi_creation(self, message):
         """Finish multi-post creation and show summary"""
         user_id = message.author.id
