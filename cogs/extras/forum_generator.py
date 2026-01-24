@@ -520,7 +520,7 @@ class ForumPostCog(commands.Cog):
 
         # If not a mention, search by name
         if not forum_channel:
-            for chann1el in message.guild.channels:
+            for channel in message.guild.channels:
                 if isinstance(channel, discord.ForumChannel) and channel.name.lower() == input_text.lower().replace("#",
                                                                                                                     ""):
                     forum_channel = channel
@@ -582,7 +582,7 @@ class ForumPostCog(commands.Cog):
 
             await self.ask_forum_channel(message)
 
-            
+
     async def next_step(self, message):
         user_id = message.author.id
         data = self.active_creations[user_id]
