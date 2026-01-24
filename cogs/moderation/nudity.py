@@ -382,7 +382,7 @@ class NSFWDetector(commands.Cog):
         except Exception as e:
             print(f"Error sending mod log: {e}")
 
-    @commands.command(name="moderate", aliases=["check", "scan"])
+    @commands.command(name="moderate", aliases=["check"])
     @commands.has_permissions(manage_messages=True)
     async def moderate_command(self, ctx, *, text: Optional[str] = None):
         """Manually check text or image for content violations"""
