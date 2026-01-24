@@ -149,12 +149,15 @@ class ForumPostCog(commands.Cog):
         forum_channel = data["forum_channel"]
         available_tags = ""
 
-        if forum_channel and hasattr(forum_channel, 'available_tags'):
-            tags_list = [tag.name for tag in forum_channel.available_tags[:10]]  # First 10 tags
+        # FIXED: Check if available_tags exists and is not None
+        if forum_channel and hasattr(forum_channel, 'available_tags') and forum_channel.available_tags:
+            tags_list = [tag.name for tag in forum_channel.available_tags[:10] if tag]  # First 10 tags, filter None
             if tags_list:
                 available_tags = f"**Available tags:** {', '.join(tags_list)}\n"
                 if len(forum_channel.available_tags) > 10:
                     available_tags += f"...and {len(forum_channel.available_tags) - 10} more\n"
+        else:
+            available_tags = "No existing tags in this forum.\n"
 
         title = "Step 3: Tags"
         if data["post_count"] > 1:
@@ -440,7 +443,16 @@ class ForumPostCog(commands.Cog):
 
         if forum_channel:
             data["forum_channel"] = forum_channel
-            await message.channel.send(f"✅ Selected forum: {forum_channel.mention}", delete_after=3)
+
+            # FIXED: Add debug info about tags availability
+            tag_info = ""
+            if hasattr(forum_channel, 'available_tags'):
+                if forum_channel.available_tags is None:
+                    tag_info = " (no tags available)"
+                else:
+                    tag_info = f" ({len(forum_channel.available_tags)} tags available)"
+
+            await message.channel.send(f"✅ Selected forum: {forum_channel.mention}{tag_info}", delete_after=5)
             await self.next_step(message)
         else:
             await message.channel.send("❌ Couldn't find that forum channel. Please try again or mention the channel.",
@@ -580,13 +592,15 @@ class ForumPostCog(commands.Cog):
             tags = []
             if not data.get("skip_tags", False) and data["data"].get("tags"):
                 forum_channel = data["forum_channel"]
-                if hasattr(forum_channel, 'available_tags'):
+
+                # FIXED: Check if available_tags exists and is not None
+                if forum_channel and hasattr(forum_channel, 'available_tags') and forum_channel.available_tags:
                     for tag_name in data["data"]["tags"][:5]:  # Limit to 5 tags
                         tag_found = False
 
                         # First, try to find existing tag
                         for available_tag in forum_channel.available_tags:
-                            if tag_name.lower() == available_tag.name.lower():
+                            if available_tag and tag_name.lower() == available_tag.name.lower():
                                 tags.append(available_tag)
                                 tag_found = True
                                 break
@@ -608,17 +622,22 @@ class ForumPostCog(commands.Cog):
                                     delete_after=5
                                 )
                 else:
-                    # Forum channel doesn't support tags
+                    # Forum channel doesn't support tags or tags list is None/empty
                     await message.channel.send(
-                        "ℹ️ This forum channel doesn't support tags.",
+                        "ℹ️ This forum channel doesn't support tags or has no available tags.",
                         delete_after=5
                     )
 
-            # Create the forum post
+            # FIXED: Handle the case where forum_channel might be None
+            if not data["forum_channel"]:
+                await message.channel.send("❌ No forum channel selected!", delete_after=5)
+                return
+
+            # Create the forum post - FIXED: Check if tags list is not empty
             thread = await data["forum_channel"].create_thread(
                 name=data["data"].get("title", "Untitled Post")[:100],  # Discord limit
                 content=data["data"].get("content", ""),
-                applied_tags=tags[:5] if tags else None  # Only apply tags if there are any
+                applied_tags=tags if tags else None  # Only apply tags if there are any (FIXED)
             )
 
             # Add attachments if any
