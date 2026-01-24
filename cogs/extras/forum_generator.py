@@ -276,6 +276,18 @@ class ForumPostCog(commands.Cog):
         else:
             preview_text += f"**Tags:** Not set\n"
 
+        # Handle attachments preview
+        attachments = data['data'].get('attachments', [])
+        if attachments:
+            file_names = [att.get('filename', 'Unknown') for att in attachments[:3]]
+            preview_text += f"**Attachments:** {', '.join(file_names)}"
+            if len(attachments) > 3:
+                preview_text += f" (+{len(attachments) - 3} more)\n"
+            else:
+                preview_text += "\n"
+        else:
+            preview_text += "**Attachments:** None\n"
+
         preview_text += f"**Content Preview:** {data['data'].get('content', 'Not set')[:100]}..." if data['data'].get(
             'content') else "**Content:** Not set"
 
@@ -402,14 +414,46 @@ class ForumPostCog(commands.Cog):
                 data["data"]["attachment_files"] = []  # Store as list of discord.File objects
                 await self.next_step(message)
             elif message.content.lower() == "done":
-                # Collect attachments from recent messages safely
+                # Store the message with attachments directly
                 attachments_data = []
                 attachment_files = []
 
-                try:
-                    async for msg in message.channel.history(limit=10):
-                        if msg.author.id == user_id and msg.attachments:
-                            for attachment in msg.attachments:
+                # Check current message for attachments first
+                if message.attachments:
+                    for attachment in message.attachments:
+                        try:
+                            # Download the file and store it
+                            file_data = await attachment.read()
+                            file_obj = discord.File(
+                                io.BytesIO(file_data),
+                                filename=attachment.filename
+                            )
+
+                            # Store both the data and file object
+                            attachments_data.append({
+                                "filename": attachment.filename,
+                                "url": attachment.url,
+                                "data": file_data,
+                                "content_type": attachment.content_type
+                            })
+                            attachment_files.append(file_obj)
+
+                            print(f"Downloaded attachment: {attachment.filename} ({len(file_data)} bytes)")
+
+                        except Exception as e:
+                            print(f"Failed to download attachment {attachment.filename}: {e}")
+                            await message.channel.send(
+                                f"⚠️ Failed to download {attachment.filename}. It may be too large.",
+                                delete_after=5
+                            )
+
+                # Also check for attachments in the creation message thread
+                if data.get("message") and data["message"].id != message.id:
+                    try:
+                        # Get the actual message object (not the cached one)
+                        creation_msg = await message.channel.fetch_message(data["message"].id)
+                        if creation_msg.attachments:
+                            for attachment in creation_msg.attachments:
                                 try:
                                     # Download the file and store it
                                     file_data = await attachment.read()
@@ -418,48 +462,86 @@ class ForumPostCog(commands.Cog):
                                         filename=attachment.filename
                                     )
 
-                                    # Store both the data and file object
                                     attachments_data.append({
                                         "filename": attachment.filename,
                                         "url": attachment.url,
-                                        "data": file_data
+                                        "data": file_data,
+                                        "content_type": attachment.content_type
                                     })
                                     attachment_files.append(file_obj)
 
-                                    print(f"Downloaded attachment: {attachment.filename} ({len(file_data)} bytes)")
+                                    print(f"Downloaded attachment from creation message: {attachment.filename}")
 
                                 except Exception as e:
-                                    print(f"Failed to download attachment {attachment.filename}: {e}")
-                                    await message.channel.send(
-                                        f"⚠️ Failed to download {attachment.filename}. It may be too large.",
-                                        delete_after=5
-                                    )
-                except Exception as e:
-                    print(f"Error collecting attachments: {e}")
-                    await message.channel.send(
-                        "⚠️ Error collecting attachments. Please try uploading them again.",
-                        delete_after=5
-                    )
+                                    print(f"Failed to download creation message attachment {attachment.filename}: {e}")
+                    except Exception as e:
+                        print(f"Error fetching creation message: {e}")
 
-                # Limit to 10 attachments
-                data["data"]["attachments"] = attachments_data[:10]
-                data["data"]["attachment_files"] = attachment_files[:10]
-
+                # If we have attachments from current message or creation message
                 if attachments_data:
+                    # Limit to 10 attachments
+                    data["data"]["attachments"] = attachments_data[:10]
+                    data["data"]["attachment_files"] = attachment_files[:10]
+
                     await message.channel.send(
                         f"✅ Downloaded {len(attachments_data)} file(s) successfully.",
                         delete_after=5
                     )
+                    await self.next_step(message)
                 else:
+                    # No attachments found, ask user what they want to do
                     await message.channel.send(
-                        "ℹ️ No attachments found. Continuing without attachments.",
-                        delete_after=5
+                        "❓ No attachments found. Did you upload files?\n"
+                        "• Reply with `skip` to continue without attachments\n"
+                        "• Upload files now and then type `done` again\n"
+                        "• Or just type `done` again to continue without attachments",
+                        delete_after=10
                     )
 
-                await self.next_step(message)
-
             elif message.attachments:
-                # User uploaded files - store them
+                # User uploaded files - store them immediately
+                attachments_data = []
+                attachment_files = []
+
+                for attachment in message.attachments:
+                    try:
+                        # Download the file and store it immediately
+                        file_data = await attachment.read()
+                        file_obj = discord.File(
+                            io.BytesIO(file_data),
+                            filename=attachment.filename
+                        )
+
+                        attachments_data.append({
+                            "filename": attachment.filename,
+                            "url": attachment.url,
+                            "data": file_data,
+                            "content_type": attachment.content_type
+                        })
+                        attachment_files.append(file_obj)
+
+                        # Add to existing attachments if any
+                        existing_attachments = data["data"].get("attachments", [])
+                        existing_files = data["data"].get("attachment_files", [])
+
+                        # Check if this filename already exists
+                        filename_exists = any(
+                            att.get("filename") == attachment.filename
+                            for att in existing_attachments
+                        )
+
+                        if not filename_exists:
+                            existing_attachments.append(attachments_data[-1])
+                            existing_files.append(attachment_files[-1])
+
+                        data["data"]["attachments"] = existing_attachments
+                        data["data"]["attachment_files"] = existing_files
+
+                        print(f"Downloaded and stored attachment: {attachment.filename}")
+
+                    except Exception as e:
+                        print(f"Failed to download attachment {attachment.filename}: {e}")
+
                 await message.channel.send(
                     f"✅ Added {len(message.attachments)} file(s). Type `done` when finished or `skip` to continue without attachments.",
                     delete_after=5
@@ -471,7 +553,6 @@ class ForumPostCog(commands.Cog):
                 await self.create_forum_post_final(message)
             elif message.content.lower() == "edit":
                 await self.go_to_edit_step(message)
-
 
     async def handle_forum_channel_input(self, message, input_text):
         user_id = message.author.id
