@@ -699,17 +699,20 @@ class ForumPostCog(commands.Cog):
                         "ℹ️ This forum channel doesn't support tags or has no available tags.",
                         delete_after=5
                     )
+            else:
+                # Tags were skipped or no tags provided
+                tags = []
 
             # Handle the case where forum_channel might be None
             if not data["forum_channel"]:
                 await message.channel.send("❌ No forum channel selected!", delete_after=5)
                 return
 
-                # Create the forum post - Check if tags list is not empty
+            # Create the forum post - FIXED: Use empty list instead of None when no tags
             thread = await data["forum_channel"].create_thread(
                 name=data["data"].get("title", "Untitled Post")[:100],  # Discord limit
                 content=data["data"].get("content", ""),
-                applied_tags=tags if tags else None  # Only apply tags if there are any
+                applied_tags=tags  # This should always be a list (even if empty)
             )
 
             # Add attachments if any
@@ -798,7 +801,9 @@ class ForumPostCog(commands.Cog):
             elif "Maximum length" in str(e):
                 error_msg = "❌ Title too long! Maximum 100 characters."
             elif "NoneType" in str(e):
-                error_msg = "❌ Error with attachments. Please try again without attachments or with smaller files."
+                error_msg = "❌ Error with tags. Please try again without tags."
+            elif "applied_tags" in str(e):
+                error_msg = "❌ Error with tags format. Please try again."
 
             await message.channel.send(error_msg)
             await self.cleanup_creation(user_id)
