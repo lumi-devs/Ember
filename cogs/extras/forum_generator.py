@@ -403,15 +403,24 @@ class ForumPostCog(commands.Cog):
                 attachments = []
                 async for msg in message.channel.history(limit=10):
                     if msg.author.id == user_id and msg.attachments:
-                        attachments.extend(msg.attachments)
+                        # FIXED: Check if msg.attachments is not None
+                        if msg.attachments:
+                            # FIXED: Properly extend the list
+                            attachments.extend(list(msg.attachments))
 
-                data["data"]["attachments"] = attachments[:10]  # Limit to 10 attachments
+                # FIXED: Ensure attachments is a list, not None
+                data["data"]["attachments"] = attachments[:10] if attachments else []
                 await self.next_step(message)
             elif message.attachments:
                 # User uploaded files
-                await message.channel.send(
-                    f"✅ Added {len(message.attachments)} file(s). Type `done` when finished or `skip` to continue without attachments.",
-                    delete_after=5)
+                # FIXED: Check if message.attachments is not None
+                if message.attachments:
+                    await message.channel.send(
+                        f"✅ Added {len(message.attachments)} file(s). Type `done` when finished or `skip` to continue without attachments.",
+                        delete_after=5
+                    )
+                else:
+                    await message.channel.send("Please upload files or type `skip`/`done`.", delete_after=5)
             else:
                 await message.channel.send("Please upload files or type `skip`/`done`.", delete_after=5)
         elif data["step"] == 6:  # Preview actions
@@ -435,7 +444,7 @@ class ForumPostCog(commands.Cog):
 
         # If not a mention, search by name
         if not forum_channel:
-            for channel in message.guild.channels:
+            for chann1el in message.guild.channels:
                 if isinstance(channel, discord.ForumChannel) and channel.name.lower() == input_text.lower().replace("#",
                                                                                                                     ""):
                     forum_channel = channel
@@ -478,7 +487,8 @@ class ForumPostCog(commands.Cog):
                 "title": "",
                 "content": "",
                 "tags": previous_data.get("tags", []),  # Keep same tags
-                "attachments": previous_data.get("attachments", [])  # Keep same attachments
+                # FIXED: Ensure attachments is a list, not None
+                "attachments": previous_data.get("attachments", []) if previous_data.get("attachments") else []
             }
 
             # Keep forum channel and skip_tags setting
@@ -641,16 +651,19 @@ class ForumPostCog(commands.Cog):
             )
 
             # Add attachments if any
-            if data["data"].get("attachments"):
+            attachments = data["data"].get("attachments")
+            if attachments and len(attachments) > 0:
                 attachment_count = 0
-                for attachment in data["data"]["attachments"][:10]:  # Limit to 10 attachments
+                for attachment in attachments[:10]:  # Limit to 10 attachments
                     try:
-                        await thread.thread.send(
-                            f"📎 {attachment.filename}",
-                            file=await attachment.to_file()
-                        )
-                        attachment_count += 1
-                        await asyncio.sleep(1)  # Avoid rate limits
+                        # FIXED: Ensure attachment is not None
+                        if attachment:
+                            await thread.thread.send(
+                                f"📎 {attachment.filename}",
+                                file=await attachment.to_file()
+                            )
+                            attachment_count += 1
+                            await asyncio.sleep(1)  # Avoid rate limits
                     except Exception as e:
                         print(f"Failed to upload attachment: {e}")
 
