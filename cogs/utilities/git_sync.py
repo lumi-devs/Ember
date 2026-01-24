@@ -92,8 +92,9 @@ class GitHubSync(commands.Cog):
         await asyncio.to_thread(pull_logic)
 
     def upload_all_files_sync(self):
-        """Push local changes to GitHub with conflict retry logic."""
-        if not self.repo: return
+        """Push local changes to GitHub with aggressive SHA recovery."""
+        if not self.repo:
+            return
 
         DATA_FOLDER.mkdir(exist_ok=True)
         all_files = self.get_all_files()
@@ -107,49 +108,61 @@ class GitHubSync(commands.Cog):
                     content_bytes = f.read()
                 content_base64 = base64.b64encode(content_bytes).decode('utf-8')
 
-                # Retry loop (max 2 attempts) to handle SHA race conditions
-                for attempt in range(2):
+                # Using a while loop for controlled retries (max 3)
+                success = False
+                attempts = 0
+                while not success and attempts < 3:
                     try:
+                        # 1. Get the current state from GitHub
                         try:
                             existing = self.repo.get_contents(github_path, ref="main")
-                            sha = existing.sha
-                            # Content comparison to save API calls
-                            if existing.content.replace('\n', '') == content_base64:
+                            current_sha = existing.sha
+                            online_content = existing.content.replace('\n', '')
+
+                            # 2. Skip if content is already identical
+                            if online_content == content_base64:
+                                success = True
                                 break
                         except GithubException as e:
                             if e.status == 404:
-                                sha = None  # File doesn't exist yet
+                                current_sha = None  # New file
                             else:
                                 raise e
 
-                        if sha:
-                            # Update existing
+                        # 3. Perform the Update or Create
+                        if current_sha:
                             self.repo.update_file(
                                 github_path,
                                 f"Update {rel_path}",
                                 content_base64,
-                                sha,
+                                current_sha,
                                 branch="main"
                             )
                         else:
-                            # Create new
                             self.repo.create_file(
                                 github_path,
                                 f"Add {rel_path}",
                                 content_base64,
                                 branch="main"
                             )
-                        break  # Success!
+
+                        success = True
+                        if attempts > 0:
+                            logging.info(f"  ✅ Recovered {rel_path} after conflict.")
 
                     except GithubException as e:
-                        # 422 or 409 usually mean the SHA changed mid-process
-                        if e.status in [422, 409] and attempt == 0:
-                            logging.warning(f"🔄 SHA mismatch for {rel_path}, retrying...")
+                        # Catch 409 (Conflict) or 422 (Unprocessable/Missing SHA)
+                        if e.status in [409, 422]:
+                            attempts += 1
+                            logging.warning(f"🔄 SHA Conflict for {rel_path} (Attempt {attempts}). Re-fetching...")
+                            # Small sleep to let GitHub API catch its breath
+                            import time
+                            time.sleep(1)
                             continue
-                        raise e
-
+                        else:
+                            raise e
             except Exception as e:
-                logging.error(f"❌ Failed to sync {rel_path}: {e}")
+                logging.error(f"❌ Permanent Sync Error for {rel_path}: {e}")
 
     async def upload_all_files(self):
         await asyncio.to_thread(self.upload_all_files_sync)
