@@ -399,28 +399,28 @@ class ForumPostCog(commands.Cog):
                 data["data"]["attachments"] = []
                 await self.next_step(message)
             elif message.content.lower() == "done":
-                # Collect attachments from recent messages
+                # Collect attachments from recent messages safely
                 attachments = []
-                async for msg in message.channel.history(limit=10):
-                    if msg.author.id == user_id and msg.attachments:
-                        # FIXED: Check if msg.attachments is not None
-                        if msg.attachments:
-                            # FIXED: Properly extend the list
-                            attachments.extend(list(msg.attachments))
+                try:
+                    async for msg in message.channel.history(limit=10):
+                        if msg.author.id == user_id:
+                            # Safely check if attachments exist and are a list
+                            current_attachments = getattr(msg, 'attachments', None)
+                            if current_attachments:
+                                attachments.extend(current_attachments)
+                except Exception as e:
+                    print(f"Error collecting attachments: {e}")
 
-                # FIXED: Ensure attachments is a list, not None
+                # Ensure we store a list, even if empty
                 data["data"]["attachments"] = attachments[:10] if attachments else []
                 await self.next_step(message)
+
             elif message.attachments:
-                # User uploaded files
-                # FIXED: Check if message.attachments is not None
-                if message.attachments:
-                    await message.channel.send(
-                        f"✅ Added {len(message.attachments)} file(s). Type `done` when finished or `skip` to continue without attachments.",
-                        delete_after=5
-                    )
-                else:
-                    await message.channel.send("Please upload files or type `skip`/`done`.", delete_after=5)
+                # User uploaded files - visual confirmation only
+                await message.channel.send(
+                    f"✅ Added {len(message.attachments)} file(s). Type `done` when finished or `skip` to continue without attachments.",
+                    delete_after=5
+                )
             else:
                 await message.channel.send("Please upload files or type `skip`/`done`.", delete_after=5)
         elif data["step"] == 6:  # Preview actions
@@ -428,6 +428,7 @@ class ForumPostCog(commands.Cog):
                 await self.create_forum_post_final(message)
             elif message.content.lower() == "edit":
                 await self.go_to_edit_step(message)
+
 
     async def handle_forum_channel_input(self, message, input_text):
         user_id = message.author.id
@@ -603,7 +604,7 @@ class ForumPostCog(commands.Cog):
             if not data.get("skip_tags", False) and data["data"].get("tags"):
                 forum_channel = data["forum_channel"]
 
-                # FIXED: Check if available_tags exists and is not None
+                # Check if available_tags exists and is not None
                 if forum_channel and hasattr(forum_channel, 'available_tags') and forum_channel.available_tags:
                     for tag_name in data["data"]["tags"][:5]:  # Limit to 5 tags
                         tag_found = False
@@ -638,26 +639,27 @@ class ForumPostCog(commands.Cog):
                         delete_after=5
                     )
 
-            # FIXED: Handle the case where forum_channel might be None
+            # Handle the case where forum_channel might be None
             if not data["forum_channel"]:
                 await message.channel.send("❌ No forum channel selected!", delete_after=5)
                 return
 
-            # Create the forum post - FIXED: Check if tags list is not empty
+            # Create the forum post - Check if tags list is not empty
             thread = await data["forum_channel"].create_thread(
                 name=data["data"].get("title", "Untitled Post")[:100],  # Discord limit
                 content=data["data"].get("content", ""),
-                applied_tags=tags if tags else None  # Only apply tags if there are any (FIXED)
+                applied_tags=tags if tags else None  # Only apply tags if there are any
             )
 
             # Add attachments if any
-            attachments = data["data"].get("attachments")
-            if attachments and len(attachments) > 0:
+            attachments_list = data["data"].get("attachments") or []  # Default to empty list if None
+
+            if attachments_list:
                 attachment_count = 0
-                for attachment in attachments[:10]:  # Limit to 10 attachments
+                # Iterate safely over the first 10 attachments
+                for attachment in attachments_list[:10]:
                     try:
-                        # FIXED: Ensure attachment is not None
-                        if attachment:
+                        if attachment:  # Ensure attachment object is valid
                             await thread.thread.send(
                                 f"📎 {attachment.filename}",
                                 file=await attachment.to_file()
@@ -717,6 +719,7 @@ class ForumPostCog(commands.Cog):
             await message.channel.send(error_msg)
             await self.cleanup_creation(user_id)
 
+            
     async def finish_multi_creation(self, message):
         """Finish multi-post creation and show summary"""
         user_id = message.author.id
