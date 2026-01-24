@@ -534,7 +534,7 @@ class StrictImageModerator(commands.Cog):
             await ctx.send("❌ Provide URL or attach image")
             return
 
-        await ctx.trigger_typing()
+        #await ctx.trigger_typing()
 
         if not url:
             attachment = ctx.message.attachments[0]
