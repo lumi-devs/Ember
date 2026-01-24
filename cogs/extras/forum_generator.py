@@ -198,7 +198,7 @@ class ForumPostCog(commands.Cog):
 
         embed = discord.Embed(
             title=title,
-            description="Write the main content of your forum post.",
+            description="Write the main content of your forum post.\n**💡 Type `skip` to skip content and create post with just title and attachments**",
             color=discord.Color.blue()
         )
 
@@ -276,6 +276,15 @@ class ForumPostCog(commands.Cog):
         else:
             preview_text += f"**Tags:** Not set\n"
 
+        # Handle content preview
+        content = data['data'].get('content', '')
+        if content:
+            preview_text += f"**Content Preview:** {content[:100]}...\n"
+        elif data.get('skip_content', False):
+            preview_text += f"**Content:** Skipped\n"
+        else:
+            preview_text += f"**Content:** Not set\n"
+
         # Handle attachments preview
         attachments = data['data'].get('attachments', [])
         if attachments:
@@ -286,10 +295,7 @@ class ForumPostCog(commands.Cog):
             else:
                 preview_text += "\n"
         else:
-            preview_text += "**Attachments:** None\n"
-
-        preview_text += f"**Content Preview:** {data['data'].get('content', 'Not set')[:100]}..." if data['data'].get(
-            'content') else "**Content:** Not set"
+            preview_text += "**Attachments:** None"
 
         embed.description = preview_text
 
@@ -406,8 +412,16 @@ class ForumPostCog(commands.Cog):
                 data["skip_tags"] = False
                 await self.next_step(message)
         elif data["step"] == 4:  # Content
-            data["data"]["content"] = message.content
-            await self.next_step(message)
+            content = message.content.lower()
+            if content == "skip":
+                data["skip_content"] = True
+                data["data"]["content"] = ""  # Empty content
+                await message.channel.send("✅ Skipped content for this post.", delete_after=3)
+                await self.next_step(message)
+            else:
+                data["data"]["content"] = message.content
+                data["skip_content"] = False
+                await self.next_step(message)
         elif data["step"] == 5:  # Attachments
             if message.content.lower() == "skip":
                 data["data"]["attachments"] = []  # Store as list of file data
@@ -543,18 +557,18 @@ class ForumPostCog(commands.Cog):
             data["current_post"] += 1
             data["step"] = 2  # Go to title step (keep same channel, tags, etc.)
 
-            # Clear only title and content, keep other settings
+            # Clear only title, keep other settings
             previous_data = data["data"].copy()
             data["data"] = {
                 "title": "",
-                "content": "",
+                "content": "",  # Always start with empty content
                 "tags": previous_data.get("tags", []),  # Keep same tags
-                # FIXED: Ensure attachments is a list, not None
-                "attachments": previous_data.get("attachments", []) if previous_data.get("attachments") else []
+                "attachments": previous_data.get("attachments", [])  # Keep attachment data
             }
 
-            # Keep forum channel and skip_tags setting
+            # Keep forum channel and skip settings
             data["skip_tags"] = data.get("skip_tags", False)
+            data["skip_content"] = False  # Reset skip_content for new post
 
             await self.ask_post_title(message)
         elif response == "yes":
@@ -564,9 +578,11 @@ class ForumPostCog(commands.Cog):
             data["data"] = {}  # Clear all data
             data["forum_channel"] = None  # Clear forum channel
             data["skip_tags"] = False  # Reset skip tags
+            data["skip_content"] = False  # Reset skip content
 
             await self.ask_forum_channel(message)
 
+            
     async def next_step(self, message):
         user_id = message.author.id
         data = self.active_creations[user_id]
