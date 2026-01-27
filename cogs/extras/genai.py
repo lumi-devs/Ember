@@ -769,10 +769,7 @@ class ConsciousBotCog(commands.Cog):
         self.conversation_history = defaultdict(deque(maxlen=20))
         
         # Initialize task loops (FIXED - define them here)
-        self.consciousness_cycle = tasks.loop(seconds=45)(self._consciousness_cycle_func)
-        self.memory_consolidation = tasks.loop(seconds=300)(self._memory_consolidation_func)
-        self.vibe_analysis = tasks.loop(seconds=180)(self._vibe_analysis_func)
-        self.auto_backup = tasks.loop(hours=6)(self._auto_backup_func)
+
         
         # Load state if exists
         asyncio.create_task(self.load_consciousness_state())
@@ -3390,6 +3387,7 @@ class ConsciousBotCog(commands.Cog):
         except Exception as e:
             logger.error(f"Emotional state adjustment error: {e}")
 
+
     @tasks.loop(seconds=45)
     async def consciousness_cycle(self):
         """Enhanced periodic consciousness maintenance"""
@@ -3415,6 +3413,7 @@ class ConsciousBotCog(commands.Cog):
         except Exception as e:
             logger.error(f"Consciousness cycle error: {e}")
             await self._log_error("consciousness_cycle", str(e))
+
 
     @safe_execute
     async def consolidate_working_memory(self):
