@@ -775,7 +775,7 @@ class ConsciousBotCog(commands.Cog):
         asyncio.create_task(self.load_consciousness_state())
         
         # Start background tasks with error handling
-        self.background_tasks = []...
+        self.background_tasks = []
         
         logger.info(f"ConsciousBotCog initialized with enhanced features")
 
