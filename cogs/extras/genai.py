@@ -3612,15 +3612,15 @@ class ConsciousBotCog(commands.Cog):
         """Enhanced reply decision logic"""
         # Always reply to direct mentions (but not too quickly)
         async with aiosqlite.connect(self.db_path) as db:
-        async with db.execute(
-            "SELECT silent_mode FROM channel_settings WHERE channel_id = ?", 
-            (message.channel.id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            if row and row[0] == 1:
-                # Still log for stats/debug if needed, but return False to skip replying
-                logger.info(f"Skipping reply in {message.channel.id} due to silent_mode.")
-                return False
+            async with db.execute(
+                "SELECT silent_mode FROM channel_settings WHERE channel_id = ?", 
+                (message.channel.id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row and row[0] == 1:
+                    # Still log for stats/debug if needed, but return False to skip replying
+                    logger.info(f"Skipping reply in {message.channel.id} due to silent_mode.")
+                    return False
             
         if self.bot.user in message.mentions:
             return True
