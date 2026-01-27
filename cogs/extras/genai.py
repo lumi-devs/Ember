@@ -775,8 +775,7 @@ class ConsciousBotCog(commands.Cog):
         asyncio.create_task(self.load_consciousness_state())
         
         # Start background tasks with error handling
-        self.background_tasks = []
-        self._start_background_tasks()
+        self.background_tasks = []...
         
         logger.info(f"ConsciousBotCog initialized with enhanced features")
 
@@ -4896,6 +4895,19 @@ class ConsciousBotCog(commands.Cog):
         await self.initialize_database()
         
         logger.info("ConsciousBotCog background tasks started")
+
+    async def cog_unload(self):
+        """Cleanup when cog unloads"""
+        # Stop all background tasks
+        self.consciousness_cycle.stop()
+        self.memory_consolidation.stop()
+        self.vibe_analysis.stop()
+        self.auto_backup.stop()
+        
+        # Save final state
+        await self.save_consciousness_state()
+        
+        logger.info("ConsciousBotCog background tasks stopped")
 
 async def setup(bot):
     """Setup function for Discord bot cog"""
