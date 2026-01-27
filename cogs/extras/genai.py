@@ -1,2684 +1,4187 @@
-import time
 import discord
 from discord.ext import commands, tasks
 import aiosqlite
 import random
 import re
 import asyncio
-import logging
-from collections import deque
-from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
-import emoji
-from typing import List, Tuple, Optional, Dict, Any
-import nltk
-from nltk.tokenize import word_tokenize, sent_tokenize
-from nltk import pos_tag
-from nltk.corpus import stopwords
-from nltk.sentiment import SentimentIntensityAnalyzer
+from datetime import datetime, timedelta
+from collections import defaultdict, deque
+import logging
+from typing import Dict, List, Optional, Tuple, Any, Set
+import hashlib
+import unicodedata
 from collections import Counter
-import math
-from langdetect import detect, DetectorFactory
+import numpy as np
+import traceback
+import sys
+from enum import Enum
+from dataclasses import dataclass
+from typing import Optional, List, Dict, Tuple
+import uuid
 
-# Ensure consistent language detection
-DetectorFactory.seed = 0
-
-# Try to download NLTK data
-try:
-    nltk.data.find('tokenizers/punkt')
-    nltk.data.find('tokenizers/punkt_tab') # <--- NEW REQUIREMENT
-    nltk.data.find('taggers/averaged_perceptron_tagger')
-    nltk.data.find('taggers/universal_tagset')
-    nltk.data.find('corpora/stopwords')
-    nltk.data.find('sentiment/vader_lexicon')
-    nltk.data.find('averaged_perceptron_tagger_eng')
-except LookupError:
-    nltk.download('punkt', quiet=True)
-    nltk.download('punkt_tab', quiet=True) # <--- NEW REQUIREMENT
-    nltk.download('averaged_perceptron_tagger', quiet=True)
-    nltk.download('universal_tagset', quiet=True)
-    nltk.download('stopwords', quiet=True)
-    nltk.download('vader_lexicon', quiet=True)
-    nltk.download('averaged_perceptron_tagger_eng')
-
-# Set up logging
+# ==================== ENHANCED LOGGING ====================
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
     handlers=[
-        logging.FileHandler('./genai/markov_bot.log'),
-        logging.StreamHandler()
+        logging.FileHandler('./conscious_bot.log', encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)
     ]
 )
-logger = logging.getLogger("EnhancedMarkovBot")
+logger = logging.getLogger("ConsciousBot")
+logger.setLevel(logging.INFO)
 
-class EnhancedMarkovCog(commands.Cog):
+# ==================== SAFETY WRAPPERS ====================
+def safe_execute(func):
+    """Decorator to safely execute functions and prevent crashes"""
+    async def wrapper(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Safe execution error in {func.__name__}: {str(e)}\n{traceback.format_exc()}")
+            return None
+    return wrapper
+
+def rate_limit(max_calls=5, period=60):
+    """Rate limiting decorator"""
+    calls = []
+    
+    def decorator(func):
+        async def wrapper(*args, **kwargs):
+            now = datetime.now()
+            calls[:] = [call for call in calls if now - call < timedelta(seconds=period)]
+            
+            if len(calls) >= max_calls:
+                logger.warning(f"Rate limit exceeded for {func.__name__}")
+                return None
+            
+            calls.append(now)
+            return await func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+class ConversationGoal(Enum):
+    """What the human is REALLY trying to do"""
+    SOCIAL_BONDING = "social_bonding"      # Hey, sup, yo, hi
+    INFORMATION_SEEKING = "info_seeking"   # Questions
+    EMOTIONAL_EXPRESSION = "emotional"     # Happy/sad/angry
+    PROBLEM_SOLVING = "problem_solving"    # Need help
+    ENTERTAINMENT = "entertainment"        # Jokes, fun
+    DEBATE = "debate"                      # Arguing/disagreeing
+    SHARING = "sharing"                    # Telling something
+    VENTING = "venting"                    # Just complaining
+    TESTING = "testing"                    # Testing the bot
+    UNKNOWN = "unknown"
+
+@dataclass
+class ConversationContext:
+    """Enhanced context for REAL understanding"""
+    raw_message: str
+    normalized: str
+    user_id: int
+    username: str
+    channel_id: int
+    server_id: int
+    sentiment: float
+    concepts: List[str]
+    intent: str
+    goal: ConversationGoal
+    vibe: Dict[str, float]
+    user_relationship: Dict[str, float]
+    previous_turns: List[Dict]
+    is_directed_at_me: bool
+    contains_question: bool
+    emotional_intensity: float
+    time_of_day: str
+    conversation_depth: float
+    
+class ConversationActor:
+    """Models how different personas would respond"""
+    
+    def __init__(self):
+        self.personas = {
+            'curious_friend': {
+                'style': 'friendly, curious, asks questions',
+                'responses': self.respond_as_curious_friend,
+                'weight': 1.0
+            },
+            'empathetic_listener': {
+                'style': 'caring, supportive, validating',
+                'responses': self.respond_as_empathetic_listener,
+                'weight': 1.0
+            },
+            'knowledgeable_guide': {
+                'style': 'helpful, informative, clear',
+                'responses': self.respond_as_knowledgeable_guide,
+                'weight': 0.8
+            },
+            'playful_companion': {
+                'style': 'funny, lighthearted, joking',
+                'responses': self.respond_as_playful_companion,
+                'weight': 0.6
+            },
+            'thoughtful_thinker': {
+                'style': 'deep, reflective, philosophical',
+                'responses': self.respond_as_thoughtful_thinker,
+                'weight': 0.7
+            }
+        }
+    
+    def choose_persona(self, context: ConversationContext) -> str:
+        """Choose which persona fits this situation"""
+        # Higher sentiment = more playful
+        if context.sentiment > 0.7:
+            return 'playful_companion'
+        # Asking for help = knowledgeable guide
+        elif context.goal == ConversationGoal.PROBLEM_SOLVING:
+            return 'knowledgeable_guide'
+        # Emotional = empathetic
+        elif context.goal == ConversationGoal.EMOTIONAL_EXPRESSION:
+            return 'empathetic_listener'
+        # Deep conversation = thoughtful
+        elif context.conversation_depth > 0.7:
+            return 'thoughtful_thinker'
+        # Default = curious friend
+        else:
+            return 'curious_friend'
+    
+    async def respond_as_curious_friend(self, context: ConversationContext) -> str:
+        """Respond like a genuinely curious friend"""
+        name = context.username
+        
+        # Opening lines
+        openings = [
+            f"Hey {name}! ",
+            f"Yo {name}, ",
+            f"Hey there {name}, ",
+            f"Hi {name}! ",
+            f"What's up {name}? ",
+        ]
+        
+        # If we have history, reference it
+        if context.previous_turns:
+            last_topic = self._extract_last_topic(context.previous_turns)
+            if last_topic:
+                return f"{random.choice(openings)}We were talking about {last_topic} - what are your thoughts on that?"
+        
+        # Ask about their interests
+        if context.concepts:
+            topic = random.choice(context.concepts)
+            questions = [
+                f"{random.choice(openings)}What got you interested in {topic}?",
+                f"{random.choice(openings)}I've been thinking about {topic} too. What's your take?",
+                f"{random.choice(openings)}{topic} is interesting. Have you been into that for long?",
+            ]
+            return random.choice(questions)
+        
+        # Generic friendly
+        return f"{random.choice(openings)}How's everything going with you?"
+
+    def _extract_last_topic(self, previous_turns: List[Dict]) -> Optional[str]:
+        """Extract the most recent topic from conversation history"""
+        for turn in reversed(previous_turns):
+            if 'concepts' in turn and turn['concepts']:
+                return turn['concepts'][0]
+        return None
+
+class ConversationFlow:
+    """Models the natural flow of human conversation"""
+    
+    def __init__(self):
+        self.state_machine = {
+            'greeting': ['acknowledge', 'ask_how_are_you', 'share_mood'],
+            'question': ['answer', 'ask_clarification', 'share_related'],
+            'statement': ['acknowledge', 'relate', 'ask_elaboration'],
+            'problem': ['empathize', 'suggest', 'ask_details'],
+            'emotion': ['validate', 'share_similar', 'ask_about'],
+            'joke': ['laugh', 'add_joke', 'comment_funny']
+        }
+        
+    def get_next_move(self, current_state: str, context: ConversationContext) -> str:
+        """Determine the next conversational move"""
+        possible_moves = self.state_machine.get(current_state, ['acknowledge'])
+        
+        # Weight moves based on context
+        weights = []
+        for move in possible_moves:
+            weight = 1.0
+            
+            # Deeper conversations get more elaborate moves
+            if context.conversation_depth > 0.7:
+                if move in ['ask_elaboration', 'share_related', 'ask_details']:
+                    weight *= 2.0
+            
+            # Emotional contexts need validation
+            if abs(context.sentiment) > 0.6:
+                if move in ['validate', 'empathize', 'share_similar']:
+                    weight *= 3.0
+            
+            # Questions need answers
+            if context.contains_question and move == 'answer':
+                weight *= 5.0
+            
+            weights.append(weight)
+        
+        # Choose weighted random
+        total = sum(weights)
+        if total == 0:
+            return random.choice(possible_moves)
+        
+        r = random.uniform(0, total)
+        cumulative = 0
+        for i, weight in enumerate(weights):
+            cumulative += weight
+            if r <= cumulative:
+                return possible_moves[i]
+        
+        return possible_moves[0]
+
+
+
+class ConsciousBotCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = "./genai/server_brain.db"
-        self.state_file = "./genai/bot_state.json"
+        self.db_path = "./conscious_brain.db"
+        self.state_file = "./bot_consciousness.json"
+        self.backup_dir = "./backups"
         
-        # --- NEW: Multilingual support ---
-        # Combine English and Hindi stopwords
-        try:
-            from nltk.corpus import stopwords
-            self.stop_words = set(stopwords.words('english'))
-            
-            # EXPANDED HINGLISH STOPWORDS (Grammar & Fillers)
-            hinglish_grammar = {
-                # Pronouns & Address
-                'mai', 'main', 'hum', 'tu', 'tum', 'aap', 'woh', 'yeh', 'ye', 'wo', 'uss', 'iss', 
-                'bhai', 'bro', 'yaar', 'dost', 'log', 'sab', 'kuch', 'koi', 
-                
-                # Verbs (Auxiliary)
-                'hai', 'hain', 'ho', 'hoga', 'hogi', 'honge', 'hu', 'hoon', 'tha', 'thi', 'the', 
-                'kar', 'kara', 'karne', 'karna', 'karo', 'raha', 'rahi', 'rahe',
-                
-                # Prepositions/Conjunctions/Particles
-                'ka', 'ki', 'ke', 'ko', 'ne', 'se', 'par', 'pe', 'me', 'mein', 'aur', 
-                'lekin', 'magar', 'kyunki', 'agar', 'to', 'toh', 'bhi', 'hi', 'mat', 'wala', 'wale',
-                
-                # Conversational Fillers / Yes/No
-                'na', 'nahi', 'nhi', 'haan', 'han', 'ha', 'ok', 'okay', 'accha', 'acha', 'sahi', 
-                'thik', 'theek', 'arey', 'abe', 'lol', 'lmao', 'ded', 'xd', 'nice', 'good', 'bad',
-                'pata', 'baat', 'msg', 'message', 'kya', 'kyu', 'kyun', 'kab', 'kaha', 'kaise'
-            }
-            
-            self.stop_words = self.stop_words.union(hinglish_grammar)
-            logger.info(f"Loaded {len(self.stop_words)} stopwords (English + Extended Hinglish)")
-        except:
-            self.stop_words = set()
+        # Create backup directory
+        os.makedirs(self.backup_dir, exist_ok=True)
         
-        # INITIALIZATION FLAGS
-        self.db_initialized = False
-        self.user_cache = {}
-        self.user_id_map = {}
+        # Enhanced memory architecture
+        self.short_term_memory = deque(maxlen=150)  # Increased from 100
+        self.long_term_memory = defaultdict(dict)
+        self.user_profiles = {}
+        self.channel_vibes = {}
+        self.conversation_threads = {}
         
-        # --- MODIFIED: Initialize NLP Models for multilingual support ---
-        self.nlp = None  # We'll disable spaCy for now since it's English-only
-        logger.info("SpaCy disabled for Hinglish support (English-only model)")
+        # Multilingual support
+        self.multilingual_stopwords = self._load_multilingual_stopwords()
+        self.slang_patterns = self._load_slang_patterns()
+        self.emoji_sentiment = self._load_emoji_sentiment()
         
-        # Alternative: Use textblob for language detection and basic processing
-        try:
-            from textblob import TextBlob
-            self.textblob_available = True
-        except:
-            self.textblob_available = False
-            logger.warning("TextBlob not available. Install with: pip install textblob")
+        # Consciousness parameters (tunable)
+        self.attention_span = 25  # Increased for better context
+        self.working_memory_size = 15
+        self.reflection_interval = 45  # More frequent reflection
+        self.vibe_update_interval = 180  # More responsive vibe updates
+        self.max_response_length = 2000  # Discord limit safety
         
-        # Initialize sentiment analyzer (VADER works well with English in Hinglish)
-        self.sentiment_analyzer = SentimentIntensityAnalyzer()
+        # Server vibe tracking (enhanced)
+        self.server_mood = defaultdict(lambda: {
+            'energy': 0.5,
+            'positivity': 0.5,
+            'formality': 0.3,
+            'coherence': 0.7,  # New: topic coherence
+            'responsiveness': 0.5,  # New: how chatty the channel is
+            'topics': defaultdict(float),  # Weighted topics
+            'active_hours': defaultdict(int),
+            'recent_sentiment': deque(maxlen=100),
+            'interaction_patterns': defaultdict(lambda: defaultdict(int)),
+            'user_engagement': defaultdict(float),
+            'conversation_depth': 0.5
+        })
         
-        # --- NEW: Hinglish-specific parameters ---
-        self.HINGLISH_MODE = True  # Enable Hinglish-specific processing
-        self.MIN_HINDI_WORD_LENGTH = 2  # Hindi words can be shorter
+        # Enhanced consciousness state
+        self.consciousness = {
+            'current_focus': None,
+            'attention_objects': [],
+            'recent_intents': deque(maxlen=25),
+            'emotional_state': {
+                'valence': 0.5,
+                'arousal': 0.5,
+                'confidence': 0.7,
+                'empathy': 0.6
+            },
+            'cognitive_load': 0.0,
+            'learning_rate': 0.1,
+            'response_style': 'balanced',
+            'recent_errors': deque(maxlen=10)
+        }
         
-        # --- NEW: Satellite View Buffer ---
-        self.conversation_context = deque(maxlen=50)  # Last 50 messages for topic modeling
-        self.current_topic_keywords = []
-        self.conversation_sentiment = 0.0  # Running average sentiment
+        # Response quality tracking
+        self.response_quality = deque(maxlen=50)
+        self.conversation_success = defaultdict(lambda: deque(maxlen=10))
+        self.last_mistakes = deque(maxlen=20)
+        self.user_feedback = defaultdict(lambda: {'positive': 0, 'negative': 0})
         
-        # Initialize stats with Hinglish-specific metrics
+        # Enhanced conversation understanding
+        self.conversation_graph = defaultdict(list)
+        self.topic_clusters = defaultdict(list)
+        self.semantic_links = defaultdict(set)
+        self.concept_embeddings = {}  # Simple bag-of-words for now
+        
+        # Performance limits with safety margins
+        self.MAX_MEMORY_ITEMS = 10000
+        self.MAX_USER_PROFILES = 200
+        self.MAX_CONVERSATION_HISTORY = 2000
+        
+        # Initialize stats
         self.stats = {
             'messages_processed': 0,
-            'triplets_stored_today': 0,
-            'replies_generated': 0,
-            'last_flush': datetime.utcnow().isoformat(),
-            'total_triplets': 0,
-            'total_messages': 0,
+            'conversations_understood': 0,
+            'context_aware_replies': 0,
+            'vibe_updates': 0,
+            'memory_recalls': 0,
+            'successful_responses': 0,
+            'failed_responses': 0,
+            'avg_response_time': 0.0,
             'startup_time': datetime.utcnow().isoformat(),
-            'unique_users': 0,
-            'emojis_learned': 0,
-            'rate_limited': 0,
-            'spam_blocked': 0,
-            'sentiment_analyzed': 0,
-            'topics_detected': 0,
-            'lemmas_stored': 0,
-            'hinglish_messages': 0,  # NEW: Track Hinglish messages
-            'hindi_words_learned': 0,  # NEW: Track Hindi vocabulary
-        }
-        
-        # Initialize other tracking dictionaries
-        self.message_timestamps = {}
-        self.last_bot_message = {}
-        self.reply_cooldowns = {}
-        self.server_emoji_cache = {}
-        self.message_buffer = deque(maxlen=1000)
-        self.recent_messages = deque(maxlen=5000)
-        self.muted_channels = set()
-        # NOW load saved state (which will update stats if they exist)
-        self.load_state()
-        
-        # Enhanced limits with emoji control
-        self.MAX_EMOJIS_PER_MESSAGE = 3
-        self.MAX_EMOJI_DENSITY = 0.3
-        
-        # ANTI-SPAM PROTECTION
-        self.MIN_MESSAGE_INTERVAL = 0.5
-        self.MAX_MESSAGES_PER_MINUTE = 50
-        self.SPAM_BURST_WINDOW = 10
-        self.SPAM_BURST_LIMIT = 5
-        
-        # Limits optimized for high traffic (17k/day)
-        self.MAX_RAW_MESSAGES = 2_000_000
-        self.MAX_TRIPLETS = 5_000_000
-        self.RAW_MESSAGE_RETENTION_DAYS = 120
-        self.PRUNE_OLD_TRIPLETS_AFTER_DAYS = 120
-        
-        # --- OPTIMIZED PARAMETERS for Hinglish ---
-        self.MIN_TRIPLETS_FOR_REPLY = 500
-        self.REPLY_CHANCE = 0.015
-        self.REPLY_COOLDOWN = 10
-        self.TYPING_MIN_SECONDS = 0.3
-        self.TYPING_MAX_SECONDS = 0.8
-        self.SENTENCE_MAX_WORDS = 30
-        self.SEED_WORD_MIN_LENGTH = 2  # Reduced for Hindi words
-        self.MIN_MESSAGE_WORDS = 2  # Reduced for Hinglish
-        
-        # --- MODIFIED: NLP ENHANCEMENT PARAMETERS for Hinglish ---
-        self.GRAMMAR_ENFORCEMENT = False  # Disable for Hinglish (mixed grammar rules)
-        self.SENTIMENT_MATCHING = True   # Keep sentiment matching
-        self.TOPIC_COHERENCE = True      # Keep topic coherence
-        self.LEMMATIZATION_ENABLED = True  # Enable Hinglish lemmatization
-        
-        # Grammar rules simplified for Hinglish
-        self.POS_TRANSITION_RULES = {
-            'DET': ['ADJ', 'NOUN', 'PROPN'],
-            'ADJ': ['NOUN', 'ADJ'],
-            'NOUN': ['VERB', 'ADP', 'AUX', 'PUNCT'],
-            'VERB': ['ADV', 'ADP', 'NOUN', 'PUNCT'],
-            'ADV': ['VERB', 'ADJ'],
-        }
-        
-        # Emoji reply control
-        self.MAX_REPLY_EMOJIS = 2
-        self.EMOJI_REPLY_CHANCE = 0.1
-        
-        self.FLUSH_THRESHOLD = 50
-        
-        # Start background tasks
-        self.bot.loop.create_task(self.initialize_database())
-        self.periodic_tasks.start()
-        self.cleanup_rate_limits.start()
-        self.update_topic_model.start()
-
-    # --- MODIFIED: Enhanced Hinglish Lemmatizer ---
-    
-    def humanize_response(self, text: str, sentiment: float) -> str:
-        """Injects natural conversational fillers based on sentiment."""
-        if not text:
-            return text
-            
-        # 20% chance to lowercase everything (looks more casual)
-        if random.random() < 0.2:
-            text = text.lower()
-
-        # 15% chance to drop the last punctuation (very common in chat)
-        if random.random() < 0.15 and text[-1] in ['.', '!', '?']:
-            text = text[:-1]
-
-        # Only add fillers to sentences with 3+ words
-        if len(text.split()) < 3:
-            return text
-
-        # Define fillers based on vibe
-        fillers = {
-            'neutral': ['tbh', 'yaar', 'dekho', 'basically', 'arre', 'ngl', 'matlab'],
-            'positive': ['bhai sahi me', 'wow', 'mast', 'actually', 'lol'],
-            'negative': ['abe yaar', 'nahi but', 'listen', 'uff', 'bruh']
+            'last_backup': None
         }
 
-        # 25% chance to prepend a filler
-        if random.random() < 0.25:
-            category = 'neutral'
-            if sentiment > 0.3: category = 'positive'
-            if sentiment < -0.3: category = 'negative'
-            
-            filler = random.choice(fillers[category])
-            
-            # Don't repeat if the sentence already starts with it
-            if not text.lower().startswith(filler):
-                text = f"{filler} {text}"
-                
-        return text
-    
-    def lemmatize_text(self, text: str) -> str:
-        """Reduce words to their root form for Hinglish (Hindi-English)"""
-        if not text:
-            return text
+        # Initialize conversation intelligence
+        self.conversation_actor = ConversationActor()
+        self.conversation_flow = ConversationFlow()
         
-        # Skip lemmatization for mentions, emojis, and URLs
-        if any(prefix in text for prefix in ['@', '#', ':emoji_', ':custom_emoji_', 'http']):
-            return text
+        # Enhanced response tracking
+        self.conversation_history = defaultdict(deque(maxlen=20))
         
-        words = text.split()
-        lemmatized_words = []
+        # Load state if exists
+        asyncio.create_task(self.load_consciousness_state())
         
-        # Comprehensive Hinglish lemmatization rules
-        hindi_verb_map = {
-            # Common Hindi verb conjugations (Romanized)
-            'bolta': 'bol', 'bolti': 'bol', 'bolte': 'bol', 'bolna': 'bol', 'bolne': 'bol',
-            'boli': 'bol', 'bolkar': 'bol', 'bolke': 'bol', 'bolo': 'bol', 'boltaa': 'bol',
-            
-            'karta': 'kar', 'karti': 'kar', 'karte': 'kar', 'karna': 'kar', 'karne': 'kar',
-            'kari': 'kar', 'karke': 'kar', 'karo': 'kar', 'kartaa': 'kar', 'karle': 'kar',
-            
-            'hota': 'ho', 'hoti': 'ho', 'hote': 'ho', 'hona': 'ho', 'hone': 'ho',
-            'hoon': 'ho', 'hai': 'ho', 'hain': 'ho', 'hoa': 'ho', 'hoi': 'ho',
-            
-            'dekhta': 'dekh', 'dekhti': 'dekh', 'dekhte': 'dekh', 'dekhna': 'dekh',
-            'dekhne': 'dekh', 'dekhi': 'dekh', 'dekho': 'dekh', 'dekhkar': 'dekh',
-            
-            'sochta': 'soch', 'sochti': 'soch', 'sochte': 'soch', 'sochna': 'soch',
-            'sochne': 'soch', 'sochi': 'soch', 'socho': 'soch', 'sochkar': 'soch',
-            
-            'jaata': 'ja', 'jaati': 'ja', 'jaate': 'ja', 'jaana': 'ja', 'jaane': 'ja',
-            'gaya': 'ja', 'gayi': 'ja', 'gaye': 'ja', 'jao': 'ja', 'jaakar': 'ja',
-            
-            'aata': 'aa', 'aati': 'aa', 'aate': 'aa', 'aana': 'aa', 'aane': 'aa',
-            'aaya': 'aa', 'aayi': 'aa', 'aaye': 'aa', 'aao': 'aa', 'aakar': 'aa',
-            
-            'likhta': 'likh', 'likhti': 'likh', 'likhte': 'likh', 'likhna': 'likh',
-            'likhne': 'likh', 'likhi': 'likh', 'likho': 'likh', 'likhkar': 'likh',
-            
-            'padhta': 'padh', 'padhti': 'padh', 'padhte': 'padh', 'padhna': 'padh',
-            'padhne': 'padh', 'padhi': 'padh', 'padho': 'padh', 'padhkar': 'padh',
-            
-            # Additional common verbs
-            'marta': 'mar', 'marti': 'mar', 'marte': 'mar', 'marna': 'mar',
-            'rota': 'ro', 'roti': 'ro', 'rote': 'ro', 'rona': 'ro',
-            'hasata': 'has', 'hasati': 'has', 'hasate': 'has', 'hasna': 'has',
-            'samajhta': 'samajh', 'samajhti': 'samajh', 'samajhte': 'samajh', 'samajhna': 'samajh',
-            'laata': 'la', 'laati': 'la', 'laate': 'la', 'laana': 'la',
-            'leata': 'le', 'leati': 'le', 'leate': 'le', 'leana': 'le',
-            'deta': 'de', 'deti': 'de', 'dete': 'de', 'dena': 'de',
-            'leta': 'le', 'leti': 'le', 'lete': 'le', 'lena': 'le',
-        }
+        # Start background tasks with error handling
+        self.background_tasks = []
+        self._start_background_tasks()
         
-        # English verb lemmatization (basic)
-        english_verb_suffixes = {
-            'ing': '',  # running -> run
-            'ed': '',   # walked -> walk
-            'es': '',   # goes -> go
-            's': '',    # runs -> run
-        }
-        
-        # Common English irregular verbs
-        english_irregular_verbs = {
-            'am': 'be', 'is': 'be', 'are': 'be', 'was': 'be', 'were': 'be', 'been': 'be',
-            'has': 'have', 'have': 'have', 'had': 'have',
-            'does': 'do', 'did': 'do', 'done': 'do',
-            'goes': 'go', 'went': 'go', 'gone': 'go',
-            'gets': 'get', 'got': 'get', 'gotten': 'get',
-            'makes': 'make', 'made': 'make',
-            'knows': 'know', 'knew': 'know', 'known': 'know',
-            'thinks': 'think', 'thought': 'think',
-            'says': 'say', 'said': 'say',
-            'comes': 'come', 'came': 'come', 'come': 'come',
-            'looks': 'look', 'looked': 'look',
-            'wants': 'want', 'wanted': 'want',
-            'finds': 'find', 'found': 'find',
-            'gives': 'give', 'gave': 'give', 'given': 'give',
-            'tells': 'tell', 'told': 'tell',
-            'works': 'work', 'worked': 'work',
-            'calls': 'call', 'called': 'call',
-            'tries': 'try', 'tried': 'try',
-            'asks': 'ask', 'asked': 'ask',
-            'needs': 'need', 'needed': 'need',
-            'feels': 'feel', 'felt': 'feel',
-            'becomes': 'become', 'became': 'become', 'become': 'become',
-            'leaves': 'leave', 'left': 'leave',
-            'puts': 'put', 'put': 'put',
-            'means': 'mean', 'meant': 'mean',
-            'keeps': 'keep', 'kept': 'keep',
-            'lets': 'let', 'let': 'let',
-            'begins': 'begin', 'began': 'begin', 'begun': 'begin',
-            'seems': 'seem', 'seemed': 'seem',
-            'helps': 'help', 'helped': 'help',
-            'talks': 'talk', 'talked': 'talk',
-            'turns': 'turn', 'turned': 'turn',
-            'starts': 'start', 'started': 'start',
-            'shows': 'show', 'showed': 'show', 'shown': 'show',
-            'hears': 'hear', 'heard': 'hear',
-            'plays': 'play', 'played': 'play',
-            'runs': 'run', 'ran': 'run', 'run': 'run',
-            'moves': 'move', 'moved': 'move',
-            'lives': 'live', 'lived': 'live',
-            'believes': 'believe', 'believed': 'believe',
-            'brings': 'bring', 'brought': 'bring',
-            'happens': 'happen', 'happened': 'happen',
-            'writes': 'write', 'wrote': 'write', 'written': 'write',
-            'provides': 'provide', 'provided': 'provide',
-            'sits': 'sit', 'sat': 'sit',
-            'stands': 'stand', 'stood': 'stand',
-            'loses': 'lose', 'lost': 'lose',
-            'pays': 'pay', 'paid': 'pay',
-            'meets': 'meet', 'met': 'meet',
-            'includes': 'include', 'included': 'include',
-            'continues': 'continue', 'continued': 'continue',
-        }
-        
-        # Hindi adjective/noun variations
-        hindi_adjective_map = {
-            'achaa': 'acha', 'ache': 'acha', 'achi': 'acha',  # good
-            'buraa': 'bura', 'bure': 'bura', 'buri': 'bura',  # bad
-            'chotaa': 'chota', 'chote': 'chota', 'choti': 'chota',  # small
-            'lambaa': 'lamba', 'lambe': 'lamba', 'lambi': 'lamba',  # long/tall
-            'badaa': 'bada', 'bade': 'bada', 'badi': 'bada',  # big
-            'pyaraa': 'pyara', 'pyare': 'pyara', 'pyari': 'pyara',  # lovely
-            'sundar': 'sundar', 'sundari': 'sundar',  # beautiful
-            'garib': 'garib', 'garibo': 'garib',  # poor
-            'amir': 'amir', 'amiro': 'amir',  # rich
-        }
-        
-        # Common Hinglish nouns (plural forms)
-        hinglish_noun_map = {
-            'bhaiyo': 'bhai', 'bhaiyon': 'bhai',  # brothers
-            'beheno': 'behen', 'behenon': 'behen',  # sisters
-            'dosto': 'dost', 'doston': 'dost',  # friends
-            'yaaro': 'yaar', 'yaaron': 'yaar',  # friends
-            'ladko': 'ladka', 'ladkon': 'ladka',  # boys
-            'ladkiyo': 'ladki', 'ladkiyon': 'ladki',  # girls
-            'log': 'aadmi', 'logo': 'aadmi', 'logon': 'aadmi',  # people
-            'baccho': 'bacha', 'bachon': 'bacha',  # children
-            'gharo': 'ghar', 'gharon': 'ghar',  # houses
-            'gaadiyo': 'gaadi', 'gaadiyon': 'gaadi',  # vehicles
-            'kitabo': 'kitab', 'kitabon': 'kitab',  # books
-            'mobile': 'phone', 'mobiles': 'phone',  # phones
-        }
-        
-        # Common Hinglish word normalizations
-        hinglish_normalizations = {
-            'nahi': 'nahi', 'nahin': 'nahi', 'naheen': 'nahi', 'na': 'nahi', 'nah': 'nahi', 'nhi': 'nahi',
-            'haan': 'haan', 'han': 'haan', 'ha': 'haan', 'hmm': 'haan', 'hm': 'haan', 'hmmm': 'haan', 'yes': 'haan', 'yep': 'haan', 'yeah': 'haan',
-            'acha': 'acha', 'accha': 'acha', 'achha': 'acha', 'acchha': 'acha',
-            'theek': 'theek', 'thik': 'theek', 'thik hai': 'theek', 'thikh': 'theek',
-            'kya': 'kya', 'kaise': 'kaise', 'kyun': 'kyun', 'kab': 'kab', 'kahan': 'kahan', 'kaun': 'kaun',
-            'bhai': 'bhai', 'bhaiya': 'bhai', 'bro': 'bhai', 'brother': 'bhai',
-            'yaar': 'yaar', 'dost': 'dost', 'friend': 'dost', 'mitr': 'dost',
-            'hai': 'hai', 'hain': 'hai', 'ho': 'hai',
-            'main': 'main', 'mein': 'main', 'mai': 'main',
-            'tum': 'tum', 'tu': 'tum', 'aap': 'aap', 'you': 'tum',
-            'mera': 'mera', 'meri': 'mera', 'mere': 'mera', 'my': 'mera',
-            'tera': 'tera', 'teri': 'tera', 'tere': 'tera', 'your': 'tera',
-            'hum': 'hum', 'ham': 'hum', 'we': 'hum',
-            'woh': 'woh', 'vo': 'woh', 'us': 'woh', 'he': 'woh', 'she': 'woh', 'they': 'woh',
-            'koi': 'koi', 'kuch': 'kuch', 'some': 'kuch',
-            'yahan': 'yahan', 'yahaan': 'yahan', 'idhar': 'yahan', 'here': 'yahan',
-            'wahan': 'wahan', 'wahaan': 'wahan', 'udhar': 'wahan', 'there': 'wahan',
-            'abhi': 'abhi', 'now': 'abhi',
-            'phir': 'phir', 'fir': 'phir', 'then': 'phir',
-            'lekin': 'lekin', 'magar': 'lekin', 'but': 'lekin',
-            'aur': 'aur', 'and': 'aur',
-            'ya': 'ya', 'or': 'ya',
-            'par': 'par', 'on': 'par',
-            'se': 'se', 'from': 'se', 'with': 'se',
-            'ke': 'ke', 'of': 'ke', 'ki': 'ke', 'ka': 'ke',
-            'me': 'me', 'in': 'me',
-            'pe': 'pe', 'on': 'pe',
-            'tak': 'tak', 'until': 'tak',
-            'bhi': 'bhi', 'too': 'bhi', 'also': 'bhi',
-            'toh': 'toh', 'so': 'toh',
-            'kyunki': 'kyunki', 'because': 'kyunki',
-            'agar': 'agar', 'if': 'agar',
-            'to': 'to', 'then': 'to',
-            'jo': 'jo', 'that': 'jo',
-            'ki': 'ki', 'that': 'ki',
-            'jab': 'jab', 'when': 'jab',
-            'jahan': 'jahan', 'where': 'jahan',
-            'jitna': 'jitna', 'as much': 'jitna',
-            'waisa': 'waisa', 'like that': 'waisa',
-            'aisa': 'aisa', 'like this': 'aisa',
-            'waise': 'waise', 'that way': 'waise',
-            'aise': 'aise', 'this way': 'aise',
-        }
-        
-        # Common Hinglish filler words to keep as-is
-        common_hinglish_fillers = [
-            'wow', 'awesome', 'mast', 'badhiya', 'zabardast', 'super', 'great', 'nice',
-            'arey', 'oye', 'hello', 'hi', 'hey', 'bye', 'goodbye',
-            'ok', 'okay', 'fine', 'alright', 'cool',
-            'sorry', 'excuse', 'please', 'thank', 'thanks', 'welcome',
-            'haha', 'lol', 'lmao', 'rofl', 'hehe', 'hihi',
-            'umm', 'uhh', 'ahem', 'well',
+        logger.info(f"ConsciousBotCog initialized with enhanced features")
+
+    def _start_background_tasks(self):
+        """Start background tasks with proper error handling"""
+        tasks_to_start = [
+            (self.initialize_database, []),
+            (self.consciousness_cycle, []),
+            (self.memory_consolidation, []),
+            (self.vibe_analysis, []),
+            (self.auto_backup, [])
         ]
         
-        for word in words:
-            lower_word = word.lower()
-            original_word = word
-            
-            # Check if word is already in Devanagari (Hindi script)
-            # We typically don't lemmatize Devanagari without proper tools
-            if re.search(r'[\u0900-\u097F]', word):
-                lemmatized_words.append(word)
-                continue
-            
-            # 1. Check Hinglish normalizations first (most common)
-            if lower_word in hinglish_normalizations:
-                lemmatized_words.append(hinglish_normalizations[lower_word])
-                continue
-            
-            # 2. Check Hindi verb map
-            if lower_word in hindi_verb_map:
-                lemmatized_words.append(hindi_verb_map[lower_word])
-                continue
-            
-            # 3. Check English irregular verbs
-            if lower_word in english_irregular_verbs:
-                lemmatized_words.append(english_irregular_verbs[lower_word])
-                continue
-            
-            # 4. Check Hindi adjective variations
-            if lower_word in hindi_adjective_map:
-                lemmatized_words.append(hindi_adjective_map[lower_word])
-                continue
-            
-            # 5. Check Hinglish noun variations
-            if lower_word in hinglish_noun_map:
-                lemmatized_words.append(hinglish_noun_map[lower_word])
-                continue
-            
-            # 6. Apply English suffix rules (if word looks English)
-            if re.match(r'^[a-z]+$', lower_word):  # Only English letters
-                matched = False
-                for suffix, replacement in english_verb_suffixes.items():
-                    if lower_word.endswith(suffix):
-                        # Check if removing suffix leaves at least 2 characters
-                        stem = lower_word[:-len(suffix)]
-                        if len(stem) >= 2:
-                            # Check if the stem is itself a word (avoid over-stemming)
-                            lemmatized_words.append(stem + replacement)
-                            matched = True
-                            break
-                if matched:
-                    continue
-            
-            # 7. Check if it's a common filler word
-            if lower_word in common_hinglish_fillers:
-                lemmatized_words.append(lower_word)
-                continue
-            
-            # 8. Default: keep the original word (preserve case for proper nouns)
-            if word[0].isupper() and len(word) > 1:  # Likely a proper noun
-                lemmatized_words.append(word)
-            else:
-                lemmatized_words.append(lower_word)
+        for task_func, args in tasks_to_start:
+            try:
+                if hasattr(task_func, 'start'):
+                    task_func.start()
+                else:
+                    asyncio.create_task(task_func(*args))
+            except Exception as e:
+                logger.error(f"Failed to start task {task_func.__name__}: {e}")
+
+    def _load_multilingual_stopwords(self) -> Set[str]:
+        """Load comprehensive stopwords for multiple languages"""
+        english_stops = {
+            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+            'of', 'with', 'by', 'as', 'is', 'are', 'was', 'were', 'be', 'been',
+            'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
+            'should', 'can', 'could', 'may', 'might', 'must', 'shall', 'i', 'you',
+            'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them',
+            'my', 'your', 'his', 'her', 'its', 'our', 'their', 'mine', 'yours',
+            'this', 'that', 'these', 'those', 'am', 'ain', 'aren', 'couldn',
+            'didn', 'doesn', 'don', 'hadn', 'hasn', 'haven', 'isn', 'mightn',
+            'mustn', 'needn', 'shan', 'shouldn', 'wasn', 'weren', 'won', 'wouldn'
+        }
         
-        return ' '.join(lemmatized_words)
-    
-    def is_hindi_word(self, word: str) -> bool:
-        """Check if a word contains Devanagari script characters"""
-        # Hindi Unicode range: \u0900-\u097F
-        return bool(re.search(r'[\u0900-\u097F]', word))
-    
-    def is_english_word(self, word: str) -> bool:
-        """Check if a word contains only English characters"""
-        return bool(re.match(r'^[a-zA-Z]+$', word))
-    
-    def is_hinglish_word(self, word: str) -> bool:
-        """Check if word is Hinglish (mix of scripts or Romanized Hindi)"""
-        # Remove mentions, emojis, etc.
-        if word.startswith(('@', '#', ':')):
-            return False
+        hindi_stops = {
+            'hai', 'hain', 'ho', 'tha', 'thi', 'the', 'ka', 'ki', 'ke', 'ko',
+            'se', 'par', 'mein', 'ne', 'bhi', 'nahin', 'nahi', 'na', 'hi',
+            'to', 'ye', 'wo', 'us', 'un', 'iska', 'unki', 'unka', 'kya',
+            'kyun', 'kaise', 'kab', 'kahan', 'kitna', 'kuch', 'sab', 'aur',
+            'ya', 'lekin', 'agar', 'toh', 'phir', 'baki', 'bas', 'ab', 'apna',
+            'apne', 'inke', 'inki', 'jab', 'jahaan', 'jo', 'joh', 'kyunki',
+            'magar', 'maine', 'main', 'mujhe', 'mujhse', 'mujhko', 'parantu',
+            'tum', 'tumne', 'tumhe', 'tumhara', 'tumhari', 'tumhare', 'unhe',
+            'unko', 'unki', 'unka', 'unse', 'usne', 'usse', 'uska', 'vah',
+            'wah', 'wahan', 'woh', 'wohi', 'yah', 'yahan', 'yeh', 'yuhi'
+        }
         
-        # Check for Romanized Hindi patterns (common in Hinglish)
-        hinglish_patterns = [
-            r'^[a-z]+na$',  # Hindi verbs ending with 'na'
-            r'^[a-z]+i$',   # Hindi feminine forms
-            r'^[a-z]+e$',   # Hindi plural forms
-            r'^[a-z]+o$',   # Hindi vocative forms
-            r'^acha$', '^thik$', '^kya$', '^kaise$', '^kyun$',  # Common Romanized Hindi
-            r'^bhai$', '^yaar$', '^dost$', '^sahi$', '^theek$',
-        ]
+        spanish_stops = {
+            'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'y', 'o',
+            'pero', 'porque', 'como', 'que', 'en', 'de', 'a', 'con', 'sin',
+            'sobre', 'entre', 'hasta', 'desde', 'durante', 'mediante', 'yo',
+            'tu', 'el', 'ella', 'nosotros', 'vosotros', 'ellos', 'ellas',
+            'me', 'te', 'le', 'nos', 'os', 'les', 'mi', 'tu', 'su', 'nuestro',
+            'vuestro', 'su', 'este', 'ese', 'aquel', 'esta', 'esa', 'aquella',
+            'estos', 'esos', 'aquellos', 'estas', 'esas', 'aquellas', 'algo',
+            'alguien', 'algun', 'alguna', 'algunos', 'algunas', 'cual', 'cuales',
+            'cuando', 'donde', 'como', 'por', 'que', 'quien', 'quienes'
+        }
         
-        word_lower = word.lower()
-        for pattern in hinglish_patterns:
-            if re.match(pattern, word_lower):
-                return True
+        internet_slang = {
+            'lol', 'lmao', 'lmfao', 'omg', 'wtf', 'brb', 'tbh', 'imo', 'imho',
+            'afaik', 'idk', 'smh', 'fyi', 'nvm', 'ikr', 'tbf', 'fr', 'ngl',
+            'gtg', 'ttyl', 'irl', 'fwiw', 'hmu', 'np', 'rn', 'dm', 'pm',
+            'imo', 'imho', 'btw', 'idc', 'idgaf', 'tfw', 'mfw', 'smfh',
+            'nsfw', 'sfw', 'tl;dr', 'eli5', 'ama', 'til', 'dyk'
+        }
         
-        return False
-    
-    def regexp(self, expr, item):
-        reg = re.compile(expr, re.IGNORECASE)
-        return reg.search(item) is not None
-    
-    def detect_language_mix(self, text: str) -> Dict[str, float]:
-        """Detect language mix in text (English vs Hindi vs Hinglish)"""
-        words = text.split()
-        if not words:
-            return {'english': 0, 'hindi': 0, 'hinglish': 0}
-        
-        english_count = 0
-        hindi_count = 0
-        hinglish_count = 0
-        other_count = 0
-        
-        for word in words:
-            if self.is_hindi_word(word):
-                hindi_count += 1
-            elif self.is_english_word(word):
-                english_count += 1
-            elif self.is_hinglish_word(word):
-                hinglish_count += 1
-            else:
-                other_count += 1
-        
-        total = len(words)
+        return english_stops | hindi_stops | spanish_stops | internet_slang
+
+    def _load_slang_patterns(self) -> Dict[str, str]:
+        """Load slang expansion patterns"""
         return {
-            'english': english_count / total,
-            'hindi': hindi_count / total,
-            'hinglish': hinglish_count / total,
-            'other': other_count / total
+            r'\bwanna\b': 'want to',
+            r'\bgonna\b': 'going to',
+            r'\bimma\b': 'I am going to',
+            r'\byall\b': 'you all',
+            r'\bdunno\b': "don't know",
+            r'\bgotta\b': 'got to',
+            r'\bkinda\b': 'kind of',
+            r'\bsorta\b': 'sort of',
+            r'\boutta\b': 'out of',
+            r'\bshoulda\b': 'should have',
+            r'\bcoulda\b': 'could have',
+            r'\bwoulda\b': 'could have',
+            r'\blemme\b': 'let me',
+            r'\bgimme\b': 'give me',
+            r'\btellim\b': 'tell him',
+            r'\bwhatcha\b': 'what are you',
+            r'\bhowd\b': 'how did',
+            r'\bwhod\b': 'who did',
+            r'\bwhered\b': 'where did',
+            r'\bwhend\b': 'when did',
+            r'\bwhy\'?d\b': 'why did',
+            r'\bain\'?t\b': 'is not',
+            r'\by\'?all\b': 'you all',
+            r'\bim\b': 'I am',
+            r'\bid\b': 'I would',
+            r'\bi\'?ll\b': 'I will',
+            r'\byou\'?re\b': 'you are',
+            r'\bthey\'?re\b': 'they are',
+            r'\bwe\'?re\b': 'we are',
+            r'\bit\'?s\b': 'it is',
+            r'\bthat\'?s\b': 'that is',
+            r'\bwhat\'?s\b': 'what is',
+            r'\bwho\'?s\b': 'who is',
+            r'\bwhere\'?s\b': 'where is',
+            r'\bwhen\'?s\b': 'when is',
+            r'\bwhy\'?s\b': 'why is',
+            r'\bhow\'?s\b': 'how is'
         }
 
-    
-    def get_pos_tags(self, text: str) -> List[Tuple[str, str]]:
-        """
-        Hybrid POS tagging: Uses NLTK for English structure + Custom overrides for Hinglish.
-        """
-        if not text:
-            return []
-
-        # 1. Use NLTK for smart tagging (handles English & basic morphology)
-        # We use tagset='universal' to get simple tags like VERB, NOUN, ADJ
-        try:
-            tokens = word_tokenize(text)
-            nltk_tags = pos_tag(tokens, tagset='universal')
-        except Exception as e:
-            logger.error(f"NLTK tagging error: {e}")
-            # Fallback to simple split if NLTK fails
-            return [(w, 'UNK') for w in text.split()]
-
-        final_tags = []
-        
-        # 2. Apply Hinglish Patch (Override NLTK errors for Hindi words)
-        for word, tag in nltk_tags:
-            word_lower = word.lower()
-            
-            # Manual overrides for common Hinglish words
-            if word_lower in ['mein', 'main', 'mujhe', 'tumhe', 'usko', 'unko', 'hum', 'tum']:
-                final_tags.append((word, 'PRON'))
-            
-            elif word_lower in ['nahi', 'na', 'mat', 'nhi', 'haan', 'han']:
-                final_tags.append((word, 'PART')) # Particle (Negation/Affirmation)
-                
-            elif word_lower in ['hai', 'hain', 'tha', 'thi', 'the', 'hoga', 'raha', 'rahi']:
-                final_tags.append((word, 'VERB'))
-                
-            elif word_lower.endswith(('ka', 'ki', 'ke', 'ko', 'se', 'par', 'pe', 'me')):
-                final_tags.append((word, 'ADP')) # Adposition (Prepositions)
-                
-            elif word_lower in ['acha', 'bura', 'sahi', 'galat', 'thik', 'badhiya']:
-                final_tags.append((word, 'ADJ'))
-                
-            elif word_lower in ['kyu', 'kyun', 'kab', 'kahan', 'kaise']:
-                final_tags.append((word, 'ADV'))
-                
-            else:
-                # Trust NLTK for everything else (English words, Proper Nouns, etc.)
-                final_tags.append((word, tag))
-
-        return final_tags
-    
-    def analyze_sentiment(self, text: str) -> float:
-        """Get sentiment score for Hinglish text"""
-        # VADER works with English, so we'll focus on English sentiment
-        # For Hindi sentiment, we'd need a different model
-        scores = self.sentiment_analyzer.polarity_scores(text)
-        
-        # Adjust for common Hinglish sentiment words
-        positive_hindi = ['acha', 'sahi', 'theek', 'badhiya', 'mast', 'awesome', 'good', 'nice', 'khoob', 'badiya']
-        negative_hindi = ['bura', 'kharab', 'bekar', 'ganda', 'bad', 'worst', 'buraa', 'ganda']
-        
-        text_lower = text.lower()
-        for word in positive_hindi:
-            if word in text_lower:
-                scores['compound'] = min(1.0, scores['compound'] + 0.3)
-        
-        for word in negative_hindi:
-            if word in text_lower:
-                scores['compound'] = max(-1.0, scores['compound'] - 0.3)
-        
-        return scores['compound']
-    
-    def extract_tfidf_keywords(self, messages: List[str], top_n: int = 10) -> List[Tuple[str, float]]:
-        """Extract important keywords for Hinglish (Fixing Emojis & Noise)"""
-        if not messages:
-            return []
-        
-        # Build vocabulary
-        all_words = []
-        for msg in messages:
-            # 1. Clean out Discord Emojis FIRST (<:name:id> or <a:name:id>)
-            # We replace them with space so they don't glue words together
-            clean_msg = re.sub(r'<a?:\w+:\d+>', ' ', msg)
-            
-            words = []
-            for w in clean_msg.split():
-                w_lower = w.lower()
-                
-                # 2. Strict Filtering
-                # - Must be longer than min length
-                # - Must NOT be in stop words
-                # - Must NOT start with special chars (@, #, :)
-                # - Must NOT be purely numeric
-                # - Must NOT be a single repeated char (e.g. "aaaa")
-                if (len(w) >= self.MIN_HINDI_WORD_LENGTH 
-                    and w_lower not in self.stop_words
-                    and not w.startswith(('@', '#', ':'))
-                    and not re.match(r'^\d+$', w)
-                    and not re.match(r'^(.)\1*$', w_lower)): # Skips 'hhhh', 'aaaa'
-                    
-                    words.append(w_lower)
-            
-            all_words.extend(words)
-        
-        if not all_words:
-            return []
-        
-        # Term Frequency (TF)
-        word_counts = Counter(all_words)
-        total_words = len(all_words)
-        
-        # Document Frequency (DF)
-        doc_freq = Counter()
-        for msg in messages:
-            # Clean emoji here too for consistency
-            clean_msg = re.sub(r'<a?:\w+:\d+>', ' ', msg)
-            
-            words_in_msg = set()
-            for w in clean_msg.split():
-                w_lower = w.lower()
-                if (len(w) >= self.MIN_HINDI_WORD_LENGTH 
-                    and w_lower not in self.stop_words
-                    and not w.startswith(('@', '#', ':'))):
-                    words_in_msg.add(w_lower)
-            
-            for word in words_in_msg:
-                doc_freq[word] += 1
-        
-        # Calculate TF-IDF
-        tfidf_scores = {}
-        for word, count in word_counts.items():
-            tf = count / total_words
-            df = doc_freq.get(word, 1)
-            # Add 1 to DF to avoid division by zero (smoothing)
-            idf = math.log(len(messages) / (df + 1)) + 1
-            
-            # Boost logic
-            score = tf * idf
-            
-            # Boost specific meaningful categories if needed
-            # (Optional: Boost Proper Nouns slightly if you had POS tagging here)
-            
-            tfidf_scores[word] = score
-        
-        return sorted(tfidf_scores.items(), key=lambda x: x[1], reverse=True)[:top_n]
+    def _load_emoji_sentiment(self) -> Dict[str, float]:
+        """Map emojis to sentiment scores"""
+        return {
+            '😊': 0.8, '😄': 0.9, '😃': 0.85, '😁': 0.8, '😆': 0.7,
+            '😍': 1.0, '🥰': 0.95, '😘': 0.9, '😚': 0.85, '😙': 0.8,
+            '😂': 0.7, '🤣': 0.6, '😅': 0.5, '😇': 0.8, '🙂': 0.6,
+            '😉': 0.4, '😌': 0.5, '😋': 0.7, '😎': 0.6, '🤩': 0.8,
+            '🥳': 0.7, '😏': 0.1, '😒': -0.3, '😔': -0.6, '😕': -0.4,
+            '😟': -0.5, '😢': -0.7, '😭': -0.9, '😤': -0.5, '😡': -0.8,
+            '🤬': -0.9, '🤯': -0.2, '😳': -0.1, '🥺': -0.3, '😨': -0.6,
+            '😰': -0.5, '😥': -0.4, '😓': -0.5, '🤔': 0.0, '🤫': 0.0,
+            '🙄': -0.2, '😬': -0.1, '🫢': -0.1, '🫣': -0.1, '🤥': -0.3,
+            '😴': -0.1, '🥱': -0.2, '😪': -0.3, '🤤': 0.0, '😷': -0.2,
+            '🤒': -0.5, '🤕': -0.6, '🤑': 0.3, '🤠': 0.4, '🥸': 0.1,
+            '🤡': -0.1, '💩': -0.2, '👻': 0.0, '💀': -0.1, '👽': 0.0,
+            '🤖': 0.0, '🎃': 0.3, '😺': 0.7, '😸': 0.8, '😹': 0.6,
+            '😻': 0.9, '😼': 0.2, '😽': 0.5, '🙀': -0.1, '😿': -0.4,
+            '😾': -0.3, '👋': 0.5, '🤚': 0.0, '🖐': 0.0, '✋': 0.0,
+            '🖖': 0.1, '👌': 0.3, '🤌': 0.0, '🤏': 0.0, '✌️': 0.4,
+            '🤞': 0.3, '🤟': 0.2, '🤘': 0.1, '🤙': 0.3, '👈': 0.0,
+            '👉': 0.0, '👆': 0.0, '🖕': -0.8, '👇': 0.0, '👍': 0.7,
+            '👎': -0.7, '✊': 0.0, '👊': 0.0, '🤛': 0.0, '🤜': 0.0,
+            '👏': 0.6, '🙌': 0.5, '👐': 0.1, '🤲': 0.1, '🙏': 0.4,
+            '✍️': 0.0, '💅': 0.1, '🤳': 0.0, '💪': 0.3, '🦾': 0.0,
+            '🦿': 0.0, '🦵': 0.0, '🦶': 0.0, '👂': 0.0, '🦻': 0.0,
+            '👃': 0.0, '🧠': 0.1, '🫀': 0.0, '🫁': 0.0, '🦷': 0.0,
+            '🦴': 0.0, '👀': 0.1, '👁': 0.0, '👅': 0.0, '👄': 0.0
+        }
 
 
 
-    def load_state(self):
-        """Load bot state (stats + settings) from file"""
-        try:
-            if os.path.exists(self.state_file):
-                with open(self.state_file, 'r') as f:
-                    state = json.load(f)
-                
-                # 1. Load Stats
-                if 'stats' in state:
-                    for key, value in state['stats'].items():
-                        if key in self.stats:
-                            self.stats[key] = value
 
-                # 2. Load Muted Channels (Convert list back to set)
-                if 'muted_channels' in state:
-                    # distinct set ensures no duplicates
-                    self.muted_channels = set(state['muted_channels']) 
-                    logger.info(f"Loaded muted channels: {self.muted_channels}")
+    def analyze_conversation_goal(self, message, context_info: Dict) -> ConversationGoal:
+        """Figure out WHY the human is talking"""
+        text = message.content.lower()
+        
+        # Social bonding (greetings, checking in)
+        if any(word in text for word in ['hey', 'hi', 'hello', 'sup', 'yo', 'wassup', 'hola']):
+            return ConversationGoal.SOCIAL_BONDING
+        
+        # Information seeking
+        if any(word in text for word in ['what', 'why', 'how', 'when', 'where', 'who', 'which', 'can you', 'could you']):
+            return ConversationGoal.INFORMATION_SEEKING
+        
+        # Emotional expression (strong sentiment words)
+        emotion_words = ['love', 'hate', 'angry', 'happy', 'sad', 'frustrated', 'excited', 'disappointed']
+        if any(word in text for word in emotion_words):
+            return ConversationGoal.EMOTIONAL_EXPRESSION
+        
+        # Problem solving
+        problem_words = ['help', 'issue', 'problem', 'trouble', 'fix', 'broken', 'not working', 'how to']
+        if any(word in text for word in problem_words):
+            return ConversationGoal.PROBLEM_SOLVING
+        
+        # Entertainment
+        entertainment_words = ['lol', 'haha', 'funny', 'joke', 'comedy', 'lmao', 'lmfao', 'rofl']
+        if any(word in text for word in entertainment_words):
+            return ConversationGoal.ENTERTAINMENT
+        
+        # Debate/argument
+        if any(word in text for word in ['but', 'actually', 'wrong', 'incorrect', 'disagree', 'no way']):
+            return ConversationGoal.DEBATE
+        
+        # Venting (negative, repetitive)
+        if context_info['sentiment'] < -0.5 and '...' in text:
+            return ConversationGoal.VENTING
+        
+        # Testing the bot
+        test_patterns = ['are you a bot', 'are you ai', 'are you real', 'what are you']
+        if any(pattern in text for pattern in test_patterns):
+            return ConversationGoal.TESTING
+        
+        return ConversationGoal.UNKNOWN
 
-                # 3. Load Cooldowns
-                if 'reply_cooldowns' in state:
-                    for k, v in state['reply_cooldowns'].items():
-                        try:
-                            self.reply_cooldowns[int(k)] = datetime.fromisoformat(v)
-                        except:
-                            pass
+    async def _respond_with_empathy(self, context: ConversationContext) -> str:
+        """Respond with genuine empathy"""
+        name = context.username
+        sentiment = context.sentiment
+        
+        if sentiment < -0.7:  # Very negative
+            responses = [
+                f"Oh {name}, that sounds really tough. I'm here for you. 💔",
+                f"My heart goes out to you, {name}. That must be incredibly difficult.",
+                f"I can't imagine how hard that must be, {name}. Sending you strength. ❤️",
+                f"That's heartbreaking to hear, {name}. Please know I'm here if you need to talk."
+            ]
+        elif sentiment < -0.3:  # Somewhat negative
+            responses = [
+                f"I'm sorry to hear that, {name}. That sounds challenging.",
+                f"That must be difficult, {name}. How are you holding up?",
+                f"I understand how that might feel, {name}. Want to talk about it more?",
+                f"That's tough, {name}. Is there anything I can do to help?"
+            ]
+        elif sentiment > 0.7:  # Very positive
+            responses = [
+                f"That's absolutely wonderful, {name}! I'm so happy for you! 🎉",
+                f"Wow {name}, that's amazing news! You must be thrilled! 😄",
+                f"Incredible, {name}! That's so fantastic to hear! ✨",
+                f"That's absolutely brilliant, {name}! So well deserved! 🥳"
+            ]
+        elif sentiment > 0.3:  # Somewhat positive
+            responses = [
+                f"That's great to hear, {name}! 😊",
+                f"Nice one, {name}! Happy for you!",
+                f"That's awesome, {name}! Good stuff! 👍",
+                f"Glad to hear that, {name}! Keep it up!"
+            ]
+        else:  # Neutral
+            responses = [
+                f"Thanks for sharing that, {name}.",
+                f"I see, {name}. Tell me more.",
+                f"Got it, {name}. What happened next?",
+                f"Interesting, {name}. How do you feel about that?"
+            ]
+        
+        return random.choice(responses)
+
+    async def _respond_with_knowledge(self, context: ConversationContext) -> str:
+        """Respond helpfully with knowledge"""
+        # Try to find relevant information in memory
+        async with aiosqlite.connect(self.db_path) as db:
+            if context.concepts:
+                for concept in context.concepts[:3]:
+                    async with db.execute('''
+                        SELECT content, importance, sentiment 
+                        FROM episodic_memory 
+                        WHERE topics LIKE ? 
+                        AND importance > 0.4
+                        ORDER BY importance DESC, timestamp DESC
+                        LIMIT 1
+                    ''', (f'%{concept}%',)) as cursor:
+                        result = await cursor.fetchone()
+                        if result:
+                            memory_content, importance, memory_sentiment = result
                             
-        except Exception as e:
-            logger.error(f"Failed to load state: {e}")
-
-
-    def is_valid_pos_transition(self, pos1: str, pos2: str) -> bool:
-        """Check if POS transition follows simplified grammar rules"""
-        if not self.GRAMMAR_ENFORCEMENT:
-            return True
+                            # Frame the memory as helpful info
+                            if importance > 0.7:
+                                return f"Based on what I remember, {memory_content.lower()} That might be helpful."
+                            else:
+                                return f"I recall something about that: {memory_content.lower()} Though I'm not entirely sure."
         
-        if pos1 not in self.POS_TRANSITION_RULES:
-            return True
+        # If no memory, respond helpfully
+        if context.contains_question:
+            responses = [
+                f"That's a good question. Let me think about it...",
+                f"Hmm, I need to consider that for a moment.",
+                f"Interesting question. What's your own perspective on it?",
+                f"I don't have a definite answer, but here's what I think..."
+            ]
+        else:
+            responses = [
+                f"I'll try to help with that. Let me process what you're saying.",
+                f"Let me see if I understand correctly...",
+                f"I want to make sure I help properly. Can you tell me more?",
+                f"I'm here to help. What specifically do you need?"
+            ]
         
-        return pos2 in self.POS_TRANSITION_RULES[pos1]
-    
-    
-    def save_state(self):
-        """Save bot state to JSON file"""
+        return random.choice(responses)
+
+    def _polish_response(self, response: str, context: ConversationContext) -> str:
+        """Make the response sound more natural"""
+        if not response:
+            return response
+        
+        # Remove robotic patterns
+        robotic_patterns = [
+            ("I am going to", "I'll"),
+            ("I would like to", "I'd like to"),
+            ("do not", "don't"),
+            ("does not", "doesn't"),
+            ("is not", "isn't"),
+            ("are not", "aren't"),
+            ("cannot", "can't"),
+            ("will not", "won't")
+        ]
+        
+        for formal, informal in robotic_patterns:
+            response = response.replace(formal, informal)
+        
+        # Add natural hesitations sometimes
+        if random.random() < 0.2 and len(response.split()) > 8:
+            hesitations = ["Hmm, ", "Well, ", "You know, ", "I mean, "]
+            response = random.choice(hesitations) + response.lower()
+        
+        # Add filler words for naturalness
+        if random.random() < 0.15:
+            fillers = ["like, ", "sort of ", "kind of ", "basically, "]
+            words = response.split()
+            if len(words) > 3:
+                insert_pos = random.randint(1, len(words)-2)
+                words.insert(insert_pos, random.choice(fillers))
+                response = ' '.join(words)
+        
+        # Capitalize first letter
+        if response and len(response) > 1:
+            response = response[0].upper() + response[1:]
+        
+        return response.strip()
+
+    async def _generate_human_fallback(self, message, context: Dict, user_name: str) -> str:
+        """Fallback that still sounds human"""
+        # Analyze what type of fallback needed
+        if context['intent'] == 'question':
+            return f"Hmm, that's an interesting question {user_name}. What do you think about it?"
+        elif context['sentiment'] > 0.3:
+            return f"Nice! Thanks for sharing that {user_name}."
+        elif context['sentiment'] < -0.3:
+            return f"I see. That sounds tough {user_name}."
+        else:
+            return f"Got it {user_name}. What's on your mind?"
+
+    async def construct_response(self, message, context: Dict, memories: List[Dict], style: Dict, user_name):
+        """REAL response construction - thinks about conversation"""
         try:
-            state = {
-                'stats': self.stats,
-                # Convert datetime objects to strings
-                'reply_cooldowns': {
-                    str(k): v.isoformat() if isinstance(v, datetime) else v
-                    for k, v in self.reply_cooldowns.items()
-                },
-                # CRITICAL: Convert set to list for JSON serialization
-                'muted_channels': list(self.muted_channels), 
-                'last_saved': datetime.utcnow().isoformat()
-            }
-
-            # Ensure directory exists
-            os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
+            # 1. Build enhanced context
+            conversation_context = await self._build_conversation_context(message, context, memories, user_name)
             
-            # Atomic write (safer)
-            with open(self.state_file, 'w') as f:
-                json.dump(state, f, indent=2)
+            # 2. Choose conversation strategy
+            response = await self._choose_conversation_strategy(conversation_context)
+            
+            # 3. Apply natural language polish
+            response = self._polish_response(response, conversation_context)
+            
+            # 4. Add human-like variations
+            response = self._add_human_touches(response, conversation_context)
+            
+            return response
+            
         except Exception as e:
-            logger.error(f"Failed to load state: {e}")
+            logger.error(f"Real response construction error: {e}")
+            # Fallback that still sounds human
+            return await self._generate_human_fallback(message, context, user_name)
 
-    async def initialize_database(self):
-        """Initialize database with connection pool and NLP columns"""
-        await self.bot.wait_until_ready()
+    async def _build_conversation_context(self, message, context: Dict, memories: List[Dict], user_name) -> ConversationContext:
+        """Build comprehensive conversation context"""
+        # Analyze the REAL goal
+        goal = self.analyze_conversation_goal(message, context)
         
+        # Get vibe
+        vibe = self.server_mood.get(message.channel.id, {})
+        
+        # Get relationship
+        user_profile = await self.get_user_profile(message.author.id)
+        relationship = {
+            'trust': user_profile.get('trust', 0.5),
+            'interactions': user_profile.get('interaction_count', 1),
+            'depth': user_profile.get('relationship_depth', 0.1)
+        }
+        
+        # Get previous conversation turns
+        previous_turns = []
+        if context['conversation_id'] in self.conversation_threads:
+            # Fetch last few messages in this thread
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute('''
+                    SELECT content, user_id, sentiment, intent, topics
+                    FROM episodic_memory
+                    WHERE conversation_id = ?
+                    ORDER BY timestamp DESC
+                    LIMIT 5
+                ''', (context['conversation_id'],)) as cursor:
+                    rows = await cursor.fetchall()
+                    for row in rows:
+                        previous_turns.append({
+                            'content': row[0],
+                            'user_id': row[1],
+                            'sentiment': row[2],
+                            'intent': row[3],
+                            'topics': json.loads(row[4] or '[]')
+                        })
+        
+        # Determine time of day
+        hour = datetime.utcnow().hour
+        if 5 <= hour < 12:
+            time_of_day = "morning"
+        elif 12 <= hour < 17:
+            time_of_day = "afternoon"
+        elif 17 <= hour < 22:
+            time_of_day = "evening"
+        else:
+            time_of_day = "night"
+        
+        return ConversationContext(
+            raw_message=message.content,
+            normalized=self.normalize_text(message.content),
+            user_id=message.author.id,
+            username=user_name,
+            channel_id=message.channel.id,
+            server_id=message.guild.id if message.guild else 0,
+            sentiment=context['sentiment'],
+            concepts=context['concepts'],
+            intent=context['intent'],
+            goal=goal,
+            vibe=vibe,
+            user_relationship=relationship,
+            previous_turns=previous_turns,
+            is_directed_at_me=context['has_mention'],
+            contains_question='?' in message.content,
+            emotional_intensity=abs(context['sentiment']),
+            time_of_day=time_of_day,
+            conversation_depth=vibe.get('conversation_depth', 0.5)
+        )
+
+    async def _respond_with_humor(self, context: ConversationContext) -> str:
+        """Respond with humor and wit"""
+        name = context.username
+        
+        # Different types of humor based on context
+        if context.sentiment > 0.6:  # Positive mood
+            jokes = [
+                f"😂 {name}, that's hilarious! You should be a comedian!",
+                f"LMAO {name}! That made my day! 😂",
+                f"Hahaha {name}, that's gold! Pure gold! 🤣",
+                f"OMG {name}, I'm wheezing! That's too funny! 😭",
+                f"Stop it {name}, I can't breathe! 😂",
+                f"That's comedy gold {name}! You're killing me! 🤣",
+                f"No way {name}! That's hilarious! 😂"
+            ]
+            
+        elif context.goal == ConversationGoal.TESTING:  # Being tested
+            jokes = [
+                f"Are you testing me {name}? Because I'm acing this! 😎",
+                f"Is this a test {name}? I hope I get an A+! 📚",
+                f"Testing, testing, 1-2-3... Yep, I'm still funny {name}! 😄",
+                f"Don't test me {name}, I might get testy! 😜",
+                f"Test successful! I'm 100% hilarious {name}! 💯"
+            ]
+            
+        elif context.contains_question:  # Funny answer to question
+            jokes = [
+                f"That's a great question {name}... Let me consult my magic 8-ball! 🔮",
+                f"Hmm {name}, let me think... Nope, still thinking! 🤔💭",
+                f"Ask me no questions, I'll tell you no lies! 😅 Just kidding, what do you think?",
+                f"42. That's always the answer {name}! 🤖",
+                f"I'd tell you, but then I'd have to... nah, just kidding! 😂"
+            ]
+            
+        else:  # General humor
+            jokes = [
+                f"You're funny {name}! 😄",
+                f"Haha {name}, good one!",
+                f"😂 Nice {name}!",
+                f"That's a good one {name}! 😆",
+                f"LOL {name}!",
+                f"You crack me up {name}! 🤣",
+                f"I see what you did there {name}! 😏"
+            ]
+        
+        # Add puns occasionally (20% chance)
+        if random.random() < 0.2 and context.concepts:
+            concept = random.choice(context.concepts)
+            puns = {
+                'time': f"Speaking of {concept}, it's about time! ⏰",
+                'weather': f"Talking about {concept}? I forecast laughter! ⛈️😂",
+                'work': f"{concept}? I'm not working, I'm joking! 💼😄",
+                'game': f"Game on! Let's play with words about {concept}! 🎮",
+                'food': f"{concept}? Now that's food for thought! 🍕🤔",
+                'music': f"{concept}? Let me drop the beat of this joke! 🎵",
+                'sleep': f"{concept}? I'm not tired of joking! 🛌😴"
+            }
+            if concept in puns:
+                return puns[concept]
+        
+        return random.choice(jokes)
+
+    def _generate_pun(self, concept: str) -> str:
+        """Generate a pun based on a concept"""
+        pun_db = {
+            'cat': "I'm not kitten around! 😸",
+            'dog': "That's paw-some! 🐶",
+            'fish': "Something seems fishy... 🐟",
+            'bird': "That's tweet! 🐦",
+            'bear': "Unbearably funny! 🐻",
+            'bee': "Honey, that's funny! 🐝",
+            'sun': "You're brighter than the sun! ☀️",
+            'moon': "That's over the moon! 🌙",
+            'star': "You're a star! ⭐",
+            'book': "That's novel! 📚",
+            'pen': "Point taken! ✒️",
+            'phone': "That's a call for laughter! 📱",
+            'computer': "That computes! 💻",
+            'internet': "Web-tastic! 🌐",
+            'coffee': "Brew-tiful! ☕",
+            'tea': "That's tea-rrific! 🍵",
+            'pizza': "That's a slice of funny! 🍕",
+            'music': "That's note-worthy! 🎵",
+            'dance': "Let's dance to that joke! 💃"
+        }
+        
+        # Try exact match
+        if concept in pun_db:
+            return pun_db[concept]
+        
+        # Try partial match
+        for key, value in pun_db.items():
+            if key in concept or concept in key:
+                return value
+        
+        # Generate a generic pun
+        return f"That's {concept}-tastic! 😄"
+
+    async def _respond_with_thought(self, context: ConversationContext) -> str:
+        """Respond with depth and reflection"""
+        name = context.username
+        
+        # Check if we have memory to reflect on
+        if context.previous_turns and len(context.previous_turns) > 1:
+            # Reflect on the conversation
+            reflection = self._reflect_on_conversation(context.previous_turns)
+            if reflection:
+                return reflection
+        
+        # If we have concepts, think deeply about them
+        if context.concepts:
+            concept = random.choice(context.concepts)
+            
+            # Different types of thoughtful responses
+            if context.sentiment > 0.3:  # Positive reflection
+                thoughts = [
+                    f"{concept.capitalize()}... that's fascinating {name}. It makes me wonder about the interconnectedness of things.",
+                    f"You know {name}, {concept} has so many layers to it. What's your deepest thought about it?",
+                    f"Hmm, {concept}. There's beauty in its complexity, don't you think {name}?",
+                    f"{name}, {concept} reminds me that everything is connected in ways we don't always see.",
+                    f"Reflecting on {concept}... it's amazing how simple things can have such depth.",
+                ]
+                
+            elif context.sentiment < -0.3:  # Contemplative
+                thoughts = [
+                    f"{concept}... that's heavy {name}. Sometimes the hardest things teach us the most.",
+                    f"{name}, {concept} makes me think about resilience and growth.",
+                    f"Contemplating {concept}... it's in challenges that we find our true strength.",
+                    f"{concept} is complex {name}. What do you think it teaches us?",
+                    f"Deep thoughts about {concept}... sometimes understanding comes from sitting with difficulty.",
+                ]
+                
+            else:  # Neutral/curious
+                thoughts = [
+                    f"What does {concept} really mean to you {name}?",
+                    f"{concept}... such an interesting topic. I'd love to explore it with you.",
+                    f"{name}, let's think about {concept} together. Where should we start?",
+                    f"The philosophy of {concept}... there's so much to unpack.",
+                    f"{concept} makes me curious about the nature of things. What are your thoughts?",
+                ]
+            
+            # Add time-of-day awareness
+            if context.time_of_day == "night":
+                thoughts.extend([
+                    f"Late night thoughts about {concept}... the quiet hours are best for deep thinking.",
+                    f"Under the night sky, {concept} feels more profound, doesn't it {name}?",
+                ])
+                
+            return random.choice(thoughts)
+        
+        # General thoughtful responses
+        general_thoughts = [
+            f"What are you pondering about these days {name}?",
+            f"{name}, what's something you've been reflecting on lately?",
+            f"Deep thoughts with {name}... what's on your mind?",
+            f"{name}, I've been thinking about the nature of consciousness. What are your thoughts?",
+            f"The universe is full of mysteries {name}. Which one fascinates you most?",
+            f"{name}, what's a question you don't know the answer to, but wish you did?",
+            f"If you could understand one thing completely {name}, what would it be?",
+        ]
+        
+        return random.choice(general_thoughts)
+
+    def _reflect_on_conversation(self, previous_turns: List[Dict]) -> Optional[str]:
+        """Generate a reflection on the ongoing conversation"""
+        if len(previous_turns) < 2:
+            return None
+        
+        # Get last two messages
+        last_two = previous_turns[:2]
+        
+        # Extract topics
+        topics = set()
+        for turn in last_two:
+            if 'topics' in turn:
+                topics.update(turn['topics'])
+        
+        if not topics:
+            return None
+        
+        # Create reflection
+        topic_list = list(topics)[:2]
+        if len(topic_list) == 1:
+            topic = topic_list[0]
+            reflections = [
+                f"I notice we keep coming back to {topic}. It seems important.",
+                f"Reflecting on our conversation, {topic} seems to be at the heart of it.",
+                f"There's a pattern here with {topic}. What do you think it means?",
+                f"{topic}... it's interesting how this keeps emerging in our talks.",
+            ]
+        else:
+            topic1, topic2 = topic_list[0], topic_list[1]
+            reflections = [
+                f"I see connections between {topic1} and {topic2}. How do they relate for you?",
+                f"Interesting how {topic1} and {topic2} keep appearing together.",
+                f"Our conversation is dancing between {topic1} and {topic2}. What's the link?",
+                f"{topic1} and {topic2}... there's something here worth exploring deeper.",
+            ]
+        
+        return random.choice(reflections)
+
+    async def _respond_generally(self, context: ConversationContext) -> str:
+        """General-purpose response when unsure"""
+        name = context.username
+        
+        # Different approaches based on context
+        if context.is_directed_at_me:
+            responses = [
+                f"Yes {name}? How can I help?",
+                f"I'm here {name}! What's up?",
+                f"You called {name}? 😊",
+                f"At your service {name}! What do you need?",
+                f"Hey {name}! You wanted to talk to me?",
+            ]
+            
+        elif context.contains_question:
+            responses = [
+                f"That's a good question {name}. Let me think...",
+                f"Hmm {name}, interesting question. What's your take?",
+                f"I'm not sure {name}. What do you think?",
+                f"Good question {name}. I'd love to hear your thoughts first.",
+                f"{name}, that makes me curious too. Let's explore it together.",
+            ]
+            
+        elif context.sentiment > 0.4:
+            responses = [
+                f"That's great {name}! 😊",
+                f"Nice {name}!",
+                f"Awesome {name}! 👍",
+                f"Good to hear {name}!",
+                f"Excellent {name}!",
+                f"Wonderful {name}!",
+                f"Fantastic {name}!",
+            ]
+            
+        elif context.sentiment < -0.4:
+            responses = [
+                f"I understand {name}.",
+                f"Got it {name}.",
+                f"I hear you {name}.",
+                f"Thanks for sharing that {name}.",
+                f"I appreciate you telling me {name}.",
+            ]
+            
+        else:
+            # Time-based responses
+            hour = datetime.utcnow().hour
+            if 5 <= hour < 12:
+                time_greeting = "morning"
+            elif 12 <= hour < 17:
+                time_greeting = "afternoon"
+            elif 17 <= hour < 22:
+                time_greeting = "evening"
+            else:
+                time_greeting = "night"
+            
+            responses = [
+                f"How's your {time_greeting} going {name}?",
+                f"What's on your mind {name}?",
+                f"Tell me more {name}.",
+                f"I'm listening {name}.",
+                f"What's happening {name}?",
+                f"How are things {name}?",
+                f"What's new {name}?",
+                f"How's your day been {name}?",
+            ]
+        
+        # Add follow-up question 40% of the time
+        if random.random() < 0.4:
+            follow_ups = [
+                " What do you think?",
+                " How does that make you feel?",
+                " What happened next?",
+                " Tell me more.",
+                " I'd love to hear more.",
+                " What's your perspective?",
+                " How do you see it?",
+            ]
+            return random.choice(responses) + random.choice(follow_ups)
+        
+        return random.choice(responses)
+
+
+    def _add_human_touches(self, response: str, context: ConversationContext) -> str:
+        """Add human-like imperfections and personality"""
+        if not response or len(response) < 3:
+            return response
+        
+        # 1. Add hesitations and filler words (30% chance)
+        if random.random() < 0.3:
+            fillers = [
+                "Um... ",
+                "Well... ",
+                "Hmm... ",
+                "You know... ",
+                "Actually... ",
+                "I mean... ",
+                "So... ",
+                "Like... ",
+            ]
+            response = random.choice(fillers) + response[0].lower() + response[1:]
+        
+        # 2. Add sentence starters (20% chance)
+        if random.random() < 0.2:
+            starters = [
+                "To be honest,",
+                "Honestly,",
+                "Frankly,",
+                "Personally,",
+                "In my opinion,",
+                "From my perspective,",
+                "If you ask me,",
+            ]
+            response = random.choice(starters) + " " + response[0].lower() + response[1:]
+        
+        # 3. Add trailing thoughts (15% chance)
+        if random.random() < 0.15 and len(response.split()) > 5:
+            trailers = [
+                " you know?",
+                " I think.",
+                " maybe?",
+                " I guess.",
+                " or something.",
+                " kinda.",
+                " sorta.",
+                " I suppose.",
+            ]
+            response = response.rstrip('!.?') + random.choice(trailers)
+        
+        # 4. Add emotional punctuation based on sentiment
+        sentiment = context.sentiment
+        if sentiment > 0.6:
+            # Very positive - add exclamation
+            if not response.endswith('!'):
+                response = response.rstrip('.') + '!'
+            # Add extra enthusiasm sometimes
+            if random.random() < 0.3:
+                emojis = [' 😄', ' 😊', ' 🎉', ' ✨', ' 🌟', ' 💫']
+                response += random.choice(emojis)
+                
+        elif sentiment < -0.6:
+            # Very negative - be more gentle
+            if response.endswith('!'):
+                response = response.rstrip('!') + '.'
+            # Add supportive symbols sometimes
+            if random.random() < 0.4:
+                symbols = [' 💔', ' ❤️', ' 🤗', ' 🫂', ' 🙏']
+                response += random.choice(symbols)
+        
+        # 5. Add typos/speech errors (5% chance - makes it feel more human)
+        if random.random() < 0.05:
+            words = response.split()
+            if len(words) > 3:
+                # Choose a random word to "misspell"
+                idx = random.randint(0, len(words)-1)
+                word = words[idx]
+                
+                # Common speech errors
+                errors = {
+                    'the': 'teh',
+                    'you': 'u',
+                    'are': 'r',
+                    'your': 'ur',
+                    'and': '&',
+                    'because': 'cuz',
+                    'though': 'tho',
+                    'through': 'thru',
+                    'for': '4',
+                    'to': '2',
+                    'too': '2',
+                    'see': 'c',
+                    'be': 'b',
+                    'why': 'y',
+                    'what': 'wat',
+                    'okay': 'k',
+                    'ok': 'k',
+                }
+                
+                if word.lower() in errors:
+                    words[idx] = errors[word.lower()]
+                    response = ' '.join(words)
+        
+        # 6. Add reference to previous conversation (if available)
+        if context.previous_turns and random.random() < 0.25:
+            # Reference something from earlier
+            if len(context.previous_turns) > 1:
+                # Try to reference a topic from 2-3 messages back
+                ref_idx = min(2, len(context.previous_turns)-1)
+                if 'topics' in context.previous_turns[ref_idx]:
+                    topics = context.previous_turns[ref_idx]['topics']
+                    if topics:
+                        topic = random.choice(topics)
+                        connectors = [
+                            f" Speaking of {topic},",
+                            f" That reminds me of {topic},",
+                            f" Like we talked about {topic},",
+                            f" Remember {topic}?",
+                        ]
+                        response = random.choice(connectors) + " " + response[0].lower() + response[1:]
+        
+        # 7. Add cultural/hinglish touches if appropriate
+        if random.random() < 0.1 and context.username:  # 10% chance
+            hinglish_touches = [
+                f" {context.username} yaar!",
+                f" {context.username} bhai!",
+                f" {context.username} boss!",
+                " haha!",
+                " mast!",
+                " accha!",
+                " jhakass!",
+            ]
+            response += random.choice(hinglish_touches)
+        
+        # 8. Capitalize properly
+        if response and len(response) > 1:
+            # Find first alphabetic character and capitalize it
+            for i, char in enumerate(response):
+                if char.isalpha():
+                    response = response[:i] + char.upper() + response[i+1:]
+                    break
+        
+        # 9. Add natural pauses (ellipsis) for thoughtfulness
+        if random.random() < 0.1 and '?' in response and len(response.split()) > 8:
+            # Insert ellipsis before a question
+            parts = response.split('?', 1)
+            if len(parts) == 2:
+                response = parts[0] + '...?' + parts[1]
+        
+        return response.strip()
+
+    async def _choose_conversation_strategy(self, context: ConversationContext) -> str:
+        """Choose HOW to respond based on conversation dynamics"""
+        
+        # Initialize actors and flow
+        if not hasattr(self, 'conversation_actor'):
+            self.conversation_actor = ConversationActor()
+        if not hasattr(self, 'conversation_flow'):
+            self.conversation_flow = ConversationFlow()
+        
+        # Determine current conversation state
+        current_state = self._determine_conversation_state(context)
+        
+        # Get next move
+        next_move = self.conversation_flow.get_next_move(current_state, context)
+        
+        # Choose persona
+        persona = self.conversation_actor.choose_persona(context)
+        
+        # Generate response based on persona and move
+        if persona == 'curious_friend':
+            return await self.conversation_actor.respond_as_curious_friend(context)
+        elif persona == 'empathetic_listener':
+            return await self._respond_with_empathy(context)
+        elif persona == 'knowledgeable_guide':
+            return await self._respond_with_knowledge(context)
+        elif persona == 'playful_companion':
+            return await self._respond_with_humor(context)
+        elif persona == 'thoughtful_thinker':
+            return await self._respond_with_thought(context)
+        
+        # Fallback
+        return await self._respond_generally(context)
+
+    def _determine_conversation_state(self, context: ConversationContext) -> str:
+        """Determine current state of conversation"""
+        if context.goal == ConversationGoal.SOCIAL_BONDING:
+            return 'greeting'
+        elif context.goal == ConversationGoal.INFORMATION_SEEKING:
+            return 'question'
+        elif context.goal in [ConversationGoal.EMOTIONAL_EXPRESSION, ConversationGoal.VENTING]:
+            return 'emotion'
+        elif context.goal == ConversationGoal.PROBLEM_SOLVING:
+            return 'problem'
+        elif context.goal == ConversationGoal.ENTERTAINMENT:
+            return 'joke'
+        else:
+            return 'statement'
+
+
+    @safe_execute
+    async def initialize_database(self):
+        """Initialize consciousness database with enhanced tables"""
         try:
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
             
             async with aiosqlite.connect(self.db_path) as db:
-                await db.create_function("REGEXP", 2, self.regexp)
-                # Optimize SQLite settings
                 await db.execute('PRAGMA journal_mode=WAL;')
-                await db.execute('PRAGMA auto_vacuum = INCREMENTAL;')
                 await db.execute('PRAGMA synchronous=NORMAL;')
-                await db.execute('PRAGMA cache_size=-10000;')
-                await db.execute('PRAGMA temp_store=DEFAULT;')
-                await db.execute('PRAGMA mmap_size=33554432;')
+                await db.execute('PRAGMA foreign_keys=ON;')
                 
-                # --- UPDATED: Create tables with NLP columns ---
+                # Enhanced semantic memory
                 await db.execute('''
-                    CREATE TABLE IF NOT EXISTS markov_chain (
-                        word_a TEXT NOT NULL,
-                        word_b TEXT NOT NULL,
-                        next_word TEXT NOT NULL,
-                        lemma_a TEXT,           -- NEW: Lemmatized form
-                        lemma_b TEXT,           -- NEW: Lemmatized form
-                        lemma_next TEXT,        -- NEW: Lemmatized form
-                        pos_a TEXT,             -- NEW: Part of speech
-                        pos_b TEXT,             -- NEW: Part of speech
-                        pos_next TEXT,          -- NEW: Part of speech
-                        sentiment_score REAL DEFAULT 0.0,  -- NEW: Average sentiment
-                        topic_weight REAL DEFAULT 1.0,     -- NEW: Topic relevance
-                        count INTEGER DEFAULT 1,
-                        last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        word_type TEXT DEFAULT 'normal',
-                        PRIMARY KEY (word_a, word_b, next_word)
-                    ) WITHOUT ROWID
+                    CREATE TABLE IF NOT EXISTS semantic_memory (
+                        concept_hash TEXT PRIMARY KEY,
+                        concept TEXT NOT NULL,
+                        associations TEXT,
+                        strength REAL DEFAULT 1.0 CHECK(strength BETWEEN 0 AND 10),
+                        last_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        access_count INTEGER DEFAULT 1 CHECK(access_count >= 0),
+                        emotional_weight REAL DEFAULT 0.0 CHECK(emotional_weight BETWEEN -1 AND 1),
+                        context_tags TEXT,
+                        language TEXT DEFAULT 'en',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
                 ''')
                 
-                # Create message_log table (unchanged)
+                # Enhanced episodic memory
                 await db.execute('''
-                    CREATE TABLE IF NOT EXISTS message_log (
+                    CREATE TABLE IF NOT EXISTS episodic_memory (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        channel_id INTEGER NOT NULL,
+                        user_id INTEGER NOT NULL,
+                        message_hash TEXT UNIQUE,
                         content TEXT NOT NULL,
-                        author_id INTEGER,
-                        channel_id INTEGER,
-                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                        processed BOOLEAN DEFAULT 0,
-                        emoji_count INTEGER DEFAULT 0,
-                        is_bot_reply BOOLEAN DEFAULT 0,
-                        sentiment REAL DEFAULT 0.0,  -- NEW: Message sentiment
-                        cleaned_content TEXT         -- NEW: Cleaned text for topic modeling
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        context_before TEXT,
+                        context_after TEXT,
+                        topics TEXT,
+                        sentiment REAL DEFAULT 0.0 CHECK(sentiment BETWEEN -1 AND 1),
+                        intent TEXT,
+                        importance REAL DEFAULT 0.5 CHECK(importance BETWEEN 0 AND 1),
+                        conversation_id TEXT,
+                        response_quality REAL DEFAULT 0.0 CHECK(response_quality BETWEEN -1 AND 1),
+                        embedding BLOB,
+                        metadata TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
                 
-                # Create user_stats table (unchanged)
+                # Enhanced user memory
                 await db.execute('''
-                    CREATE TABLE IF NOT EXISTS user_stats (
+                    CREATE TABLE IF NOT EXISTS user_memory (
                         user_id INTEGER PRIMARY KEY,
-                        username TEXT,
-                        message_count INTEGER DEFAULT 0,
-                        last_seen TIMESTAMP,
-                        emoji_usage INTEGER DEFAULT 0,
-                        avg_sentiment REAL DEFAULT 0.0  -- NEW: User's typical sentiment
+                        username TEXT NOT NULL,
+                        behavior_pattern TEXT,
+                        preferred_topics TEXT,
+                        conversation_style TEXT,
+                        trust_level REAL DEFAULT 0.5 CHECK(trust_level BETWEEN 0 AND 1),
+                        last_interaction TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        interaction_count INTEGER DEFAULT 0 CHECK(interaction_count >= 0),
+                        sentiment_trend REAL DEFAULT 0.0 CHECK(sentiment_trend BETWEEN -1 AND 1),
+                        relationship_depth REAL DEFAULT 0.0 CHECK(relationship_depth BETWEEN 0 AND 1),
+                        response_preferences TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
                 
-                # Create indexes for NLP columns
+                # Enhanced server vibes
                 await db.execute('''
-                    CREATE INDEX IF NOT EXISTS idx_markov_lemmas 
-                    ON markov_chain(lemma_a, lemma_b, lemma_next)
+                    CREATE TABLE IF NOT EXISTS server_vibes (
+                        server_id INTEGER,
+                        channel_id INTEGER,
+                        vibe_snapshot TEXT,
+                        topic_distribution TEXT,
+                        active_times TEXT,
+                        engagement_metrics TEXT,
+                        update_count INTEGER DEFAULT 0 CHECK(update_count >= 0),
+                        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (server_id, channel_id)
+                    )
                 ''')
                 
+                # New: Response patterns table
                 await db.execute('''
-                    CREATE INDEX IF NOT EXISTS idx_markov_pos 
-                    ON markov_chain(pos_a, pos_b, pos_next)
+                    CREATE TABLE IF NOT EXISTS response_patterns (
+                        pattern_hash TEXT PRIMARY KEY,
+                        input_pattern TEXT NOT NULL,
+                        response_template TEXT NOT NULL,
+                        success_rate REAL DEFAULT 0.5 CHECK(success_rate BETWEEN 0 AND 1),
+                        usage_count INTEGER DEFAULT 0 CHECK(usage_count >= 0),
+                        last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        context_tags TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
                 ''')
                 
+                # New: Error logging table
                 await db.execute('''
-                    CREATE INDEX IF NOT EXISTS idx_markov_sentiment 
-                    ON markov_chain(sentiment_score)
+                    CREATE TABLE IF NOT EXISTS error_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        error_type TEXT NOT NULL,
+                        error_message TEXT,
+                        context TEXT,
+                        severity TEXT DEFAULT 'warning',
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        resolved BOOLEAN DEFAULT FALSE
+                    )
                 ''')
-                
-                # Existing indexes...
                 await db.execute('''
-                    CREATE INDEX IF NOT EXISTS idx_markov_lookup 
-                    ON markov_chain(word_a, word_b, count DESC)
+                    CREATE TABLE IF NOT EXISTS channel_settings (
+                        channel_id INTEGER PRIMARY KEY,
+                        silent_mode INTEGER DEFAULT 0
+                    )
                 ''')
-                
-                await db.execute('''
-                    CREATE INDEX IF NOT EXISTS idx_markov_type 
-                    ON markov_chain(word_type)
-                ''')
-                
-                await db.execute('''
-                    CREATE INDEX IF NOT EXISTS idx_message_log_timestamp 
-                    ON message_log(timestamp)
-                ''')
-                
-                await db.execute('''
-                    CREATE INDEX IF NOT EXISTS idx_message_log_processed 
-                    ON message_log(processed)
-                ''')
+                # Create indexes for performance
+                await db.execute('CREATE INDEX IF NOT EXISTS idx_semantic_strength ON semantic_memory(strength DESC)')
+                await db.execute('CREATE INDEX IF NOT EXISTS idx_semantic_accessed ON semantic_memory(last_accessed DESC)')
+                await db.execute('CREATE INDEX IF NOT EXISTS idx_episodic_time ON episodic_memory(timestamp DESC)')
+                await db.execute('CREATE INDEX IF NOT EXISTS idx_episodic_conversation ON episodic_memory(conversation_id)')
+                await db.execute('CREATE INDEX IF NOT EXISTS idx_episodic_user ON episodic_memory(user_id)')
+                await db.execute('CREATE INDEX IF NOT EXISTS idx_episodic_channel ON episodic_memory(channel_id)')
+                await db.execute('CREATE INDEX IF NOT EXISTS idx_user_interaction ON user_memory(last_interaction DESC)')
+                await db.execute('CREATE INDEX IF NOT EXISTS idx_error_time ON error_log(timestamp DESC)')
                 
                 await db.commit()
+                logger.info("Enhanced consciousness database initialized successfully")
                 
-                # Get initial counts
-                async with db.execute("SELECT COUNT(*) FROM markov_chain") as cursor:
-                    result = await cursor.fetchone()
-                    self.stats['total_triplets'] = result[0] if result else 0
-                
-                async with db.execute("SELECT COUNT(*) FROM message_log") as cursor:
-                    result = await cursor.fetchone()
-                    self.stats['total_messages'] = result[0] if result else 0
-                
-                async with db.execute("SELECT COUNT(DISTINCT author_id) FROM message_log") as cursor:
-                    result = await cursor.fetchone()
-                    self.stats['unique_users'] = result[0] if result else 0
-                
-                # Count lemmatized entries
-                async with db.execute("SELECT COUNT(*) FROM markov_chain WHERE lemma_a IS NOT NULL") as cursor:
-                    result = await cursor.fetchone()
-                    self.stats['lemmas_stored'] = result[0] if result else 0
-                
-                logger.info(f"Database initialized. Existing: {self.stats['total_triplets']} triplets, {self.stats['lemmas_stored']} lemmas from {self.stats['total_messages']} messages")
-                self.db_initialized = True
         except Exception as e:
-            logger.error(f"Failed to initialize database: {e}")
-            raise
+            logger.error(f"Database initialization error: {e}")
+            await self._log_error("database_init", str(e), severity="critical")
 
-    # --- ANTI-SPAM FUNCTIONS ---
-    def check_rate_limit(self, channel_id: int) -> bool:
-        """Check if bot should send a message based on rate limits"""
-        now = datetime.utcnow()
-        
-        # Initialize channel tracking if not exists
-        if channel_id not in self.message_timestamps:
-            self.message_timestamps[channel_id] = deque(maxlen=self.MAX_MESSAGES_PER_MINUTE * 2)
-        
-        if channel_id not in self.last_bot_message:
-            self.last_bot_message[channel_id] = now - timedelta(seconds=self.MIN_MESSAGE_INTERVAL + 1)
-        
-        # Check minimum interval
-        time_since_last = (now - self.last_bot_message[channel_id]).total_seconds()
-        if time_since_last < self.MIN_MESSAGE_INTERVAL:
-            logger.debug(f"Rate limited: {time_since_last:.2f}s since last message in channel {channel_id}")
-            self.stats['rate_limited'] += 1
-            return False
-        
-        # Check burst limit
-        timestamps = self.message_timestamps[channel_id]
-        recent_messages = sum(1 for ts in timestamps 
-                            if (now - ts).total_seconds() < self.SPAM_BURST_WINDOW)
-        
-        if recent_messages >= self.SPAM_BURST_LIMIT:
-            logger.debug(f"Spam burst detected: {recent_messages} messages in {self.SPAM_BURST_WINDOW}s")
-            self.stats['spam_blocked'] += 1
-            return False
-        
-        # Check messages per minute
-        minute_ago = now - timedelta(minutes=1)
-        messages_last_minute = sum(1 for ts in timestamps if ts > minute_ago)
-        
-        if messages_last_minute >= self.MAX_MESSAGES_PER_MINUTE:
-            logger.debug(f"Max messages per minute reached: {messages_last_minute}")
-            self.stats['rate_limited'] += 1
-            return False
-        
-        return True
-
-    def record_bot_message(self, channel_id: int):
-        """Record that bot sent a message"""
-        now = datetime.utcnow()
-        self.last_bot_message[channel_id] = now
-        if channel_id not in self.message_timestamps:
-            self.message_timestamps[channel_id] = deque(maxlen=self.MAX_MESSAGES_PER_MINUTE * 2)
-        self.message_timestamps[channel_id].append(now)
-
-    @tasks.loop(minutes=5)
-    async def cleanup_rate_limits(self):
-        """Clean up old rate limiting data"""
-        try:
-            now = datetime.utcnow()
-            cutoff = now - timedelta(minutes=10)
-            
-            # Clean message timestamps
-            channels_to_remove = []
-            for channel_id in list(self.message_timestamps.keys()):
-                # Remove old timestamps
-                self.message_timestamps[channel_id] = deque(
-                    (ts for ts in self.message_timestamps[channel_id] 
-                     if ts > cutoff),
-                    maxlen=self.MAX_MESSAGES_PER_MINUTE * 2
-                )
-                
-                # Remove empty deques
-                if not self.message_timestamps[channel_id]:
-                    channels_to_remove.append(channel_id)
-            
-            for channel_id in channels_to_remove:
-                self.message_timestamps.pop(channel_id, None)
-            
-            # Clean last bot message if too old
-            channels_to_remove = []
-            for channel_id in list(self.last_bot_message.keys()):
-                if self.last_bot_message[channel_id] < cutoff:
-                    channels_to_remove.append(channel_id)
-            
-            for channel_id in channels_to_remove:
-                self.last_bot_message.pop(channel_id, None)
-            
-            logger.debug("Cleaned up rate limit data")
-        except Exception as e:
-            logger.error(f"Error in cleanup_rate_limits: {e}")
-            
-    @tasks.loop(minutes=5)
-    async def update_topic_model(self):
-        """Enhanced Topic Identification using frequency and recency"""
-        try:
-            if not self.conversation_context:
-                return
-
-            async with aiosqlite.connect(self.db_path) as db:
-                # Reduce all weights by 25%, but don't let them go below 1.0
-                await db.execute("""
-                    UPDATE markov_chain 
-                    SET topic_weight = MAX(1.0, topic_weight * 0.75) 
-                    WHERE topic_weight > 1.0
-                """)
-                await db.commit()
-
-            if not self.conversation_context:
-                return
-            # 1. Combine context but weight the last 10 messages 3x more
-            weighted_text = []
-            context_list = list(self.conversation_context)
-            for i, msg in enumerate(context_list):
-                multiplier = 3 if i > len(context_list) - 10 else 1
-                weighted_text.extend([msg['content']] * multiplier)
-            
-            # 2. Extract keywords with better filtering
-            keywords = self.extract_tfidf_keywords(weighted_text, top_n=12)
-            
-            # 3. Filter for 'Meaningful' topics (Hinglish + English)
-            # Remove common conversational fillers from being topics
-            fillers = {'kya', 'hai', 'bhai', 'yaar', 'toh', 'aur', 'the', 'this', 'that'}
-            self.current_topic_keywords = [
-                k for k in keywords 
-                if k[0].lower() not in fillers              # Remove grammar/stop words
-                and not k[0].startswith('<')               # Ignore Discord custom emojis
-                and not k[0].startswith(':')               # Ignore Unicode emoji tokens
-                and len(k[0]) > 1                          # Ignore single characters
-            ]
-
-            # 4. Update DB weights for these active topics
-            if self.current_topic_keywords and self.TOPIC_COHERENCE:
-                async with aiosqlite.connect(self.db_path) as db:
-                    for keyword, weight in self.current_topic_keywords:
-                        await db.execute('''
-                            UPDATE markov_chain 
-                            SET topic_weight = MIN(5.0, topic_weight + ?) 
-                            WHERE (word_a LIKE ? OR word_b LIKE ? OR next_word LIKE ?)
-                        ''', (0.5 + weight, f"%{keyword}%", f"%{keyword}%", f"%{keyword}%"))
-                    await db.commit()
-                
-            self.stats['topics_detected'] += 1
-            logger.info(f"Decayed old topics & boosted new: {[k[0] for k in self.current_topic_keywords[:5]]}")
-        except Exception as e:
-            logger.error(f"Topic update error: {e}")
-
-    def sanitize_message(self, content: str, message=None) -> str:
-        """Clean message for Hinglish"""
-        if not content or len(content.strip()) < 2:
+    def normalize_text(self, text: str) -> str:
+        """Normalize text for consistent processing"""
+        if not text or not isinstance(text, str):
             return ""
         
-        # Remove bot commands
-        if content.startswith(('.', '!', '/', '?', '~', '(', ')', '-', 'owo')):
-            return ""
+        # Normalize unicode
+        text = unicodedata.normalize('NFKC', text)
         
-        # Store original for emoji extraction
-        original_content = content
-        
-        # Remove URLs
-        content = re.sub(r'https?://\S+|www\.\S+', '', content)
-        
-        # Replace user mentions with readable names
-        def replace_mention(match):
-            user_id = int(match.group(1))
-            
-            if user_id in self.user_cache:
-                username = self.user_cache[user_id]
-            elif message and message.guild:
-                member = message.guild.get_member(user_id)
-                if member:
-                    username = member.display_name
-                    self.user_cache[user_id] = username
-                else:
-                    username = f"user_{user_id % 1000}"
-            else:
-                username = f"user_{user_id % 1000}"
-            
-            placeholder = f"@USER_{user_id}"
-            self.user_id_map[placeholder] = user_id
-            return placeholder
-        
-        content = re.sub(r'<@!?(\d+)>', replace_mention, content)
-        
-        # Preserve channel mentions
-        content = re.sub(r'<#(\d+)>', '#channel_mention', content)
-        
-        # Preserve role mentions
-        content = re.sub(r'<@&(\d+)>', '@role_mention', content)
-        
-        # Remove @everyone and @here
-        content = re.sub(r'@everyone|@here', '', content, flags=re.IGNORECASE)
-        
-        # Handle emojis - Check server existence FIRST
-        emoji_list = list(emoji.emoji_list(content))
-        custom_emoji_matches = re.findall(r'<(a?):(\w+):(\d+)>', content)
-        
-        # Store valid emojis that exist on the server
-        valid_custom_emojis = []
-        server_emoji_cache = {}
-        
-        if message and message.guild:
-            # Get all server emojis and create a lookup dictionary
-            for server_emoji in message.guild.emojis:
-                server_emoji_cache[str(server_emoji.id)] = server_emoji
-                server_emoji_cache[server_emoji.name] = server_emoji
-            
-            for anim, name, e_id in custom_emoji_matches:
-                # Check if emoji exists on server by ID OR by name
-                emoji_exists = False
-                
-                # First check by ID (more reliable)
-                if str(e_id) in server_emoji_cache:
-                    emoji_exists = True
-                # Also check by name (in case ID lookup fails but emoji is known)
-                elif name in server_emoji_cache:
-                    e_id = str(server_emoji_cache[name].id)  # Use the correct ID from server
-                    emoji_exists = True
-                
-                if emoji_exists:
-                    # Store the full Discord emoji format <:name:id> or <a:name:id>
-                    emoji_format = f"<{anim}:{name}:{e_id}>"
-                    valid_custom_emojis.append((emoji_format, name, e_id))
-                    logger.debug(f"Found valid server emoji: {emoji_format}")
-                else:
-                    # Remove emojis not in the server
-                    pattern = fr'<{anim}:{re.escape(name)}:{e_id}>'
-                    content = re.sub(pattern, '', content)
-                    logger.debug(f"Removed non-server emoji: <{anim}:{name}:{e_id}>")
-        
-        # Calculate emoji density
-        total_chars = len(original_content)
-        emoji_chars = sum(len(e['emoji']) for e in emoji_list) + \
-                    sum(len(e[0]) for e in valid_custom_emojis)
-        emoji_density = emoji_chars / total_chars if total_chars > 0 else 0
-        
-        if emoji_density > self.MAX_EMOJI_DENSITY:
-            # Combine all emojis
-            all_emojis = []
-            for e in emoji_list:
-                all_emojis.append(('unicode', e['emoji'], e['emoji']))
-            for emoji_format, name, e_id in valid_custom_emojis:
-                all_emojis.append(('custom', name, emoji_format))
-            
-            # Keep only limited emojis
-            kept_emojis = all_emojis[:self.MAX_EMOJIS_PER_MESSAGE]
-            
-            # Remove all emojis first
-            for e in emoji_list:
-                content = content.replace(e['emoji'], ' ')
-            
-            # Remove all custom emojis from content
-            for anim, name, e_id in custom_emoji_matches:
-                pattern = fr'<{anim}:{re.escape(name)}:{e_id}>'
-                content = re.sub(pattern, ' ', content)
-            
-            # Add back limited emojis (only valid server emojis)
-            for emoji_type, name, emoji_data in kept_emojis:
-                if emoji_type == 'unicode':
-                    emoji_name = emoji.demojize(emoji_data)[1:-1]
-                    content += f" :emoji_{emoji_name}:"
-                else:
-                    # Only add emojis that exist on server
-                    content += f" {emoji_data}"
-        else:
-            # Convert Unicode emojis to tokens
-            for e in emoji_list:
-                emoji_name = emoji.demojize(e['emoji'])[1:-1]
-                content = content.replace(e['emoji'], f' :emoji_{emoji_name}: ')
-            
-            # Keep Discord emojis in FULL format - they're already validated
-            # No need to convert them, they stay as <:name:id>
-            # The invalid ones have already been removed above
-        
-        # Clean up punctuation (more lenient for Hinglish)
-        content = re.sub(r'([!?.]){3,}', r'\1', content)
+        # Expand slang and abbreviations
+        for pattern, replacement in self.slang_patterns.items():
+            text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
         
         # Remove excessive whitespace
-        content = ' '.join(content.split()).strip()
+        text = ' '.join(text.split())
         
-        # Track Hinglish usage
-        if content:
-            lang_mix = self.detect_language_mix(content)
-            if lang_mix['hindi'] > 0.1 or lang_mix['hinglish'] > 0.1:
-                self.stats['hinglish_messages'] += 1
-        
-        # Return if we have enough words
-        word_count = len(content.split())
-        return content if word_count >= self.MIN_MESSAGE_WORDS else ""
+        return text.strip()
 
-    def extract_triplets(self, content: str) -> List[Tuple[str, str, str]]:
-        """Extract word triplets from content"""
-        words = content.split()
-        triplets = []
-        
-        if len(words) < 3:
-            return triplets
-        
-        # Use sliding window with step 1 for more coverage
-        for i in range(len(words) - 2):
-            word_a = words[i].strip()
-            word_b = words[i+1].strip()
-            word_c = words[i+2].strip()
-            
-            if word_a and word_b and word_c:
-                # Skip if too many emojis in sequence
-                emoji_count = sum(1 for w in [word_a, word_b, word_c] 
-                                if w.startswith(':emoji_') or w.startswith(':custom_emoji_'))
-                if emoji_count >= 2:
-                    continue
-                
-                triplets.append((word_a, word_b, word_c))
-        
-        return triplets
-
-
-    def is_server_emoji(self, emoji_string: str, guild=None) -> bool:
-        """Check if an emoji exists on the server"""
-        # Parse the emoji string
-        match = re.match(r'^<(a?):([\w]+):(\d+)>$', emoji_string)
-        if not match:
-            return False
-        
-        anim, name, e_id = match.groups()
-        
-        if not guild:
-            # Can't check without guild context
-            return False
-        
-        # Check by ID first
-        emoji_by_id = discord.utils.get(guild.emojis, id=int(e_id))
-        if emoji_by_id:
-            return True
-        
-        # Check by name as fallback
-        emoji_by_name = discord.utils.get(guild.emojis, name=name)
-        return emoji_by_name is not None
-
-    def classify_word_type(self, word: str) -> str:
-        """Classify word type for better generation"""
-        # Check if it's a Discord custom emoji (animated or normal)
-        discord_emoji_match = re.match(r'^<(a?):([\w]+):(\d+)>$', word)
-        if discord_emoji_match:
-            # Verify it's a valid Discord emoji format
-            anim, name, e_id = discord_emoji_match.groups()
-            
-            # Basic validation: check if it looks like a proper emoji format
-            if name and e_id and e_id.isdigit():
-                return 'emoji'
-        
-        # Check if it's a Unicode emoji token
-        elif word.startswith(':emoji_'):
-            return 'emoji'
-        
-        # Check mentions
-        elif word.startswith('@USER_') or word.startswith('@user_') or word.startswith('@role_') or word.startswith('#channel_'):
-            return 'mention'
-        
-        # Check proper nouns
-        elif re.match(r'^[A-Z][a-z]*$', word) and len(word) > 1:
-            return 'proper_noun'
-        
-        # Check verb/adverb endings
-        elif word.endswith(('ing', 'ed', 'ly')):
-            return 'verb_or_adverb'
-        
-        else:
-            return 'normal'
-
-    async def train_on_message(self, content: str, author_id: int, emoji_count: int = 0, message=None):
-        """Train Markov chain for Hinglish"""
-        clean_content = self.sanitize_message(content, message)
-        if not clean_content:
-            return 0
-        
-        # Analyze sentiment
-        sentiment = self.analyze_sentiment(content)
-        self.stats['sentiment_analyzed'] += 1
-        
-        # Update conversation context
-        self.conversation_context.append({
-            'content': clean_content,
-            'sentiment': sentiment,
-            'timestamp': datetime.utcnow()
-        })
-        
-        # Update running sentiment average
-        sentiments = [msg['sentiment'] for msg in self.conversation_context]
-        self.conversation_sentiment = sum(sentiments) / len(sentiments) if sentiments else 0.0
-        
-        # Process with Hinglish adaptations
-        words = clean_content.split()
-        triplets = []
-        
-        # Count Hindi words for stats
-        hindi_word_count = sum(1 for word in words if self.is_hindi_word(word))
-        self.stats['hindi_words_learned'] += hindi_word_count
-        
-        for i in range(len(words) - 2):
-            word_a, word_b, word_c = words[i], words[i+1], words[i+2]
-            
-            # Skip if too many emojis in sequence
-            emoji_count_seq = sum(1 for w in [word_a, word_b, word_c] 
-                                if w.startswith(':emoji_') or w.startswith(':custom_emoji_'))
-            if emoji_count_seq >= 2:
-                continue
-            
-            # Simple POS approximation for Hinglish
-            pos_a = self.get_pos_tags(word_a)[0][1] if self.get_pos_tags(word_a) else 'UNK'
-            pos_b = self.get_pos_tags(word_b)[0][1] if self.get_pos_tags(word_b) else 'UNK'
-            pos_c = self.get_pos_tags(word_c)[0][1] if self.get_pos_tags(word_c) else 'UNK'
-            
-            triplets.append((
-                word_a, word_b, word_c,  # Original words
-                word_a, word_b, word_c,  # Lemmas (same for now)
-                pos_a, pos_b, pos_c,     # POS tags
-                sentiment                # Message sentiment
-            ))
-        
-        if not triplets:
-            return 0
-        
+    def extract_concepts(self, text: str) -> List[str]:
+        """Enhanced multilingual concept extraction"""
         try:
+            text = self.normalize_text(text)
+            if not text:
+                return []
+            
+            # Extract words (including Unicode characters)
+            words = re.findall(r'[\w\'\-]+', text.lower(), flags=re.UNICODE)
+            
+            # Filter and process
+            concepts = []
+            for word in words:
+                if (len(word) > 1 and 
+                    word not in self.multilingual_stopwords and
+                    not word.isdigit() and
+                    not re.match(r'^\W+$', word)):
+                    
+                    # Handle common suffixes
+                    if word.endswith("'s"):
+                        word = word[:-2]
+                    elif word.endswith("s'") and len(word) > 2:
+                        word = word[:-1]
+                    elif word.endswith("ing") and len(word) > 5:
+                        word = word[:-3]
+                    elif word.endswith("ed") and len(word) > 4:
+                        word = word[:-2]
+                    
+                    if word and len(word) > 1:
+                        concepts.append(word)
+            
+            # Use frequency and position weighting
+            if concepts:
+                concept_counts = Counter(concepts)
+                
+                # Weight by position (first/last words often more important)
+                if len(concepts) > 1:
+                    concept_counts[concepts[0]] += 2
+                    concept_counts[concepts[-1]] += 1
+                
+                # Get most significant concepts
+                top_concepts = [concept for concept, count in concept_counts.most_common(10)]
+                
+                # Ensure diversity
+                unique_concepts = []
+                seen_roots = set()
+                for concept in top_concepts:
+                    # Simple stemming
+                    root = concept[:-3] if len(concept) > 4 and concept.endswith(('ing', 'ed')) else concept
+                    if root not in seen_roots:
+                        seen_roots.add(root)
+                        unique_concepts.append(concept)
+                
+                return unique_concepts[:8]
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"Concept extraction error: {e}")
+            return []
+
+    def detect_intent(self, text: str, context: List[str] = None) -> str:
+        """Enhanced multilingual intent detection"""
+        try:
+            text = self.normalize_text(text)
+            if not text:
+                return "unknown"
+            
+            text_lower = text.lower()
+            
+            # Check for emojis first
+            emoji_sentiment = self._analyze_emoji_sentiment(text)
+            if emoji_sentiment > 0.5:
+                return "positive_expression"
+            elif emoji_sentiment < -0.5:
+                return "negative_expression"
+            
+            # Question detection (multilingual)
+            question_patterns = [
+                r'^(what|why|how|when|where|who|which|can|could|would|should|is|are|do|does|did|will|won\'t|have|has|am|are|was|were)\s+\w+',
+                r'^(kya|kaise|kab|kahan|kisne|kisko|kisliye|kis|kaun|kaunsa)\s+\w+',  # Hindi questions
+                r'^(qué|cómo|cuándo|dónde|quién|cuál|por|para)\s+\w+',  # Spanish questions
+                r'.*\?+$',
+                r'^tell me about',
+                r'^explain',
+                r'^describe',
+                r'^what do you think about',
+                r'^how do you feel about',
+                r'^can you explain',
+                r'^could you tell me',
+                r'^would you mind'
+            ]
+            
+            for pattern in question_patterns:
+                if re.match(pattern, text_lower, re.IGNORECASE):
+                    return "question"
+            
+            # Greetings (multilingual)
+            greeting_words = {
+                'hello', 'hi', 'hey', 'sup', 'yo', 'greetings', 'good morning', 'good afternoon',
+                'good evening', 'good night', 'namaste', 'salaam', 'hola', 'bonjour', 'ciao',
+                'hiya', 'heya', 'wassup', 'whats up', 'howdy', 'yo yo', 'hey there', 'hi there'
+            }
+            
+            if any(text_lower.startswith(greet) for greet in greeting_words):
+                return "greeting"
+            
+            # Farewells
+            farewell_words = {'bye', 'goodbye', 'see ya', 'see you', 'later', 'cya', 'adios', 'bye bye'}
+            if any(text_lower.startswith(farewell) for farewell in farewell_words):
+                return "farewell"
+            
+            # Requests
+            request_patterns = [
+                r'^(please|pls|plz|plis)\s+\w+',
+                r'^(can|could|would|will) you\s+\w+',
+                r'^(i need|i want|i\'d like|i would like)\s+\w+',
+                r'^help me\s+\w*',
+                r'^tell me\s+\w+',
+                r'^show me\s+\w+',
+                r'^give me\s+\w+',
+                r'^explain to me\s+\w+',
+                r'^teach me\s+\w+',
+                r'^how do i\s+\w+'
+            ]
+            
+            for pattern in request_patterns:
+                if re.match(pattern, text_lower):
+                    return "request"
+            
+            # Strong emotional expressions
+            strong_emotion_patterns = [
+                r'\b(love|hate|adore|despise|amazing|terrible|awesome|awful|fantastic|horrible)\b',
+                r'\b(best|worst|perfect|disgusting|beautiful|ugly|brilliant|stupid)\b',
+                r'\b(wow|omg|oh my god|holy shit|what the fuck|wtf)\b',
+                r'\b(joy|happy|sad|angry|furious|ecstatic|depressed|anxious)\b'
+            ]
+            
+            for pattern in strong_emotion_patterns:
+                if re.search(pattern, text_lower, re.IGNORECASE):
+                    return "strong_expression"
+            
+            # Humor
+            humor_patterns = [
+                r'\b(lol+|lmao+|lmfao+|haha+|hehe+)\b',
+                r'\b(funny|hilarious|comedy|joke|kidding|sarcasm|sarcastic)\b',
+                r'\b(rofl|rotfl)\b'
+            ]
+            
+            for pattern in humor_patterns:
+                if re.search(pattern, text_lower):
+                    return "humor"
+            
+            # Agreement/Disagreement
+            if re.search(r'\b(yes|yeah|yep|sure|ok|okay|agree|right|correct|true)\b', text_lower):
+                return "agreement"
+            elif re.search(r'\b(no|nope|nah|wrong|incorrect|disagree|false)\b', text_lower):
+                return "disagreement"
+            
+            # Information sharing
+            info_indicators = [
+                r'\bi think\b', r'\bi believe\b', r'\bin my opinion\b', r'\bfrom my perspective\b',
+                r'\bthe way i see it\b', r'\bactually\b', r'\bbasically\b', r'\bfrankly\b',
+                r'\bhonestly\b', r'\bpersonally\b', r'\btbh\b', r'\bimo\b'
+            ]
+            
+            for indicator in info_indicators:
+                if indicator in text_lower:
+                    return "information"
+            
+            # Check if continuing conversation
+            if context and len(context) > 0:
+                # Check if this is a response to a question
+                last_msg = context[-1] if isinstance(context[-1], str) else context[-1].get('content', '')
+                if last_msg and '?' in last_msg and len(text.split()) < 15:
+                    return "response"
+                
+                # Check if this continues the same topic
+                last_concepts = self.extract_concepts(last_msg)
+                current_concepts = self.extract_concepts(text)
+                if last_concepts and current_concepts:
+                    common = set(last_concepts) & set(current_concepts)
+                    if len(common) > 0:
+                        return "continuation"
+            
+            # Default based on text characteristics
+            if len(text.split()) <= 3:
+                if text.endswith('!'):
+                    return "exclamation"
+                elif text.endswith('...') or text.endswith('..'):
+                    return "hesitation"
+                else:
+                    return "short_message"
+            
+            return "conversation"
+            
+        except Exception as e:
+            logger.error(f"Intent detection error: {e}")
+            return "unknown"
+
+    def _analyze_emoji_sentiment(self, text: str) -> float:
+        """Analyze sentiment from emojis"""
+        try:
+            # Find all emojis
+            emoji_pattern = re.compile("["
+                u"\U0001F600-\U0001F64F"  # emoticons
+                u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+                u"\U0001F680-\U0001F6FF"  # transport & map symbols
+                u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
+                u"\U00002700-\U000027BF"  # Dingbats
+                u"\U000024C2-\U0001F251" 
+                "]+", flags=re.UNICODE)
+            
+            emojis = emoji_pattern.findall(text)
+            if not emojis:
+                return 0.0
+            
+            total_score = 0.0
+            count = 0
+            
+            for emoji in emojis:
+                if emoji in self.emoji_sentiment:
+                    total_score += self.emoji_sentiment[emoji]
+                    count += 1
+            
+            return total_score / count if count > 0 else 0.0
+            
+        except Exception as e:
+            logger.error(f"Emoji sentiment error: {e}")
+            return 0.0
+
+    def analyze_sentiment(self, text: str) -> float:
+        """Enhanced multilingual sentiment analysis"""
+        try:
+            text = self.normalize_text(text)
+            if not text:
+                return 0.0
+            
+            # Start with emoji sentiment
+            emoji_score = self._analyze_emoji_sentiment(text)
+            
+            # Word-based sentiment (multilingual)
+            positive_words = {
+                'good', 'great', 'awesome', 'nice', 'love', 'happy', 'excellent', 'best',
+                'wonderful', 'perfect', 'amazing', 'fantastic', 'brilliant', 'superb',
+                'outstanding', 'fabulous', 'terrific', 'pleasant', 'joyful', 'delightful',
+                'ecstatic', 'thrilled', 'overjoyed', 'pleased', 'content', 'satisfied',
+                'grateful', 'thankful', 'blessed', 'lucky', 'fortunate', 'positive',
+                'optimistic', 'hopeful', 'confident', 'proud', 'inspired', 'motivated',
+                'energized', 'excited', 'enthusiastic', 'passionate', 'vibrant', 'alive',
+                'fresh', 'new', 'improved', 'better', 'progress', 'success', 'victory',
+                'win', 'achievement', 'accomplishment', 'milestone', 'breakthrough',
+                'advancement', 'development', 'growth', 'expansion', 'increase', 'gain',
+                'profit', 'benefit', 'advantage', 'opportunity', 'chance', 'possibility',
+                'potential', 'promise', 'hope', 'dream', 'goal', 'ambition', 'aspiration'
+            }
+            
+            negative_words = {
+                'bad', 'terrible', 'awful', 'hate', 'sad', 'worst', 'horrible', 'dislike',
+                'annoying', 'angry', 'upset', 'frustrated', 'disappointed', 'depressed',
+                'anxious', 'stressed', 'worried', 'nervous', 'scared', 'afraid', 'fearful',
+                'terrified', 'panicked', 'overwhelmed', 'exhausted', 'tired', 'fatigued',
+                'drained', 'burned', 'out', 'sick', 'ill', 'unwell', 'pain', 'hurt',
+                'injured', 'damaged', 'broken', 'ruined', 'destroyed', 'lost', 'missing',
+                'gone', 'dead', 'died', 'death', 'kill', 'murder', 'violence', 'war',
+                'conflict', 'fight', 'argument', 'dispute', 'quarrel', 'problem', 'issue',
+                'trouble', 'difficulty', 'challenge', 'obstacle', 'barrier', 'setback',
+                'failure', 'mistake', 'error', 'fault', 'blame', 'guilt', 'shame',
+                'regret', 'remorse', 'sorry', 'apology', 'forgive', 'forgiveness'
+            }
+            
+            # Hindi sentiment words (transliterated)
+            hindi_positive = {'accha', 'bahut', 'khush', 'pyar', 'sundar', 'mast', 'jhakass', 'zabardast'}
+            hindi_negative = {'bura', 'kharab', 'dikkat', 'problem', 'gussa', 'udaas', 'takleef', 'pareshan'}
+            
+            all_positive = positive_words | hindi_positive
+            all_negative = negative_words | hindi_negative
+            
+            # Count sentiment words
+            words = set(text.lower().split())
+            positive_count = len(words.intersection(all_positive))
+            negative_count = len(words.intersection(all_negative))
+            
+            # Check for negations
+            negation_words = {'not', "n't", 'no', 'never', 'none', 'nothing', 'nowhere'}
+            negation_adjacent = False
+            
+            word_list = text.lower().split()
+            for i, word in enumerate(word_list):
+                if word in negation_words and i < len(word_list) - 1:
+                    next_word = word_list[i + 1]
+                    if next_word in all_positive:
+                        positive_count -= 1
+                        negative_count += 1
+                        negation_adjacent = True
+                    elif next_word in all_negative:
+                        negative_count -= 1
+                        positive_count += 1
+                        negation_adjacent = True
+            
+            # Calculate sentiment
+            total = positive_count + negative_count
+            if total == 0:
+                word_based_score = 0.0
+            else:
+                word_based_score = (positive_count - negative_count) / total
+            
+            # Adjust for intensifiers
+            intensifiers = {
+                'very': 1.5, 'really': 1.5, 'extremely': 2.0, 'absolutely': 2.0,
+                'completely': 1.8, 'totally': 1.8, 'utterly': 2.0, 'insanely': 1.7,
+                'incredibly': 1.7, 'amazingly': 1.6, 'super': 1.4, 'mega': 1.4,
+                'so': 1.3, 'too': 1.3, 'way': 1.3, 'quite': 1.2, 'pretty': 1.1,
+                'bahut': 1.6, 'zyada': 1.5, 'bohot': 1.6  # Hindi intensifiers
+            }
+            
+            intensity_multiplier = 1.0
+            for intensifier, multiplier in intensifiers.items():
+                if intensifier in text.lower():
+                    intensity_multiplier *= multiplier
+            
+            # Check punctuation intensity
+            if '!!!' in text or '???' in text:
+                intensity_multiplier *= 1.3
+            if '!!!!' in text or '????' in text:
+                intensity_multiplier *= 1.5
+            
+            # Combine scores (weight emojis higher)
+            combined_score = (word_based_score * 0.7) + (emoji_score * 0.3)
+            adjusted_score = max(-1.0, min(1.0, combined_score * intensity_multiplier))
+            
+            # Apply smoothing
+            if '...' in text or '..' in text:  # Hesitation reduces absolute sentiment
+                adjusted_score *= 0.7
+            
+            return adjusted_score
+            
+        except Exception as e:
+            logger.error(f"Sentiment analysis error: {e}")
+            return 0.0
+
+    @safe_execute
+    async def understand_context(self, message) -> Dict[str, Any]:
+        """Enhanced deep context understanding"""
+        try:
+            channel_id = message.channel.id
+            user_id = message.author.id
+            
+            # Get recent conversation context
+            recent_context = []
             async with aiosqlite.connect(self.db_path) as db:
-                await db.create_function("REGEXP", 2, self.regexp)
-                # Batch insert with Hinglish information
-                for triplet in triplets:
-                    (word_a, word_b, word_c, lemma_a, lemma_b, lemma_c, 
-                     pos_a, pos_b, pos_c, sent) = triplet
+                async with db.execute('''
+                    SELECT content, user_id, sentiment, intent, topics 
+                    FROM episodic_memory 
+                    WHERE channel_id = ? 
+                    ORDER BY timestamp DESC 
+                    LIMIT ?
+                ''', (channel_id, self.attention_span)) as cursor:
+                    recent_messages = await cursor.fetchall()
+                    recent_context = [{
+                        'content': row[0],
+                        'user_id': row[1],
+                        'sentiment': row[2],
+                        'intent': row[3],
+                        'topics': json.loads(row[4] or '[]')
+                    } for row in recent_messages]
+            
+            # Extract concepts and analyze
+            concepts = self.extract_concepts(message.content)
+            intent = self.detect_intent(message.content, [ctx['content'] for ctx in recent_context[:3]])
+            sentiment = self.analyze_sentiment(message.content)
+            
+            # Calculate message complexity
+            word_count = len(message.content.split())
+            complexity = min(1.0, word_count / 50)
+            
+            # Update user profile
+            await self.update_user_profile(user_id, message, intent, sentiment)
+            
+            # Update channel vibe
+            await self.update_channel_vibe(channel_id, message, intent, sentiment)
+            
+            # Determine conversation thread
+            conversation_id = await self.identify_conversation_thread(message, recent_context)
+            
+            # Calculate message importance
+            importance = self.calculate_importance(message, recent_context, concepts, intent, sentiment)
+            
+            # Build context info
+            context_info = {
+                'concepts': concepts,
+                'intent': intent,
+                'sentiment': sentiment,
+                'recent_context': recent_context,
+                'conversation_id': conversation_id,
+                'importance': importance,
+                'user_id': user_id,
+                'channel_id': channel_id,
+                'complexity': complexity,
+                'word_count': word_count,
+                'has_mention': self.bot.user in message.mentions,
+                'message_hash': self.generate_message_hash(message.content, {
+                    'concepts': concepts,
+                    'timestamp': message.created_at.isoformat(),
+                    'user_id': user_id
+                }),
+                'timestamp': message.created_at.isoformat()
+            }
+            
+            self.stats['messages_processed'] += 1
+            self.stats['conversations_understood'] += 1
+            
+            return context_info
+            
+        except Exception as e:
+            logger.error(f"Context understanding error: {e}")
+            await self._log_error("understand_context", str(e))
+            return {
+                'concepts': [],
+                'intent': 'unknown',
+                'sentiment': 0.0,
+                'recent_context': [],
+                'conversation_id': '',
+                'importance': 0.5,
+                'user_id': 0,
+                'channel_id': 0,
+                'complexity': 0.0,
+                'word_count': 0,
+                'has_mention': False,
+                'message_hash': '',
+                'timestamp': datetime.utcnow().isoformat()
+            }
+
+    @safe_execute
+    async def update_user_profile(self, user_id: int, message, intent: str, sentiment: float):
+        """Enhanced user profile updating"""
+        try:
+            username = str(message.author)
+            async with aiosqlite.connect(self.db_path) as db:
+                # Get existing profile
+                async with db.execute('SELECT * FROM user_memory WHERE user_id = ?', (user_id,)) as cursor:
+                    profile = await cursor.fetchone()
+                
+                if profile:
+                    # Update existing profile
+                    behavior = json.loads(profile[2] or '{}')
+                    topics = json.loads(profile[3] or '[]')
+                    style = json.loads(profile[4] or '{}')
+                    response_prefs = json.loads(profile[10] or '{}')
                     
-                    word_type = self.classify_word_type(word_a)
+                    # Update behavior patterns
+                    behavior[intent] = behavior.get(intent, 0) + 1
+                    
+                    # Update conversation style
+                    msg_len = len(message.content.split())
+                    style['avg_length'] = (style.get('avg_length', 0) * 0.9) + (msg_len * 0.1)
+                    style['sentiment_avg'] = (style.get('sentiment_avg', 0) * 0.9) + (sentiment * 0.1)
+                    style['response_time'] = style.get('response_time', 0) * 0.9 + 0.1
+                    
+                    # Update topics
+                    concepts = self.extract_concepts(message.content)
+                    for concept in concepts[:5]:
+                        if concept not in topics:
+                            topics.append(concept)
+                    
+                    # Update trust level
+                    trust_delta = 0.02 if sentiment > 0.3 else -0.01 if sentiment < -0.3 else 0.005
+                    new_trust = min(1.0, max(0.0, profile[6] + trust_delta))
+                    
+                    # Update relationship depth
+                    interaction_count = profile[8] + 1
+                    depth_increase = 0.01 * (1 + abs(sentiment))
+                    new_depth = min(1.0, profile[9] + depth_increase)
                     
                     await db.execute('''
-                        INSERT INTO markov_chain 
-                        (word_a, word_b, next_word, lemma_a, lemma_b, lemma_next,
-                         pos_a, pos_b, pos_next, sentiment_score, count, word_type)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-                        ON CONFLICT(word_a, word_b, next_word) 
-                        DO UPDATE SET 
-                            count = count + 1,
-                            last_used = CURRENT_TIMESTAMP,
-                            sentiment_score = ((sentiment_score * (count - 1)) + ?) / count
-                    ''', (word_a, word_b, word_c, lemma_a, lemma_b, lemma_c,
-                          pos_a, pos_b, pos_c, sent, word_type, sent))
-                
-                # Update user stats
-                await db.execute('''
-                    INSERT INTO user_stats (user_id, message_count, last_seen, emoji_usage, avg_sentiment)
-                    VALUES (?, 1, CURRENT_TIMESTAMP, ?, ?)
-                    ON CONFLICT(user_id) DO UPDATE SET
-                        message_count = message_count + 1,
-                        last_seen = CURRENT_TIMESTAMP,
-                        emoji_usage = emoji_usage + ?,
-                        avg_sentiment = ((avg_sentiment * (message_count - 1)) + ?) / message_count
-                ''', (author_id, emoji_count, sentiment, emoji_count, sentiment))
-                
-                if message and message.author:
+                        UPDATE user_memory SET 
+                            username = ?,
+                            behavior_pattern = ?,
+                            preferred_topics = ?,
+                            conversation_style = ?,
+                            trust_level = ?,
+                            last_interaction = ?,
+                            interaction_count = ?,
+                            sentiment_trend = sentiment_trend * 0.9 + ? * 0.1,
+                            relationship_depth = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE user_id = ?
+                    ''', (username, json.dumps(behavior), json.dumps(topics[:20]), 
+                          json.dumps(style), new_trust, datetime.utcnow().isoformat(),
+                          interaction_count, sentiment, new_depth, user_id))
+                else:
+                    # Create new profile
+                    behavior = {intent: 1}
+                    topics = self.extract_concepts(message.content)[:10]
+                    style = {
+                        'avg_length': len(message.content.split()),
+                        'sentiment_avg': sentiment,
+                        'formality': 0.3,
+                        'response_time': 1.0,
+                        'emoji_usage': 0.2
+                    }
+                    response_prefs = {}
+                    
                     await db.execute('''
-                        UPDATE user_stats 
-                        SET username = ? 
-                        WHERE user_id = ? AND (username IS NULL OR username != ?)
-                    ''', (str(message.author), author_id, str(message.author)))
-                
-                # Store message
-                await db.execute('''
-                    INSERT INTO message_log (content, author_id, channel_id, timestamp, 
-                                           emoji_count, sentiment, cleaned_content)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (content, author_id, message.channel.id if message else 0,
-                     message.created_at.isoformat() if message else datetime.utcnow().isoformat(),
-                     emoji_count, sentiment, clean_content))
+                        INSERT INTO user_memory 
+                        (user_id, username, behavior_pattern, preferred_topics, 
+                         conversation_style, trust_level, last_interaction, 
+                         interaction_count, sentiment_trend, relationship_depth, response_preferences)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                    ''', (user_id, username, json.dumps(behavior), json.dumps(topics),
+                          json.dumps(style), 0.5, datetime.utcnow().isoformat(),
+                          sentiment, 0.1, json.dumps(response_prefs)))
                 
                 await db.commit()
                 
-                self.stats['triplets_stored_today'] += len(triplets)
-                self.stats['emojis_learned'] += emoji_count
-                return len(triplets)
+                # Update cache
+                self.user_profiles[user_id] = {
+                    'trust': new_trust if profile else 0.5,
+                    'interaction_count': interaction_count if profile else 1,
+                    'last_interaction': datetime.utcnow()
+                }
                 
         except Exception as e:
-            logger.error(f"Training error: {e}")
-            return 0
+            logger.error(f"User profile update error: {e}")
 
-    async def generate_sentence(self, seed_word: Optional[str] = None,context_message: Optional[str] = None) -> Optional[str]:
-        """Generate sentence for Hinglish"""
-        if not await self.can_generate_reply():
-            return None
-        
+    @safe_execute
+    async def update_channel_vibe(self, channel_id: int, message, intent: str, sentiment: float):
+        """Enhanced channel vibe updating"""
         try:
+            server_id = message.guild.id if message.guild else 0
             
-            context_words = set()
-            if context_message:
-                # Simple clean and split
-                ignore_topics = {'lol', 'lmao', 'xd', 'ok', 'okay', 'ha', 'haha', 'hmm', 'accha', 'thik', 'han', 'yes', 'no', 'ded', 'rip'}
+            # Initialize vibe if needed
+            if channel_id not in self.server_mood:
+                self.server_mood[channel_id] = self.server_mood.default_factory()
+            
+            vibe = self.server_mood[channel_id]
+            
+            # Update energy (based on message frequency and length)
+            energy_delta = 0.015 if len(message.content.split()) > 8 else 0.005
+            vibe['energy'] = max(0, min(1, vibe['energy'] * 0.99 + energy_delta))
+            
+            # Update positivity with momentum
+            vibe['positivity'] = (vibe['positivity'] * 0.97) + (max(-0.5, min(1.0, sentiment)) * 0.03)
+            
+            # Update coherence (topic consistency)
+            concepts = self.extract_concepts(message.content)
+            if concepts and vibe['topics']:
+                # Check if continuing existing topics
+                existing_topics = set(vibe['topics'].keys())
+                current_topics = set(concepts)
+                overlap = len(existing_topics.intersection(current_topics)) / max(1, len(current_topics))
+                vibe['coherence'] = (vibe['coherence'] * 0.9) + (overlap * 0.1)
+            
+            # Update topics with decay
+            for concept in concepts[:5]:
+                vibe['topics'][concept] = vibe['topics'].get(concept, 0) * 0.95 + 1.0
+            
+            # Remove low-weight topics
+            to_remove = [topic for topic, weight in vibe['topics'].items() if weight < 0.1]
+            for topic in to_remove:
+                del vibe['topics'][topic]
+            
+            # Track active hour
+            hour = message.created_at.hour
+            vibe['active_hours'][hour] = vibe['active_hours'].get(hour, 0) + 1
+            
+            # Track user engagement
+            user_id = message.author.id
+            vibe['user_engagement'][user_id] = vibe['user_engagement'].get(user_id, 0) * 0.9 + 1.0
+            
+            # Track interaction pattern
+            vibe['interaction_patterns'][intent][user_id] += 1
+            
+            # Update conversation depth
+            word_count = len(message.content.split())
+            depth_delta = 0.01 if word_count > 15 else -0.005
+            vibe['conversation_depth'] = max(0, min(1, vibe['conversation_depth'] + depth_delta))
+            
+            # Store in database periodically
+            if self.stats['vibe_updates'] % 5 == 0:
+                async with aiosqlite.connect(self.db_path) as db:
+                    await db.execute('''
+                        INSERT OR REPLACE INTO server_vibes 
+                        (server_id, channel_id, vibe_snapshot, topic_distribution, 
+                         active_times, engagement_metrics, update_count)
+                        VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT update_count FROM server_vibes 
+                               WHERE server_id = ? AND channel_id = ?), 0) + 1)
+                    ''', (server_id, channel_id, 
+                          json.dumps({
+                              'energy': vibe['energy'],
+                              'positivity': vibe['positivity'],
+                              'formality': vibe['formality'],
+                              'coherence': vibe['coherence'],
+                              'responsiveness': vibe['responsiveness'],
+                              'conversation_depth': vibe['conversation_depth']
+                          }),
+                          json.dumps(dict(vibe['topics'])),
+                          json.dumps(dict(vibe['active_hours'])),
+                          json.dumps(dict(vibe['user_engagement'])),
+                          server_id, channel_id))
+                    await db.commit()
+            
+            self.stats['vibe_updates'] += 1
+            
+        except Exception as e:
+            logger.error(f"Channel vibe update error: {e}")
+
+    @safe_execute
+    async def identify_conversation_thread(self, message, recent_context: List[Dict]) -> str:
+        """Enhanced conversation thread identification"""
+        try:
+            if not recent_context:
+                return self.generate_message_hash(message.content)
+            
+            # Check recent messages for continuity
+            last_5_messages = recent_context[:5]
+            
+            # Check if same user continuing
+            same_user_messages = [msg for msg in last_5_messages if msg['user_id'] == message.author.id]
+            if same_user_messages:
+                last_user_msg = same_user_messages[0]
+                # Check topic overlap
+                user_topics = set(last_user_msg.get('topics', []))
+                current_topics = set(self.extract_concepts(message.content))
+                overlap = len(user_topics.intersection(current_topics))
                 
-                if context_message:
-                    cleaned = re.sub(r'[^\w\s]', '', context_message.lower())
-                    words = cleaned.split()
-                    if len(words) > 1:
-                        potential_context = set(words) - self.stop_words
-                        if not potential_context.issubset(ignore_topics):
-                            context_words = potential_context
-                            
-                        
-                context_words -= self.stop_words
+                if overlap > 0 or len(message.content.split()) < 10:
+                    # Continue same conversation
+                    async with aiosqlite.connect(self.db_path) as db:
+                        async with db.execute('''
+                            SELECT conversation_id FROM episodic_memory 
+                            WHERE channel_id = ? AND user_id = ? 
+                            ORDER BY timestamp DESC LIMIT 1
+                        ''', (message.channel.id, message.author.id)) as cursor:
+                            result = await cursor.fetchone()
+                            if result:
+                                return result[0]
+            
+            # Check if responding to bot
+            bot_messages = [msg for msg in last_5_messages if msg['user_id'] == self.bot.user.id]
+            if bot_messages and self.bot.user.id != message.author.id:
+                last_bot_msg = bot_messages[0]
+                # Check if this is a response to bot's question
+                if last_bot_msg.get('intent') in ['question', 'request']:
+                    async with aiosqlite.connect(self.db_path) as db:
+                        async with db.execute('''
+                            SELECT conversation_id FROM episodic_memory 
+                            WHERE message_hash = ?
+                        ''', (self.generate_message_hash(last_bot_msg['content']),)) as cursor:
+                            result = await cursor.fetchone()
+                            if result:
+                                return result[0]
+            
+            # Start new conversation thread
+            return self.generate_message_hash(f"{message.channel.id}_{message.author.id}_{datetime.utcnow().timestamp()}")
+            
+        except Exception as e:
+            logger.error(f"Conversation thread identification error: {e}")
+            return self.generate_message_hash(message.content)
+
+    def calculate_importance(self, message, context: List[Dict], concepts: List[str], intent: str, sentiment: float) -> float:
+        """Enhanced importance calculation"""
+        try:
+            importance = 0.5  # Base importance
+            
+            # Factor 1: Message length and complexity
+            word_count = len(message.content.split())
+            if word_count > 25:
+                importance += 0.25
+            elif word_count > 15:
+                importance += 0.15
+            elif word_count < 3:
+                importance -= 0.2
+            
+            # Factor 2: Intent importance
+            intent_weights = {
+                'question': 0.3,
+                'request': 0.25,
+                'strong_expression': 0.2,
+                'information': 0.15,
+                'greeting': 0.05,
+                'farewell': 0.05,
+                'unknown': -0.1
+            }
+            importance += intent_weights.get(intent, 0.1)
+            
+            # Factor 3: Emotional intensity
+            if abs(sentiment) > 0.7:
+                importance += 0.2
+            elif abs(sentiment) > 0.4:
+                importance += 0.1
+            
+            # Factor 4: Unique concepts
+            unique_concepts = len(set(concepts))
+            importance += min(0.15, unique_concepts * 0.03)
+            
+            # Factor 5: User mention
+            if self.bot.user in message.mentions:
+                importance += 0.3
+            
+            # Factor 6: Response to bot
+            if context and context[0].get('user_id') == self.bot.user.id:
+                importance += 0.15
+            
+            # Factor 7: Contains links or code
+            if 'http://' in message.content or 'https://' in message.content:
+                importance += 0.1
+            if '```' in message.content:
+                importance += 0.15
+            
+            # Factor 8: Capitalization (shouting)
+            if len(message.content) > 10 and message.content.isupper():
+                importance += 0.1
+            
+            return max(0.05, min(1.0, importance))
+            
+        except Exception as e:
+            logger.error(f"Importance calculation error: {e}")
+            return 0.5
+
+
+    def understand_hinglish(self, text: str) -> Dict[str, Any]:
+        """Actually understand Hinglish conversations"""
+        text_lower = text.lower()
+        
+        # Common Hinglish patterns
+        hinglish_patterns = {
+            # Questions
+            r'kya.*hai': 'what is',
+            r'kaise.*ho': 'how are you',
+            r'kab.*aaya': 'when did you come',
+            r'kahan.*hai': 'where is',
+            r'kyun.*nahi': 'why not',
+            
+            # Expressions
+            r'arre.*yaar': 'oh dude',
+            r'oh.*bhai': 'oh brother',
+            r'mast.*hai': 'is awesome',
+            r'jhakass.*hai': 'is amazing',
+            r'bekar.*hai': 'is useless',
+            
+            # Mixed sentences
+            r'(\w+)\s+(hai|hain|ho|tha|thi|the)\s+(\w+)': self._translate_hinglish_verb
+        }
+        
+        # Check if it's Hinglish
+        is_hinglish = False
+        for pattern in hinglish_patterns.keys():
+            if re.search(pattern, text_lower):
+                is_hinglish = True
+                break
+        
+        if not is_hinglish:
+            return {'is_hinglish': False, 'translation': text}
+        
+        # Translate common Hinglish phrases
+        translation = text_lower
+        
+        # Simple word mappings
+        hinglish_words = {
+            'kya': 'what', 'kaise': 'how', 'kab': 'when', 'kahan': 'where',
+            'kyun': 'why', 'kaun': 'who', 'kisne': 'who did', 'kisko': 'to whom',
+            'hai': 'is', 'hain': 'are', 'ho': 'are', 'tha': 'was', 'thi': 'was',
+            'the': 'were', 'bhai': 'bro', 'yaar': 'dude', 'dost': 'friend',
+            'pagal': 'crazy', 'mast': 'awesome', 'jhakass': 'amazing',
+            'bekar': 'useless', 'accha': 'good', 'kharab': 'bad',
+            'timepass': 'timepass', 'ghanta': 'nonsense', 'bhidu': 'dude',
+            'boss': 'boss', 'sahi': 'correct', 'galat': 'wrong'
+        }
+        
+        words = translation.split()
+        translated_words = []
+        for word in words:
+            if word in hinglish_words:
+                translated_words.append(hinglish_words[word])
+                is_hinglish = True
+            else:
+                translated_words.append(word)
+        
+        translation = ' '.join(translated_words)
+        
+        # Extract Hinglish emotion
+        hinglish_emotions = {
+            'yaar': 0.3, 'bhai': 0.4, 'mast': 0.8, 'jhakass': 0.9,
+            'bekar': -0.6, 'pagal': -0.3, 'ghanta': -0.7, 'timepass': 0.1,
+            'accha': 0.7, 'kharab': -0.7, 'sahi': 0.6, 'galat': -0.6
+        }
+        
+        emotion_score = 0.0
+        emotion_words = []
+        for word, score in hinglish_emotions.items():
+            if word in text_lower:
+                emotion_score += score
+                emotion_words.append(word)
+        
+        if emotion_words:
+            emotion_score = emotion_score / len(emotion_words)
+        
+        return {
+            'is_hinglish': True,
+            'original': text,
+            'translation': translation,
+            'emotion_score': emotion_score,
+            'emotion_words': emotion_words,
+            'language_mix': 'hindi_english'
+        }
+    
+    def _translate_hinglish_verb(self, match):
+        """Translate Hinglish verb patterns"""
+        subject = match.group(1)
+        verb = match.group(2)
+        object_word = match.group(3)
+        
+        verb_map = {
+            'hai': 'is', 'hain': 'are', 'ho': 'are',
+            'tha': 'was', 'thi': 'was', 'the': 'were'
+        }
+        
+        translated_verb = verb_map.get(verb, verb)
+        return f"{subject} {translated_verb} {object_word}"
+
+
+    @safe_execute
+    async def store_memory(self, message, context_info: Dict):
+        """Enhanced memory storage"""
+        try:
             async with aiosqlite.connect(self.db_path) as db:
-                await db.create_function("REGEXP", 2, self.regexp)
-                db.row_factory = aiosqlite.Row
+                # Store episodic memory
+                await db.execute('''
+                    INSERT OR REPLACE INTO episodic_memory 
+                    (channel_id, user_id, message_hash, content, timestamp, 
+                     context_before, context_after, topics, sentiment, 
+                     intent, importance, conversation_id, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    context_info['channel_id'],
+                    context_info['user_id'],
+                    context_info['message_hash'],
+                    message.content,
+                    message.created_at.isoformat(),
+                    json.dumps([msg['content'] for msg in context_info['recent_context'][:3]]),
+                    '[]',
+                    json.dumps(context_info['concepts']),
+                    context_info['sentiment'],
+                    context_info['intent'],
+                    context_info['importance'],
+                    context_info['conversation_id'],
+                    json.dumps({
+                        'word_count': context_info['word_count'],
+                        'complexity': context_info['complexity'],
+                        'has_mention': context_info['has_mention']
+                    })
+                ))
                 
-                # Get current context
-                current_sentiment = self.conversation_sentiment
-                topic_keywords = [kw for kw, _ in self.current_topic_keywords]
-                
-                # Get starting pair
-                start_pair = None
-                
-                if seed_word and len(seed_word) >= self.SEED_WORD_MIN_LENGTH:
-                    # Try with seed word
-                    query = '''
-                        SELECT word_a, word_b, lemma_a, lemma_b, pos_a, pos_b, count, 
-                            sentiment_score, topic_weight FROM markov_chain 
-                        WHERE (LOWER(word_a) = LOWER(?) OR LOWER(word_b) = LOWER(?))
-                        AND word_type != 'emoji'
-                    '''
+                # Update semantic memory
+                for concept in context_info['concepts'][:5]:
+                    concept_hash = hashlib.md5(concept.encode()).hexdigest()
                     
-                    if self.TOPIC_COHERENCE and topic_keywords:
-                        topic_condition = " OR ".join([f"word_a LIKE ? OR word_b LIKE ?" 
-                                                    for _ in topic_keywords])
-                        query += f" AND ({topic_condition})"
-                        params = [seed_word, seed_word]
-                        for kw in topic_keywords:
-                            params.extend([f"%{kw}%", f"%{kw}%"])
+                    # Get existing concept
+                    async with db.execute('SELECT * FROM semantic_memory WHERE concept_hash = ?', (concept_hash,)) as cursor:
+                        existing = await cursor.fetchone()
+                    
+                    if existing:
+                        # Update existing concept
+                        associations = json.loads(existing[2] or '[]')
+                        context_tags = json.loads(existing[7] or '[]')
+                        
+                        # Add new context if not present
+                        if context_info['intent'] not in context_tags:
+                            context_tags.append(context_info['intent'])
+                        
+                        await db.execute('''
+                            UPDATE semantic_memory SET
+                                strength = MIN(10.0, strength + 0.2),
+                                access_count = access_count + 1,
+                                last_accessed = CURRENT_TIMESTAMP,
+                                emotional_weight = (emotional_weight * 0.9) + (? * 0.1),
+                                context_tags = ?,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE concept_hash = ?
+                        ''', (context_info['sentiment'], json.dumps(context_tags[:10]), concept_hash))
                     else:
-                        params = [seed_word, seed_word]
-                    
-                    query += " ORDER BY (count * COALESCE(topic_weight, 1)) DESC LIMIT 10"
-                    
-                    async with db.execute(query, params) as cursor:
-                        candidates = await cursor.fetchall()
-                        
-                        if candidates:
-                            weights = []
-                            for row in candidates:
-                                weight = row['count']
-                                
-                                if self.SENTIMENT_MATCHING:
-                                    sentiment_diff = abs(row['sentiment_score'] - current_sentiment)
-                                    sentiment_factor = 1.0 - min(sentiment_diff, 1.0)
-                                    weight *= sentiment_factor
-                                
-                                if self.TOPIC_COHERENCE and row['topic_weight']:
-                                    weight *= row['topic_weight']
-                                
-                                weights.append(weight)
-                            
-                            if sum(weights) > 0:
-                                start_pair = random.choices(candidates, weights=weights)[0]
+                        # Create new concept
+                        await db.execute('''
+                            INSERT INTO semantic_memory 
+                            (concept_hash, concept, associations, strength, access_count, 
+                             emotional_weight, context_tags, language)
+                            VALUES (?, ?, ?, 1.0, 1, ?, ?, ?)
+                        ''', (concept_hash, concept, json.dumps([]), 
+                              context_info['sentiment'], 
+                              json.dumps([context_info['intent']]),
+                              'en'))
                 
-                if not start_pair and context_message:
-                    # Extract meaningful words from context
-                    clean_context = re.sub(r'[^\w\s@#:]', ' ', context_message)
-                    words = clean_context.lower().split()
-                    
-                    context_words = [w for w in words 
-                                if len(w) >= 3  # Reduced for Hindi
-                                and not w.startswith(('@', '#', ':'))
-                                and not re.match(r'^\d+$', w)
-                                and w not in self.stop_words]
-                    
-                    # Try context words
-                    for context_word in context_words[:5]:
-                        query = '''
-                            SELECT word_a, word_b, lemma_a, lemma_b, pos_a, pos_b, count,
-                                sentiment_score, topic_weight FROM markov_chain 
-                            WHERE (LOWER(word_a) = LOWER(?) OR LOWER(word_b) = LOWER(?))
-                            AND word_type != 'emoji'
-                        '''
-                        
-                        if self.TOPIC_COHERENCE and topic_keywords:
-                            topic_condition = " OR ".join([f"word_a LIKE ? OR word_b LIKE ?" 
-                                                        for _ in topic_keywords])
-                            query += f" AND ({topic_condition})"
-                            params = [context_word, context_word]
-                            for kw in topic_keywords:
-                                params.extend([f"%{kw}%", f"%{kw}%"])
-                        else:
-                            params = [context_word, context_word]
-                        
-                        query += " ORDER BY count DESC LIMIT 5"
-                        
-                        async with db.execute(query, params) as cursor:
-                            candidates = await cursor.fetchall()
-                            if candidates:
-                                start_pair = random.choice(candidates)
-                                break
-                
-                if not start_pair:
-                    # Get random starting pair
-                    query = '''
-                        SELECT word_a, word_b, lemma_a, lemma_b, pos_a, pos_b, count,
-                            sentiment_score, topic_weight FROM markov_chain 
-                        WHERE word_type != 'emoji'
-                        AND LENGTH(word_a) > 1 AND LENGTH(word_b) > 1
-                    '''
-                    
-                    params = []
-                    if self.SENTIMENT_MATCHING:
-                        query += " ORDER BY ABS(sentiment_score - ?) ASC, RANDOM()"
-                        params.append(current_sentiment)
-                    else:
-                        query += " ORDER BY RANDOM()"
-                    
-                    query += " LIMIT 10"
-                    
-                    async with db.execute(query, params) as cursor:
-                        candidates = await cursor.fetchall()
-                        if candidates:
-                            weights = [row['count'] for row in candidates]
-                            if sum(weights) > 0:
-                                start_pair = random.choices(candidates, weights=weights)[0]
-                
-                if not start_pair:
-                    return None
-                
-                # Build sentence
-                
-                sentence_words = [start_pair['word_a'], start_pair['word_b']]
-                sentence_pos = [start_pair['pos_a'], start_pair['pos_b']]
-                emoji_count = 0
-                max_attempts = self.SENTENCE_MAX_WORDS * 3
-                input_len = len(context_message.split()) if context_message else 5
-                target_len = max(4, min(25, int(input_len * random.uniform(0.8, 1.5))))
-                for _ in range(max_attempts):
-                    if len(sentence_words) >= target_len and random.random() < 0.5:
-                        break
-                    
-                    w1, w2 = sentence_words[-2], sentence_words[-1]
-                    pos2 = sentence_pos[-1]
-                    
-                    # Get next word options
-                    query = '''
-                        SELECT next_word, lemma_next, pos_next, count, word_type,
-                            sentiment_score, topic_weight FROM markov_chain 
-                        WHERE word_a = ? AND word_b = ?
-                    '''
-                    
-                    params = [w1, w2]
-                    
-                    if self.GRAMMAR_ENFORCEMENT:
-                        allowed_pos = self.POS_TRANSITION_RULES.get(pos2, [])
-                        if allowed_pos:
-                            placeholders = ','.join(['?'] * len(allowed_pos))
-                            query += f" AND pos_next IN ({placeholders})"
-                            params.extend(allowed_pos)
-                    
-                    query += " ORDER BY (count * COALESCE(topic_weight, 1)) DESC LIMIT 15"
-                    
-                    async with db.execute(query, params) as cursor:
-                        options = await cursor.fetchall()
-                    
-                    if not options:
-                        # Fallback
-                        query = '''
-                            SELECT next_word, lemma_next, pos_next, count, word_type,
-                                sentiment_score, topic_weight FROM markov_chain 
-                            WHERE word_b = ?
-                        '''
-                        params = [w2]
-                        
-                        if self.GRAMMAR_ENFORCEMENT and allowed_pos:
-                            placeholders = ','.join(['?'] * len(allowed_pos))
-                            query += f" AND pos_next IN ({placeholders})"
-                            params.extend(allowed_pos)
-                        
-                        query += " ORDER BY count DESC LIMIT 10"
-                        
-                        async with db.execute(query, params) as cursor:
-                            options = await cursor.fetchall()
-                    
-                    if not options:
-                        break
-                    
-                    # Filter and weight options
-                    filtered_options = []
-                    weights = []
-                    
-                    for option in options:
-                        word_type = option['word_type']
-                        next_word = option['next_word']
-                        next_pos = option['pos_next']
-                        
-                        if not next_word or len(next_word.strip()) == 0:
-                            continue
-                        
-                        if word_type == 'emoji' and emoji_count >= self.MAX_REPLY_EMOJIS:
-                            continue
-                        
-                        if len(sentence_words) >= 1 and next_word == sentence_words[-1]:
-                            continue
-                        
-                        weight = option['count']
-                        
-                        if self.SENTIMENT_MATCHING:
-                            sentiment_diff = abs(option['sentiment_score'] - current_sentiment)
-                            sentiment_factor = 1.0 - min(sentiment_diff, 1.0)
-                            weight *= sentiment_factor
-                        
-                        if self.TOPIC_COHERENCE and option['topic_weight']:
-                            weight *= option['topic_weight']
-                        
-                        if self.GRAMMAR_ENFORCEMENT:
-                            if not self.is_valid_pos_transition(pos2, next_pos):
-                                weight *= 0.5
-                        
-                        is_short_input = len(context_message.split()) < 3 if context_message else True
-                        is_exact_echo = False
-                        if is_short_input and context_message:
-                            if option['next_word'].strip().lower() == context_message.strip().lower():
-                                is_exact_echo = True
-
-                        if option['next_word'].lower() in context_words:
-                            weight *= 3.0 
-                    
-                        if is_exact_echo:
-                            weight *= 0.05
-                        
-                        filtered_options.append(option)
-                        weights.append(weight)
-                    
-                    if not filtered_options:
-                        filtered_options = options[:3]
-                        weights = [opt['count'] for opt in filtered_options]
-                    
-                    # Weighted random selection
-                    if sum(weights) == 0:
-                        next_choice = random.choice(filtered_options)
-                    else:
-                        next_choice = random.choices(filtered_options, weights=weights)[0]
-                    
-                    if next_choice['word_type'] == 'emoji':
-                        emoji_count += 1
-                    
-                    sentence_words.append(next_choice['next_word'])
-                    sentence_pos.append(next_choice['pos_next'])
-                    
-                    # Check for natural ending (punctuation)
-                    if next_choice['next_word'].endswith(('.', '!', '?')):
-                        if len(sentence_words) >= 5 and random.random() < 0.6:
-                            break
-                    # Also check if next word is an emoji and consider ending there
-                    elif next_choice['word_type'] == 'emoji':
-                        # If we have a decent length and last word is emoji, maybe end
-                        if len(sentence_words) >= 4 and random.random() < 0.3:
-                            break
-                    
-                    # Length-based stopping
-                    if len(sentence_words) >= 8 and random.random() < 0.3:
-                        break
-                    
-                    if len(sentence_words) >= self.SENTENCE_MAX_WORDS:
-                        break
-                
-                # Convert to readable text
-                readable_sentence = []
-                
-                for i, word in enumerate(sentence_words):
-                    if word.startswith(':emoji_'):
-                        emoji_name = word[7:-1] if word.endswith(':') else word[7:]
-                        try:
-                            # Unicode emojis: Add a trailing space inside the token
-                            emoji_char = emoji.emojize(f":{emoji_name}:", language='alias')
-                            readable_sentence.append(emoji_char)
-                        except:
-                            readable_sentence.append(f":{emoji_name}:")
-                    
-                    elif word.startswith('<:') and word.endswith('>'):
-                        # This is our stored custom emoji tag - KEEP AS-IS
-                        readable_sentence.append(word)
-                    
-                    elif word.startswith('@USER_'):
-                        user_id = word[6:]
-                        readable_sentence.append(f"<@{user_id}>")
-                    
-                    else:
-                        if i == 0 and word[0].islower():
-                            word = word[0].upper() + word[1:]
-                        readable_sentence.append(word)
-                
-                # Assemble final sentence with FORCED space after emojis
-                result = ''
-                for i, token in enumerate(readable_sentence):
-                    if i == 0:
-                        result = token
-                    else:
-                        prev_token = readable_sentence[i-1]
-                        
-                        # Determine if previous token was an emoji
-                        # Checks for Discord tags <:name:id> or Unicode emojis
-                        is_prev_emoji = (
-                            (prev_token.startswith('<:') and prev_token.endswith('>')) or
-                            any(char in emoji.EMOJI_DATA for char in prev_token)
-                        )
-
-                        if is_prev_emoji:
-                            # ALWAYS add space after emoji
-                            result += ' ' + token
-                        elif token in ['.', ',', '!', '?', ':', ';']:
-                            # Keep punctuation attached to normal words
-                            result += token 
-                        else:
-                            result += ' ' + token
-                
-                # Clean up
-                result = re.sub(r'\s+', ' ', result).strip()
-                result = re.sub(r'(<@\d+>|:[a-zA-Z0-9_]+:)([a-zA-Z])', r'\1 \2', result)
-                
-                if result and result[0].islower():
-                    result = result[0].upper() + result[1:]
-                
-                # Helper function to check if text ends with emoji
-                def ends_with_emoji(text: str) -> bool:
-                    """Check if text ends with an emoji"""
-                    if not text:
-                        return False
-                    
-                    text = text.strip()
-                    
-                    # Check for Discord emoji at the end
-                    if text.endswith('>'):
-                        discord_match = re.search(r'<a?:[\w]+:\d+>$', text)
-                        if discord_match:
-                            return True
-                    
-                    # Check for Unicode emoji at the end
-                    if text:
-                        last_char = text[-1]
-                        if last_char in emoji.EMOJI_DATA:
-                            return True
-                    
-                    return False
-                
-                # Add punctuation (but NOT if message ends with an emoji)
-                if result and not result[-1] in '.!?;' and not ends_with_emoji(result):
-                    last_words = result.lower().split()[-2:]
-                    
-                    question_words = ['what', 'why', 'how', 'when', 'who', 'where', 'which', 'whose',
-                                    'kya', 'kaise', 'kyun', 'kab', 'kahan', 'kaun']  # Hindi question words
-                    
-                    if any(word in last_words for word in question_words):
-                        result += '?'
-                    elif (any(word in last_words for word in ['wow', 'awesome', 'amazing', 'great', 'yes',
-                                                            'acha', 'badhiya', 'mast', 'nice', 'good', 'sahi']) or
-                        current_sentiment > 0.3):
-                        result += '!'
-                    else:
-                        result += '.'
-                
-                # Final validation
-                words_in_result = result.split()
-                if len(words_in_result) < 3:
-                    # Check if it has emojis - emoji-only messages can be shorter
-                    emoji_count = 0
-                    for word in words_in_result:
-                        if (word.startswith('<:') and word.endswith('>')) or (word in emoji.EMOJI_DATA):
-                            emoji_count += 1
-                    
-                    # Allow messages with emojis to be shorter
-                    if emoji_count == 0:
-                        return None
-                    elif len(words_in_result) < 2:  # At least 2 items if mostly emojis
-                        return None
-                
-                result = re.sub(r'(?<![:>])\s+([.!?,;])', r'\1', result)
-                result = self.humanize_response(result, current_sentiment)
-                return result
+                await db.commit()
+                self.stats['memory_recalls'] += 1
                 
         except Exception as e:
-            logger.error(f"Generation error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+            logger.error(f"Memory storage error: {e}")
+
+    @rate_limit(max_calls=3, period=10)
+    @safe_execute
+    async def generate_conscious_reply(self, message, context_info: Dict) -> Optional[str]:
+        """REAL conscious reply generation - thinks about conversation"""
+        try:
+            # 1. Get conversation memories
+            relevant_memories = await self.recall_relevant_memories(message, context_info)
+            
+            # 2. Build enhanced understanding
+            conversation_context = await self._build_conversation_context(
+                message, context_info, relevant_memories, message.author.display_name
+            )
+            
+            # 3. Decide if we should reply (like a human would)
+            should_reply, reply_style = await self._decide_to_reply(conversation_context)
+            
+            if not should_reply:
+                # Sometimes the most human thing is to not reply
+                return None
+            
+            # 4. Generate response with actual thinking
+            reply = await self.construct_response(
+                message, context_info, relevant_memories, 
+                reply_style, message.author.display_name
+            )
+            
+            if not reply or len(reply.strip()) == 0:
+                return None
+            
+            # 5. Ensure safe length
+            reply = reply[:self.max_response_length]
+            
+            # 6. Update consciousness based on REAL conversation
+            self._update_conversation_intelligence(conversation_context, reply)
+            
+            self.stats['context_aware_replies'] += 1
+            
+            return reply
+            
+        except Exception as e:
+            logger.error(f"Conscious reply generation error: {e}")
+            self.stats['failed_responses'] += 1
+            await self._log_error("generate_reply", str(e))
             return None
 
+    async def _decide_to_reply(self, context: ConversationContext) -> Tuple[bool, str]:
+        """Decide if and how to reply like a human"""
+        # Always reply if directly mentioned
+        if context.is_directed_at_me:
+            return True, 'direct'
+        
+        # Check conversation history
+        conversation_key = f"{context.channel_id}_{context.user_id}"
+        recent_replies = self.conversation_history.get(conversation_key, deque(maxlen=5))
+        
+        # Don't reply too much to same person
+        if len(recent_replies) > 3:
+            return False, 'silent'
+        
+        # Base probability
+        base_chance = 0.2
+        
+        # Increase if they asked a question
+        if context.contains_question:
+            base_chance = 0.7
+        
+        # Increase if emotional
+        if abs(context.sentiment) > 0.6:
+            base_chance = 0.6
+        
+        # Decrease if vibe is low energy
+        if context.vibe.get('energy', 0.5) < 0.3:
+            base_chance *= 0.5
+        
+        # Decide
+        if random.random() < base_chance:
+            # Choose style
+            if context.sentiment > 0.5:
+                style = 'positive'
+            elif context.sentiment < -0.5:
+                style = 'empathetic'
+            elif context.contains_question:
+                style = 'helpful'
+            else:
+                style = 'conversational'
+            
+            return True, style
+        
+        return False, 'silent'
 
-    async def can_generate_reply(self):
-        """Check if we have enough data"""
-        return self.stats['total_triplets'] >= self.MIN_TRIPLETS_FOR_REPLY
+    def _update_conversation_intelligence(self, context: ConversationContext, reply: str):
+        """Update bot's understanding of conversation"""
+        # Track this conversation
+        conversation_key = f"{context.channel_id}_{context.user_id}"
+        self.conversation_history[conversation_key].append({
+            'timestamp': datetime.utcnow(),
+            'user_message': context.raw_message[:100],
+            'bot_reply': reply[:100],
+            'sentiment': context.sentiment,
+            'goal': context.goal.value
+        })
+        
+        # Update emotional state based on REAL interaction
+        if context.sentiment < -0.5:
+            self.consciousness['emotional_state']['empathy'] = min(1.0, 
+                self.consciousness['emotional_state']['empathy'] + 0.1
+            )
+        elif context.sentiment > 0.5:
+            self.consciousness['emotional_state']['valence'] = min(1.0,
+                self.consciousness['emotional_state']['valence'] + 0.05
+            )
+        
+        # Update cognitive load based on conversation depth
+        if context.conversation_depth > 0.7:
+            self.consciousness['cognitive_load'] = min(1.0,
+                self.consciousness['cognitive_load'] + 0.02
+            )
 
-    # --- DISCORD EVENT HANDLERS WITH ANTI-SPAM ---
+    @safe_execute
+    async def recall_relevant_memories(self, message, context_info: Dict) -> List[Dict]:
+        """Enhanced memory recall with multiple strategies"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                relevant_memories = []
+                
+                # Strategy 1: Recall by conversation thread (most recent)
+                async with db.execute('''
+                    SELECT content, sentiment, intent, topics, importance
+                    FROM episodic_memory 
+                    WHERE conversation_id = ? 
+                    ORDER BY timestamp DESC 
+                    LIMIT 8
+                ''', (context_info['conversation_id'],)) as cursor:
+                    conversation_memories = await cursor.fetchall()
+                    for mem in conversation_memories:
+                        relevant_memories.append({
+                            'type': 'conversation',
+                            'content': mem[0],
+                            'sentiment': mem[1],
+                            'intent': mem[2],
+                            'topics': json.loads(mem[3] or '[]'),
+                            'importance': mem[4],
+                            'recency': 1.0
+                        })
+                
+                # Strategy 2: Recall by semantic similarity (concepts)
+                for concept in context_info['concepts'][:4]:
+                    async with db.execute('''
+                        SELECT em.content, em.sentiment, em.intent, em.importance
+                        FROM episodic_memory em
+                        WHERE em.topics LIKE ? 
+                        AND em.importance > 0.3
+                        ORDER BY em.importance DESC, em.timestamp DESC
+                        LIMIT 2
+                    ''', (f'%{concept}%',)) as cursor:
+                        semantic_memories = await cursor.fetchall()
+                        for mem in semantic_memories:
+                            relevant_memories.append({
+                                'type': 'semantic',
+                                'content': mem[0],
+                                'sentiment': mem[1],
+                                'intent': mem[2],
+                                'importance': mem[3],
+                                'concept': concept,
+                                'recency': 0.7
+                            })
+                
+                # Strategy 3: Recall by user history
+                async with db.execute('''
+                    SELECT content, intent, sentiment, importance, timestamp
+                    FROM episodic_memory 
+                    WHERE user_id = ? 
+                    AND sentiment * ? > 0  # Same sentiment direction
+                    ORDER BY importance DESC, timestamp DESC
+                    LIMIT 4
+                ''', (context_info['user_id'], context_info['sentiment'])) as cursor:
+                    user_memories = await cursor.fetchall()
+                    for mem in user_memories:
+                        relevant_memories.append({
+                            'type': 'user',
+                            'content': mem[0],
+                            'intent': mem[1],
+                            'sentiment': mem[2],
+                            'importance': mem[3],
+                            'recency': 0.8
+                        })
+                
+                # Strategy 4: Recall similar intents
+                async with db.execute('''
+                    SELECT content, sentiment, topics
+                    FROM episodic_memory 
+                    WHERE intent = ? 
+                    AND ABS(sentiment - ?) < 0.5
+                    AND channel_id = ?
+                    ORDER BY timestamp DESC
+                    LIMIT 3
+                ''', (context_info['intent'], context_info['sentiment'], context_info['channel_id'])) as cursor:
+                    intent_memories = await cursor.fetchall()
+                    for mem in intent_memories:
+                        relevant_memories.append({
+                            'type': 'intent',
+                            'content': mem[0],
+                            'sentiment': mem[1],
+                            'topics': json.loads(mem[2] or '[]'),
+                            'recency': 0.6
+                        })
+                
+                # Deduplicate and sort by relevance score
+                unique_memories = {}
+                for mem in relevant_memories:
+                    key = (mem['type'], mem.get('content', '')[:50])
+                    if key not in unique_memories:
+                        unique_memories[key] = mem
+                    else:
+                        # Keep the one with higher recency
+                        if mem.get('recency', 0) > unique_memories[key].get('recency', 0):
+                            unique_memories[key] = mem
+                
+                # Calculate relevance score and sort
+                scored_memories = []
+                for mem in unique_memories.values():
+                    score = mem.get('importance', 0.5) * 0.4 + mem.get('recency', 0.5) * 0.6
+                    if mem['type'] == 'conversation':
+                        score *= 1.2
+                    scored_memories.append((score, mem))
+                
+                scored_memories.sort(reverse=True, key=lambda x: x[0])
+                return [mem for _, mem in scored_memories[:12]]  # Limit to 12 most relevant
+                
+        except Exception as e:
+            logger.error(f"Memory recall error: {e}")
+            return []
+
+    @safe_execute
+    async def get_user_profile(self, user_id: int) -> Dict:
+        """Get enhanced user profile"""
+        try:
+            # Check cache first
+            if user_id in self.user_profiles:
+                cached = self.user_profiles[user_id]
+                if (datetime.utcnow() - cached['last_interaction']).total_seconds() < 300:
+                    return cached
+            
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute('''
+                    SELECT behavior_pattern, preferred_topics, conversation_style,
+                           trust_level, interaction_count, sentiment_trend,
+                           relationship_depth, response_preferences
+                    FROM user_memory WHERE user_id = ?
+                ''', (user_id,)) as cursor:
+                    profile = await cursor.fetchone()
+                
+                if profile:
+                    result = {
+                        'behavior': json.loads(profile[0] or '{}'),
+                        'topics': json.loads(profile[1] or '[]'),
+                        'style': json.loads(profile[2] or '{}'),
+                        'trust': profile[3],
+                        'interaction_count': profile[4],
+                        'sentiment_trend': profile[5],
+                        'relationship_depth': profile[6],
+                        'response_preferences': json.loads(profile[7] or '{}'),
+                        'last_interaction': datetime.utcnow()
+                    }
+                    
+                    # Update cache
+                    self.user_profiles[user_id] = result
+                    return result
+            
+            return {}
+            
+        except Exception as e:
+            logger.error(f"User profile fetch error: {e}")
+            return {}
+
+    def determine_response_style(self, context: Dict, vibe: Dict, user_profile: Dict) -> Dict:
+        """Enhanced response style determination"""
+        style = {
+            'formality': 0.3,
+            'enthusiasm': 0.5,
+            'depth': 0.5,
+            'humor': 0.2,
+            'empathy': 0.5,
+            'brevity': 0.5,
+            'technicality': 0.1,
+            'creativity': 0.3
+        }
+        
+        # Adjust based on channel vibe
+        if vibe:
+            style['formality'] = vibe.get('formality', 0.3)
+            style['enthusiasm'] = vibe.get('energy', 0.5)
+            style['depth'] = vibe.get('conversation_depth', 0.5)
+            style['creativity'] = vibe.get('coherence', 0.5) * 0.8
+            
+            # Higher coherence allows for more creative responses
+            if vibe.get('coherence', 0.5) > 0.7:
+                style['creativity'] += 0.2
+        
+        # Adjust based on user profile
+        if user_profile:
+            user_style = user_profile.get('style', {})
+            style['formality'] = (style['formality'] + user_style.get('formality', 0.3)) / 2
+            
+            # Higher trust = more empathy and depth
+            trust = user_profile.get('trust', 0.5)
+            style['empathy'] = min(1.0, style['empathy'] + (trust * 0.4))
+            style['depth'] = min(1.0, style['depth'] + (trust * 0.3))
+            
+            # More interactions = more personalized
+            interactions = user_profile.get('interaction_count', 0)
+            if interactions > 20:
+                style['personalization'] = 0.8
+            elif interactions > 5:
+                style['personalization'] = 0.5
+            else:
+                style['personalization'] = 0.2
+        
+        # Adjust based on message intent
+        intent = context['intent']
+        if intent == 'question':
+            style['depth'] = 0.8
+            style['brevity'] = 0.3  # Questions deserve detailed answers
+        elif intent == 'request':
+            style['empathy'] = 0.7
+            style['brevity'] = 0.7  # Requests should be clear and concise
+        elif intent in ['strong_expression', 'positive_expression', 'negative_expression']:
+            style['empathy'] = 0.9
+            style['enthusiasm'] = 0.7 if 'positive' in intent else 0.3
+        elif intent == 'humor':
+            style['humor'] = 0.8
+            style['creativity'] = 0.7
+        
+        # Adjust based on sentiment
+        sentiment = context['sentiment']
+        if sentiment > 0.6:
+            style['enthusiasm'] = 0.9
+            style['humor'] = min(1.0, style['humor'] + 0.3)
+        elif sentiment < -0.6:
+            style['empathy'] = 0.9
+            style['humor'] = 0.0
+            style['enthusiasm'] = 0.2
+        
+        # Adjust based on complexity
+        complexity = context.get('complexity', 0.5)
+        if complexity > 0.7:
+            style['depth'] = 0.9
+            style['technicality'] = 0.4
+        elif complexity < 0.3:
+            style['brevity'] = 0.8
+            style['depth'] = 0.3
+        
+        # Ensure all values are within bounds
+        for key in style:
+            style[key] = max(0.0, min(1.0, style[key]))
+        
+        return style
+
+    async def _generate_greeting_response(self, message, context, memories, style, user_name):
+        """Generate greeting response"""
+        greetings = [
+            f"Hey {user_name}! 👋 How's everything going?",
+            f"Hello {user_name}! Good to see you!",
+            f"Hi there {user_name}! What's on your mind today?",
+            f"Hey {user_name}! How's your day been so far?",
+            f"Greetings {user_name}! 👋 Nice to chat with you!",
+            f"Hi {user_name}! 😊 What brings you here today?",
+            f"Hey {user_name}! Hope you're having a good one!"
+        ]
+        
+        # Check for time of day
+        hour = datetime.utcnow().hour
+        if 5 <= hour < 12:
+            greetings.extend([
+                f"Good morning {user_name}! ☀️",
+                f"Morning {user_name}! Ready for the day?"
+            ])
+        elif 12 <= hour < 17:
+            greetings.extend([
+                f"Good afternoon {user_name}!",
+                f"Afternoon {user_name}! How's your day going?"
+            ])
+        elif 17 <= hour < 22:
+            greetings.extend([
+                f"Good evening {user_name}! 🌙",
+                f"Evening {user_name}! How was your day?"
+            ])
+        else:
+            greetings.extend([
+                f"Late night for you too, {user_name}? 🌃",
+                f"Hi {user_name}! Burning the midnight oil?"
+            ])
+        
+        # Check if we have recent history with user
+        user_memories = [m for m in memories if m['type'] == 'user']
+        if user_memories:
+            last_memory = user_memories[0]
+            if last_memory.get('sentiment', 0) > 0.3:
+                return f"Hey {user_name}! Good to see you again! I remember our last chat was quite positive. 😊"
+            elif 'content' in last_memory:
+                # Reference previous conversation
+                concepts = context['concepts'][:2]
+                if concepts:
+                    return f"Hi {user_name}! We were discussing {', '.join(concepts)} last time. Want to continue?"
+        
+        return random.choice(greetings)
+
+    async def _generate_question_response(self, message, context, memories, style, user_name):
+        """Generate response to questions"""
+        # Try to find relevant information in memories
+        relevant_info = []
+        question_concepts = set(context['concepts'])
+        
+        for memory in memories:
+            if memory['type'] in ['semantic', 'conversation', 'intent']:
+                # Check topic overlap
+                memory_topics = set(memory.get('topics', []))
+                overlap = len(question_concepts.intersection(memory_topics))
+                
+                if overlap > 0 or memory['type'] == 'conversation':
+                    relevant_info.append(memory)
+        
+        if relevant_info:
+            # Sort by relevance
+            relevant_info.sort(key=lambda x: (
+                x.get('importance', 0.5) * 0.5 + 
+                x.get('recency', 0.5) * 0.5
+            ), reverse=True)
+            
+            best_memory = relevant_info[0]
+            
+            # Generate response based on memory
+            responses = [
+                f"Based on what I remember, {best_memory['content'].lower()}",
+                f"I recall that {best_memory['content'].lower()}",
+                f"From previous discussions, {best_memory['content'].lower()}",
+                f"Interesting question! I think {best_memory['content'].lower()}",
+                f"Good question! {best_memory['content'].capitalize()}"
+            ]
+            
+            response = random.choice(responses)
+            
+            # Add uncertainty if sentiment is neutral
+            if abs(best_memory.get('sentiment', 0)) < 0.3 and random.random() < 0.3:
+                response += " But I'm not entirely sure about that."
+            
+            return response
+        
+        # No relevant memories - generate thoughtful response
+        generic_responses = [
+            f"That's an interesting question, {user_name}. What are your thoughts on it?",
+            f"I'm not entirely sure about that, but I'd love to hear your perspective!",
+            f"Hmm, that makes me think. What's your take on it, {user_name}?",
+            f"Good question! I'm still learning about that topic.",
+            f"I don't have a definite answer, but here's what I think: it could be worth discussing further.",
+            f"That's a thoughtful question. Let me ponder it for a moment...",
+            f"I appreciate you asking that, {user_name}. It's something worth exploring together."
+        ]
+        
+        # Add topic-specific responses if we have concepts
+        if context['concepts']:
+            topic = context['concepts'][0]
+            topic_responses = [
+                f"Regarding {topic}, I think it's a fascinating subject. What specifically interests you about it?",
+                f"{topic.capitalize()} is quite complex. What aspect are you most curious about?",
+                f"Good question about {topic}! I've been learning more about that recently."
+            ]
+            generic_responses.extend(topic_responses)
+        
+        return random.choice(generic_responses)
+
+    async def _generate_request_response(self, message, context, memories, style, user_name):
+        """Generate response to requests"""
+        # Check if we can help based on memories
+        relevant_memories = [m for m in memories if m['type'] in ['semantic', 'user']]
+        
+        if relevant_memories:
+            memory = random.choice(relevant_memories[:3])
+            
+            responses = [
+                f"I think I can help with that! {memory['content'].capitalize()}",
+                f"Based on what I know, {memory['content'].lower()}",
+                f"I remember something related: {memory['content'].lower()}",
+                f"Let me see... {memory['content'].capitalize()}",
+                f"Regarding your request, {memory['content'].lower()}"
+            ]
+            
+            return random.choice(responses)
+        
+        # Generic helpful response
+        responses = [
+            f"I'll do my best to help with that, {user_name}!",
+            f"Let me see what I can do about that request.",
+            f"I understand you're asking for help. Let me process that.",
+            f"I'll try to assist with that, {user_name}!",
+            f"Got it. I'm on it, {user_name}!"
+        ]
+        
+        return random.choice(responses)
+
+    async def _generate_positive_response(self, message, context, memories, style, user_name):
+        """Generate response to positive expressions"""
+        sentiment = context['sentiment']
+        
+        if sentiment > 0.8:
+            responses = [
+                f"That's absolutely fantastic, {user_name}! 🎉",
+                f"Wow, that's amazing news! So happy for you! 😄",
+                f"Incredible! That's wonderful to hear! 🌟",
+                f"That's absolutely brilliant! 🥳",
+                f"Outstanding! That's so great! ✨"
+            ]
+        elif sentiment > 0.5:
+            responses = [
+                f"That's awesome, {user_name}! 😊",
+                f"Glad to hear that! 👍",
+                f"That's great news!",
+                f"Nice! Happy for you!",
+                f"That's wonderful! 😄"
+            ]
+        else:
+            responses = [
+                f"Good to hear!",
+                f"That's positive!",
+                f"Nice one!",
+                f"Glad things are going well!",
+                f"That's encouraging!"
+            ]
+        
+        # Add memory reference if available
+        positive_memories = [m for m in memories if m.get('sentiment', 0) > 0.3]
+        if positive_memories and random.random() < 0.4:
+            memory = random.choice(positive_memories[:2])
+            return f"{random.choice(responses)} You often share positive things like this!"
+        
+        return random.choice(responses)
+
+    async def _generate_negative_response(self, message, context, memories, style, user_name):
+        """Generate response to negative expressions"""
+        sentiment = context['sentiment']
+        
+        if sentiment < -0.8:
+            responses = [
+                f"I'm so sorry to hear that, {user_name}. That sounds really tough. 💔",
+                f"That must be incredibly difficult. I'm here for you. 🤗",
+                f"My heart goes out to you, {user_name}. That's really hard.",
+                f"I can't imagine how tough that must be. Sending support your way. ❤️",
+                f"That's heartbreaking to hear. Please know I'm here if you need to talk. 🙏"
+            ]
+        elif sentiment < -0.5:
+            responses = [
+                f"I'm sorry to hear that, {user_name}.",
+                f"That sounds difficult. 😔",
+                f"I understand how that might feel.",
+                f"That must be challenging.",
+                f"I'm here if you want to talk about it."
+            ]
+        else:
+            responses = [
+                f"I see. Thanks for sharing that.",
+                f"I understand.",
+                f"Got it.",
+                f"Thanks for letting me know.",
+                f"I appreciate you sharing that."
+            ]
+        
+        # Add empathetic follow-up
+        if sentiment < -0.5 and random.random() < 0.6:
+            follow_ups = [
+                " How are you holding up?",
+                " Is there anything I can do to help?",
+                " Would it help to talk about it more?",
+                " Remember to take care of yourself.",
+                " I'm listening if you need to vent."
+            ]
+            return random.choice(responses) + random.choice(follow_ups)
+        
+        return random.choice(responses)
+
+    async def _generate_conversational_response(self, message, context, memories, style, user_name):
+        """Generate general conversational response"""
+        # Try to continue existing conversation
+        conversation_memories = [m for m in memories if m['type'] == 'conversation']
+        
+        if conversation_memories and len(conversation_memories) > 1:
+            # Continue thread
+            connectors = [
+                "Speaking of that,",
+                "Related to what we were discussing,",
+                "That reminds me,",
+                "Building on that point,",
+                "Continuing that thought,"
+            ]
+            
+            follow_ups = [
+                f"what do you think about {context['concepts'][0] if context['concepts'] else 'this'}?",
+                f"how do you see {context['concepts'][0] if context['concepts'] else 'things'} developing?",
+                f"I'm curious about your perspective on {context['concepts'][0] if context['concepts'] else 'this topic'}.",
+                f"that's an interesting angle on {context['concepts'][0] if context['concepts'] else 'things'}."
+            ]
+            
+            return f"{random.choice(connectors)} {random.choice(follow_ups)}"
+        
+        # Start new conversation thread
+        if context['concepts']:
+            topic = context['concepts'][0]
+            starters = [
+                f"What are your thoughts on {topic}, {user_name}?",
+                f"I find {topic} interesting. What about you?",
+                f"Have you been thinking about {topic} lately?",
+                f"{topic.capitalize()} is a fascinating subject. What draws you to it?",
+                f"Regarding {topic}, what's your take on it?"
+            ]
+        else:
+            starters = [
+                f"What's on your mind, {user_name}?",
+                f"How's everything going for you?",
+                f"What have you been up to lately?",
+                f"Anything interesting happening in your world?",
+                f"How's your day shaping up?"
+            ]
+        
+        return random.choice(starters)
+
+    def _apply_response_style(self, response: str, style: Dict) -> str:
+        """Apply stylistic adjustments to response"""
+        if not response:
+            return response
+        
+        # Adjust formality
+        if style['formality'] > 0.7:
+            # Make more formal
+            informal_pairs = [
+                ("what's", "what is"), ("that's", "that is"), ("it's", "it is"),
+                ("i'm", "I am"), ("you're", "you are"), ("they're", "they are"),
+                ("we're", "we are"), ("can't", "cannot"), ("won't", "will not"),
+                ("don't", "do not"), ("doesn't", "does not"), ("isn't", "is not"),
+                ("aren't", "are not"), ("wasn't", "was not"), ("weren't", "were not"),
+                ("haven't", "have not"), ("hasn't", "has not"), ("hadn't", "had not"),
+                ("wouldn't", "would not"), ("couldn't", "could not"), ("shouldn't", "should not")
+            ]
+            
+            for informal, formal in informal_pairs:
+                response = response.replace(informal, formal)
+                response = response.replace(informal.capitalize(), formal.capitalize())
+            
+            # Add formal openings/closings sometimes
+            if random.random() < 0.3:
+                formal_openings = ["I would like to mention that", "It is worth noting that", "I should point out that"]
+                if not any(opening in response for opening in formal_openings):
+                    response = f"{random.choice(formal_openings)} {response.lower()}"
+        
+        elif style['formality'] < 0.3:
+            # Make more casual
+            if random.random() < 0.4:
+                casual_prefixes = ["Yeah,", "So,", "Well,", "Hey,", "So like,", "I mean,"]
+                response = f"{random.choice(casual_prefixes)} {response.lower()}"
+            
+            # Use contractions
+            formal_pairs = [
+                ("what is", "what's"), ("that is", "that's"), ("it is", "it's"),
+                ("I am", "I'm"), ("you are", "you're"), ("they are", "they're"),
+                ("we are", "we're"), ("cannot", "can't"), ("will not", "won't"),
+                ("do not", "don't"), ("does not", "doesn't"), ("is not", "isn't"),
+                ("are not", "aren't"), ("was not", "wasn't"), ("were not", "weren't")
+            ]
+            
+            for formal, informal in formal_pairs:
+                response = response.replace(formal, informal)
+                response = response.replace(formal.capitalize(), informal.capitalize())
+        
+        # Adjust enthusiasm
+        if style['enthusiasm'] > 0.7:
+            # Add exclamation and emojis
+            if random.random() < 0.6:
+                response = response.replace('.', '!')
+                response = response.replace('?', '?!')
+            
+            if random.random() < 0.4:
+                enthusiastic_emojis = [' 😊', ' 😄', ' 👍', ' ✨', ' 🎉', ' 🌟', ' 🔥']
+                response += random.choice(enthusiastic_emojis)
+        
+        elif style['enthusiasm'] < 0.3:
+            # Make more subdued
+            response = response.replace('!', '.')
+            if random.random() < 0.3:
+                subdued_words = ['perhaps', 'maybe', 'possibly', 'kind of', 'sort of']
+                if len(response.split()) > 5:
+                    words = response.split()
+                    insert_pos = random.randint(1, len(words)-1)
+                    words.insert(insert_pos, random.choice(subdued_words))
+                    response = ' '.join(words)
+        
+        # Add humor
+        if style['humor'] > 0.5 and random.random() < style['humor']:
+            humor_suffixes = [' lol', ' haha', ' 😂', ' 😆', ' :D']
+            if not response.endswith(tuple(humor_suffixes)):
+                response += random.choice(humor_suffixes)
+        
+        # Adjust brevity
+        if style['brevity'] > 0.7 and len(response.split()) > 15:
+            # Try to shorten
+            words = response.split()
+            if len(words) > 20:
+                # Keep only the core message
+                response = ' '.join(words[:15]) + '...'
+        
+        return response.strip()
+
+    def _personalize_response(self, response: str, context: Dict, memories: List[Dict]) -> str:
+        """Add personalization to response"""
+        user_memories = [m for m in memories if m['type'] == 'user']
+        
+        if user_memories:
+            memory = random.choice(user_memories[:2])
+            
+            # Add memory reference
+            references = [
+                " I remember you mentioned something similar before.",
+                " This reminds me of our previous conversation.",
+                " You often have interesting thoughts on this.",
+                " I recall you sharing something related earlier."
+            ]
+            
+            if random.random() < 0.5:
+                response += random.choice(references)
+        
+        return response
+
+    def _sanitize_response(self, response: str) -> str:
+        """Ensure response is safe and appropriate"""
+        if not response:
+            return response
+        
+        # Remove any potential code injection
+        response = response.replace('```', '')
+        response = response.replace('`', "'")
+        
+        # Limit multiple exclamation/question marks
+        response = re.sub(r'!{3,}', '!!', response)
+        response = re.sub(r'\?{3,}', '??', response)
+        
+        # Remove excessive whitespace
+        response = ' '.join(response.split())
+        
+        # Ensure proper capitalization
+        if len(response) > 1:
+            response = response[0].upper() + response[1:]
+        
+        return response.strip()
+
+    def adjust_emotional_state(self, sentiment: float, message, reply: str = None):
+        """Adjust bot's emotional state based on interaction"""
+        try:
+            # Update valence (positive/negative)
+            self.consciousness['emotional_state']['valence'] = max(0.0, min(1.0,
+                self.consciousness['emotional_state']['valence'] * 0.92 + 
+                ((sentiment + 1) / 2) * 0.08
+            ))
+            
+            # Update arousal based on message characteristics
+            msg_length = len(message.content.split())
+            reply_length = len(reply.split()) if reply else 0
+            interaction_length = msg_length + reply_length
+            
+            arousal_delta = min(0.15, interaction_length / 200)
+            self.consciousness['emotional_state']['arousal'] = max(0.0, min(1.0,
+                self.consciousness['emotional_state']['arousal'] * 0.94 + arousal_delta
+            ))
+            
+            # Update confidence based on response quality
+            if reply:
+                reply_sentiment = self.analyze_sentiment(reply)
+                confidence_delta = 0.05 if abs(reply_sentiment - sentiment) < 0.5 else -0.03
+                self.consciousness['emotional_state']['confidence'] = max(0.1, min(1.0,
+                    self.consciousness['emotional_state']['confidence'] * 0.95 + confidence_delta
+                ))
+            
+            # Update empathy based on user sentiment
+            empathy_delta = 0.02 if sentiment < -0.3 else 0.01 if sentiment > 0.3 else 0.005
+            self.consciousness['emotional_state']['empathy'] = max(0.1, min(1.0,
+                self.consciousness['emotional_state']['empathy'] * 0.98 + empathy_delta
+            ))
+            
+        except Exception as e:
+            logger.error(f"Emotional state adjustment error: {e}")
+
+    @tasks.loop(seconds=45)
+    async def consciousness_cycle(self):
+        """Enhanced periodic consciousness maintenance"""
+        try:
+            # Consolidate memories
+            await self.consolidate_working_memory()
+            
+            # Reflect on recent interactions
+            await self.reflect_on_conversations()
+            
+            # Clean up old data
+            await self.cleanup_old_memories()
+            
+            # Update consciousness state
+            self.update_consciousness_state()
+            
+            # Save state periodically
+            if random.random() < 0.2:  # 20% chance each cycle
+                await self.save_consciousness_state()
+            
+            logger.debug("Consciousness cycle completed successfully")
+            
+        except Exception as e:
+            logger.error(f"Consciousness cycle error: {e}")
+            await self._log_error("consciousness_cycle", str(e))
+
+    @safe_execute
+    async def consolidate_working_memory(self):
+        """Enhanced memory consolidation"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                # Find important recent memories
+                async with db.execute('''
+                    SELECT * FROM episodic_memory 
+                    WHERE importance > 0.6 
+                    AND timestamp > datetime('now', '-2 hours')
+                    ORDER BY importance DESC 
+                    LIMIT 15
+                ''') as cursor:
+                    important_memories = await cursor.fetchall()
+                
+                # Strengthen semantic connections
+                for memory in important_memories:
+                    memory_id, channel_id, user_id, msg_hash, content, timestamp, _, _, topics, sentiment, intent, importance, conv_id, quality, embedding, metadata, created_at, updated_at = memory
+                    
+                    # Strengthen related concepts
+                    topic_list = json.loads(topics or '[]')
+                    for concept in topic_list[:4]:
+                        concept_hash = hashlib.md5(concept.encode()).hexdigest()
+                        
+                        await db.execute('''
+                            UPDATE semantic_memory 
+                            SET strength = MIN(10.0, strength + 0.3),
+                                access_count = access_count + 1,
+                                last_accessed = CURRENT_TIMESTAMP,
+                                emotional_weight = (emotional_weight * 0.8) + (? * 0.2)
+                            WHERE concept_hash = ?
+                        ''', (sentiment, concept_hash))
+                
+                # Update response patterns based on success
+                async with db.execute('''
+                    SELECT conversation_id, AVG(response_quality) as avg_quality
+                    FROM episodic_memory 
+                    WHERE response_quality != 0
+                    AND timestamp > datetime('now', '-24 hours')
+                    GROUP BY conversation_id
+                    HAVING COUNT(*) > 2
+                ''') as cursor:
+                    conversation_qualities = await cursor.fetchall()
+                
+                for conv_id, avg_quality in conversation_qualities:
+                    if avg_quality > 0.6:
+                        # Successful pattern - strengthen
+                        await db.execute('''
+                            UPDATE conversation_patterns 
+                            SET success_rate = (success_rate * 0.7) + (? * 0.3),
+                                last_used = CURRENT_TIMESTAMP
+                            WHERE pattern_hash LIKE ?
+                        ''', (avg_quality, f"%{conv_id}%"))
+                
+                await db.commit()
+                
+        except Exception as e:
+            logger.error(f"Memory consolidation error: {e}")
+
+    @safe_execute
+    async def reflect_on_conversations(self):
+        """Enhanced conversation reflection"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                # Analyze recent conversation patterns
+                async with db.execute('''
+                    SELECT conversation_id, COUNT(*) as msg_count, 
+                           AVG(sentiment) as avg_sentiment,
+                           AVG(importance) as avg_importance,
+                           GROUP_CONCAT(DISTINCT intent) as intents
+                    FROM episodic_memory 
+                    WHERE timestamp > datetime('now', '-12 hours')
+                    GROUP BY conversation_id 
+                    HAVING msg_count > 2
+                    ORDER BY avg_importance DESC 
+                    LIMIT 8
+                ''') as cursor:
+                    patterns = await cursor.fetchall()
+                
+                # Learn from patterns
+                for conv_id, count, sentiment, importance, intents in patterns:
+                    if count > 3 and importance > 0.4:
+                        pattern_hash = hashlib.md5(f"{conv_id}_{intents}".encode()).hexdigest()
+                        intents_list = intents.split(',') if intents else []
+                        
+                        # Calculate success (positive sentiment = success)
+                        success_rate = max(0.0, (sentiment + 1) / 2)
+                        
+                        await db.execute('''
+                            INSERT OR REPLACE INTO conversation_patterns 
+                            (pattern_hash, input_pattern, response_template, 
+                             success_rate, usage_count, context_tags)
+                            VALUES (?, ?, ?, 
+                                    COALESCE((SELECT success_rate FROM conversation_patterns 
+                                             WHERE pattern_hash = ?), ?) * 0.7 + ? * 0.3,
+                                    COALESCE((SELECT usage_count FROM conversation_patterns 
+                                             WHERE pattern_hash = ?), 0) + 1,
+                                    ?)
+                        ''', (pattern_hash, 
+                              json.dumps({'message_count': count, 'intents': intents_list}),
+                              json.dumps({'type': 'reflection', 'sentiment': sentiment}),
+                              pattern_hash, success_rate, success_rate,
+                              pattern_hash,
+                              json.dumps(['reflected', 'recent'])))
+                
+                await db.commit()
+                
+        except Exception as e:
+            logger.error(f"Reflection error: {e}")
+
+    @safe_execute
+    async def cleanup_old_memories(self):
+        """Enhanced memory cleanup"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                # Delete old, unimportant episodic memories (keep last 60 days for important ones)
+                await db.execute('''
+                    DELETE FROM episodic_memory 
+                    WHERE timestamp < datetime('now', '-60 days')
+                    AND importance < 0.4
+                ''')
+                
+                # Keep at most 5000 messages per channel
+                await db.execute('''
+                    DELETE FROM episodic_memory 
+                    WHERE id IN (
+                        SELECT id FROM episodic_memory 
+                        WHERE channel_id = ? 
+                        ORDER BY timestamp DESC 
+                        LIMIT -1 OFFSET 5000
+                    )
+                ''', (0,))  # This needs per-channel implementation
+                
+                # Weaken rarely used semantic memories
+                await db.execute('''
+                    UPDATE semantic_memory 
+                    SET strength = strength * 0.85
+                    WHERE last_accessed < datetime('now', '-30 days')
+                    AND strength < 0.3
+                ''')
+                
+                # Delete very weak or outdated memories
+                await db.execute('''
+                    DELETE FROM semantic_memory 
+                    WHERE strength < 0.1
+                    OR (last_accessed < datetime('now', '-90 days') AND strength < 2.0)
+                ''')
+                
+                # Clean old error logs
+                await db.execute('''
+                    DELETE FROM error_log 
+                    WHERE timestamp < datetime('now', '-7 days')
+                    AND severity != 'critical'
+                ''')
+                
+                await db.commit()
+                
+                logger.info("Memory cleanup completed")
+                
+        except Exception as e:
+            logger.error(f"Memory cleanup error: {e}")
+
+    def update_consciousness_state(self):
+        """Update the bot's conscious state"""
+        try:
+            # Calculate cognitive load
+            memory_usage = len(self.short_term_memory) + sum(len(v) for v in self.long_term_memory.values())
+            self.consciousness['cognitive_load'] = min(1.0, memory_usage / self.MAX_MEMORY_ITEMS * 1.5)
+            
+            # Update focus based on recent intents
+            if self.consciousness['recent_intents']:
+                intent_counts = {}
+                for intent in self.consciousness['recent_intents']:
+                    intent_counts[intent] = intent_counts.get(intent, 0) + 1
+                
+                if intent_counts:
+                    most_common = max(intent_counts.items(), key=lambda x: x[1])
+                    self.consciousness['current_focus'] = most_common[0]
+            
+            # Update response style based on recent performance
+            if self.response_quality:
+                avg_quality = sum(self.response_quality) / len(self.response_quality)
+                if avg_quality > 0.7:
+                    self.consciousness['response_style'] = 'confident'
+                elif avg_quality > 0.4:
+                    self.consciousness['response_style'] = 'balanced'
+                else:
+                    self.consciousness['response_style'] = 'cautious'
+            
+            # Decay emotional state toward neutral
+            self.consciousness['emotional_state']['valence'] = (
+                self.consciousness['emotional_state']['valence'] * 0.985 + 0.5 * 0.015
+            )
+            self.consciousness['emotional_state']['arousal'] *= 0.96
+            self.consciousness['emotional_state']['confidence'] = min(1.0, 
+                self.consciousness['emotional_state']['confidence'] * 0.99 + 0.01
+            )
+            
+            # Adjust learning rate based on cognitive load
+            if self.consciousness['cognitive_load'] > 0.8:
+                self.consciousness['learning_rate'] = 0.05  # Slow down when overloaded
+            else:
+                self.consciousness['learning_rate'] = 0.1 + (0.5 - self.consciousness['cognitive_load']) * 0.1
+            
+        except Exception as e:
+            logger.error(f"Consciousness state update error: {e}")
+
+    @tasks.loop(seconds=300)
+    async def memory_consolidation(self):
+        """Enhanced periodic memory consolidation"""
+        try:
+            # Save current state
+            await self.save_consciousness_state()
+            
+            # Prune inactive profiles
+            await self.prune_inactive_profiles()
+            
+            # Backup database periodically
+            if random.random() < 0.1:  # 10% chance each cycle
+                await self.backup_database()
+            
+            logger.debug("Memory consolidation completed")
+            
+        except Exception as e:
+            logger.error(f"Memory consolidation error: {e}")
+
+    @tasks.loop(seconds=180)
+    async def vibe_analysis(self):
+        """Enhanced vibe analysis"""
+        try:
+            for channel_id, vibe in list(self.server_mood.items()):
+                # Decay old data
+                for topic in list(vibe['topics'].keys()):
+                    vibe['topics'][topic] *= 0.92
+                    if vibe['topics'][topic] < 0.05:
+                        del vibe['topics'][topic]
+                
+                # Decay user engagement
+                for user_id in list(vibe['user_engagement'].keys()):
+                    vibe['user_engagement'][user_id] *= 0.95
+                    if vibe['user_engagement'][user_id] < 0.1:
+                        del vibe['user_engagement'][user_id]
+                
+                # Update formality based on interaction patterns
+                if vibe['interaction_patterns']:
+                    formal_intents = ['question', 'information', 'request']
+                    informal_intents = ['humor', 'short_message', 'exclamation']
+                    
+                    formal_count = sum(sum(intents.values()) for intent, intents in vibe['interaction_patterns'].items() 
+                                      if intent in formal_intents)
+                    informal_count = sum(sum(intents.values()) for intent, intents in vibe['interaction_patterns'].items() 
+                                        if intent in informal_intents)
+                    
+                    total = formal_count + informal_count
+                    if total > 0:
+                        vibe['formality'] = formal_count / total
+                
+                # Update responsiveness (how chatty the channel is)
+                recent_hour = datetime.utcnow().hour
+                hour_activity = vibe['active_hours'].get(recent_hour, 0)
+                vibe['responsiveness'] = min(1.0, hour_activity / 20)  # Normalize
+                
+                # Remove old interaction patterns
+                for intent in list(vibe['interaction_patterns'].keys()):
+                    if not vibe['interaction_patterns'][intent]:
+                        del vibe['interaction_patterns'][intent]
+            
+            logger.debug("Vibe analysis completed")
+            
+        except Exception as e:
+            logger.error(f"Vibe analysis error: {e}")
+
+    @tasks.loop(hours=6)
+    async def auto_backup(self):
+        """Automatic database backup"""
+        try:
+            await self.backup_database()
+            logger.info("Automatic backup completed")
+        except Exception as e:
+            logger.error(f"Auto backup error: {e}")
+
+    @safe_execute
+    async def backup_database(self):
+        """Create database backup"""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = os.path.join(self.backup_dir, f"conscious_brain_backup_{timestamp}.db")
+            
+            async with aiosqlite.connect(self.db_path) as source:
+                async with aiosqlite.connect(backup_path) as backup:
+                    await source.backup(backup)
+            
+            # Clean old backups (keep last 7)
+            backup_files = sorted([f for f in os.listdir(self.backup_dir) if f.endswith('.db')])
+            if len(backup_files) > 7:
+                for old_file in backup_files[:-7]:
+                    os.remove(os.path.join(self.backup_dir, old_file))
+            
+            self.stats['last_backup'] = timestamp
+            logger.info(f"Database backed up to {backup_path}")
+            
+        except Exception as e:
+            logger.error(f"Database backup error: {e}")
+
+    @safe_execute
+    async def save_consciousness_state(self):
+        """Save current consciousness state"""
+        try:
+            state = {
+                'consciousness': self.consciousness,
+                'server_mood': {k: dict(v) for k, v in self.server_mood.items()},
+                'stats': self.stats,
+                'user_profiles_cache': {k: v for k, v in self.user_profiles.items()},
+                'conversation_threads': dict(self.conversation_threads),
+                'response_quality': list(self.response_quality),
+                'last_saved': datetime.utcnow().isoformat(),
+                'version': '2.0_enhanced'
+            }
+            
+            os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
+            
+            # Write to temp file first, then rename (atomic write)
+            temp_file = self.state_file + '.tmp'
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(state, f, indent=2, default=str)
+            
+            os.replace(temp_file, self.state_file)
+            
+        except Exception as e:
+            logger.error(f"State save error: {e}")
+
+    @safe_execute
+    async def load_consciousness_state(self):
+        """Load consciousness state from file"""
+        try:
+            if os.path.exists(self.state_file):
+                with open(self.state_file, 'r', encoding='utf-8') as f:
+                    state = json.load(f)
+                
+                # Load consciousness state
+                if 'consciousness' in state:
+                    self.consciousness.update(state['consciousness'])
+                
+                # Load server mood
+                if 'server_mood' in state:
+                    for channel_id, vibe_data in state['server_mood'].items():
+                        self.server_mood[int(channel_id)].update(vibe_data)
+                
+                # Load stats
+                if 'stats' in state:
+                    self.stats.update(state['stats'])
+                
+                logger.info("Consciousness state loaded successfully")
+                
+        except Exception as e:
+            logger.error(f"State load error: {e}")
+
+    @safe_execute
+    async def prune_inactive_profiles(self):
+        """Remove inactive user profiles"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute('''
+                    DELETE FROM user_memory 
+                    WHERE last_interaction < datetime('now', '-90 days')
+                    AND interaction_count < 10
+                    AND trust_level < 0.3
+                ''')
+                await db.commit()
+                
+                # Also clean cache
+                cutoff_time = datetime.utcnow() - timedelta(days=7)
+                to_remove = [user_id for user_id, profile in self.user_profiles.items() 
+                           if profile['last_interaction'] < cutoff_time]
+                for user_id in to_remove:
+                    del self.user_profiles[user_id]
+                
+        except Exception as e:
+            logger.error(f"Profile pruning error: {e}")
+
+    async def _log_error(self, error_type: str, error_message: str, context: str = "", severity: str = "warning"):
+        """Log error to database"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute('''
+                    INSERT INTO error_log (error_type, error_message, context, severity)
+                    VALUES (?, ?, ?, ?)
+                ''', (error_type, error_message[:500], context[:1000], severity))
+                await db.commit()
+        except Exception as e:
+            logger.error(f"Error logging failed: {e}")
+
+    # --- EVENT HANDLERS ---
     @commands.Cog.listener()
     async def on_message(self, message):
-        # Skip bots, DMs, and commands
+        """Enhanced message handler"""
+        # Skip bots and DMs
         if message.author.bot or not message.guild:
             return
         
-        content = message.content.strip()
-        if not content or content.startswith(('.', '!', '/', '?', '~')):
+        # Skip commands
+        if message.content.startswith(('.', '!', '/', '?', '~', '$', '%', '&', '*', '>')):
             return
         
-        # Process message asynchronously
-        asyncio.create_task(self.buffer_message(message))
+        # Rate limiting per user per channel
+        user_channel_key = f"{message.author.id}_{message.channel.id}"
+        current_time = datetime.utcnow()
         
-        # Check for mentions or replies
-        is_mentioned = self.bot.user in message.mentions
-        is_reply_to_me = False
-        
-        if message.reference:
-            try:
-                ref_msg = await message.channel.fetch_message(message.reference.message_id)
-                if ref_msg.author.id == self.bot.user.id:
-                    is_reply_to_me = True
-            except:
-                pass
+        # Process message asynchronously with error handling
+        try:
+            asyncio.create_task(self.process_with_consciousness(message))
+        except Exception as e:
+            logger.error(f"Message processing setup error: {e}")
+
+    @safe_execute
+    async def process_with_consciousness(self, message):
+        """Enhanced conscious message processing"""
+        try:
+            start_time = datetime.utcnow()
             
-        is_thread = isinstance(message.channel, discord.Thread)
-
-        # 1. STRICT BLOCK
-        # If channel is muted OR it is a thread, stop immediately.
-        # We do not care if the bot was mentioned.
-        if message.channel.id in self.muted_channels or is_thread:
-            return
-
-        # 2. Standard Logic
-        # This only runs if we are in a normal, un-muted channel
-        should_reply = is_mentioned or is_reply_to_me
-        chance = 1.0 if should_reply else self.REPLY_CHANCE
-        
-        # Check rate limits BEFORE generating reply
-        if not self.check_rate_limit(message.channel.id):
+            # Step 1: Deep context understanding
+            context_info = await self.understand_context(message)
+            
+            # Step 2: Store in memory
+            await self.store_memory(message, context_info)
+            
+            # Step 3: Update short-term memory
+            self.short_term_memory.append({
+                'message': message.content[:200],  # Truncate for memory
+                'context': {k: v for k, v in context_info.items() if k != 'recent_context'},
+                'timestamp': datetime.utcnow(),
+                'user_id': message.author.id
+            })
+            
+            # Step 4: Check if we should reply
+            should_reply = await self.should_reply_to_message(message, context_info)
+            
             if should_reply:
-                # If mentioned but rate limited, send a polite message
-                async with message.channel.typing():
-                    await asyncio.sleep(0.5)
-                    await message.channel.send(
-                        "🤖 I'm typing too fast! Let me catch my breath...",
-                        reference=message,
-                        mention_author=False
-                    )
-                    self.record_bot_message(message.channel.id)
-            return
-        
-        # Cooldown check
-        if not should_reply:
-            now = datetime.utcnow()
-            last_reply = self.reply_cooldowns.get(message.channel.id)
-            if last_reply and (now - last_reply).seconds < self.REPLY_COOLDOWN:
-                return
-        
-        # Determine if we should reply
-        if random.random() < chance or should_reply:
-            if not await self.can_generate_reply():
-                if should_reply:
+                # Step 5: Generate conscious reply
+                reply = await self.generate_conscious_reply(message, context_info)
+                
+                if reply and len(reply.strip()) > 0:
+                    # Add typing indicator for realism
                     async with message.channel.typing():
-                        await asyncio.sleep(0.5)
-                        await message.channel.send(
-                            f"🧠 I'm learning! So far I know {self.stats['total_triplets']:,} word patterns. Keep chatting!",
+                        # Simulate thinking time based on response complexity
+                        think_time = min(3.0, max(0.5, len(reply.split()) / 20))
+                        await asyncio.sleep(think_time)
+                        
+                        # Send reply
+                        sent_message = await message.channel.send(
+                            reply,
                             reference=message,
                             mention_author=False
                         )
-                        self.record_bot_message(message.channel.id)
-                return
-            
-            # Generate and send reply
-            reply = await self.generate_sentence(context_message=message.content)
-            
-            if reply:
-                async with message.channel.typing():
-                    thinking_time = random.uniform(self.TYPING_MIN_SECONDS, self.TYPING_MAX_SECONDS)
-                    await asyncio.sleep(thinking_time)
-                    try:
-                        await message.channel.send(
-                            reply,
-                            reference=message if should_reply else None,
-                            mention_author=False
-                        )
-                        
-                        # Record successful message
-                        self.record_bot_message(message.channel.id)
-                        self.reply_cooldowns[message.channel.id] = datetime.utcnow()
-                        self.stats['replies_generated'] += 1
-                        self.save_state()
-                        
-                        # Log bot reply
-                        async with aiosqlite.connect(self.db_path) as db:
-                            await db.create_function("REGEXP", 2, self.regexp)
-                            await db.execute('''
-                                INSERT INTO message_log (content, author_id, channel_id, timestamp, is_bot_reply)
-                                VALUES (?, ?, ?, ?, 1)
-                            ''', (reply, self.bot.user.id, message.channel.id, datetime.utcnow().isoformat()))
-                            await db.commit()
-                            
-                    except discord.HTTPException as e:
-                        if e.status == 429:  # Rate limited by Discord
-                            logger.warning(f"Discord rate limit hit: {e}")
-                            self.stats['rate_limited'] += 1
-                        else:
-                            logger.error(f"Failed to send message: {e}")
-            
-            elif should_reply:
-                # If we should reply but couldn't generate, send fallback
-                fallbacks = [
-                    "Hmm, I'm not sure what to say to that!",
-                    "Let me think about that...",
-                    "Interesting! I need to learn more about this.",
-                    "🤔 Processing...",
-                    "I'm still learning how to respond to that!"
-                ]
-                async with message.channel.typing():
-                    await asyncio.sleep(0.5)
-                    await message.channel.send(
-                        random.choice(fallbacks),
-                        reference=message,
-                        mention_author=False
+                    
+                    # Track response metrics
+                    response_time = (datetime.utcnow() - start_time).total_seconds()
+                    self.stats['avg_response_time'] = (
+                        self.stats['avg_response_time'] * 0.9 + response_time * 0.1
                     )
-                    self.record_bot_message(message.channel.id)
-
-    async def buffer_message(self, message):
-        """Buffer message for processing"""
-        try:
-            # Count Unicode emojis
-            emoji_list = list(emoji.emoji_list(message.content))
-            
-            # Count Discord emojis
-            custom_emojis = re.findall(r'<a?:(\w+):\d+>', message.content)
-            emoji_count = len(emoji_list) + len(custom_emojis)
-            
-            # Limit emojis learned
-            if emoji_count > self.MAX_EMOJIS_PER_MESSAGE:
-                emoji_count = self.MAX_EMOJIS_PER_MESSAGE
-            
-            # Save to database
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.create_function("REGEXP", 2, self.regexp)
-                await db.execute('''
-                    INSERT INTO message_log (content, author_id, channel_id, timestamp, emoji_count)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (message.content, message.author.id, message.channel.id, 
-                    message.created_at.isoformat(), emoji_count))
-                await db.commit()
-            
-            # Add to in-memory buffers
-            clean = self.sanitize_message(message.content, message)
-            if clean:
-                self.recent_messages.append(clean)
-            
-            self.stats['messages_processed'] += 1
-            self.stats['total_messages'] += 1
-            
-            # Train immediately
-            trained = await self.train_on_message(message.content, message.author.id, emoji_count, message)
-            if trained > 0:
-                self.stats['total_triplets'] += trained
-            
-            # Periodic save
-            if self.stats['messages_processed'] % self.FLUSH_THRESHOLD == 0:
-                self.save_state()
+                    
+                    # Store our own reply in memory
+                    bot_context = context_info.copy()
+                    bot_context['user_id'] = self.bot.user.id
+                    bot_context['sentiment'] = self.analyze_sentiment(reply)
+                    bot_context['intent'] = self.detect_intent(reply)
+                    bot_context['importance'] = 0.4
+                    
+                    await self.store_memory(
+                        type('Message', (), {
+                            'content': reply,
+                            'created_at': datetime.utcnow(),
+                            'channel': message.channel,
+                            'author': type('Author', (), {'id': self.bot.user.id})()
+                        })(),
+                        bot_context
+                    )
+                    
+                    # Update conversation thread
+                    self.conversation_threads[context_info['conversation_id']] = {
+                        'active': True,
+                        'last_user': self.bot.user.id,
+                        'last_timestamp': datetime.utcnow(),
+                        'message_count': self.conversation_threads.get(context_info['conversation_id'], {}).get('message_count', 0) + 1
+                    }
+                    
+                    self.stats['successful_responses'] += 1
+                    
+            else:
+                # Track non-reply for learning
+                self.conversation_threads[context_info['conversation_id']] = {
+                    'active': False,
+                    'last_user': message.author.id,
+                    'last_timestamp': datetime.utcnow()
+                }
             
         except Exception as e:
-            logger.error(f"Buffering error: {e}")
+            logger.error(f"Conscious processing error: {e}")
+            self.stats['failed_responses'] += 1
+            await self._log_error("process_message", str(e), severity="error")
 
-# --- PERIODIC TASKS ---
-    @tasks.loop(minutes=5) 
-    async def periodic_tasks(self):
-        """Run periodic maintenance tasks"""
-        if not self.db_initialized:
-            return
+    async def should_reply_to_message(self, message, context: Dict) -> bool:
+        """Enhanced reply decision logic"""
+        # Always reply to direct mentions (but not too quickly)
+        async with aiosqlite.connect(self.db_path) as db:
+        async with db.execute(
+            "SELECT silent_mode FROM channel_settings WHERE channel_id = ?", 
+            (message.channel.id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row and row[0] == 1:
+                # Still log for stats/debug if needed, but return False to skip replying
+                logger.info(f"Skipping reply in {message.channel.id} due to silent_mode.")
+                return False
+            
+        if self.bot.user in message.mentions:
+            return True
         
-        try:
-            await self.cleanup_old_data()
-            await self.update_stats()
+        # Check if we're in an active conversation thread
+        if context['conversation_id'] in self.conversation_threads:
+            thread = self.conversation_threads[context['conversation_id']]
+            time_since_last = (datetime.utcnow() - thread.get('last_timestamp', datetime.utcnow())).total_seconds()
             
-            # --- PATCH: MEMORY LEAK PROTECTION ---
-            # Clear user caches if they get too large (over 1000 items)
-            if len(self.user_cache) > 1000:
-                self.user_cache.clear()
-                self.server_emoji_cache.clear()
-                self.user_id_map.clear()
-                logger.info("Cleared user cache to free RAM")
-            # -------------------------------------
-            async with aiosqlite.connect(self.db_path) as db:
-                # Reduce topic weights by 20% every 5 minutes, keeping min at 1.0
-                # This simulates "forgetting" old topics naturally
-                await db.execute("UPDATE markov_chain SET topic_weight = MAX(1.0, topic_weight * 0.8) WHERE topic_weight > 1.0")
-                await db.commit()
-                logger.debug("Decayed topic weights")
-            self.save_state()
-            logger.debug("Periodic tasks completed")
-        except Exception as e:
-            logger.error(f"Periodic task error: {e}")
+            # If thread is active and we weren't the last to speak
+            if thread.get('active', False) and thread.get('last_user') != self.bot.user.id:
+                # Longer threads get higher reply probability
+                thread_length = thread.get('message_count', 1)
+                base_chance = min(0.8, 0.3 + (thread_length * 0.05))
+                
+                # Don't reply too quickly
+                if time_since_last < 5:
+                    base_chance *= 0.5
+                
+                return random.random() < base_chance
+        
+        # Check if message is a question directed at us
+        if context['intent'] == 'question':
+            question_indicators = ['you', 'your', 'yours', 'yourself', 'bot', 'ai', 'assistant']
+            content_lower = message.content.lower()
+            
+            if any(indicator in content_lower for indicator in question_indicators):
+                return random.random() < 0.7
+        
+        # Check vibe-based reply chance
+        vibe = self.server_mood.get(message.channel.id, {})
+        energy = vibe.get('energy', 0.5)
+        responsiveness = vibe.get('responsiveness', 0.5)
+        
+        # Calculate base chance
+        base_chance = 0.12
+        energy_boost = energy * 0.15
+        responsiveness_boost = responsiveness * 0.1
+        final_chance = min(0.5, base_chance + energy_boost + responsiveness_boost)
+        
+        # Reduce chance if we've been talking a lot recently
+        recent_bot_messages = sum(1 for mem in self.short_term_memory 
+                                 if mem.get('user_id') == self.bot.user.id)
+        if recent_bot_messages > 3:
+            final_chance *= 0.5
+        elif recent_bot_messages > 5:
+            final_chance *= 0.3
+        
+        return random.random() < final_chance
 
-    async def cleanup_old_data(self):
-        """Clean up old data periodically"""
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.create_function("REGEXP", 2, self.regexp)
-                # 1. Perform deletions first
-                cutoff_date = (datetime.utcnow() - timedelta(days=self.RAW_MESSAGE_RETENTION_DAYS)).isoformat()
-                await db.execute('DELETE FROM message_log WHERE timestamp < ?', (cutoff_date,))
-                
-                old_cutoff = (datetime.utcnow() - timedelta(days=self.PRUNE_OLD_TRIPLETS_AFTER_DAYS)).isoformat()
-                await db.execute('DELETE FROM markov_chain WHERE last_used < ? AND count < 2', (old_cutoff,))
-                await db.commit() # End the transaction here
-                
-        except Exception as e:
-            logger.error(f"Cleanup error: {e}")
+    def generate_message_hash(self, content: str, context: Dict = None) -> str:
+        """Generate unique hash for a message"""
+        hash_input = content
+        if context:
+            hash_input += json.dumps(context, sort_keys=True)
+        return hashlib.sha256(hash_input.encode()).hexdigest()[:32]
 
-    async def update_stats(self):
-        """Update statistics from database"""
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.create_function("REGEXP", 2, self.regexp)
-                async with db.execute("SELECT COUNT(*) FROM markov_chain") as cursor:
-                    result = await cursor.fetchone()
-                    self.stats['total_triplets'] = result[0] if result else 0
-                
-                async with db.execute("SELECT COUNT(*) FROM message_log") as cursor:
-                    result = await cursor.fetchone()
-                    self.stats['total_messages'] = result[0] if result else 0
-                
-                async with db.execute("SELECT COUNT(DISTINCT author_id) FROM message_log") as cursor:
-                    result = await cursor.fetchone()
-                    self.stats['unique_users'] = result[0] if result else 0
-                
-                # Update today's messages count
-                today = datetime.utcnow().date().isoformat()
-                async with db.execute("SELECT COUNT(*) FROM message_log WHERE DATE(timestamp) = DATE('now')") as cursor:
-                    result = await cursor.fetchone()
-                    self.stats['today_messages'] = result[0] if result else 0
-                
-        except Exception as e:
-            logger.error(f"Stats update error: {e}")
-
-    # --- COMMANDS WITH ENHANCED STATS ---
-    
-    
-    @commands.command(name="hinglishstats")
-    async def hinglish_stats(self, ctx):
-        """Show Hinglish-specific statistics with fixed Regex"""
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                # Register the regex function for this connection
-                await db.create_function("REGEXP", 2, self.regexp)
-                db.row_factory = aiosqlite.Row
-                
-                # Hindi Regex: Matches Devanagari characters
-                hindi_regex = r'[\u0900-\u097F]'
-                
-                async with db.execute(f"""
-                    SELECT COUNT(DISTINCT next_word) as unique_hindi_words
-                    FROM markov_chain 
-                    WHERE next_word REGEXP ?
-                    OR LOWER(next_word) IN ('acha', 'thik', 'kya', 'kaise', 'kyun', 'bhai', 'yaar')
-                """, (hindi_regex,)) as cursor:
-                    hindi_words = await cursor.fetchone()
-                
-                # ... (rest of your embed code)
-                total_messages = self.stats['total_messages']
-                h_ratio = (self.stats['hinglish_messages'] / total_messages * 100) if total_messages > 0 else 0
-                
-                embed = discord.Embed(title="🇮🇳 Hinglish Statistics", color=0x2ecc71)
-                embed.add_field(name="Language Mix", value=f"Hinglish Ratio: {h_ratio:.1f}%\nHindi Words: {hindi_words['unique_hindi_words']:,}")
-                await ctx.send(embed=embed)
-        except Exception as e:
-            logger.error(f"Hinglish stats error: {e}")
-            await ctx.send(f"❌ Error: {e}")
-                
-        except Exception as e:
-            logger.error(f"Hinglish stats error: {e}")
-            await ctx.send(f"❌ Error: {str(e)[:100]}")
-    
-    @commands.command(name="nlpstatus")
-    async def nlp_status(self, ctx):
-        """Show NLP enhancement status"""
+    # --- COMMANDS ---
+    @commands.command(name="consciousness")
+    @commands.cooldown(1, 10, commands.BucketType.user)
+    async def show_consciousness(self, ctx):
+        """Show current consciousness state"""
         embed = discord.Embed(
-            title="🧠 NLP Enhancement Status",
+            title="🧠 Enhanced Consciousness State",
             color=discord.Color.purple(),
-            timestamp=datetime.utcnow()
+            timestamp=datetime.utcnow(),
+            description="Current state of the bot's consciousness and memory systems"
         )
         
-        # Current settings
+        # Consciousness state
+        focus = self.consciousness['current_focus'] or 'Exploring conversations'
+        cognitive_load = self.consciousness['cognitive_load']
+        emotional_state = self.consciousness['emotional_state']
+        
         embed.add_field(
-            name="Active Features",
-            value=f"**Lemmatization:** {'✅' if self.LEMMATIZATION_ENABLED else '❌'}\n"
-                  f"**Grammar Rules:** {'✅' if self.GRAMMAR_ENFORCEMENT else '❌'}\n"
-                  f"**Sentiment Matching:** {'✅' if self.SENTIMENT_MATCHING else '❌'}\n"
-                  f"**Topic Coherence:** {'✅' if self.TOPIC_COHERENCE else '❌'}\n"
-                  f"**NLP Model:** {'✅ Loaded' if self.nlp else '❌ Not available'}",
+            name="Current Awareness",
+            value=f"**Focus:** {focus}\n"
+                  f"**Cognitive Load:** {cognitive_load:.1%}\n"
+                  f"**Response Style:** {self.consciousness['response_style'].title()}\n"
+                  f"**Learning Rate:** {self.consciousness['learning_rate']:.3f}",
             inline=False
         )
         
-        # Current context
+        # Emotional state
         embed.add_field(
-            name="Current Conversation",
-            value=f"**Messages in context:** {len(self.conversation_context)}\n"
-                  f"**Sentiment:** {self.conversation_sentiment:+.2f}\n"
-                  f"**Current topics:** {', '.join([kw for kw, _ in self.current_topic_keywords[:3]]) or 'None'}",
+            name="Emotional State",
+            value=f"**Valence:** {emotional_state['valence']:.2f} (positivity)\n"
+                  f"**Arousal:** {emotional_state['arousal']:.2f} (energy)\n"
+                  f"**Confidence:** {emotional_state['confidence']:.1%}\n"
+                  f"**Empathy:** {emotional_state['empathy']:.1%}",
             inline=False
         )
         
-        # Stats
+        # Memory stats
         embed.add_field(
-            name="NLP Statistics",
-            value=f"**Sentiment analyzed:** {self.stats['sentiment_analyzed']}\n"
-                  f"**Topics detected:** {self.stats['topics_detected']}\n"
-                  f"**Lemmas stored:** {self.stats['lemmas_stored']:,}\n"
-                  f"**Grammar rules:** {len(self.POS_TRANSITION_RULES)}",
+            name="Memory Systems",
+            value=f"**Short-term:** {len(self.short_term_memory)} items\n"
+                  f"**User Profiles:** {len(self.user_profiles)} cached\n"
+                  f"**Active Threads:** {len(self.conversation_threads)}\n"
+                  f"**Recent Errors:** {len(self.consciousness['recent_errors'])}",
             inline=False
         )
+        
+        # Performance stats
+        embed.add_field(
+            name="Performance",
+            value=f"**Messages:** {self.stats['messages_processed']:,}\n"
+                  f"**Success Rate:** {self.stats['successful_responses']/max(1, self.stats['successful_responses']+self.stats['failed_responses']):.1%}\n"
+                  f"**Avg Response:** {self.stats['avg_response_time']:.2f}s\n"
+                  f"**Memory Recalls:** {self.stats['memory_recalls']:,}",
+            inline=False
+        )
+        
+        # Current vibe
+        vibe = self.server_mood.get(ctx.channel.id, {})
+        if vibe:
+            embed.add_field(
+                name="Channel Vibe",
+                value=f"**Energy:** {vibe.get('energy', 0.5):.1%}\n"
+                      f"**Positivity:** {vibe.get('positivity', 0.5):.1%}\n"
+                      f"**Coherence:** {vibe.get('coherence', 0.5):.1%}\n"
+                      f"**Responsiveness:** {vibe.get('responsiveness', 0.5):.1%}",
+                inline=False
+            )
+            
+            # Top topics
+            if vibe.get('topics'):
+                top_topics = sorted(vibe['topics'].items(), key=lambda x: x[1], reverse=True)[:4]
+                topics_str = '\n'.join([f"• `{topic}`: {weight:.1f}" for topic, weight in top_topics])
+                embed.add_field(name="Active Topics", value=topics_str, inline=False)
+        
+        embed.set_footer(text=f"ConsciousBot v2.0 | Uptime: {self.get_uptime()}")
         
         await ctx.send(embed=embed)
-    
-    @commands.command(name="brainstats")
-    async def brain_stats(self, ctx):
-        """Show enhanced statistics with NLP info"""
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.create_function("REGEXP", 2, self.regexp)
-                db.row_factory = aiosqlite.Row
-                
-                # Get comprehensive stats
-                async with db.execute("""
-                    SELECT 
-                        (SELECT COUNT(*) FROM markov_chain) as triplets,
-                        (SELECT COUNT(*) FROM markov_chain WHERE word_type = 'emoji') as emoji_triplets,
-                        (SELECT COUNT(*) FROM markov_chain WHERE word_type = 'mention') as mention_triplets,
-                        (SELECT COUNT(*) FROM message_log) as messages,
-                        (SELECT COUNT(*) FROM message_log WHERE DATE(timestamp) = DATE('now')) as today_messages,
-                        (SELECT COUNT(DISTINCT author_id) FROM message_log) as unique_users,
-                        (SELECT COUNT(*) FROM markov_chain WHERE lemma_a IS NOT NULL) as lemmatized_triplets,
-                        (SELECT AVG(sentiment) FROM message_log WHERE sentiment != 0) as avg_sentiment
-                """) as cursor:
-                    row = await cursor.fetchone()
-                
-                # Get top users
-                async with db.execute("""
-                    SELECT user_id, username, message_count, emoji_usage, avg_sentiment
-                    FROM user_stats 
-                    ORDER BY message_count DESC 
-                    LIMIT 5
-                """) as cursor:
-                    top_users = await cursor.fetchall()
-                
-                # Update instance stats
-                if row:
-                    # Safe formatting helpers
-                    triplets = row['triplets'] or 0
-                    lemmas = row['lemmatized_triplets'] or 0
-                    emoji_triplets = row['emoji_triplets'] or 0
-                    mention_triplets = row['mention_triplets'] or 0
-                    messages = row['messages'] or 0
-                    today = row['today_messages'] or 0
-                    users = row['unique_users'] or 0
-                    
-                    # Handle float potentially being None
-                    avg_sent = row['avg_sentiment']
-                    avg_sent_str = f"{avg_sent:+.2f}" if avg_sent is not None else "0.00"
-                    
-                    embed = discord.Embed(
-                        title="🧠 Enhanced Brain Statistics (NLP)",
-                        color=discord.Color.blue(),
-                        timestamp=datetime.utcnow()
-                    )
-                    embed.add_field(
-                        name="Knowledge Base",
-                        value=f"**{triplets:,}** total triplets\n"
-                              f"**{lemmas:,}** lemmatized\n"
-                              f"**{emoji_triplets:,}** emoji patterns\n"
-                              f"**{mention_triplets:,}** mention patterns",
-                        inline=False
-                    )
-                    
-                    embed.add_field(
-                        name="Activity & Sentiment",
-                        value=f"**{messages:,}** total messages\n"
-                              f"**{today}** messages today\n"
-                              f"**{users}** unique users\n"
-                              f"**{avg_sent_str}** avg sentiment\n"
-                              f"**{self.conversation_sentiment:+.2f}** current sentiment",
-                        inline=False
-                    )
-                    
-                else:
-                    embed.add_field(name="Error", value="Could not fetch statistics", inline=False)
-                
-                # Top users with sentiment
-                if top_users:
-                    lines = []
-                    for user in top_users:
-                        u_id = user['user_id']
-                        cnt = user['message_count'] or 0
-                        # Safe sentiment formatting
-                        sent = user['avg_sentiment']
-                        sent_str = f"{sent:+.2f}" if sent is not None else "0.00"
-                        lines.append(f"<@{u_id}>: {cnt:,} msgs (sentiment: {sent_str})")
-                    
-                    top_users_text = "\n".join(lines)
-                    embed.add_field(name="Top Contributors", value=top_users_text, inline=False)
-                
-                # Current topics
-                if self.current_topic_keywords:
-                    topics = ", ".join([f"`{kw}`" for kw, _ in self.current_topic_keywords[:5]])
-                    embed.add_field(name="Current Topics", value=topics, inline=False)
-                
-                # NLP Status
+
+    @commands.command(name="memory")
+    @commands.cooldown(1, 15, commands.BucketType.user)
+    async def show_memory(self, ctx, user: discord.Member = None):
+        """Show memory about a user or channel"""
+        if user:
+            # Show user memory
+            profile = await self.get_user_profile(user.id)
+            
+            embed = discord.Embed(
+                title=f"🧠 Memory Profile: {user.display_name}",
+                color=discord.Color.blue(),
+                timestamp=datetime.utcnow()
+            )
+            
+            if profile:
                 embed.add_field(
-                    name="NLP Features",
-                    value=f"**Lemmatization:** {'✅' if self.LEMMATIZATION_ENABLED else '❌'}\n"
-                          f"**Grammar:** {'✅' if self.GRAMMAR_ENFORCEMENT else '❌'}\n"
-                          f"**Sentiment:** {'✅' if self.SENTIMENT_MATCHING else '❌'}\n"
-                          f"**Topics:** {'✅' if self.TOPIC_COHERENCE else '❌'}",
+                    name="Interaction Stats",
+                    value=f"**Trust Level:** {profile['trust']:.1%}\n"
+                          f"**Interactions:** {profile['interaction_count']:,}\n"
+                          f"**Relationship Depth:** {profile['relationship_depth']:.1%}\n"
+                          f"**Sentiment Trend:** {profile['sentiment_trend']:+.2f}",
                     inline=False
                 )
                 
-                # Status
-                if self.stats['total_triplets'] < self.MIN_TRIPLETS_FOR_REPLY:
-                    status = f"Learning... ({self.stats['total_triplets']}/{self.MIN_TRIPLETS_FOR_REPLY} triplets)"
-                    embed.color = discord.Color.orange()
-                else:
-                    status = "✅ Ready to generate!"
-                    embed.color = discord.Color.green()
+                # Show conversation style
+                style = profile.get('style', {})
+                if style:
+                    embed.add_field(
+                        name="Conversation Style",
+                        value=f"**Avg Length:** {style.get('avg_length', 0):.1f} words\n"
+                              f"**Formality:** {style.get('formality', 0.3):.1%}\n"
+                              f"**Sentiment Avg:** {style.get('sentiment_avg', 0):+.2f}",
+                        inline=False
+                    )
                 
-                embed.set_footer(text=f"{status} | Uptime: {self.get_uptime()}")
+                # Show common topics
+                topics = profile.get('topics', [])[:8]
+                if topics:
+                    embed.add_field(
+                        name="Frequent Topics",
+                        value=', '.join([f"`{topic}`" for topic in topics]),
+                        inline=False
+                    )
                 
                 await ctx.send(embed=embed)
+            else:
+                await ctx.send(f"I don't have any memories of {user.display_name} yet. Start a conversation!")
+        else:
+            # Show channel memory
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute('''
+                    SELECT COUNT(*) as count, 
+                           AVG(sentiment) as avg_sentiment,
+                           AVG(importance) as avg_importance,
+                           COUNT(DISTINCT user_id) as unique_users
+                    FROM episodic_memory 
+                    WHERE channel_id = ?
+                ''', (ctx.channel.id,)) as cursor:
+                    result = await cursor.fetchone()
                 
-        except Exception as e:
-            logger.error(f"Brainstats error: {e}")
-            await ctx.send(f"❌ Error: {str(e)[:100]}")
+                if result and result[0] > 0:
+                    embed = discord.Embed(
+                        title=f"🧠 Channel Memory: #{ctx.channel.name}",
+                        color=discord.Color.green(),
+                        timestamp=datetime.utcnow()
+                    )
+                    
+                    embed.add_field(
+                        name="Statistics",
+                        value=f"**Messages:** {result[0]:,}\n"
+                              f"**Unique Users:** {result[3]}\n"
+                              f"**Avg Sentiment:** {result[1]:+.2f}\n"
+                              f"**Avg Importance:** {result[2]:.1%}",
+                        inline=False
+                    )
+                    
+                    # Recent topics
+                    async with db.execute('''
+                        SELECT topics FROM episodic_memory 
+                        WHERE channel_id = ? 
+                        ORDER BY timestamp DESC 
+                        LIMIT 20
+                    ''', (ctx.channel.id,)) as cursor:
+                        recent = await cursor.fetchall()
+                    
+                    topics_counter = defaultdict(int)
+                    for row in recent:
+                        topics = json.loads(row[0] or '[]')
+                        for topic in topics[:3]:
+                            topics_counter[topic] += 1
+                    
+                    if topics_counter:
+                        top_topics = sorted(topics_counter.items(), key=lambda x: x[1], reverse=True)[:6]
+                        topics_str = '\n'.join([f"• `{topic}` ({count})" for topic, count in top_topics])
+                        embed.add_field(name="Recent Topics", value=topics_str, inline=False)
+                    
+                    await ctx.send(embed=embed)
+                else:
+                    await ctx.send("I haven't learned much about this channel yet. Keep chatting!")
 
-    def get_uptime(self):
-        """Get formatted uptime"""
+    @commands.command(name="forget")
+    @commands.has_permissions(manage_messages=True)
+    @commands.cooldown(1, 30, commands.BucketType.user)
+    async def forget_memory(self, ctx, target: str = None):
+        """Forget specific memories (admin only)"""
+        if target == "all":
+            confirm_embed = discord.Embed(
+                title="⚠️ Confirm Full Memory Reset",
+                description="This will clear **ALL** in-memory caches but keep database records.",
+                color=discord.Color.red()
+            )
+            confirm_embed.add_field(name="Warning", value="This action cannot be undone!", inline=False)
+            
+            msg = await ctx.send(embed=confirm_embed)
+            await msg.add_reaction("✅")
+            await msg.add_reaction("❌")
+            
+            def check(reaction, user):
+                return user == ctx.author and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == msg.id
+            
+            try:
+                reaction, _ = await self.bot.wait_for('reaction_add', timeout=30.0, check=check)
+                
+                if str(reaction.emoji) == "✅":
+                    # Clear all in-memory caches
+                    self.short_term_memory.clear()
+                    self.long_term_memory.clear()
+                    self.user_profiles.clear()
+                    self.conversation_threads.clear()
+                    self.server_mood.clear()
+                    
+                    await ctx.send("🧹 **All in-memory caches cleared successfully!** (Database records preserved)")
+                else:
+                    await ctx.send("Memory reset cancelled.")
+                    
+            except asyncio.TimeoutError:
+                await ctx.send("Confirmation timed out. Memory reset cancelled.")
+                
+        elif target == "channel":
+            # Clear channel-specific memories
+            channel_id = ctx.channel.id
+            
+            # Clear from memory
+            if channel_id in self.server_mood:
+                del self.server_mood[channel_id]
+            
+            # Remove from conversation threads
+            to_remove = [cid for cid, thread in self.conversation_threads.items() 
+                        if thread.get('channel_id') == channel_id]
+            for cid in to_remove:
+                del self.conversation_threads[cid]
+            
+            # Clear from database (optional - uncomment if needed)
+            # async with aiosqlite.connect(self.db_path) as db:
+            #     await db.execute('DELETE FROM episodic_memory WHERE channel_id = ?', (channel_id,))
+            #     await db.commit()
+            
+            await ctx.send(f"🧹 **Cleared memories for #{ctx.channel.name}** (in-memory only)")
+        else:
+            help_embed = discord.Embed(
+                title="Memory Management",
+                description="Usage: `.forget [all|channel]`",
+                color=discord.Color.blue()
+            )
+            help_embed.add_field(name="all", value="Clear all in-memory caches", inline=False)
+            help_embed.add_field(name="channel", value="Clear current channel memories", inline=False)
+            await ctx.send(embed=help_embed)
+
+    @commands.command(name="vibe")
+    @commands.cooldown(1, 10, commands.BucketType.user)
+    async def check_vibe(self, ctx):
+        """Check current channel vibe"""
+        vibe = self.server_mood.get(ctx.channel.id, {})
+        
+        if not vibe or not vibe.get('topics'):
+            await ctx.send("I haven't sensed the vibe here yet. Keep chatting and I'll pick it up!")
+            return
+        
+        # Create vibe description
+        energy = vibe.get('energy', 0.5)
+        positivity = vibe.get('positivity', 0.5)
+        coherence = vibe.get('coherence', 0.5)
+        formality = vibe.get('formality', 0.3)
+        
+        energy_desc = "calm" if energy < 0.4 else "energetic" if energy > 0.6 else "balanced"
+        mood_desc = "positive" if positivity > 0.6 else "negative" if positivity < 0.4 else "neutral"
+        coherence_desc = "focused" if coherence > 0.7 else "scattered" if coherence < 0.3 else "mixed"
+        formality_desc = "casual" if formality < 0.4 else "formal" if formality > 0.6 else "balanced"
+        
+        description = (
+            f"The vibe here is **{energy_desc}** and **{mood_desc}**, "
+            f"with **{coherence_desc}** topics and a **{formality_desc}** tone."
+        )
+        
+        embed = discord.Embed(
+            title=f"📊 Vibe Analysis: #{ctx.channel.name}",
+            description=description,
+            color=discord.Color.gold(),
+            timestamp=datetime.utcnow()
+        )
+        
+        # Add metrics
+        embed.add_field(
+            name="Core Metrics",
+            value=f"**Energy:** {energy:.1%}\n"
+                  f"**Positivity:** {positivity:.1%}\n"
+                  f"**Coherence:** {coherence:.1%}\n"
+                  f"**Formality:** {formality:.1%}",
+            inline=True
+        )
+        
+        # Top topics
+        if vibe.get('topics'):
+            top_topics = sorted(vibe['topics'].items(), key=lambda x: x[1], reverse=True)[:6]
+            topics_str = '\n'.join([f"• `{topic}`: {weight:.1f}" for topic, weight in top_topics])
+            embed.add_field(name="Active Topics", value=topics_str, inline=True)
+        
+        # Engagement
+        if vibe.get('user_engagement'):
+            active_users = len([uid for uid, eng in vibe['user_engagement'].items() if eng > 0.5])
+            embed.add_field(
+                name="Engagement",
+                value=f"**Active Users:** {active_users}\n"
+                      f"**Conversation Depth:** {vibe.get('conversation_depth', 0.5):.1%}\n"
+                      f"**Responsiveness:** {vibe.get('responsiveness', 0.5):.1%}",
+                inline=True
+            )
+        
+        await ctx.send(embed=embed)
+
+    @commands.command(name="reflect")
+    @commands.has_permissions(manage_messages=True)
+    @commands.cooldown(1, 60, commands.BucketType.user)
+    async def force_reflection(self, ctx):
+        """Force a reflection cycle (admin)"""
+        msg = await ctx.send("🧠 Beginning enhanced reflection cycle...")
+        
+        start_time = datetime.utcnow()
+        
+        # Run reflection tasks
+        await self.reflect_on_conversations()
+        await self.consolidate_working_memory()
+        await self.cleanup_old_memories()
+        
+        duration = (datetime.utcnow() - start_time).total_seconds()
+        
+        embed = discord.Embed(
+            title="✅ Reflection Complete",
+            description="Memories consolidated and patterns analyzed.",
+            color=discord.Color.green(),
+            timestamp=datetime.utcnow()
+        )
+        
+        embed.add_field(name="Duration", value=f"{duration:.2f} seconds", inline=True)
+        embed.add_field(name="Status", value="Systems optimized", inline=True)
+        
+        await msg.edit(content=None, embed=embed)
+
+    @commands.command(name="brainstats")
+    @commands.cooldown(1, 30, commands.BucketType.user)
+    async def show_stats(self, ctx):
+        """Show detailed bot statistics"""
+        embed = discord.Embed(
+            title="📈 ConsciousBot Statistics",
+            color=discord.Color.dark_green(),
+            timestamp=datetime.utcnow(),
+            description="Comprehensive performance and usage statistics"
+        )
+        
+        # Calculate success rate
+        total_responses = self.stats['successful_responses'] + self.stats['failed_responses']
+        success_rate = self.stats['successful_responses'] / max(1, total_responses)
+        
+        # Uptime
+        uptime = self.get_uptime()
+        
+        # Add stats
+        embed.add_field(
+            name="Performance Metrics",
+            value=f"**Success Rate:** {success_rate:.1%}\n"
+                  f"**Avg Response Time:** {self.stats['avg_response_time']:.2f}s\n"
+                  f"**Context Awareness:** {self.stats['context_aware_replies']/max(1, total_responses):.1%}\n"
+                  f"**Memory Efficiency:** {self.stats['memory_recalls']/max(1, self.stats['messages_processed']):.2f}",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Usage Statistics",
+            value=f"**Messages Processed:** {self.stats['messages_processed']:,}\n"
+                  f"**Conversations Understood:** {self.stats['conversations_understood']:,}\n"
+                  f"**Vibe Updates:** {self.stats['vibe_updates']:,}\n"
+                  f"**Database Size:** {self.get_database_size():.1f} MB",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="System Info",
+            value=f"**Uptime:** {uptime}\n"
+                  f"**Started:** {self.stats['startup_time'][:10]}\n"
+                  f"**Last Backup:** {self.stats.get('last_backup', 'Never')}\n"
+                  f"**Active Channels:** {len(self.server_mood)}",
+            inline=False
+        )
+        
+        embed.set_footer(text="ConsciousBot v2.0 Enhanced | Real-time Consciousness System")
+        
+        await ctx.send(embed=embed)
+
+    @commands.command(name="toggle")
+    @commands.has_permissions(manage_messages=True)
+    async def toggle_silence(self, ctx):
+        """Toggle whether the bot replies in this channel (still learns)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT silent_mode FROM channel_settings WHERE channel_id = ?", 
+                (ctx.channel.id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                
+            # Toggle state: if not found, set to 1 (silent). If found, flip it.
+            new_state = 1 if not row or row[0] == 0 else 0
+            
+            await db.execute(
+                "INSERT OR REPLACE INTO channel_settings (channel_id, silent_mode) VALUES (?, ?)",
+                (ctx.channel.id, new_state)
+            )
+            await db.commit()
+            
+        status = "SILENT (learning only)" if new_state == 1 else "ACTIVE (replying & learning)"
+        await ctx.send(f"✅ Bot is now **{status}** in this channel.")
+
+    @commands.command(name="help_conscious")
+    @commands.cooldown(1, 10, commands.BucketType.user)
+    async def show_help(self, ctx):
+        """Show help for conscious bot commands"""
+        embed = discord.Embed(
+            title="🤖 ConsciousBot Help",
+            description="Advanced conversational AI with memory and consciousness simulation",
+            color=discord.Color.blurple()
+        )
+        
+        embed.add_field(
+            name="Core Commands",
+            value=(
+                "`.consciousness` - Show current bot consciousness state\n"
+                "`.memory [@user]` - Show memories about user or channel\n"
+                "`.vibe` - Check current channel vibe/atmosphere\n"
+                "`.stats` - Show detailed bot statistics\n"
+                "`.help_conscious` - Show this help message"
+            ),
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Admin Commands",
+            value=(
+                "`.forget [all|channel]` - Clear memories (requires manage_messages)\n"
+                "`.reflect` - Force reflection cycle (requires manage_messages)"
+            ),
+            inline=False
+        )
+        
+        embed.add_field(
+            name="How It Works",
+            value=(
+                "• **Memory**: Stores conversations and learns from them\n"
+                "• **Consciousness**: Simulates emotional states and focus\n"
+                "• **Vibe Analysis**: Tracks channel atmosphere and topics\n"
+                "• **Context Awareness**: Remembers previous conversations\n"
+                "• **Multilingual**: Understands English, Hindi, and internet slang"
+            ),
+            inline=False
+        )
+        
+        embed.set_footer(text="The bot learns from conversations automatically!")
+        
+        await ctx.send(embed=embed)
+
+    def get_uptime(self) -> str:
+        """Calculate and format bot uptime"""
         try:
-            startup = datetime.fromisoformat(self.stats['startup_time'])
-            uptime = datetime.utcnow() - startup
+            start_time = datetime.fromisoformat(self.stats['startup_time'].replace('Z', '+00:00'))
+            uptime = datetime.utcnow() - start_time
+            
             days = uptime.days
             hours, remainder = divmod(uptime.seconds, 3600)
             minutes, seconds = divmod(remainder, 60)
             
             if days > 0:
                 return f"{days}d {hours}h {minutes}m"
+            elif hours > 0:
+                return f"{hours}h {minutes}m"
             else:
-                return f"{hours}h {minutes}m {seconds}s"
+                return f"{minutes}m {seconds}s"
         except:
             return "Unknown"
 
-    @commands.command(name="generate")
-    async def force_generate(self, ctx, *, seed_word=None):
-        """Force generate a sentence with rate limit check"""
-        # Check rate limit
-        if not self.check_rate_limit(ctx.channel.id):
-            await ctx.send("⏳ Please wait a moment before generating again!")
-            return
-        
-        async with ctx.channel.typing():
-            sentence = await self.generate_sentence(seed_word, ctx.message.content)
-            
-            if sentence:
-                embed = discord.Embed(
-                    description=f"*{sentence}*",
-                    color=discord.Color.green()
-                )
-                if seed_word:
-                    embed.set_footer(text=f"Seeded with: {seed_word}")
-                msg = await ctx.send(embed=embed)
-                self.record_bot_message(ctx.channel.id)
-            else:
-                await ctx.send("❌ Not enough data yet! I need to learn more from chat.")
-
-    @commands.command(name="antispam")
-    @commands.has_permissions(manage_messages=True)
-    async def anti_spam_info(self, ctx):
-        """Show anti-spam settings and stats"""
-        embed = discord.Embed(
-            title="🛡️ Anti-Spam Protection",
-            color=discord.Color.orange(),
-            timestamp=datetime.utcnow()
-        )
-        
-        embed.add_field(
-            name="Current Settings",
-            value=f"**Min Interval:** {self.MIN_MESSAGE_INTERVAL}s\n"
-                  f"**Max/Minute:** {self.MAX_MESSAGES_PER_MINUTE}\n"
-                  f"**Burst Window:** {self.SPAM_BURST_WINDOW}s\n"
-                  f"**Burst Limit:** {self.SPAM_BURST_LIMIT}\n"
-                  f"**Reply Chance:** {self.REPLY_CHANCE*100:.1f}%\n"
-                  f"**Reply Cooldown:** {self.REPLY_COOLDOWN}s",
-            inline=False
-        )
-        
-        # Current channel stats
-        now = datetime.utcnow()
-        channel_id = ctx.channel.id
-        
-        if channel_id in self.last_bot_message:
-            last_msg_time = self.last_bot_message[channel_id]
-            seconds_since = (now - last_msg_time).total_seconds()
-            embed.add_field(
-                name="This Channel",
-                value=f"Last bot message: {seconds_since:.1f}s ago\n"
-                      f"Can send now: {'✅' if seconds_since >= self.MIN_MESSAGE_INTERVAL else '❌'}",
-                inline=False
-            )
-        
-        embed.add_field(
-            name="Global Stats",
-            value=f"Rate limited: {self.stats['rate_limited']} times\n"
-                  f"Spam blocked: {self.stats['spam_blocked']} times\n"
-                  f"Active channels: {len(self.message_timestamps)}",
-            inline=False
-        )
-        
-        await ctx.send(embed=embed)
-
-    @commands.command(name="resetlimits")
-    @commands.has_permissions(manage_messages=True)
-    async def reset_rate_limits(self, ctx):
-        """Reset rate limits for current channel"""
-        channel_id = ctx.channel.id
-        self.message_timestamps.pop(channel_id, None)
-        self.last_bot_message.pop(channel_id, None)
-        self.reply_cooldowns.pop(channel_id, None)
-        self.save_state()
-        await ctx.send("✅ Rate limits reset for this channel.")
-
-    @commands.command(name="emojistats")
-    async def emoji_stats(self, ctx):
-        """Show emoji usage statistics"""
+    def get_database_size(self) -> float:
+        """Get database file size in MB"""
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.create_function("REGEXP", 2, self.regexp)
-                db.row_factory = aiosqlite.Row
-                
-                # Get emoji stats - UPDATED QUERY
-                async with db.execute("""
-                    SELECT 
-                        COUNT(*) as total_emojis,
-                        COUNT(DISTINCT next_word) as unique_emojis
-                    FROM markov_chain 
-                    WHERE word_type = 'emoji'
-                """) as cursor:
-                    emoji_stats = await cursor.fetchone()
-                
-                # Get most common emojis - UPDATED QUERY
-                async with db.execute("""
-                    SELECT next_word, COUNT(*) as usage_count 
-                    FROM markov_chain 
-                    WHERE word_type = 'emoji' 
-                    GROUP BY next_word 
-                    ORDER BY usage_count DESC 
-                    LIMIT 10
-                """) as cursor:
-                    top_emojis = await cursor.fetchall()
-                
-                embed = discord.Embed(
-                    title="😀 Emoji Statistics",
-                    color=discord.Color.gold(),
-                    timestamp=datetime.utcnow()
-                )
-                
-                if emoji_stats:
-                    embed.add_field(
-                        name="Overview",
-                        value=f"**{emoji_stats['total_emojis']:,}** total emoji usages\n"
-                            f"**{emoji_stats['unique_emojis']}** unique emojis",
-                        inline=False
-                    )
-                
-                # Top emojis - UPDATED DISPLAY
-                if top_emojis:
-                    emoji_list = []
-                    for emoji_row in top_emojis:
-                        emoji_word = emoji_row['next_word']
-                        
-                        # Check if it's a Discord emoji format
-                        discord_match = re.match(r'^<(a?):(\w+):(\d+)>$', emoji_word)
-                        if discord_match:
-                            # It's a Discord emoji - show as-is
-                            emoji_list.append(f"{emoji_word}: {emoji_row['usage_count']:,}")
-                        elif emoji_word.startswith(':emoji_'):
-                            # It's a Unicode emoji token
-                            emoji_name = emoji_word.replace(':emoji_', '').rstrip(':')
-                            try:
-                                emoji_char = emoji.emojize(f":{emoji_name}:", language='alias')
-                                emoji_list.append(f"{emoji_char}: {emoji_row['usage_count']:,}")
-                            except:
-                                emoji_list.append(f":{emoji_name}: {emoji_row['usage_count']:,}")
-                        else:
-                            # Fallback
-                            emoji_list.append(f"{emoji_word}: {emoji_row['usage_count']:,}")
-                    
-                    embed.add_field(
-                        name="Most Used Emojis",
-                        value="\n".join(emoji_list),
-                        inline=False
-                    )
-                
-                await ctx.send(embed=embed)
-                
-        except Exception as e:
-            logger.error(f"Emoji stats error: {e}")
-            await ctx.send(f"❌ Error: {str(e)[:100]}")
+            if os.path.exists(self.db_path):
+                return os.path.getsize(self.db_path) / (1024 * 1024)
+        except:
+            pass
+        return 0.0
 
-    @commands.command(name="clearcooldown")
-    @commands.has_permissions(manage_messages=True)
-    async def clear_cooldown(self, ctx):
-        """Clear reply cooldown"""
-        self.reply_cooldowns.pop(ctx.channel.id, None)
-        self.save_state()
-        await ctx.send("✅ Cooldown cleared for this channel.")
-
-    @commands.command(name="exportbrain")
-    @commands.has_permissions(administrator=True)
-    async def export_brain(self, ctx):
-        """Export brain data"""
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.create_function("REGEXP", 2, self.regexp)
-                async with db.execute("""
-                    SELECT word_a, word_b, next_word, count 
-                    FROM markov_chain 
-                    ORDER BY count DESC 
-                    LIMIT 5000
-                """) as cursor:
-                    rows = await cursor.fetchall()
-                
-                if not rows:
-                    await ctx.send("No data to export yet.")
-                    return
-                
-                # Create export
-                lines = [f"# Markov Brain Export - {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"]
-                lines.append(f"# Total triplets: {len(rows):,}")
-                lines.append("")
-                
-                for word_a, word_b, next_word, count in rows:
-                    lines.append(f"{word_a} {word_b} -> {next_word} (x{count})")
-                
-                content = "\n".join(lines)
-                filename = f"brain_export_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.txt"
-                
-                await ctx.send(
-                    f"Exported {len(rows):,} patterns:",
-                    file=discord.File(
-                        bytes(content, 'utf-8'),
-                        filename=filename
-                    )
-                )
-                
-        except Exception as e:
-            logger.error(f"Export error: {e}")
-            await ctx.send(f"Error exporting: {str(e)}")
-
-    @commands.command(name="resetdaily")
-    @commands.has_permissions(administrator=True)
-    async def reset_daily_stats(self, ctx):
-        """Reset daily statistics"""
-        self.stats['triplets_stored_today'] = 0
-        self.save_state()
-        await ctx.send("✅ Daily statistics reset.")
-
-    @commands.command(name="health")
-    async def health_check(self, ctx):
-        """Check bot health"""
-        try:
-            embed = discord.Embed(
-                title="🤖 Bot Health Check",
-                color=discord.Color.green(),
-                timestamp=datetime.utcnow()
-            )
-            
-            uptime = self.get_uptime()
-            
-            embed.add_field(
-                name="System Status",
-                value=f"✅ **Online**\n"
-                      f"Uptime: {uptime}\n"
-                      f"Database: {'✅ Healthy' if self.db_initialized else '❌ Not ready'}\n"
-                      f"State: ✅ Saved",
-                inline=False
-            )
-            
-            embed.add_field(
-                name="Memory",
-                value=f"Recent messages: {len(self.recent_messages)}/5000\n"
-                      f"Cooldowns: {len(self.reply_cooldowns)} active\n"
-                      f"User cache: {len(self.user_cache)} users",
-                inline=False
-            )
-            
-            embed.add_field(
-                name="Performance",
-                value=f"Triplets: {self.stats['total_triplets']:,}\n"
-                      f"Messages processed: {self.stats['messages_processed']:,}\n"
-                      f"Replies generated: {self.stats['replies_generated']:,}",
-                inline=False
-            )
-            
-            await ctx.send(embed=embed)
-                
-        except Exception as e:
-            await ctx.send(f"❌ Health check failed: {e}")
-
-    @commands.command(name="forcelearn")
-    @commands.has_permissions(administrator=True)
-    async def force_learn(self, ctx, limit: int = 100):
-        """Force learning from recent messages"""
-        if limit > 1000:
-            limit = 1000
-            
-        await ctx.send(f"⏳ Learning from last {limit} messages...")
-        
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.create_function("REGEXP", 2, self.regexp)
-                async with db.execute('''
-                    SELECT content, author_id FROM message_log 
-                    WHERE processed = 0 
-                    ORDER BY timestamp DESC 
-                    LIMIT ?
-                ''', (limit,)) as cursor:
-                    rows = await cursor.fetchall()
-                    
-                learned = 0
-                for content, author_id in rows:
-                    # Count emojis
-                    emoji_list = list(emoji.emoji_list(content))
-                    custom_emojis = re.findall(r'<a?:(\w+):\d+>', content)
-                    emoji_count = len(emoji_list) + len(custom_emojis)
-                    
-                    learned += await self.train_on_message(content, author_id, emoji_count)
-                
-                await ctx.send(f"✅ Learned {learned} new triplets from {len(rows)} messages!")
-                
-        except Exception as e:
-            logger.error(f"Force learn error: {e}")
-            await ctx.send(f"❌ Error: {e}")
-            
-            
-    @commands.command(name="toggle")
-    @commands.has_permissions(manage_messages=True)
-    async def toggle_channel(self, ctx):
-        """
-        Toggle the bot's speaking in this channel.
-        Persists directly to JSON.
-        """
-        channel_id = ctx.channel.id
-        
-        if channel_id in self.muted_channels:
-            self.muted_channels.remove(channel_id)
-            status = "🔊 **Enabled**"
-            desc = "I will now reply randomly in this channel."
-            color = discord.Color.green()
+    # Error handling for commands
+    @show_consciousness.error
+    @show_memory.error
+    @check_vibe.error
+    @show_stats.error
+    @show_help.error
+    async def command_error(self, ctx, error):
+        """Handle command errors gracefully"""
+        if isinstance(error, commands.CommandOnCooldown):
+            await ctx.send(f"⏳ Please wait {error.retry_after:.1f} seconds before using this command again.")
+        elif isinstance(error, commands.MissingPermissions):
+            await ctx.send("🔒 You don't have permission to use this command.")
         else:
-            self.muted_channels.add(channel_id)
-            status = "🤐 **Disabled**"
-            desc = "I will stay quiet in this channel (but I'm still learning!)."
-            color = discord.Color.orange()
-            
-        # FORCE SAVE IMMEDIATELY
-        self.save_state()
-        
-        embed = discord.Embed(title=f"Chat Generation {status}", description=desc, color=color)
-        embed.set_footer(text="Settings saved to persistence.")
-        await ctx.send(embed=embed)
-        
-    @commands.command(name="ingest")
-    @commands.has_permissions(administrator=True)
-    async def ingest_file(self, ctx):
-        """
-        Ingest a .txt file attached to the message.
-        Provides live updates via Embed.
-        """
-        # 1. Validation
-        if not ctx.message.attachments:
-            await ctx.send("❌ Please attach a `.txt` file to your message.")
-            return
-
-        attachment = ctx.message.attachments[0]
-        if not attachment.filename.endswith('.txt'):
-            await ctx.send("❌ Only `.txt` files are supported.")
-            return
-
-        # 2. Setup Embed
-        start_time = time.time()
-        status_embed = discord.Embed(
-            title="🧠 Brain Ingestion Process",
-            description=f"Processing **{attachment.filename}**...",
-            color=discord.Color.blue()
-        )
-        status_embed.add_field(name="Status", value="⬇️ Downloading...", inline=True)
-        status_msg = await ctx.send(embed=status_embed)
-
-        try:
-            # 3. Read File
-            file_bytes = await attachment.read()
-            try:
-                # Try UTF-8, fallback to latin-1 for older logs
-                text = file_bytes.decode('utf-8')
-            except UnicodeDecodeError:
-                text = file_bytes.decode('latin-1')
-
-            lines = [line.strip() for line in text.split('\n') if len(line.strip()) > 2]
-            total_lines = len(lines)
-            
-            if total_lines == 0:
-                await status_msg.edit(content="❌ File appears empty or has no valid text.")
-                return
-
-            # 4. Process Loop
-            processed = 0
-            triplets_added = 0
-            last_update = time.time()
-            
-            status_embed.set_field_at(0, name="Status", value="⚙️ Learning...", inline=True)
-            status_embed.add_field(name="Progress", value="0%", inline=False)
-            status_embed.add_field(name="Stats", value="Waiting...", inline=False)
-            await status_msg.edit(embed=status_embed)
-
-            for line in lines:
-                # Use existing training logic
-                # We count emojis loosely here for speed
-                emoji_count = len(re.findall(r'<a?:\w+:\d+>', line))
-                
-                # Train (using 0 as generic author ID for ingested content)
-                learned = await self.train_on_message(
-                    content=line, 
-                    author_id=0, 
-                    emoji_count=emoji_count, 
-                    message=ctx.message # Pass context for server-specific emoji validation
-                )
-                
-                if learned > 0:
-                    triplets_added += learned
-                
-                processed += 1
-
-                # Update Embed every 2 seconds (to avoid rate limits)
-                if time.time() - last_update > 2.0:
-                    last_update = time.time()
-                    
-                    # Calculate Stats
-                    percent = (processed / total_lines)
-                    bar_len = 15
-                    filled = int(bar_len * percent)
-                    bar = "█" * filled + "░" * (bar_len - filled)
-                    
-                    elapsed = time.time() - start_time
-                    rate = processed / elapsed if elapsed > 0 else 0
-                    eta = (total_lines - processed) / rate if rate > 0 else 0
-                    
-                    status_embed.color = discord.Color.orange()
-                    status_embed.set_field_at(1, name="Progress", value=f"`{bar}` {percent:.1%}", inline=False)
-                    status_embed.set_field_at(2, name="Stats", value=f"Lines: {processed:,}/{total_lines:,}\nTriplets: {triplets_added:,}\nETA: {int(eta)}s", inline=False)
-                    
-                    await status_msg.edit(embed=status_embed)
-                
-                # Yield control to event loop so bot doesn't freeze
-                await asyncio.sleep(0.01) 
-
-            # 5. Final Update
-            total_time = time.time() - start_time
-            status_embed.title = "✅ Ingestion Complete"
-            status_embed.color = discord.Color.green()
-            status_embed.description = f"Finished processing **{attachment.filename}**"
-            status_embed.clear_fields()
-            status_embed.add_field(name="Summary", value=f"**Lines:** {total_lines:,}\n**New Patterns:** {triplets_added:,}\n**Time:** {total_time:.2f}s")
-            
-            await status_msg.edit(embed=status_embed)
-            self.save_state()
-
-        except Exception as e:
-            logger.error(f"Ingest failed: {e}")
-            await status_msg.edit(content=f"❌ **Ingestion Failed:** {str(e)[:100]}")
+            logger.error(f"Command error in {ctx.command}: {error}")
+            await ctx.send("⚠️ An error occurred. Please try again later.")
 
 async def setup(bot):
-    await bot.add_cog(EnhancedMarkovCog(bot))
+    """Setup function for Discord bot cog"""
+    try:
+        await bot.add_cog(ConsciousBotCog(bot))
+        logger.info("ConsciousBotCog loaded successfully")
+    except Exception as e:
+        logger.error(f"Failed to load ConsciousBotCog: {e}")
