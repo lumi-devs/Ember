@@ -778,103 +778,6 @@ class ConsciousBotCog(commands.Cog):
                 logger.error(f"Failed to start task {task_func.__name__}: {e}")
 
     # ==================== MISSING METHODS FOR COG ====================
-    
-    async def _consciousness_cycle_func(self):
-        """Enhanced periodic consciousness maintenance"""
-        try:
-            # Consolidate memories
-            await self.consolidate_working_memory()
-            
-            # Reflect on recent interactions
-            await self.reflect_on_conversations()
-            
-            # Clean up old data
-            await self.cleanup_old_memories()
-            
-            # Update consciousness state
-            self.update_consciousness_state()
-            
-            # Save state periodically
-            if random.random() < 0.2:  # 20% chance each cycle
-                await self.save_consciousness_state()
-            
-            logger.debug("Consciousness cycle completed successfully")
-            
-        except Exception as e:
-            logger.error(f"Consciousness cycle error: {e}")
-            await self._log_error("consciousness_cycle", str(e))
-
-    async def _memory_consolidation_func(self):
-        """Enhanced periodic memory consolidation"""
-        try:
-            # Save current state
-            await self.save_consciousness_state()
-            
-            # Prune inactive profiles
-            await self.prune_inactive_profiles()
-            
-            # Backup database periodically
-            if random.random() < 0.1:  # 10% chance each cycle
-                await self.backup_database()
-            
-            logger.debug("Memory consolidation completed")
-            
-        except Exception as e:
-            logger.error(f"Memory consolidation error: {e}")
-
-    async def _vibe_analysis_func(self):
-        """Enhanced vibe analysis"""
-        try:
-            for channel_id, vibe in list(self.server_mood.items()):
-                # Decay old data
-                for topic in list(vibe['topics'].keys()):
-                    vibe['topics'][topic] *= 0.92
-                    if vibe['topics'][topic] < 0.05:
-                        del vibe['topics'][topic]
-                
-                # Decay user engagement
-                for user_id in list(vibe['user_engagement'].keys()):
-                    vibe['user_engagement'][user_id] *= 0.95
-                    if vibe['user_engagement'][user_id] < 0.1:
-                        del vibe['user_engagement'][user_id]
-                
-                # Update formality based on interaction patterns
-                if vibe['interaction_patterns']:
-                    formal_intents = ['question', 'information', 'request']
-                    informal_intents = ['humor', 'short_message', 'exclamation']
-                    
-                    formal_count = sum(sum(intents.values()) for intent, intents in vibe['interaction_patterns'].items() 
-                                      if intent in formal_intents)
-                    informal_count = sum(sum(intents.values()) for intent, intents in vibe['interaction_patterns'].items() 
-                                        if intent in informal_intents)
-                    
-                    total = formal_count + informal_count
-                    if total > 0:
-                        vibe['formality'] = formal_count / total
-                
-                # Update responsiveness (how chatty the channel is)
-                recent_hour = datetime.utcnow().hour
-                hour_activity = vibe['active_hours'].get(recent_hour, 0)
-                vibe['responsiveness'] = min(1.0, hour_activity / 20)  # Normalize
-                
-                # Remove old interaction patterns
-                for intent in list(vibe['interaction_patterns'].keys()):
-                    if not vibe['interaction_patterns'][intent]:
-                        del vibe['interaction_patterns'][intent]
-            
-            logger.debug("Vibe analysis completed")
-            
-        except Exception as e:
-            logger.error(f"Vibe analysis error: {e}")
-
-    async def _auto_backup_func(self):
-        """Automatic database backup"""
-        try:
-            await self.backup_database()
-            logger.info("Automatic backup completed")
-        except Exception as e:
-            logger.error(f"Auto backup error: {e}")
-
     def _analyze_cultural_context(self, text: str) -> Dict[str, Any]:
         """Analyze cultural/Hinglish context"""
         text_lower = text.lower()
@@ -4653,27 +4556,43 @@ class ConsciousBotCog(commands.Cog):
 
     async def cog_load(self):
         """Start background tasks when cog loads"""
-        # Start all background tasks
-        self.consciousness_cycle.start()
-        self.memory_consolidation.start()
-        self.vibe_analysis.start()
-        self.auto_backup.start()
-        
-        # Initialize database
+        # Initialize database FIRST
         await self.initialize_database()
+        
+        # THEN start all background tasks
+        if not self.consciousness_cycle.is_running():
+            self.consciousness_cycle.start()
+        
+        if not self.memory_consolidation.is_running():
+            self.memory_consolidation.start()
+        
+        if not self.vibe_analysis.is_running():
+            self.vibe_analysis.start()
+        
+        if not self.auto_backup.is_running():
+            self.auto_backup.start()
         
         logger.info("ConsciousBotCog background tasks started")
 
     async def cog_unload(self):
         """Cleanup when cog unloads"""
         # Stop all background tasks
-        self.consciousness_cycle.stop()
-        self.memory_consolidation.stop()
-        self.vibe_analysis.stop()
-        self.auto_backup.stop()
+        if self.consciousness_cycle.is_running():
+            self.consciousness_cycle.stop()
+        
+        if self.memory_consolidation.is_running():
+            self.memory_consolidation.stop()
+        
+        if self.vibe_analysis.is_running():
+            self.vibe_analysis.stop()
+        
+        if self.auto_backup.is_running():
+            self.auto_backup.stop()
         
         # Save final state
         await self.save_consciousness_state()
+        
+        logger.info("ConsciousBotCog background tasks stopped")
 
 
 async def setup(bot):
