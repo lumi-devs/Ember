@@ -3974,7 +3974,7 @@ class ConsciousBotCog(commands.Cog):
         except Exception as e:
             logger.error(f"Memory cleanup error: {e}")
 
-            
+
     def update_consciousness_state(self):
         """Update the bot's conscious state"""
         try:
@@ -4883,6 +4883,19 @@ class ConsciousBotCog(commands.Cog):
         else:
             logger.error(f"Command error in {ctx.command}: {error}")
             await ctx.send("⚠️ An error occurred. Please try again later.")
+
+    async def cog_load(self):
+        """Start background tasks when cog loads"""
+        # Start all background tasks
+        self.consciousness_cycle.start()
+        self.memory_consolidation.start()
+        self.vibe_analysis.start()
+        self.auto_backup.start()
+        
+        # Initialize database
+        await self.initialize_database()
+        
+        logger.info("ConsciousBotCog background tasks started")
 
 async def setup(bot):
     """Setup function for Discord bot cog"""
