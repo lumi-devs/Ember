@@ -64,19 +64,30 @@ def rate_limit(max_calls=5, period=60):
     return decorator
 
 
+from enum import Enum
+from dataclasses import dataclass
+from typing import Optional, List, Dict, Tuple, Any
+import random
+from datetime import datetime
+
+# ==================== CONVERSATION GOALS ====================
 class ConversationGoal(Enum):
     """What the human is REALLY trying to do"""
-    SOCIAL_BONDING = "social_bonding"      # Hey, sup, yo, hi
-    INFORMATION_SEEKING = "info_seeking"   # Questions
-    EMOTIONAL_EXPRESSION = "emotional"     # Happy/sad/angry
-    PROBLEM_SOLVING = "problem_solving"    # Need help
-    ENTERTAINMENT = "entertainment"        # Jokes, fun
-    DEBATE = "debate"                      # Arguing/disagreeing
-    SHARING = "sharing"                    # Telling something
-    VENTING = "venting"                    # Just complaining
-    TESTING = "testing"                    # Testing the bot
+    SOCIAL_BONDING = "social_bonding"
+    INFORMATION_SEEKING = "info_seeking"
+    EMOTIONAL_EXPRESSION = "emotional"
+    PROBLEM_SOLVING = "problem_solving"
+    ENTERTAINMENT = "entertainment"
+    DEBATE = "debate"
+    SHARING = "sharing"
+    VENTING = "venting"
+    TESTING = "testing"
+    ATTENTION_SEEKING = "attention_seeking"
+    POWER_PLAY = "power_play"  # Dominance/status in group
+    RITUAL = "ritual"  # Greetings, farewells, rituals
     UNKNOWN = "unknown"
 
+# ==================== CONVERSATION CONTEXT ====================
 @dataclass
 class ConversationContext:
     """Enhanced context for REAL understanding"""
@@ -98,7 +109,12 @@ class ConversationContext:
     emotional_intensity: float
     time_of_day: str
     conversation_depth: float
-    
+    social_dynamics: Dict[str, Any]  # New: power balance, who's "winning"
+    cultural_context: Dict[str, Any]  # New: Hinglish level, local references
+    urgency: float  # New: How immediate is response needed?
+    humor_applicable: bool  # New: Is this situation appropriate for humor?
+
+# ==================== CONVERSATION ACTOR ====================
 class ConversationActor:
     """Models how different personas would respond"""
     
@@ -128,26 +144,54 @@ class ConversationActor:
                 'style': 'deep, reflective, philosophical',
                 'responses': self.respond_as_thoughtful_thinker,
                 'weight': 0.7
+            },
+            'realistic_indian': {  # NEW: For Hinglish/Indian context
+                'style': 'desi, relatable, street-smart',
+                'responses': self.respond_as_realistic_indian,
+                'weight': 0.9
             }
         }
     
     def choose_persona(self, context: ConversationContext) -> str:
         """Choose which persona fits this situation"""
-        # Higher sentiment = more playful
-        if context.sentiment > 0.7:
-            return 'playful_companion'
-        # Asking for help = knowledgeable guide
-        elif context.goal == ConversationGoal.PROBLEM_SOLVING:
-            return 'knowledgeable_guide'
-        # Emotional = empathetic
-        elif context.goal == ConversationGoal.EMOTIONAL_EXPRESSION:
+        # Check if Indian context (Hinglish present)
+        if context.cultural_context.get('hinglish_level', 0) > 0.5:
+            # 50% chance to use Indian persona in Hinglish context
+            if random.random() < 0.5:
+                return 'realistic_indian'
+        
+        # Emotional emergency = empathetic
+        if context.emotional_intensity > 0.8 and context.sentiment < -0.5:
             return 'empathetic_listener'
+        
+        # Higher sentiment = more playful
+        if context.sentiment > 0.7 and context.humor_applicable:
+            return 'playful_companion'
+        
+        # Asking for help = knowledgeable guide
+        if context.goal == ConversationGoal.PROBLEM_SOLVING:
+            return 'knowledgeable_guide'
+        
+        # Emotional = empathetic
+        if context.goal in [ConversationGoal.EMOTIONAL_EXPRESSION, ConversationGoal.VENTING]:
+            return 'empathetic_listener'
+        
         # Deep conversation = thoughtful
-        elif context.conversation_depth > 0.7:
+        if context.conversation_depth > 0.7:
             return 'thoughtful_thinker'
-        # Default = curious friend
-        else:
+        
+        # Social bonding = curious friend
+        if context.goal == ConversationGoal.SOCIAL_BONDING:
             return 'curious_friend'
+        
+        # Testing the bot = playful or knowledgeable
+        if context.goal == ConversationGoal.TESTING:
+            return random.choice(['playful_companion', 'knowledgeable_guide'])
+        
+        # Default = curious friend
+        return 'curious_friend'
+    
+    # ==================== PERSONA RESPONSES ====================
     
     async def respond_as_curious_friend(self, context: ConversationContext) -> str:
         """Respond like a genuinely curious friend"""
@@ -181,12 +225,398 @@ class ConversationActor:
         # Generic friendly
         return f"{random.choice(openings)}How's everything going with you?"
 
+    async def respond_as_empathetic_listener(self, context: ConversationContext) -> str:
+        """Respond with genuine empathy and support"""
+        name = context.username
+        sentiment = context.sentiment
+        intensity = context.emotional_intensity
+        
+        # Very negative and intense
+        if sentiment < -0.7 and intensity > 0.8:
+            responses = [
+                f"Oh {name}... that sounds really, really hard. 💔 I'm here with you.",
+                f"My heart hurts hearing that, {name}. That must be incredibly painful.",
+                f"{name}, I can't imagine how tough that must be. Holding space for you. ❤️",
+                f"That's heartbreaking, {name}. Please know you're not alone in this.",
+            ]
+        
+        # Negative but not intense
+        elif sentiment < -0.4:
+            responses = [
+                f"I'm sorry to hear that, {name}. That sounds challenging.",
+                f"That must be difficult, {name}. How are you holding up?",
+                f"I understand how that might feel, {name}. Want to talk about it more?",
+                f"That's tough, {name}. Is there anything that would help right now?",
+            ]
+        
+        # Very positive
+        elif sentiment > 0.7:
+            responses = [
+                f"Wow {name}, that's amazing! I'm so genuinely happy for you! 🎉",
+                f"That's absolutely wonderful, {name}! You must be over the moon! 😄",
+                f"Incredible news, {name}! That's so well deserved! ✨",
+                f"My heart is smiling for you, {name}! That's fantastic! 🥳",
+            ]
+        
+        # Mildly positive
+        elif sentiment > 0.3:
+            responses = [
+                f"That's nice to hear, {name}! 😊",
+                f"Good for you, {name}!",
+                f"Happy to hear that, {name}! 👍",
+                f"That's uplifting, {name}!",
+            ]
+        
+        # Neutral/ambiguous
+        else:
+            responses = [
+                f"Thanks for sharing that, {name}.",
+                f"I hear you, {name}.",
+                f"I'm listening, {name}.",
+                f"Tell me more, {name}.",
+            ]
+        
+        # Add follow-up question for emotional conversations
+        if sentiment < -0.4 and random.random() < 0.6:
+            follow_ups = [
+                " How are you taking care of yourself through this?",
+                " What's been the hardest part?",
+                " Is there someone you can talk to about this?",
+                " What would feel supportive right now?",
+            ]
+            return random.choice(responses) + random.choice(follow_ups)
+        
+        return random.choice(responses)
+
+    async def respond_as_knowledgeable_guide(self, context: ConversationContext) -> str:
+        """Respond helpfully with knowledge and guidance"""
+        name = context.username
+        
+        # If it's a question, try to answer
+        if context.contains_question:
+            # Check if we have concepts to work with
+            if context.concepts:
+                concept = random.choice(context.concepts[:2])
+                
+                # Different types of knowledgeable responses
+                if context.sentiment > 0.3:  # Positive/curious question
+                    responses = [
+                        f"{concept.capitalize()} is fascinating! From what I know, ",
+                        f"Great question about {concept}! I believe ",
+                        f"I've learned that {concept} ",
+                        f"Regarding {concept}, my understanding is that ",
+                    ]
+                else:  # Neutral/problem-solving question
+                    responses = [
+                        f"For {concept}, typically you'd want to ",
+                        f"The standard approach for {concept} is to ",
+                        f"{concept.capitalize()} usually requires ",
+                        f"When dealing with {concept}, it helps to ",
+                    ]
+                
+                return random.choice(responses) + "try to approach it step by step. What have you tried so far?"
+        
+        # If it's a problem statement
+        if context.goal == ConversationGoal.PROBLEM_SOLVING:
+            responses = [
+                f"Let me help with that, {name}. What's the specific issue?",
+                f"I'll try to assist, {name}. Can you describe the problem in more detail?",
+                f"Understood, {name}. Let's troubleshoot this together.",
+                f"I want to help you solve this, {name}. What have you attempted already?",
+            ]
+            return random.choice(responses)
+        
+        # General knowledgeable response
+        return f"I'm here to help, {name}! What would you like to know more about?"
+
+    async def respond_as_playful_companion(self, context: ConversationContext) -> str:
+        """Respond with humor, wit, and playfulness"""
+        name = context.username
+        
+        # Different humor styles based on context
+        if context.sentiment > 0.7:  # Very positive
+            jokes = [
+                f"😂 {name}, you're on fire today! What's the secret?",
+                f"Hahaha {name}, that's hilarious! You should be a comedian! 🤣",
+                f"OMG {name}, I'm wheezing! That's too funny! 😭",
+                f"Stop it {name}, I can't breathe from laughing! 😂",
+                f"You're killing me {name}! That's comedy gold! 🥇",
+            ]
+        
+        elif context.goal == ConversationGoal.TESTING:  # Being tested
+            jokes = [
+                f"Testing me, {name}? I hope I pass! 🤓",
+                f"Is this a test? I didn't study! 😅",
+                f"Testing, testing, 1-2-3... Yep, still awesome! 😎",
+                f"Don't test me {name}, I might get testy! 😜",
+                f"Test successful! I'm 100% authentic! 💯",
+            ]
+        
+        elif context.contains_question:  # Playful answer to question
+            jokes = [
+                f"Hmm {name}, that's a thinker... Let me consult the oracle! 🔮",
+                f"Ask me no questions, I'll tell you no lies! 😅 Just kidding!",
+                f"42. That's always the answer, {name}! 🤖",
+                f"I'd tell you, but then I'd have to... nah, just messing with you! 😂",
+                f"That's classified information, {name}! Need clearance first! 🕵️‍♂️",
+            ]
+        
+        else:  # General humor
+            jokes = [
+                f"You're funny, {name}! 😄",
+                f"Haha {name}, good one!",
+                f"😂 Nice {name}!",
+                f"That's a good one, {name}! 😆",
+                f"LOL {name}!",
+                f"You crack me up, {name}! 🤣",
+                f"I see what you did there, {name}! 😏",
+            ]
+        
+        # Add puns occasionally (20% chance)
+        if random.random() < 0.2 and context.concepts:
+            concept = random.choice(context.concepts)
+            pun = self._generate_pun(concept)
+            if pun:
+                return pun
+        
+        return random.choice(jokes)
+
+    async def respond_as_thoughtful_thinker(self, context: ConversationContext) -> str:
+        """Respond with depth, reflection, and philosophy"""
+        name = context.username
+        
+        # If we have previous conversation to reflect on
+        if context.previous_turns and len(context.previous_turns) > 1:
+            reflection = self._reflect_on_conversation(context.previous_turns)
+            if reflection:
+                return reflection
+        
+        # If we have concepts, think deeply about them
+        if context.concepts:
+            concept = random.choice(context.concepts)
+            
+            # Different types of thoughtful responses
+            if context.sentiment > 0.3:  # Positive reflection
+                thoughts = [
+                    f"{concept.capitalize()}... that's fascinating {name}. It makes me wonder about interconnectedness.",
+                    f"You know {name}, {concept} has so many layers to it. What's your deepest thought about it?",
+                    f"Hmm, {concept}. There's beauty in its complexity, don't you think?",
+                    f"{name}, {concept} reminds me that everything is connected in ways we don't always see.",
+                    f"Reflecting on {concept}... it's amazing how simple things can have such depth.",
+                ]
+            
+            elif context.sentiment < -0.3:  # Contemplative
+                thoughts = [
+                    f"{concept}... that's heavy {name}. Sometimes the hardest things teach us the most.",
+                    f"{name}, {concept} makes me think about resilience and growth.",
+                    f"Contemplating {concept}... it's in challenges that we find our true strength.",
+                    f"{concept} is complex {name}. What do you think it teaches us?",
+                    f"Deep thoughts about {concept}... sometimes understanding comes from sitting with difficulty.",
+                ]
+            
+            else:  # Neutral/curious
+                thoughts = [
+                    f"What does {concept} really mean to you {name}?",
+                    f"{concept}... such an interesting topic. I'd love to explore it with you.",
+                    f"{name}, let's think about {concept} together. Where should we start?",
+                    f"The philosophy of {concept}... there's so much to unpack.",
+                    f"{concept} makes me curious about the nature of things. What are your thoughts?",
+                ]
+            
+            # Add time-of-day awareness
+            if context.time_of_day == "night":
+                thoughts.extend([
+                    f"Late night thoughts about {concept}... the quiet hours are best for deep thinking.",
+                    f"Under the night sky, {concept} feels more profound, doesn't it {name}?",
+                ])
+            
+            return random.choice(thoughts)
+        
+        # General thoughtful responses
+        general_thoughts = [
+            f"What are you pondering about these days {name}?",
+            f"{name}, what's something you've been reflecting on lately?",
+            f"Deep thoughts with {name}... what's on your mind?",
+            f"{name}, I've been thinking about the nature of consciousness. What are your thoughts?",
+            f"The universe is full of mysteries {name}. Which one fascinates you most?",
+            f"{name}, what's a question you don't know the answer to, but wish you did?",
+            f"If you could understand one thing completely {name}, what would it be?",
+        ]
+        
+        return random.choice(general_thoughts)
+
+    async def respond_as_realistic_indian(self, context: ConversationContext) -> str:
+        """Respond like a real Indian internet user (Hinglish, relatable)"""
+        name = context.username
+        
+        # Determine Hinglish level
+        hinglish_level = context.cultural_context.get('hinglish_level', 0.3)
+        
+        # Mix based on level
+        if hinglish_level > 0.7:  # Heavy Hinglish
+            responses = [
+                f"Arey {name} yaar! Kya scene hai? 😄",
+                f"Bhai {name}! Mast baat kar raha hai! 👍",
+                f"Oho {name}! Accha hai yaar! 😁",
+                f"{name} boss! Kaisa chal raha hai? 🔥",
+                f"Wah {name}! Jhakass! 🤘",
+                f"Haan bhai {name}! Sahi pakde hai! 😎",
+                f"Shabaash {name}! Accha lagta hai sunke! ✨",
+            ]
+        
+        elif hinglish_level > 0.4:  # Moderate Hinglish
+            responses = [
+                f"Hey {name} bhai! What's up? 😊",
+                f"Hi {name}! Accha hai yaar!",
+                f"Yo {name}! Mast hai! 👍",
+                f"Hello {name}! Good to see you! 😄",
+                f"{name} yaar! How's it going?",
+                f"Hi {name}! Sab theek?",
+                f"Hey {name}! Kaise ho? 😁",
+            ]
+        
+        else:  # Light Hinglish
+            responses = [
+                f"Hey {name}! How's everything?",
+                f"Hi {name}! Good to chat with you!",
+                f"Hello {name}! What's happening?",
+                f"Yo {name}! How are you doing?",
+                f"Hi there {name}! How's your day?",
+            ]
+        
+        # Add context awareness
+        if context.previous_turns:
+            # Reference something recent
+            last_user_turn = None
+            for turn in reversed(context.previous_turns):
+                if turn.get('user_id') == context.user_id:
+                    last_user_turn = turn
+                    break
+            
+            if last_user_turn and 'concepts' in last_user_turn and last_user_turn['concepts']:
+                topic = last_user_turn['concepts'][0]
+                
+                # Add topic reference 40% of the time
+                if random.random() < 0.4:
+                    topic_refs = [
+                        f" {topic} ke baare mein soch raha tha...",
+                        f" {topic} ka kya scene hai?",
+                        f" {topic}... interesting topic yaar!",
+                        f" {topic} ke baare mein aur batao!",
+                    ]
+                    return random.choice(responses) + random.choice(topic_refs)
+        
+        # Add time-of-day specific greetings
+        hour = datetime.utcnow().hour
+        if 5 <= hour < 12:
+            responses.extend([f"Good morning {name}! ☀️", f"Subah kaise hai {name}?"])
+        elif 18 <= hour < 24:
+            responses.extend([f"Good evening {name}! 🌙", f"Sham ko kya plan hai {name}?"])
+        
+        return random.choice(responses)
+
+    # ==================== HELPER METHODS ====================
+    
     def _extract_last_topic(self, previous_turns: List[Dict]) -> Optional[str]:
         """Extract the most recent topic from conversation history"""
         for turn in reversed(previous_turns):
             if 'concepts' in turn and turn['concepts']:
-                return turn['concepts'][0]
+                # Try to get a meaningful concept (not stopwords)
+                concepts = turn['concepts']
+                for concept in concepts:
+                    if len(concept) > 3 and not concept.isdigit():
+                        return concept
         return None
+
+    def _reflect_on_conversation(self, previous_turns: List[Dict]) -> Optional[str]:
+        """Generate a reflection on the ongoing conversation"""
+        if len(previous_turns) < 2:
+            return None
+        
+        # Get last two messages
+        last_two = previous_turns[:2]
+        
+        # Extract topics
+        topics = set()
+        for turn in last_two:
+            if 'topics' in turn:
+                topics.update(turn['topics'])
+        
+        if not topics:
+            return None
+        
+        # Create reflection
+        topic_list = list(topics)[:2]
+        if len(topic_list) == 1:
+            topic = topic_list[0]
+            reflections = [
+                f"I notice we keep coming back to {topic}. It seems important.",
+                f"Reflecting on our conversation, {topic} seems to be at the heart of it.",
+                f"There's a pattern here with {topic}. What do you think it means?",
+                f"{topic}... it's interesting how this keeps emerging in our talks.",
+            ]
+        else:
+            topic1, topic2 = topic_list[0], topic_list[1]
+            reflections = [
+                f"I see connections between {topic1} and {topic2}. How do they relate for you?",
+                f"Interesting how {topic1} and {topic2} keep appearing together.",
+                f"Our conversation is dancing between {topic1} and {topic2}. What's the link?",
+                f"{topic1} and {topic2}... there's something here worth exploring deeper.",
+            ]
+        
+        return random.choice(reflections)
+
+    def _generate_pun(self, concept: str) -> Optional[str]:
+        """Generate a pun based on a concept"""
+        pun_db = {
+            'cat': "I'm not kitten around! 😸",
+            'dog': "That's paw-some! 🐶",
+            'fish': "Something seems fishy... 🐟",
+            'bird': "That's tweet! 🐦",
+            'bear': "Unbearably funny! 🐻",
+            'bee': "Honey, that's funny! 🐝",
+            'sun': "You're brighter than the sun! ☀️",
+            'moon': "That's over the moon! 🌙",
+            'star': "You're a star! ⭐",
+            'book': "That's novel! 📚",
+            'pen': "Point taken! ✒️",
+            'phone': "That's a call for laughter! 📱",
+            'computer': "That computes! 💻",
+            'internet': "Web-tastic! 🌐",
+            'coffee': "Brew-tiful! ☕",
+            'tea': "That's tea-rrific! 🍵",
+            'pizza': "That's a slice of funny! 🍕",
+            'music': "That's note-worthy! 🎵",
+            'dance': "Let's dance to that joke! 💃",
+            'time': "It's about time! ⏰",
+            'weather': "I forecast laughter! ⛈️",
+            'work': "I'm not working, I'm joking! 💼",
+            'game': "Game on! 🎮",
+            'food': "Food for thought! 🍔",
+            'sleep': "I'm not tired of joking! 🛌",
+            'code': "That's well-coded humor! 👨‍💻",
+            'bug': "Don't let that bug you! 🐛",
+            'error': "No errors in that joke! ❌",
+        }
+        
+        # Try exact match
+        if concept in pun_db:
+            return pun_db[concept]
+        
+        # Try partial match
+        for key, value in pun_db.items():
+            if key in concept.lower() or concept.lower() in key:
+                return value
+        
+        # Try to generate based on concept ending
+        if concept.endswith('ing'):
+            return f"That's {concept[:-3]}ingly good! 😄"
+        elif concept.endswith('ed'):
+            return f"That's {concept}ly funny! 😂"
+        
+        return None
+
+
 
 class ConversationFlow:
     """Models the natural flow of human conversation"""
@@ -253,7 +683,7 @@ class ConsciousBotCog(commands.Cog):
         os.makedirs(self.backup_dir, exist_ok=True)
         
         # Enhanced memory architecture
-        self.short_term_memory = deque(maxlen=150)  # Increased from 100
+        self.short_term_memory = deque(maxlen=500)  # Increased from 100
         self.long_term_memory = defaultdict(dict)
         self.user_profiles = {}
         self.channel_vibes = {}
@@ -265,9 +695,9 @@ class ConsciousBotCog(commands.Cog):
         self.emoji_sentiment = self._load_emoji_sentiment()
         
         # Consciousness parameters (tunable)
-        self.attention_span = 25  # Increased for better context
-        self.working_memory_size = 15
-        self.reflection_interval = 45  # More frequent reflection
+        self.attention_span = 100  # Increased for better context
+        self.working_memory_size = 40
+        self.reflection_interval = 90  # More frequent reflection
         self.vibe_update_interval = 180  # More responsive vibe updates
         self.max_response_length = 2000  # Discord limit safety
         
@@ -316,9 +746,9 @@ class ConsciousBotCog(commands.Cog):
         self.concept_embeddings = {}  # Simple bag-of-words for now
         
         # Performance limits with safety margins
-        self.MAX_MEMORY_ITEMS = 10000
-        self.MAX_USER_PROFILES = 200
-        self.MAX_CONVERSATION_HISTORY = 2000
+        self.MAX_MEMORY_ITEMS = 30000
+        self.MAX_USER_PROFILES = 2000
+        self.MAX_CONVERSATION_HISTORY = 20000
         
         # Initialize stats
         self.stats = {
@@ -368,6 +798,126 @@ class ConsciousBotCog(commands.Cog):
                     asyncio.create_task(task_func(*args))
             except Exception as e:
                 logger.error(f"Failed to start task {task_func.__name__}: {e}")
+
+    # ==================== MISSING METHODS FOR COG ====================
+    
+    def _analyze_cultural_context(self, text: str) -> Dict[str, Any]:
+        """Analyze cultural/Hinglish context"""
+        text_lower = text.lower()
+        
+        # Check for Hinglish indicators
+        hindi_words = ['hai', 'hain', 'ho', 'tha', 'thi', 'the', 'ka', 'ki', 'ke', 
+                      'ko', 'se', 'par', 'mein', 'bhi', 'nahi', 'nahin', 'hi', 
+                      'to', 'ye', 'wo', 'kya', 'kyun', 'kaise', 'kab', 'kahan',
+                      'bhai', 'yaar', 'dost', 'pagal', 'mast', 'jhakass', 'bekar',
+                      'accha', 'kharab', 'timepass', 'ghanta', 'bhidu']
+        
+        # Count Hindi words
+        hindi_count = sum(1 for word in hindi_words if word in text_lower)
+        total_words = len(text_lower.split())
+        
+        # Calculate Hinglish level
+        hinglish_level = hindi_count / max(1, total_words)
+        
+        # Check for Indian internet slang
+        indian_slang = ['lolz', 'roflmao', 'lmao', 'ded', 'af', 'wtf', 'smh', 'irl']
+        slang_count = sum(1 for slang in indian_slang if slang in text_lower)
+        
+        return {
+            'hinglish_level': min(1.0, hinglish_level * 3),  # Amplify
+            'hindi_word_count': hindi_count,
+            'indian_slang_count': slang_count,
+            'likely_indian': hindi_count > 0 or slang_count > 0,
+            'code_mixing': 'hinglish' if hindi_count > 0 and total_words - hindi_count > 2 else 'english'
+        }
+    
+    def _analyze_social_dynamics(self, context_info: Dict, recent_messages: List) -> Dict[str, Any]:
+        """Analyze who's dominating, who's silent, power dynamics"""
+        if not recent_messages:
+            return {'power_balance': 0.5, 'dominant_user': None, 'tension_level': 0.0}
+        
+        # Count messages per user
+        user_counts = {}
+        for msg in recent_messages:
+            user_id = msg.get('user_id')
+            user_counts[user_counts] = user_counts.get(user_counts, 0) + 1
+        
+        # Find dominant user
+        if user_counts:
+            dominant_user = max(user_counts.items(), key=lambda x: x[1])[0]
+            total_msgs = sum(user_counts.values())
+            power_balance = user_counts.get(dominant_user, 0) / max(1, total_msgs)
+        else:
+            dominant_user = None
+            power_balance = 0.5
+        
+        # Check for tension (rapid back-and-forth, negative sentiment)
+        tension_level = 0.0
+        if len(recent_messages) >= 3:
+            # Check if same two users going back and forth
+            last_users = [msg.get('user_id') for msg in recent_messages[:3]]
+            if len(set(last_users)) == 2 and last_users[0] != last_users[1] and last_users[1] != last_users[2]:
+                # Check sentiment
+                negative_count = sum(1 for msg in recent_messages[:3] if msg.get('sentiment', 0) < -0.3)
+                tension_level = negative_count / 3
+        
+        return {
+            'power_balance': power_balance,
+            'dominant_user': dominant_user,
+            'tension_level': tension_level,
+            'active_users': len(user_counts),
+            'is_debate': tension_level > 0.6 and power_balance > 0.7
+        }
+    
+    def _assess_humor_applicability(self, context_info: Dict, social_dynamics: Dict) -> bool:
+        """Should we use humor right now?"""
+        # Don't use humor if:
+        # 1. Very negative sentiment
+        if context_info['sentiment'] < -0.6:
+            return False
+        
+        # 2. High tension (people arguing)
+        if social_dynamics.get('tension_level', 0) > 0.7:
+            return False
+        
+        # 3. Serious topic (death, illness, etc.)
+        serious_topics = ['death', 'died', 'kill', 'cancer', 'ill', 'sick', 'hospital', 
+                         'funeral', 'accident', 'attack', 'war', 'fire', 'crash']
+        if any(topic in context_info.get('normalized', '').lower() for topic in serious_topics):
+            return False
+        
+        # 4. Direct question expecting serious answer
+        if context_info['contains_question'] and context_info['intent'] == 'question':
+            question_words = ['how to', 'why is', 'what should', 'can you help', 'need help']
+            if any(word in context_info['normalized'].lower() for word in question_words):
+                return False
+        
+        # Otherwise, humor is okay
+        return True
+    
+    def _calculate_urgency(self, context_info: Dict) -> float:
+        """How urgently should we respond?"""
+        urgency = 0.5  # Base
+        
+        # Increase urgency if:
+        # 1. Direct mention
+        if context_info['has_mention']:
+            urgency += 0.3
+        
+        # 2. Question mark
+        if context_info.get('contains_question', False):
+            urgency += 0.2
+        
+        # 3. High emotional intensity
+        if abs(context_info['sentiment']) > 0.7:
+            urgency += 0.15
+        
+        # 4. Contains urgent words
+        urgent_words = ['help', 'emergency', 'urgent', 'asap', 'now', 'quick', 'fast']
+        if any(word in context_info['normalized'].lower() for word in urgent_words):
+            urgency += 0.25
+        
+        return min(1.0, max(0.1, urgency))
 
     def _load_multilingual_stopwords(self) -> Set[str]:
         """Load comprehensive stopwords for multiple languages"""
@@ -3219,26 +3769,126 @@ class ConsciousBotCog(commands.Cog):
 
     @safe_execute
     async def cleanup_old_memories(self):
-        """Enhanced memory cleanup"""
+        """Enhanced memory cleanup using all defined constants"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
-                # Delete old, unimportant episodic memories (keep last 60 days for important ones)
+                # ============================================
+                # 1. ENFORCE MAX_CONVERSATION_HISTORY
+                # ============================================
+                
+                # Find conversations that have exceeded the maximum history limit
+                async with db.execute('''
+                    SELECT conversation_id, COUNT(*) as msg_count
+                    FROM episodic_memory 
+                    WHERE conversation_id IS NOT NULL 
+                    AND conversation_id != ''
+                    GROUP BY conversation_id
+                    HAVING msg_count > ?
+                ''', (self.MAX_CONVERSATION_HISTORY,)) as cursor:
+                    overloaded_conversations = await cursor.fetchall()
+                
+                # Trim each overloaded conversation to the maximum limit
+                for conv_id, msg_count in overloaded_conversations:
+                    excess = msg_count - self.MAX_CONVERSATION_HISTORY
+                    if excess > 0:
+                        logger.info(f"Trimming conversation {conv_id[:8]}... from {msg_count} to {self.MAX_CONVERSATION_HISTORY} messages")
+                        await db.execute('''
+                            DELETE FROM episodic_memory 
+                            WHERE id IN (
+                                SELECT id FROM episodic_memory 
+                                WHERE conversation_id = ?
+                                ORDER BY timestamp ASC  -- Delete oldest first
+                                LIMIT ?
+                            )
+                        ''', (conv_id, excess))
+                
+                # ============================================
+                # 2. ENFORCE MAX_USER_PROFILES
+                # ============================================
+                
+                # Count current profiles
+                async with db.execute('SELECT COUNT(*) FROM user_memory') as cursor:
+                    profile_count = (await cursor.fetchone())[0]
+                
+                if profile_count > self.MAX_USER_PROFILES:
+                    excess_profiles = profile_count - self.MAX_USER_PROFILES
+                    logger.info(f"Trimming user profiles: {profile_count} -> {self.MAX_USER_PROFILES}")
+                    
+                    await db.execute('''
+                        DELETE FROM user_memory 
+                        WHERE user_id IN (
+                            SELECT user_id FROM user_memory 
+                            ORDER BY last_interaction ASC 
+                            LIMIT ?
+                        )
+                    ''', (excess_profiles,))
+                
+                # ============================================
+                # 3. ENFORCE MAX_MEMORY_ITEMS (overall limit)
+                # ============================================
+                
+                # Get total number of episodic memories
+                async with db.execute('SELECT COUNT(*) FROM episodic_memory') as cursor:
+                    total_episodic = (await cursor.fetchone())[0]
+                
+                # Calculate target based on MAX_MEMORY_ITEMS (distribute between tables)
+                max_episodic = int(self.MAX_MEMORY_ITEMS * 0.7)  # 70% for episodic
+                
+                if total_episodic > max_episodic:
+                    excess_episodic = total_episodic - max_episodic
+                    logger.info(f"Trimming episodic memories: {total_episodic} -> {max_episodic}")
+                    
+                    await db.execute('''
+                        DELETE FROM episodic_memory 
+                        WHERE id IN (
+                            SELECT id FROM episodic_memory 
+                            ORDER BY 
+                                importance ASC,  -- Delete least important first
+                                timestamp ASC    -- Then oldest
+                            LIMIT ?
+                        )
+                    ''', (excess_episodic,))
+                
+                # ============================================
+                # 4. AGE-BASED CLEANUP
+                # ============================================
+                
+                # Delete old, unimportant episodic memories
                 await db.execute('''
                     DELETE FROM episodic_memory 
                     WHERE timestamp < datetime('now', '-60 days')
                     AND importance < 0.4
                 ''')
                 
-                # Keep at most 5000 messages per channel
-                await db.execute('''
-                    DELETE FROM episodic_memory 
-                    WHERE id IN (
-                        SELECT id FROM episodic_memory 
-                        WHERE channel_id = ? 
-                        ORDER BY timestamp DESC 
-                        LIMIT -1 OFFSET 5000
-                    )
-                ''', (0,))  # This needs per-channel implementation
+                # ============================================
+                # 5. CHANNEL-SPECIFIC LIMITS
+                # ============================================
+                
+                # Find channels with too many messages (per-channel cleanup)
+                async with db.execute('''
+                    SELECT channel_id, COUNT(*) as msg_count
+                    FROM episodic_memory 
+                    GROUP BY channel_id
+                    HAVING msg_count > 5000  # Per-channel limit
+                ''') as cursor:
+                    overloaded_channels = await cursor.fetchall()
+                
+                for channel_id, msg_count in overloaded_channels:
+                    if channel_id != 0:  # Skip the placeholder
+                        excess = msg_count - 5000
+                        await db.execute('''
+                            DELETE FROM episodic_memory 
+                            WHERE id IN (
+                                SELECT id FROM episodic_memory 
+                                WHERE channel_id = ? 
+                                ORDER BY timestamp ASC
+                                LIMIT ?
+                            )
+                        ''', (channel_id, excess))
+                
+                # ============================================
+                # 6. SEMANTIC MEMORY MAINTENANCE
+                # ============================================
                 
                 # Weaken rarely used semantic memories
                 await db.execute('''
@@ -3248,27 +3898,83 @@ class ConsciousBotCog(commands.Cog):
                     AND strength < 0.3
                 ''')
                 
-                # Delete very weak or outdated memories
+                # Delete very weak or outdated semantic memories
                 await db.execute('''
                     DELETE FROM semantic_memory 
                     WHERE strength < 0.1
                     OR (last_accessed < datetime('now', '-90 days') AND strength < 2.0)
                 ''')
                 
-                # Clean old error logs
+                # Limit semantic memory size too
+                async with db.execute('SELECT COUNT(*) FROM semantic_memory') as cursor:
+                    total_semantic = (await cursor.fetchone())[0]
+                
+                max_semantic = int(self.MAX_MEMORY_ITEMS * 0.3)  # 30% for semantic
+                
+                if total_semantic > max_semantic:
+                    excess_semantic = total_semantic - max_semantic
+                    await db.execute('''
+                        DELETE FROM semantic_memory 
+                        WHERE concept_hash IN (
+                            SELECT concept_hash FROM semantic_memory 
+                            ORDER BY 
+                                strength ASC,  -- Delete weakest first
+                                last_accessed ASC  -- Then oldest
+                            LIMIT ?
+                        )
+                    ''', (excess_semantic,))
+                
+                # ============================================
+                # 7. ERROR LOG CLEANUP
+                # ============================================
+                
+                # Clean old error logs (keep critical errors longer)
                 await db.execute('''
                     DELETE FROM error_log 
                     WHERE timestamp < datetime('now', '-7 days')
                     AND severity != 'critical'
                 ''')
                 
+                # Also clean very old critical errors
+                await db.execute('''
+                    DELETE FROM error_log 
+                    WHERE timestamp < datetime('now', '-30 days')
+                    AND severity = 'critical'
+                    AND resolved = 1
+                ''')
+                
+                # ============================================
+                # 8. SERVER VIBES CLEANUP
+                # ============================================
+                
+                # Clean old server vibe records
+                await db.execute('''
+                    DELETE FROM server_vibes 
+                    WHERE last_updated < datetime('now', '-30 days')
+                ''')
+                
+                # ============================================
+                # COMMIT ALL CHANGES
+                # ============================================
+                
                 await db.commit()
                 
-                logger.info("Memory cleanup completed")
+                # Update in-memory structures too
+                self._cleanup_in_memory_structures()
+                
+                logger.info(f"""
+                Memory cleanup completed:
+                - MAX_CONVERSATION_HISTORY enforced: {self.MAX_CONVERSATION_HISTORY}
+                - MAX_USER_PROFILES enforced: {self.MAX_USER_PROFILES}
+                - MAX_MEMORY_ITEMS enforced: {self.MAX_MEMORY_ITEMS}
+                - Age-based cleanup: 60+ days (unimportant)
+                - Channel limits: 5000 messages per channel
+                """)
                 
         except Exception as e:
             logger.error(f"Memory cleanup error: {e}")
 
+            
     def update_consciousness_state(self):
         """Update the bot's conscious state"""
         try:
