@@ -926,42 +926,42 @@ class ConsciousBotCog(commands.Cog):
             'code_mixing': 'hinglish' if hindi_count > 0 and total_words - hindi_count > 2 else 'english'
         }
 
-def _analyze_social_dynamics(self, context_info: Dict, recent_messages: List) -> Dict[str, Any]:
-    if not recent_messages:
-        return {'power_balance': 0.5, 'dominant_user': None, 'tension_level': 0.0}
-    
-    # FIX THIS LINE:
-    user_counts = {}
-    for msg in recent_messages:
-        user_id = msg.get('user_id')
-        user_counts[user_id] = user_counts.get(user_id, 0) + 1  
+    def _analyze_social_dynamics(self, context_info: Dict, recent_messages: List) -> Dict[str, Any]:
+        if not recent_messages:
+            return {'power_balance': 0.5, 'dominant_user': None, 'tension_level': 0.0}
         
-        # Find dominant user
-        if user_counts:
-            dominant_user = max(user_counts.items(), key=lambda x: x[1])[0]
-            total_msgs = sum(user_counts.values())
-            power_balance = user_counts.get(dominant_user, 0) / max(1, total_msgs)
-        else:
-            dominant_user = None
-            power_balance = 0.5
-        
-        # Check for tension (rapid back-and-forth, negative sentiment)
-        tension_level = 0.0
-        if len(recent_messages) >= 3:
-            # Check if same two users going back and forth
-            last_users = [msg.get('user_id') for msg in recent_messages[:3]]
-            if len(set(last_users)) == 2 and last_users[0] != last_users[1] and last_users[1] != last_users[2]:
-                # Check sentiment
-                negative_count = sum(1 for msg in recent_messages[:3] if msg.get('sentiment', 0) < -0.3)
-                tension_level = negative_count / 3
-        
-        return {
-            'power_balance': power_balance,
-            'dominant_user': dominant_user,
-            'tension_level': tension_level,
-            'active_users': len(user_counts),
-            'is_debate': tension_level > 0.6 and power_balance > 0.7
-        }
+        # FIX THIS LINE:
+        user_counts = {}
+        for msg in recent_messages:
+            user_id = msg.get('user_id')
+            user_counts[user_id] = user_counts.get(user_id, 0) + 1  
+            
+            # Find dominant user
+            if user_counts:
+                dominant_user = max(user_counts.items(), key=lambda x: x[1])[0]
+                total_msgs = sum(user_counts.values())
+                power_balance = user_counts.get(dominant_user, 0) / max(1, total_msgs)
+            else:
+                dominant_user = None
+                power_balance = 0.5
+            
+            # Check for tension (rapid back-and-forth, negative sentiment)
+            tension_level = 0.0
+            if len(recent_messages) >= 3:
+                # Check if same two users going back and forth
+                last_users = [msg.get('user_id') for msg in recent_messages[:3]]
+                if len(set(last_users)) == 2 and last_users[0] != last_users[1] and last_users[1] != last_users[2]:
+                    # Check sentiment
+                    negative_count = sum(1 for msg in recent_messages[:3] if msg.get('sentiment', 0) < -0.3)
+                    tension_level = negative_count / 3
+            
+            return {
+                'power_balance': power_balance,
+                'dominant_user': dominant_user,
+                'tension_level': tension_level,
+                'active_users': len(user_counts),
+                'is_debate': tension_level > 0.6 and power_balance > 0.7
+            }
     
     def _assess_humor_applicability(self, context_info: Dict, social_dynamics: Dict) -> bool:
         """Should we use humor right now?"""
