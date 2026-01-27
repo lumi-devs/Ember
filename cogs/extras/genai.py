@@ -46,23 +46,38 @@ def safe_execute(func):
     return wrapper
 
 def rate_limit(max_calls=5, period=60):
-    """Rate limiting decorator"""
-    calls = []
+    # Use a dictionary to track calls per user/ID
+    user_calls = {} 
     
     def decorator(func):
         async def wrapper(*args, **kwargs):
+            # Try to find a user_id or message object in the arguments
+            # This depends on how you call your methods
+            user_id = "global" 
+            for arg in args:
+                if hasattr(arg, 'author'): # Check if it's a discord.Message
+                    user_id = arg.author.id
+                    break
+                elif hasattr(arg, 'user_id'): # Check your custom context
+                    user_id = arg.user_id
+                    break
+
             now = datetime.now()
-            calls[:] = [call for call in calls if now - call < timedelta(seconds=period)]
             
-            if len(calls) >= max_calls:
-                logger.warning(f"Rate limit exceeded for {func.__name__}")
+            # Initialize or clean up specific user's history
+            if user_id not in user_calls:
+                user_calls[user_id] = []
+            
+            user_calls[user_id] = [c for c in user_calls[user_id] if now - c < timedelta(seconds=period)]
+            
+            if len(user_calls[user_id]) >= max_calls:
+                logger.warning(f"Rate limit exceeded for {user_id} on {func.__name__}")
                 return None
             
-            calls.append(now)
+            user_calls[user_id].append(now)
             return await func(*args, **kwargs)
         return wrapper
     return decorator
-
 
 from enum import Enum
 from dataclasses import dataclass
@@ -110,6 +125,10 @@ class ConversationContext:
     emotional_intensity: float
     time_of_day: str
     conversation_depth: float
+    social_dynamics: Dict[str, Any] = None
+    cultural_context: Dict[str, Any] = None
+    urgency: float = 0.5
+    humor_applicable: bool = False
 
 # ==================== CONVERSATION ACTOR ====================
 class ConversationActor:
@@ -525,43 +544,6 @@ class ConversationActor:
                         return concept
         return None
 
-    def _reflect_on_conversation(self, previous_turns: List[Dict]) -> Optional[str]:
-        """Generate a reflection on the ongoing conversation"""
-        if len(previous_turns) < 2:
-            return None
-        
-        # Get last two messages
-        last_two = previous_turns[:2]
-        
-        # Extract topics
-        topics = set()
-        for turn in last_two:
-            if 'topics' in turn:
-                topics.update(turn['topics'])
-        
-        if not topics:
-            return None
-        
-        # Create reflection
-        topic_list = list(topics)[:2]
-        if len(topic_list) == 1:
-            topic = topic_list[0]
-            reflections = [
-                f"I notice we keep coming back to {topic}. It seems important.",
-                f"Reflecting on our conversation, {topic} seems to be at the heart of it.",
-                f"There's a pattern here with {topic}. What do you think it means?",
-                f"{topic}... it's interesting how this keeps emerging in our talks.",
-            ]
-        else:
-            topic1, topic2 = topic_list[0], topic_list[1]
-            reflections = [
-                f"I see connections between {topic1} and {topic2}. How do they relate for you?",
-                f"Interesting how {topic1} and {topic2} keep appearing together.",
-                f"Our conversation is dancing between {topic1} and {topic2}. What's the link?",
-                f"{topic1} and {topic2}... there's something here worth exploring deeper.",
-            ]
-        
-        return random.choice(reflections)
 
     def _generate_pun(self, concept: str) -> Optional[str]:
         """Generate a pun based on a concept"""
@@ -1665,6 +1647,15 @@ class ConsciousBotCog(commands.Cog):
                         severity TEXT DEFAULT 'warning',
                         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         resolved BOOLEAN DEFAULT FALSE
+                    )
+                ''')
+
+                await db.execute('''
+                    CREATE TABLE IF NOT EXISTS channel_settings (
+                        channel_id INTEGER PRIMARY KEY,
+                        silent_mode INTEGER DEFAULT 0 CHECK(silent_mode IN (0, 1)),
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
                 # Create indexes for performance
@@ -3731,6 +3722,24 @@ class ConsciousBotCog(commands.Cog):
                 
         except Exception as e:
             logger.error(f"Memory cleanup error: {e}")
+
+    def _cleanup_in_memory_structures(self):
+        """Clean up in-memory data structures"""
+        # Clean old short-term memories
+        cutoff_time = datetime.utcnow() - timedelta(hours=24)
+        self.short_term_memory = deque(
+            [m for m in self.short_term_memory if m.get('timestamp', datetime.utcnow()) > cutoff_time],
+            maxlen=500
+        )
+        
+        # Clean old conversation threads
+        cutoff_time = datetime.utcnow() - timedelta(hours=6)
+        to_remove = []
+        for conv_id, thread in self.conversation_threads.items():
+            if thread.get('last_timestamp', datetime.utcnow()) < cutoff_time:
+                to_remove.append(conv_id)
+        for conv_id in to_remove:
+            del self.conversation_threads[conv_id]
 
 
     def update_consciousness_state(self):
