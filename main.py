@@ -6,6 +6,19 @@ import asyncio
 import logging
 import discord
 from discord.ext import commands
+from flask import Flask
+from threading import Thread
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run_flask():
+    # Set use_reloader=False to prevent the thread from starting twice
+    app.run(host="0.0.0.0", port=8080, use_reloader=False)
+
 
 # ------------------ LOGGING ------------------
 LOG_FILE = Path("logs/bot.log")
@@ -70,4 +83,7 @@ async def main():
         await bot.start(BOT_TOKEN)
 
 if __name__ == "__main__":
+    t = Thread(target=run_flask)
+    t.daemon = True # This ensures the thread dies when the main script stops
+    t.start()
     asyncio.run(main())
