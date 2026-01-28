@@ -15,4 +15,4 @@ markovify
 nltk
 emoji
 langdetect
-huggingface_hub
+openai

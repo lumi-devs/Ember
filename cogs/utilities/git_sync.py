@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands, tasks
-from github import Github
+from github import Github, GithubException
 from pathlib import Path
 import os
 import base64
@@ -8,6 +8,7 @@ import logging
 import asyncio
 from typing import Optional
 
+# Configuration
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("REPO_NAME")
 DATA_FOLDER = Path("data")
@@ -15,22 +16,29 @@ SYNC_INTERVAL_SECONDS = 45
 
 logging.basicConfig(level=logging.INFO)
 
+
 class GitHubSync(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.github: Optional[Github] = None
         self.repo = None
-        
+
         if GITHUB_TOKEN and GITHUB_REPO:
             bot.loop.create_task(self.startup_tasks())
         else:
             logging.warning("GitHub credentials not set. Sync disabled.")
 
     async def startup_tasks(self):
-        """Start the upload loop."""
+        """Logic to run when the cog loads."""
         await self.bot.wait_until_ready()
         await self.initialize_github()
+
         if self.repo:
+            # 1. Pull any files that exist on GitHub but are missing locally
+            logging.info("Checking for missing local files...")
+            await self.download_missing_files()
+
+            # 2. Start the periodic upload loop
             self.upload_loop.start()
 
     async def initialize_github(self):
@@ -44,136 +52,188 @@ class GitHubSync(commands.Cog):
             self.repo = None
 
     def get_all_files(self):
-        """Get all files in data directory recursively."""
+        """Get all valid files in data directory, skipping temp DB files."""
         all_files = []
+        if not DATA_FOLDER.exists():
+            return all_files
+
         for root, dirs, files in os.walk(DATA_FOLDER):
             for file in files:
+                # Skip SQLite temporary files to prevent "Database is locked" errors
+                if file.endswith(("-journal", "-wal", "-shm")) or file.startswith("."):
+                    continue
                 full_path = Path(root) / file
                 all_files.append(full_path)
         return all_files
 
+    async def download_missing_files(self):
+        """Pull files from GitHub only if they do not exist locally."""
+        if not self.repo: return
+
+        def pull_logic():
+            try:
+                # Get all files currently in the 'data/' folder on GitHub
+                contents = self.repo.get_contents("data")
+                while contents:
+                    file_content = contents.pop(0)
+                    if file_content.type == "dir":
+                        contents.extend(self.repo.get_contents(file_content.path))
+                    else:
+                        local_path = Path(file_content.path)
+                        # Mirror only: Pull if missing
+                        if not local_path.exists():
+                            local_path.parent.mkdir(parents=True, exist_ok=True)
+                            with open(local_path, "wb") as f:
+                                f.write(file_content.decoded_content)
+                            print(f"  📥 Recovered: {local_path}")
+            except Exception as e:
+                logging.error(f"❌ Pull logic error: {e}")
+
+        await asyncio.to_thread(pull_logic)
+
     def upload_all_files_sync(self):
-        """Upload ALL files to GitHub - Synchronous version for to_thread."""
+        """Push local changes to GitHub with aggressive SHA recovery."""
         if not self.repo:
             return
-            
+
         DATA_FOLDER.mkdir(exist_ok=True)
         all_files = self.get_all_files()
-        
-        if not all_files:
-            return
-            
-        #print(f"⬆ Uploading {len(all_files)} files to GitHub...")
-        
+
         for file_path in all_files:
+            rel_path = file_path.relative_to(DATA_FOLDER)
+            github_path = f"data/{rel_path}"
+
             try:
-                # Get relative path for GitHub
-                rel_path = file_path.relative_to(DATA_FOLDER)
-                github_path = f"data/{rel_path}"
-                
-                # Read file
                 with open(file_path, 'rb') as f:
                     content_bytes = f.read()
-                
-                # Encode to base64 for GitHub API
                 content_base64 = base64.b64encode(content_bytes).decode('utf-8')
-                
-                # Create/Update file on GitHub
-                try:
-                    # Try to get existing file with explicit ref
-                    existing = self.repo.get_contents(github_path, ref="main")
-                    # Update existing file
-                    self.repo.update_file(
-                        github_path,
-                        f"Update {rel_path}",
-                        content_base64,
-                        existing.sha,
-                        branch="main"
-                    )
-                    #logging.info(f"  ✅ Updated: {rel_path}")
-                except Exception as e:
-                    # If file doesn't exist or other error, create new file
-                    self.repo.create_file(
-                        github_path,
-                        f"Add {rel_path}",
-                        content_base64,
-                        branch="main"
-                    )
-                    print(f"  ✅ Created: {rel_path}")
-                    
+
+                # Using a while loop for controlled retries (max 3)
+                success = False
+                attempts = 0
+                while not success and attempts < 3:
+                    try:
+                        # 1. Get the current state from GitHub
+                        try:
+                            existing = self.repo.get_contents(github_path, ref="main")
+                            current_sha = existing.sha
+                            online_content = existing.content.replace('\n', '')
+
+                            # 2. Skip if content is already identical
+                            if online_content == content_base64:
+                                success = True
+                                break
+                        except GithubException as e:
+                            if e.status == 404:
+                                current_sha = None  # New file
+                            else:
+                                raise e
+
+                        # 3. Perform the Update or Create
+                        if current_sha:
+                            self.repo.update_file(
+                                github_path,
+                                f"Update {rel_path}",
+                                content_base64,
+                                current_sha,
+                                branch="main"
+                            )
+                        else:
+                            self.repo.create_file(
+                                github_path,
+                                f"Add {rel_path}",
+                                content_base64,
+                                branch="main"
+                            )
+
+                        success = True
+                        if attempts > 0:
+                            logging.info(f"  ✅ Recovered {rel_path} after conflict.")
+
+                    except GithubException as e:
+                        # Catch 409 (Conflict) or 422 (Unprocessable/Missing SHA)
+                        if e.status in [409, 422]:
+                            attempts += 1
+                            logging.warning(f"🔄 SHA Conflict for {rel_path} (Attempt {attempts}). Re-fetching...")
+                            # Small sleep to let GitHub API catch its breath
+                            import time
+                            time.sleep(1)
+                            continue
+                        else:
+                            raise e
             except Exception as e:
-                print(f"  ❌ Failed {file_path}: {e}")
-        
-        #print("✅ All files uploaded!")
+                logging.error(f"❌ Permanent Sync Error for {rel_path}: {e}")
 
     async def upload_all_files(self):
-        """Async wrapper for upload_all_files_sync."""
-        if not self.repo:
-            return
         await asyncio.to_thread(self.upload_all_files_sync)
 
     @tasks.loop(seconds=SYNC_INTERVAL_SECONDS)
     async def upload_loop(self):
-        """Periodic upload to GitHub."""
         if self.repo:
             await self.upload_all_files()
 
     @upload_loop.before_loop
     async def before_upload_loop(self):
-        """Wait until bot is ready."""
         await self.bot.wait_until_ready()
 
     @commands.command(name="upload")
     @commands.is_owner()
     async def manual_upload(self, ctx: commands.Context):
-        """Manually upload all files to GitHub RIGHT NOW."""
+        """Push all local data to GitHub immediately."""
         if not self.repo:
             return await ctx.send("❌ GitHub not connected.")
-            
-        await ctx.send("⏳ Uploading ALL files to GitHub...")
-        
-        # Force AFK checkpoint if exists
+
+        await ctx.send("⏳ Pushing ALL files to GitHub...")
+
+        # Checkpoint AFK data if applicable
         afk_cog = self.bot.get_cog("AFK")
         if afk_cog and hasattr(afk_cog, 'force_checkpoint'):
             await afk_cog.force_checkpoint()
-        
+
         await self.upload_all_files()
-        await ctx.send("✅ ALL files uploaded to GitHub!")
+        await ctx.send("✅ Mirror push complete!")
+
+    @commands.command(name="gitpull")
+    @commands.is_owner()
+    async def manual_pull(self, ctx: commands.Context):
+        """Force pull all files from GitHub (overwrites local)."""
+        if not self.repo:
+            return await ctx.send("❌ GitHub not connected.")
+
+        await ctx.send("⏳ Force pulling data from GitHub (Overwriting local)...")
+
+        def force_pull():
+            contents = self.repo.get_contents("data")
+            while contents:
+                file_content = contents.pop(0)
+                if file_content.type == "dir":
+                    contents.extend(self.repo.get_contents(file_content.path))
+                else:
+                    local_path = Path(file_content.path)
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(local_path, "wb") as f:
+                        f.write(file_content.decoded_content)
+
+        await asyncio.to_thread(force_pull)
+        await ctx.send("✅ Local files updated from GitHub!")
 
     @commands.command(name="gitlist")
     @commands.is_owner()
     async def list_files(self, ctx: commands.Context):
-        """Show what files will be uploaded."""
-        if not DATA_FOLDER.exists():
-            return await ctx.send("❌ No data folder.")
-            
+        """Show files tracked for syncing."""
         all_files = self.get_all_files()
-        
         if not all_files:
-            return await ctx.send("❌ No files in data folder.")
-            
-        embed = discord.Embed(
-            title="📁 Files to Upload",
-            color=discord.Color.blue()
-        )
-        
-        # Show first 10 files
-        file_list = []
-        for file_path in all_files[:10]:
-            rel_path = file_path.relative_to(DATA_FOLDER)
-            size = file_path.stat().st_size / 1024  # KB
-            file_list.append(f"`{rel_path}` ({size:.1f} KB)")
-        
-        if len(all_files) > 10:
-            file_list.append(f"... and {len(all_files) - 10} more")
-        
-        embed.add_field(
-            name=f"Total: {len(all_files)} files",
-            value="\n".join(file_list),
-            inline=False
-        )
-        
+            return await ctx.send("📁 No files currently in data folder.")
+
+        embed = discord.Embed(title="📁 Managed Data Files", color=discord.Color.blue())
+        file_list = [f"`{f.relative_to(DATA_FOLDER)}`" for f in all_files[:15]]
+
+        if len(all_files) > 15:
+            file_list.append(f"... and {len(all_files) - 15} more")
+
+        embed.add_field(name=f"Total: {len(all_files)}", value="\n".join(file_list))
         await ctx.send(embed=embed)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(GitHubSync(bot))

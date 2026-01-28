@@ -18,9 +18,9 @@ class Verification(commands.Cog):
         # 🔒 LIST OF ALLOWED CHANNEL IDs (Comma separated)
         # The bot will ONLY respond to commands in these channels
         self.ALLOWED_CHANNEL_IDS = [
-            1460678841478680698,  # e.g., #staff-commands
             1413074803421614100,
-            1424670074354143264   # e.g., #admin-chat
+            1424670074354143264,   # e.g., #admin-cht
+	    1460993615563329566
         ]
         # ------------------------
 
