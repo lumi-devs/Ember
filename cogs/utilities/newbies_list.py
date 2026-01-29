@@ -1,3 +1,4 @@
+import ast
 import discord
 from discord.ext import commands, tasks
 from discord.ui import View, Button, UserSelect
@@ -22,8 +23,8 @@ class DynamicMemberList(commands.Cog):
         self.FEMALE_ROLE_ID = int(os.environ.get("FEMALE_ROLE_ID"))  # Replace with actual female role ID
 
         # Permission roles (manual list only)
-        self.ADD_ROLES = os.environ.get("ADD_NEWBIES_ROLE_ID")
-        self.REMOVE_ROLES = os.environ.get("REMOVE_NEWBIES_ROLE_ID")
+        self.ADD_ROLES = ast.literal_eval(os.environ.get("ADD_NEWBIES_ROLE_ID"))
+        self.REMOVE_ROLES = ast.literal_eval(os.environ.get("REMOVE_NEWBIES_ROLE_ID"))
         
         # Load existing data
         self.member_lists = self.load_data()
