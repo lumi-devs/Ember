@@ -3,15 +3,9 @@ dateparser
 PyGithub
 flask
 python-dotenv
-yt-dlp
 aiofiles
-instaloader
-pytubefix
-praw
 wget
-quart
 aiosqlite
-markovify
 nltk
 emoji
 langdetect
