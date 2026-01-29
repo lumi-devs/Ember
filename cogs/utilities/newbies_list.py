@@ -3,7 +3,7 @@ from discord.ext import commands, tasks
 from discord.ui import View, Button, UserSelect
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 class DynamicMemberList(commands.Cog):
@@ -15,13 +15,23 @@ class DynamicMemberList(commands.Cog):
         # Configuration - KEEP AS INTEGERS
         self.MAX_MEMBERS = 12
         self.MEMBER_EXPIRY_DAYS = 2
-        self.ADD_ROLES = [1406324000736542911, 1410302930485121106, 1408709182856630332, 1438551732807536690, 1393170995157798983]  # Add role IDs here that can ADD members
-        self.REMOVE_ROLES=[1406324000736542911]
+        
+        # Role IDs for auto-categorization (SET THESE IN YOUR BOT CONFIG)
+        self.NEWBIE_ROLE_ID = os.environ.get("NEWBIE_ROLE_ID")  # Replace with actual newbie role ID
+        self.MALE_ROLE_ID = os.environ.get("MALE_ROLE_ID")    # Replace with actual male role ID
+        self.FEMALE_ROLE_ID = os.environ.get("FEMALE_ROLE_ID")  # Replace with actual female role ID
+
+        # Permission roles (manual list only)
+        self.ADD_ROLES = os.environ.get("ADD_NEWBIES_ROLE_ID")
+        self.REMOVE_ROLES = os.environ.get("REMOVE_NEWBIES_ROLE_ID")
+        [1406324000736542911]
+        
         # Load existing data
         self.member_lists = self.load_data()
         
-        # Start cleanup tasks
+        # Start background tasks
         self.cleanup_expired_members.start()
+        self.refresh_auto_lists.start()
         
         # Register persistent views
         self.bot.add_view(self.MembersMainView(cog=self))
@@ -31,6 +41,7 @@ class DynamicMemberList(commands.Cog):
     def cog_unload(self):
         """Cleanup when cog is unloaded"""
         self.cleanup_expired_members.cancel()
+        self.refresh_auto_lists.cancel()
         self.save_data()
     
     def load_data(self):
@@ -40,7 +51,8 @@ class DynamicMemberList(commands.Cog):
                 with open(self.data_file, 'r') as f:
                     data = json.load(f)
                 return data
-            except:
+            except Exception as e:
+                print(f"[ERROR] Failed to load data: {e}")
                 return {}
         return {}
     
@@ -51,16 +63,301 @@ class DynamicMemberList(commands.Cog):
         with open(self.data_file, 'w') as f:
             json.dump(self.member_lists, f, indent=4)
     
+    # ------------------------------------------------------------
+    # AUTO LIST MANAGEMENT (Newbie Detection + Categorization)
+    # ------------------------------------------------------------
+    
+    def get_auto_newbies(self, guild):
+        """Get auto-categorized newbies from guild members"""
+        newbie_role = guild.get_role(self.NEWBIE_ROLE_ID)
+        male_role = guild.get_role(self.MALE_ROLE_ID)
+        female_role = guild.get_role(self.FEMALE_ROLE_ID)
+        
+        if not newbie_role:
+            return [], []
+        
+        males = []
+        females = []
+        
+        for member in guild.members:
+            if newbie_role not in member.roles:
+                continue
+            
+            # Skip bots
+            if member.bot:
+                continue
+            
+            if male_role and male_role in member.roles:
+                males.append(member)
+            elif female_role and female_role in member.roles:
+                females.append(member)
+            # Members without gender role are ignored (not categorized)
+        
+        # Sort by join date (oldest first)
+        males.sort(key=lambda m: m.joined_at or datetime.now(pytz.UTC))
+        females.sort(key=lambda m: m.joined_at or datetime.now(pytz.UTC))
+        
+        return males, females
+    
+    @tasks.loop(minutes=5)
+    async def refresh_auto_lists(self):
+        """Refresh auto-categorized newbie lists periodically"""
+        await self.bot.wait_until_ready()
+        
+        for channel_id, list_data in list(self.member_lists.items()):
+            try:
+                channel = self.bot.get_channel(int(channel_id))
+                if not channel or not isinstance(channel, discord.TextChannel):
+                    continue
+                
+                guild = channel.guild
+                males, females = self.get_auto_newbies(guild)
+                
+                # Update all messages for this list
+                await self.update_all_messages(channel, list_data, males, females)
+            except Exception as e:
+                print(f"[ERROR] Failed to refresh auto list in channel {channel_id}: {e}")
+    
+    @refresh_auto_lists.before_loop
+    async def before_refresh(self):
+        await self.bot.wait_until_ready()
+    
+    @commands.Cog.listener()
+    async def on_member_update(self, before, after):
+        """Detect role changes to update auto lists immediately"""
+        # Check if newbie role or gender roles changed
+        newbie_role = after.guild.get_role(self.NEWBIE_ROLE_ID)
+        male_role = after.guild.get_role(self.MALE_ROLE_ID)
+        female_role = after.guild.get_role(self.FEMALE_ROLE_ID)
+        
+        if not newbie_role:
+            return
+        
+        # Check if relevant roles changed
+        roles_changed = (
+            (newbie_role in before.roles) != (newbie_role in after.roles) or
+            (male_role and (male_role in before.roles) != (male_role in after.roles)) or
+            (female_role and (female_role in before.roles) != (female_role in after.roles))
+        )
+        
+        if not roles_changed:
+            return
+        
+        # Refresh all lists in this guild
+        for channel_id, list_data in self.member_lists.items():
+            if list_data.get('guild_id') == str(after.guild.id):
+                try:
+                    channel = self.bot.get_channel(int(channel_id))
+                    if channel:
+                        males, females = self.get_auto_newbies(after.guild)
+                        await self.update_all_messages(channel, list_data, males, females)
+                except Exception as e:
+                    print(f"[ERROR] Failed to update list after role change: {e}")
+    
+    @commands.Cog.listener()
+    async def on_member_remove(self, member):
+        """Remove from manual list when member leaves (auto list updates automatically)"""
+        now = datetime.now(pytz.UTC)
+        removed_from_lists = 0
+        
+        for channel_id, list_data in list(self.member_lists.items()):
+            if 'members' in list_data and 'guild_id' in list_data:
+                if int(list_data['guild_id']) == member.guild.id:
+                    member_id_str = str(member.id)
+                    
+                    if member_id_str in list_data['members']:
+                        member_data = list_data['members'].pop(member_id_str)
+                        list_data['removed_members'].append({
+                            'id': member_id_str,
+                            'name': member_data['name'],
+                            'removed_at': now.isoformat(),
+                            'reason': 'left_server_immediately'
+                        })
+                        removed_from_lists += 1
+                        self.save_data()
+                        
+                        try:
+                            channel = self.bot.get_channel(int(channel_id))
+                            if channel:
+                                males, females = self.get_auto_newbies(member.guild)
+                                await self.update_all_messages(channel, list_data, males, females)
+                        except Exception as e:
+                            print(f"Error updating list after member left: {e}")
+        
+        if removed_from_lists > 0:
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Removed {member.name} from {removed_from_lists} manual list(s)")
+    
+    # ------------------------------------------------------------
+    # MESSAGE UPDATERS (All 7 Messages)
+    # ------------------------------------------------------------
+    
+    async def update_all_messages(self, channel, list_data, auto_males=None, auto_females=None):
+        """Update all 7 messages for a list"""
+        if auto_males is None or auto_females is None:
+            auto_males, auto_females = self.get_auto_newbies(channel.guild)
+        
+        # 1. Update auto males embed
+        if list_data.get('auto_males_message_id'):
+            try:
+                msg = await channel.fetch_message(int(list_data['auto_males_message_id']))
+                await self.update_auto_embed(msg, auto_males, "blue", "👦 Newbie Males")
+            except:
+                pass
+        
+        # 2. Update auto females embed
+        if list_data.get('auto_females_message_id'):
+            try:
+                msg = await channel.fetch_message(int(list_data['auto_females_message_id']))
+                await self.update_auto_embed(msg, auto_females, "pink", "👧 Newbie Females")
+            except:
+                pass
+        
+        # 3. Update manual embed
+        if list_data.get('manual_message_id'):
+            try:
+                msg = await channel.fetch_message(int(list_data['manual_message_id']))
+                await self.update_manual_embed(msg, list_data)
+            except:
+                pass
+        
+        # 4. Update plain males
+        if list_data.get('plain_males_id'):
+            try:
+                msg = await channel.fetch_message(int(list_data['plain_males_id']))
+                await self.update_plain_mentions(msg, auto_males)
+            except:
+                pass
+        
+        # 5. Update plain females
+        if list_data.get('plain_females_id'):
+            try:
+                msg = await channel.fetch_message(int(list_data['plain_females_id']))
+                await self.update_plain_mentions(msg, auto_females)
+            except:
+                pass
+        
+        # 6. Update plain collected (combined)
+        if list_data.get('plain_collected_id'):
+            try:
+                msg = await channel.fetch_message(int(list_data['plain_collected_id']))
+                await self.update_plain_mentions(msg, auto_males + auto_females)
+            except:
+                pass
+        
+        # 7. Update plain manual
+        if list_data.get('plain_manual_id'):
+            try:
+                msg = await channel.fetch_message(int(list_data['plain_manual_id']))
+                await self.update_plain_manual(msg, list_data)
+            except:
+                pass
+    
+    async def update_auto_embed(self, message, members, color_name, title):
+        """Update auto-categorized embed (males/females)"""
+        color_map = {
+            "blue": discord.Color.blue(),
+            "pink": discord.Color.magenta()
+        }
+        color = color_map.get(color_name, discord.Color.blue())
+        
+        embed = discord.Embed(
+            title=title,
+            color=color,
+            timestamp=datetime.now(pytz.UTC)
+        )
+        
+        if members:
+            member_text = ""
+            for i, member in enumerate(members[:25], 1):  # Limit to 25 for embed
+                member_text += f"{i}. {member.mention} (joined <t:{int(member.joined_at.timestamp())}:R>)\n"
+            
+            embed.description = f"**Total: {len(members)}**\n{member_text}"
+            embed.set_footer(text="Auto-updated every 5 minutes • Members with Newbie + Gender roles")
+        else:
+            embed.description = "*No members with required roles*"
+            embed.set_footer(text="Auto-updated • Requires Newbie + Gender roles")
+        
+        await message.edit(embed=embed)
+    
+    async def update_manual_embed(self, message, list_data):
+        """Update manual newbie list embed (same as original implementation)"""
+        members = list_data['members']
+        embed = discord.Embed(
+            title="📋 Manual Newbie List",
+            description="Members manually added to the newbie list",
+            color=discord.Color.green(),
+            timestamp=datetime.now(pytz.UTC)
+        )
+        
+        if members:
+            sorted_members = sorted(
+                members.items(),
+                key=lambda x: datetime.fromisoformat(x[1]['added_at'])
+            )
+            
+            member_text = ""
+            for i, (member_id, member_data) in enumerate(sorted_members[:25], 1):
+                member = message.guild.get_member(int(member_id))
+                if member:
+                    added_time = datetime.fromisoformat(member_data['added_at'])
+                    member_text += f"{i}. {member.mention} (added <t:{int(added_time.timestamp())}:R>)\n"
+                else:
+                    member_text += f"{i}. *Unknown User* ({member_id})\n"
+            
+            embed.add_field(
+                name=f"👥 Current Members ({len(members)}/{self.MAX_MEMBERS})",
+                value=member_text,
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name=f"👥 Current Members (0/{self.MAX_MEMBERS})",
+                value="*No manually added members*\nUse **➕ Add Members** button below",
+                inline=False
+            )
+        
+        view = self.MembersMainView(cog=self, channel=message.channel)
+        await message.edit(embed=embed, view=view)
+    
+    async def update_plain_mentions(self, message, members):
+        """Update plain text message with @mentions for easy copying"""
+        if members:
+            content = " ".join([m.mention for m in members])
+        else:
+            content = "*No members to display*"
+        await message.edit(content=content)
+    
+    async def update_plain_manual(self, message, list_data):
+        """Update plain text for manually added members"""
+        members = list_data['members']
+        if members:
+            sorted_members = sorted(
+                members.items(),
+                key=lambda x: datetime.fromisoformat(x[1]['added_at'])
+            )
+            content = " ".join([
+                message.guild.get_member(int(mid)).mention 
+                for mid, _ in sorted_members 
+                if message.guild.get_member(int(mid))
+            ])
+        else:
+            content = "*No manually added members*"
+        await message.edit(content=content)
+    
+    # ------------------------------------------------------------
+    # CLEANUP TASK (Manual List Only)
+    # ------------------------------------------------------------
+    
     @tasks.loop(hours=1)
     async def cleanup_expired_members(self):
-        """Clean up members who have been on list for 2+ days"""
+        """Clean up manually added members after expiry period"""
         now = datetime.now(pytz.UTC)
         expired_count = 0
         
         for channel_id, list_data in list(self.member_lists.items()):
             if 'members' in list_data:
                 expired_members = []
-                for member_id, member_data in list_data['members'].items():
+                for member_id, member_data in list(list_data['members'].items()):
                     added_at = datetime.fromisoformat(member_data['added_at'])
                     if (now - added_at).days >= self.MEMBER_EXPIRY_DAYS:
                         expired_members.append((member_id, member_data))
@@ -80,122 +377,29 @@ class DynamicMemberList(commands.Cog):
                     try:
                         channel = self.bot.get_channel(int(channel_id))
                         if channel:
-                            # Update both messages
-                            await self.update_both_messages(channel, list_data)
-                    except:
-                        pass
+                            males, females = self.get_auto_newbies(channel.guild)
+                            await self.update_all_messages(channel, list_data, males, females)
+                    except Exception as e:
+                        print(f"Error updating after cleanup: {e}")
         
         if expired_count > 0:
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Cleaned up {expired_count} expired members")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Cleaned up {expired_count} expired manual members")
     
     @cleanup_expired_members.before_loop
     async def before_cleanup(self):
-        """Wait until bot is ready"""
         await self.bot.wait_until_ready()
     
-    @commands.Cog.listener()
-    async def on_member_remove(self, member):
-        """Immediately remove members when they leave the server"""
-        now = datetime.now(pytz.UTC)
-        removed_from_lists = 0
-        
-        for channel_id, list_data in list(self.member_lists.items()):
-            if 'members' in list_data and 'guild_id' in list_data:
-                # Check if this list belongs to the member's guild
-                if int(list_data['guild_id']) == member.guild.id:
-                    member_id_str = str(member.id)
-                    
-                    if member_id_str in list_data['members']:
-                        # Remove the member from this list
-                        member_data = list_data['members'].pop(member_id_str)
-                        list_data['removed_members'].append({
-                            'id': member_id_str,
-                            'name': member_data['name'],
-                            'removed_at': now.isoformat(),
-                            'reason': 'left_server_immediately'
-                        })
-                        removed_from_lists += 1
-                        
-                        # Save data
-                        self.save_data()
-                        
-                        # Update both messages
-                        try:
-                            channel = self.bot.get_channel(int(channel_id))
-                            if channel:
-                                await self.update_both_messages(channel, list_data)
-                        except Exception as e:
-                            print(f"Error updating list after member left: {e}")
-        
-        if removed_from_lists > 0:
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Removed {member.name} from {removed_from_lists} list(s) (left server)")
-    
     # ------------------------------------------------------------
-    # Helper Methods for Dual Messages
-    # ------------------------------------------------------------
-    
-    async def update_both_messages(self, channel, list_data):
-        """Update both the embed message and plain text message"""
-        try:
-            # Update embed message
-            message_id = list_data.get('message_id')
-            if message_id:
-                message = await channel.fetch_message(int(message_id))
-                if message:
-                    await self.update_embed(message, list_data)
-            
-            # Update plain text message
-            plain_message_id = list_data.get('plain_message_id')
-            if plain_message_id:
-                plain_message = await channel.fetch_message(int(plain_message_id))
-                if plain_message:
-                    await self.update_plain_text(plain_message, list_data)
-        except Exception as e:
-            print(f"Error updating messages: {e}")
-    
-    async def update_plain_text(self, message, list_data):
-        """Update the plain text message with member list for copying"""
-        members = list_data['members']
-        
-        if members:
-            # Sort members by when they were added (oldest first)
-            sorted_members = sorted(
-                members.items(),
-                key=lambda x: datetime.fromisoformat(x[1]['added_at'])
-            )
-            
-            # Create plain text format for easy copying
-            plain_text = ""
-            
-            for member_id, member_data in sorted_members:
-                member = message.guild.get_member(int(member_id))
-                
-                if member:
-                    # Plain @mention format that users can copy
-                    plain_text += f"{member.mention} "
-            
-            if plain_text:
-                content = f"{plain_text}"
-            else:
-                content = "***No members in the list yet*\n*Add members using the buttons above*"
-        else:
-            content = "***No members in the list yet*\n*Add members using the buttons above*"
-        
-        # Update message
-        await message.edit(content=content)
-    
-    # ------------------------------------------------------------
-    # Button Classes
+    # BUTTONS & VIEWS (Manual List Only)
     # ------------------------------------------------------------
     
     class AddMembersButton(Button):
-        """Button to open member selection dropdown"""
         def __init__(self, cog):
             super().__init__(
-                label="➕ Add Members",
+                label="➕ Add Newbies",
                 style=discord.ButtonStyle.primary,
                 custom_id="dml_add_members_button",
-                emoji="👥",
+                emoji="👦👧",
                 row=0
             )
             self.cog = cog
@@ -203,71 +407,46 @@ class DynamicMemberList(commands.Cog):
         async def callback(self, interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
             
-            channel = interaction.channel
-            
-            # Check permissions - FIXED VERSION
+            # Permission check (same as original)
             has_permission = False
-            
-            # If ADD_ROLES is empty, allow everyone
             if not self.cog.ADD_ROLES:
                 has_permission = True
             else:
-                # Check each role the user has
                 for role in interaction.user.roles:
-                    # Compare role.id (int) with ADD_ROLES (int)
                     if role.id in self.cog.ADD_ROLES:
                         has_permission = True
                         break
-                
-                # Also check if user is admin (optional, but good to have)
                 if not has_permission and interaction.user.guild_permissions.administrator:
                     has_permission = True
             
             if not has_permission:
-                # Show which roles are required for debugging
-                required_roles = []
-                for role_id in self.cog.ADD_ROLES:
-                    role = interaction.guild.get_role(role_id)
-                    if role:
-                        required_roles.append(role.mention)
-                    else:
-                        required_roles.append(f"Unknown Role ({role_id})")
-                
+                required_roles = [f"<@&{rid}>" for rid in self.cog.ADD_ROLES] or ["None configured"]
                 await interaction.followup.send(
-                    f"❌ You don't have permission to add members to this list!\n"
-                    f"**Required roles:** {', '.join(required_roles) if required_roles else 'None configured'}\n"
-                    f"**Your roles:** {', '.join([r.mention for r in interaction.user.roles[1:]])}",
+                    f"❌ You don't have permission to add members!\n**Required roles:** {', '.join(required_roles)}",
                     ephemeral=True
                 )
                 return
             
-            # Check if list exists
-            channel_id = str(channel.id)
+            channel_id = str(interaction.channel.id)
             if channel_id not in self.cog.member_lists:
-                await interaction.followup.send(
-                    "❌ No list found in this channel!",
-                    ephemeral=True
-                )
+                await interaction.followup.send("❌ No list found in this channel!", ephemeral=True)
                 return
             
             list_data = self.cog.member_lists[channel_id]
             
-            # Create view with UserSelect
             view = discord.ui.View(timeout=300)
             view.add_item(self.cog.UserSelectDropdown(self.cog, "add", list_data))
             
             await interaction.followup.send(
-                "**Select members to add to the list:**\n"
-                "Use the dropdown below to choose members.",
+                "**Select newbies to add manually:**\n*(These will stay for 2 days unless removed)*",
                 view=view,
                 ephemeral=True
             )
     
     class RemoveMembersButton(Button):
-        """Button to remove members (Admin/Remove Roles only)"""
         def __init__(self, cog):
             super().__init__(
-                label="🗑️ Remove Members",
+                label="🗑️ Remove Newbies",
                 style=discord.ButtonStyle.danger,
                 custom_id="dml_remove_members_button",
                 emoji="❌",
@@ -278,68 +457,42 @@ class DynamicMemberList(commands.Cog):
         async def callback(self, interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
             
-            # Check permissions - UPDATED VERSION
-            has_permission = False
-            
-            # Check if user is admin
-            if interaction.user.guild_permissions.administrator:
-                has_permission = True
-            
-            # Check REMOVE_ROLES if not admin
+            # Permission check (same as original)
+            has_permission = interaction.user.guild_permissions.administrator
             if not has_permission and self.cog.REMOVE_ROLES:
-                # Check each role the user has
                 for role in interaction.user.roles:
-                    # Compare role.id (int) with REMOVE_ROLES (int)
                     if role.id in self.cog.REMOVE_ROLES:
                         has_permission = True
                         break
             
             if not has_permission:
-                # Show which roles are required for debugging
-                required_roles = []
-                for role_id in self.cog.REMOVE_ROLES:
-                    role = interaction.guild.get_role(role_id)
-                    if role:
-                        required_roles.append(role.mention)
-                    else:
-                        required_roles.append(f"Unknown Role ({role_id})")
-                
+                required = "Administrator" if not self.cog.REMOVE_ROLES else f"Administrator or roles: {', '.join([f'<@&{r}>' for r in self.cog.REMOVE_ROLES])}"
                 await interaction.followup.send(
-                    f"❌ You don't have permission to remove members from this list!\n"
-                    f"**Required:** Administrator permission or one of these roles: {', '.join(required_roles) if required_roles else 'Administrator only'}\n",
+                    f"❌ You don't have permission to remove members!\n**Required:** {required}",
                     ephemeral=True
                 )
                 return
             
-            channel = interaction.channel
-            
-            # Check if list exists
-            channel_id = str(channel.id)
+            channel_id = str(interaction.channel.id)
             if channel_id not in self.cog.member_lists:
-                await interaction.followup.send(
-                    "❌ No list found in this channel!",
-                    ephemeral=True
-                )
+                await interaction.followup.send("❌ No list found in this channel!", ephemeral=True)
                 return
             
             list_data = self.cog.member_lists[channel_id]
             
-            # Create view with UserSelect
             view = discord.ui.View(timeout=300)
             view.add_item(self.cog.UserSelectDropdown(self.cog, "remove", list_data))
             
             await interaction.followup.send(
-                "**Select members to remove from the list:**\n"
-                "Use the dropdown below to choose members.",
+                "**Select manually added newbies to remove:**",
                 view=view,
                 ephemeral=True
             )
     
     class RefreshButton(Button):
-        """Button to refresh the list"""
         def __init__(self, cog):
             super().__init__(
-                label="🔄 Refresh",
+                label="🔄 Refresh All",
                 style=discord.ButtonStyle.secondary,
                 custom_id="dml_refresh_button",
                 emoji="🔄",
@@ -350,26 +503,19 @@ class DynamicMemberList(commands.Cog):
         async def callback(self, interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
             
-            channel = interaction.channel
-            channel_id = str(channel.id)
-            
+            channel_id = str(interaction.channel.id)
             if channel_id not in self.cog.member_lists:
-                await interaction.followup.send(
-                    "❌ No list found in this channel!",
-                    ephemeral=True
-                )
+                await interaction.followup.send("❌ No list found!", ephemeral=True)
                 return
             
-            list_data = self.cog.member_lists[channel_id]
-            
             try:
-                await self.cog.update_both_messages(channel, list_data)
-                await interaction.followup.send("✅ List refreshed!", ephemeral=True)
+                males, females = self.cog.get_auto_newbies(interaction.guild)
+                await self.cog.update_all_messages(interaction.channel, self.cog.member_lists[channel_id], males, females)
+                await interaction.followup.send("✅ All lists refreshed!", ephemeral=True)
             except Exception as e:
-                await interaction.followup.send(f"❌ Error refreshing: {str(e)}", ephemeral=True)
+                await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
     
     class InfoButton(Button):
-        """Button to show list info"""
         def __init__(self, cog):
             super().__init__(
                 label="ℹ️ Info",
@@ -383,60 +529,52 @@ class DynamicMemberList(commands.Cog):
         async def callback(self, interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
             
-            channel = interaction.channel
-            channel_id = str(channel.id)
-            
+            channel_id = str(interaction.channel.id)
             if channel_id not in self.cog.member_lists:
-                await interaction.followup.send(
-                    "❌ No list found in this channel!",
-                    ephemeral=True
-                )
+                await interaction.followup.send("❌ No list found!", ephemeral=True)
                 return
             
             list_data = self.cog.member_lists[channel_id]
-            members = list_data['members']
+            auto_males, auto_females = self.cog.get_auto_newbies(interaction.guild)
+            manual_count = len(list_data['members'])
             
             embed = discord.Embed(
-                title="📋 List Information",
+                title="📋 Newbie List System Info",
                 color=discord.Color.blue(),
                 timestamp=datetime.now(pytz.UTC)
             )
             
-            # Count members expiring soon
-            expiring_soon = 0
-            now = datetime.now(pytz.UTC)
-            
-            for member_id, member_data in members.items():
-                added_at = datetime.fromisoformat(member_data['added_at'])
-                days_passed = (now - added_at).days
-                if days_passed >= 1:  # Expiring in 1 day or less
-                    expiring_soon += 1
+            embed.add_field(
+                name="Auto-Categorized Newbies",
+                value=f"👦 Males: {len(auto_males)}\n👧 Females: {len(auto_females)}\n📊 Total: {len(auto_males) + len(auto_females)}",
+                inline=False
+            )
             
             embed.add_field(
-                name="Statistics",
+                name="Manual Newbies",
+                value=f"👥 Current: {manual_count}/{self.cog.MAX_MEMBERS}\n⏳ Expiry: {self.cog.MEMBER_EXPIRY_DAYS} days",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="How It Works",
                 value=(
-                    f"**Total Members:** {len(members)}/{self.cog.MAX_MEMBERS}\n"
-                    f"**Expiring Soon:** {expiring_soon} member(s)\n"
-                    f"**Duration:** {self.cog.MEMBER_EXPIRY_DAYS} days per member\n"
-                    f"**Last Updated:** <t:{int(now.timestamp())}:R>"
+                    "• **Auto Lists**: Members with `Newbie` + `Male/Female` roles\n"
+                    "• **Manual List**: Added via buttons (expires after 2 days)\n"
+                    "• **Auto Refresh**: Every 5 minutes + on role changes"
                 ),
                 inline=False
             )
             
             await interaction.followup.send(embed=embed, ephemeral=True)
     
-    # ------------------------------------------------------------
-    # User Select Dropdown
-    # ------------------------------------------------------------
-    
     class UserSelectDropdown(UserSelect):
-        """Discord's built-in UserSelect for selecting users"""
         def __init__(self, cog, action_type: str, list_data: dict):
-            placeholder = "Select members..." if action_type == "add" else "Select members to remove..."
+            placeholder = "Select newbies to add..." if action_type == "add" else "Select newbies to remove..."
             super().__init__(
                 placeholder=placeholder,
                 min_values=1,
-                max_values=25,  # Discord's max
+                max_values=10,
                 custom_id=f"dml_user_select_{action_type}"
             )
             self.cog = cog
@@ -447,20 +585,19 @@ class DynamicMemberList(commands.Cog):
             try:
                 if not interaction.response.is_done():
                     await interaction.response.defer(ephemeral=True)
-            except discord.NotFound:
-                await interaction.followup.send("❌ This interaction has expired.", ephemeral=True)
+            except:
+                await interaction.followup.send("❌ Interaction expired.", ephemeral=True)
                 return
             
             channel_id = str(interaction.channel.id)
-            
             if channel_id not in self.cog.member_lists:
-                await interaction.followup.send("❌ This list no longer exists!", ephemeral=True)
+                await interaction.followup.send("❌ List no longer exists!", ephemeral=True)
                 return
             
             list_data = self.cog.member_lists[channel_id]
             
             if self.action_type == "add":
-                # Check ADD permissions - FIXED VERSION
+                # Permission check (same as button)
                 has_permission = False
                 if not self.cog.ADD_ROLES:
                     has_permission = True
@@ -469,82 +606,62 @@ class DynamicMemberList(commands.Cog):
                         if role.id in self.cog.ADD_ROLES:
                             has_permission = True
                             break
+                    if not has_permission and interaction.user.guild_permissions.administrator:
+                        has_permission = True
                 
                 if not has_permission:
-                    await interaction.followup.send("❌ You don't have permission to add members!", ephemeral=True)
+                    await interaction.followup.send("❌ No permission to add members!", ephemeral=True)
                     return
                 
-                added_members = []
-                skipped_members = []
+                added = []
+                skipped = []
                 
                 for member in self.values:
-                    member_id_str = str(member.id)
-                    
-                    # Skip if already in list
-                    if member_id_str in list_data['members']:
-                        skipped_members.append(member)
+                    mid = str(member.id)
+                    if mid in list_data['members']:
+                        skipped.append(member)
                         continue
                     
-                    # Check capacity and remove oldest if needed
+                    # Enforce capacity limit
                     if len(list_data['members']) >= self.cog.MAX_MEMBERS:
-                        oldest_member_id = None
-                        oldest_time = None
-                        
-                        for mid, data in list_data['members'].items():
-                            added_time = datetime.fromisoformat(data['added_at'])
-                            if oldest_time is None or added_time < oldest_time:
-                                oldest_time = added_time
-                                oldest_member_id = mid
-                        
-                        if oldest_member_id:
-                            old_data = list_data['members'].pop(oldest_member_id)
-                            list_data['removed_members'].append({
-                                'id': oldest_member_id,
-                                'name': old_data['name'],
-                                'removed_at': datetime.now(pytz.UTC).isoformat(),
-                                'removed_by': str(interaction.user.id),
-                                'reason': 'auto_removed_capacity'
-                            })
+                        # Remove oldest
+                        oldest = min(list_data['members'].items(), key=lambda x: datetime.fromisoformat(x[1]['added_at']))
+                        del list_data['members'][oldest[0]]
+                        list_data['removed_members'].append({
+                            'id': oldest[0],
+                            'name': oldest[1]['name'],
+                            'removed_at': datetime.now(pytz.UTC).isoformat(),
+                            'reason': 'auto_removed_capacity'
+                        })
                     
-                    # Add member WITHOUT avatar URL
-                    list_data['members'][member_id_str] = {
-                        'id': member_id_str,
+                    list_data['members'][mid] = {
+                        'id': mid,
                         'name': member.name,
                         'display_name': member.display_name,
                         'added_at': datetime.now(pytz.UTC).isoformat(),
                         'added_by': str(interaction.user.id),
                         'added_by_name': interaction.user.name
                     }
-                    added_members.append(member)
+                    added.append(member)
                 
-                # Save and update
                 self.cog.save_data()
                 
                 try:
-                    await self.cog.update_both_messages(interaction.channel, list_data)
+                    males, females = self.cog.get_auto_newbies(interaction.guild)
+                    await self.cog.update_all_messages(interaction.channel, list_data, males, females)
                     
-                    response_text = ""
-                    if added_members:
-                        response_text += f"✅ **Added {len(added_members)} member(s):**\n"
-                        for member in added_members:
-                            response_text += f"• **{member.display_name or member.name}** (@{member.name})\n"
-                    
-                    if skipped_members:
-                        response_text += f"\n⚠️ Skipped {len(skipped_members)} (already in list)"
-                    
-                    await interaction.followup.send(response_text or "No members added.", ephemeral=True)
+                    msg = ""
+                    if added:
+                        msg += f"✅ Added {len(added)} newbie(s):\n" + "\n".join([f"• {m.display_name}" for m in added])
+                    if skipped:
+                        msg += f"\n⚠️ Skipped {len(skipped)} (already in manual list)"
+                    await interaction.followup.send(msg or "No new members added.", ephemeral=True)
                 except Exception as e:
-                    await interaction.followup.send(f"❌ Error updating list: {str(e)}", ephemeral=True)
+                    await interaction.followup.send(f"❌ Update error: {str(e)}", ephemeral=True)
             
             elif self.action_type == "remove":
-                # Check permissions - UPDATED VERSION
-                has_permission = False
-                
-                # Check if user is admin
-                if interaction.user.guild_permissions.administrator:
-                    has_permission = True
-                
-                # Check REMOVE_ROLES if not admin
+                # Permission check
+                has_permission = interaction.user.guild_permissions.administrator
                 if not has_permission and self.cog.REMOVE_ROLES:
                     for role in interaction.user.roles:
                         if role.id in self.cog.REMOVE_ROLES:
@@ -552,139 +669,66 @@ class DynamicMemberList(commands.Cog):
                             break
                 
                 if not has_permission:
-                    await interaction.followup.send("❌ You don't have permission to remove members!", ephemeral=True)
+                    await interaction.followup.send("❌ No permission to remove members!", ephemeral=True)
                     return
                 
-                removed_members = []
-                
+                removed = []
                 for member in self.values:
-                    member_id_str = str(member.id)
-                    
-                    if member_id_str in list_data['members']:
-                        member_data = list_data['members'].pop(member_id_str)
+                    mid = str(member.id)
+                    if mid in list_data['members']:
+                        data = list_data['members'].pop(mid)
                         list_data['removed_members'].append({
-                            'id': member_id_str,
-                            'name': member_data['name'],
+                            'id': mid,
+                            'name': data['name'],
                             'removed_at': datetime.now(pytz.UTC).isoformat(),
                             'removed_by': str(interaction.user.id),
                             'reason': 'admin_removed'
                         })
-                        removed_members.append(member)
+                        removed.append(member)
                 
-                if removed_members:
+                if removed:
                     self.cog.save_data()
-                    
                     try:
-                        await self.cog.update_both_messages(interaction.channel, list_data)
-                        
-                        response_text = f"✅ **Removed {len(removed_members)} member(s):**\n"
-                        for member in removed_members:
-                            response_text += f"• **{member.display_name or member.name}** (@{member.name})\n"
-                        
-                        await interaction.followup.send(response_text, ephemeral=True)
+                        males, females = self.cog.get_auto_newbies(interaction.guild)
+                        await self.cog.update_all_messages(interaction.channel, list_data, males, females)
+                        msg = f"✅ Removed {len(removed)} newbie(s):\n" + "\n".join([f"• {m.display_name}" for m in removed])
+                        await interaction.followup.send(msg, ephemeral=True)
                     except Exception as e:
-                        await interaction.followup.send(f"❌ Error updating list: {str(e)}", ephemeral=True)
+                        await interaction.followup.send(f"❌ Update error: {str(e)}", ephemeral=True)
                 else:
-                    await interaction.followup.send("❌ No members were removed!", ephemeral=True)
-    
-    # ------------------------------------------------------------
-    # Main View
-    # ------------------------------------------------------------
+                    await interaction.followup.send("❌ No members removed (not in manual list)", ephemeral=True)
     
     class MembersMainView(View):
-        """Main view with buttons for the member list"""
-        def __init__(self, cog, channel: discord.TextChannel = None):
-            super().__init__(timeout=None)  # Persistent view
+        def __init__(self, cog, channel=None):
+            super().__init__(timeout=None)
             self.cog = cog
-            
-            # Add buttons with unique custom_ids
             self.add_item(DynamicMemberList.AddMembersButton(cog))
             self.add_item(DynamicMemberList.RemoveMembersButton(cog))
             self.add_item(DynamicMemberList.RefreshButton(cog))
             self.add_item(DynamicMemberList.InfoButton(cog))
     
     # ------------------------------------------------------------
-    # Helper Methods
-    # ------------------------------------------------------------
-    
-    async def update_embed(self, message, list_data):
-        """Update the embed with current member list"""
-        members = list_data['members']
-        
-        # Create embed
-        embed = discord.Embed(
-            title="📋 Dynamic Member List",
-            description="Use the buttons below to manage the member list.",
-            color=discord.Color.blue(),
-            timestamp=datetime.now(pytz.UTC)
-        )
-        
-        # Add member list
-        if members:
-            # Sort members by when they were added (oldest first)
-            sorted_members = sorted(
-                members.items(),
-                key=lambda x: datetime.fromisoformat(x[1]['added_at'])
-            )
-            
-            # Simple member list format
-            member_text = ""
-            member_count = 1
-            
-            for member_id, member_data in sorted_members:
-                member = message.guild.get_member(int(member_id))
-                
-                if member:
-                    # Member is in the server
-                    member_text += f"{member.mention} \n"
-                    member_count += 1
-                else:
-                    # Member left - skip them
-                    continue
-            
-            if member_text:
-                embed.add_field(
-                    name=f"👥 Current Members ({len(members)}/{self.MAX_MEMBERS})",
-                    value=member_text,
-                    inline=False
-                )
-            else:
-                embed.add_field(
-                    name=f"👥 Current Members (0/{self.MAX_MEMBERS})",
-                    value="*No members in the list yet*\nUse the **➕ Add Members** button to add members.",
-                    inline=False
-                )
-        else:
-            embed.add_field(
-                name=f"👥 Current Members (0/{self.MAX_MEMBERS})",
-                value="*No members in the list yet*\nUse the **➕ Add Members** button to add members.",
-                inline=False
-            )
-        
-        # Create main view with buttons
-        view = self.MembersMainView(cog=self, channel=message.channel)
-        
-        # Update message
-        await message.edit(embed=embed, view=view)
-    
-    # ------------------------------------------------------------
-    # Commands
+    # COMMANDS
     # ------------------------------------------------------------
     
     @commands.command(name="createlist")
     @commands.has_permissions(administrator=True)
     async def create_list(self, ctx):
-        """Create a new dynamic member list (Admin only)"""
+        """Create complete newbie list system (7 messages)"""
         channel_id = str(ctx.channel.id)
-        
         if channel_id in self.member_lists:
-            await ctx.send("⚠️ A member list already exists in this channel! Use `.deletelist` first.")
+            await ctx.send("⚠️ List system already exists here! Use `.deletelist` first.")
             return
         
-        # Create initial data
+        # Create initial data structure
         list_data = {
-            'message_id': None,
-            'plain_message_id': None,  # NEW: Store plain text message ID
+            'auto_males_message_id': None,
+            'auto_females_message_id': None,
+            'manual_message_id': None,
+            'plain_males_id': None,
+            'plain_females_id': None,
+            'plain_collected_id': None,
+            'plain_manual_id': None,
             'members': {},
             'removed_members': [],
             'created_at': datetime.now(pytz.UTC).isoformat(),
@@ -692,260 +736,183 @@ class DynamicMemberList(commands.Cog):
             'guild_id': str(ctx.guild.id)
         }
         
-        # Create initial embed (buttons message)
-        embed = discord.Embed(
-            title="📋 Dynamic Member List",
-            description="Use the buttons below to manage the member list.",
-            color=discord.Color.blue(),
-            timestamp=datetime.now(pytz.UTC)
-        )
+        # Get current auto newbies
+        males, females = self.get_auto_newbies(ctx.guild)
         
-        embed.add_field(
+        # 1. Auto Males Embed
+        embed_males = discord.Embed(
+            title="👦 Newbie Males",
+            color=discord.Color.blue(),
+            description="*Auto-updated list of members with Newbie + Male roles*"
+        )
+        msg1 = await ctx.send(embed=embed_males)
+        list_data['auto_males_message_id'] = str(msg1.id)
+        
+        # 2. Auto Females Embed
+        embed_females = discord.Embed(
+            title="👧 Newbie Females",
+            color=discord.Color.magenta(),
+            description="*Auto-updated list of members with Newbie + Female roles*"
+        )
+        msg2 = await ctx.send(embed=embed_females)
+        list_data['auto_females_message_id'] = str(msg2.id)
+        
+        # 3. Manual List Embed
+        embed_manual = discord.Embed(
+            title="📋 Manual Newbie List",
+            description="*Manually added newbies (expire after 2 days)*",
+            color=discord.Color.green()
+        )
+        embed_manual.add_field(
             name=f"👥 Current Members (0/{self.MAX_MEMBERS})",
-            value="*No members in the list yet*\nUse the **➕ Add Members** button to add members.",
+            value="*No manually added members*\nUse **➕ Add Newbies** button below",
             inline=False
         )
-        
-        # Create view with buttons
         view = self.MembersMainView(cog=self, channel=ctx.channel)
+        msg3 = await ctx.send(embed=embed_manual, view=view)
+        list_data['manual_message_id'] = str(msg3.id)
         
-        # Send first message with buttons
-        message = await ctx.send(embed=embed, view=view)
+        # 4. Plain Males
+        content_males = " ".join([m.mention for m in males]) if males else "*No newbie males*"
+        msg4 = await ctx.send(content_males)
+        list_data['plain_males_id'] = str(msg4.id)
         
-        # Send second message for plain text copy
-        plain_text_message = await ctx.send("***No members in the list yet*\n*Add members using the buttons above*")
+        # 5. Plain Females
+        content_females = " ".join([m.mention for m in females]) if females else "*No newbie females*"
+        msg5 = await ctx.send(content_females)
+        list_data['plain_females_id'] = str(msg5.id)
         
-        # Store data
-        list_data['message_id'] = str(message.id)
-        list_data['plain_message_id'] = str(plain_text_message.id)  # NEW: Store plain text message ID
+        # 6. Plain Collected (Combined)
+        content_collected = " ".join([m.mention for m in males + females]) if (males or females) else "*No newbies*"
+        msg6 = await ctx.send(content_collected)
+        list_data['plain_collected_id'] = str(msg6.id)
+        
+        # 7. Plain Manual
+        msg7 = await ctx.send("*No manually added newbies*")
+        list_data['plain_manual_id'] = str(msg7.id)
+        
+        # Save data
         self.member_lists[channel_id] = list_data
         self.save_data()
         
-        await ctx.send("✅ Dynamic member list created with copy-friendly display!", delete_after=5)
+        await ctx.send("✅ Newbie list system created with 7 messages!", delete_after=5)
     
     @commands.command(name="deletelist")
     @commands.has_permissions(administrator=True)
     async def delete_list(self, ctx):
-        """Delete the member list from this channel (Admin only)"""
+        """Delete entire newbie list system from channel"""
         channel_id = str(ctx.channel.id)
-        
         if channel_id not in self.member_lists:
-            await ctx.send("❌ No member list exists in this channel!")
+            await ctx.send("❌ No list system exists here!")
             return
         
-        # Try to delete both messages
         list_data = self.member_lists[channel_id]
-        message_id = list_data.get('message_id')
-        plain_message_id = list_data.get('plain_message_id')
+        message_ids = [
+            'auto_males_message_id', 'auto_females_message_id', 'manual_message_id',
+            'plain_males_id', 'plain_females_id', 'plain_collected_id', 'plain_manual_id'
+        ]
         
-        try:
-            if message_id:
-                message = await ctx.channel.fetch_message(int(message_id))
-                await message.delete()
-        except:
-            pass
-        
-        try:
-            if plain_message_id:
-                plain_message = await ctx.channel.fetch_message(int(plain_message_id))
-                await plain_message.delete()
-        except:
-            pass
+        # Attempt to delete all messages
+        for key in message_ids:
+            if list_data.get(key):
+                try:
+                    msg = await ctx.channel.fetch_message(int(list_data[key]))
+                    await msg.delete()
+                except:
+                    pass
         
         # Remove from data
         del self.member_lists[channel_id]
         self.save_data()
         
-        await ctx.send("✅ Member list deleted!")
+        await ctx.send("✅ Newbie list system deleted!")
     
-    @commands.command(name="setaddroles")
+    @commands.command(name="setnewbieroles")
     @commands.has_permissions(administrator=True)
-    async def set_add_roles(self, ctx, *roles: discord.Role):
-        """Set which roles can add members to the list (Admin only)"""
-        if not roles:
-            await ctx.send("❌ Please mention at least one role!")
-            return
+    async def set_newbie_roles(self, ctx, newbie_role: discord.Role, male_role: discord.Role, female_role: discord.Role):
+        """Set the three required roles for auto-categorization"""
+        self.NEWBIE_ROLE_ID = newbie_role.id
+        self.MALE_ROLE_ID = male_role.id
+        self.FEMALE_ROLE_ID = female_role.id
         
-        self.ADD_ROLES = [role.id for role in roles]
-        await ctx.send(f"✅ Set add permissions to: {', '.join([role.mention for role in roles])}")
-    
-    @commands.command(name="forceremove")
-    @commands.has_permissions(administrator=True)
-    async def force_remove(self, ctx, member: discord.Member = None):
-        """Force remove a member from the list (Admin only)"""
-        if not member:
-            await ctx.send("❌ Please mention a member to remove!")
-            return
-        
-        channel_id = str(ctx.channel.id)
-        
-        if channel_id not in self.member_lists:
-            await ctx.send("❌ No member list exists in this channel!")
-            return
-        
-        list_data = self.member_lists[channel_id]
-        member_id = str(member.id)
-        
-        if member_id not in list_data['members']:
-            await ctx.send(f"❌ **{member.display_name or member.name}** (@{member.name}) is not in the list!")
-            return
-        
-        # Remove member
-        member_data = list_data['members'].pop(member_id)
-        list_data['removed_members'].append({
-            'id': member_id,
-            'name': member.name,
-            'removed_at': datetime.now(pytz.UTC).isoformat(),
-            'removed_by': str(ctx.author.id),
-            'reason': 'admin_force_remove'
-        })
-        
-        self.save_data()
-        
-        # Update both messages
-        try:
-            await self.update_both_messages(ctx.channel, list_data)
-            await ctx.send(f"✅ Force removed **{member.display_name or member.name}** (@{member.name}) from the list.")
-        except Exception as e:
-            await ctx.send(f"❌ Error updating list: {str(e)}")
-    
-    @commands.command(name="reloadviews")
-    @commands.has_permissions(administrator=True)
-    async def reload_views(self, ctx):
-        """Reload persistent views for all lists (Admin only)"""
-        await ctx.send("🔄 Reloading persistent views...")
-        
-        # Clear existing views
-        self.bot.remove_view(self.MembersMainView(cog=self))
-        
-        # Re-add view
-        self.bot.add_view(self.MembersMainView(cog=self))
-        
-        await ctx.send("✅ Persistent views reloaded!")
-    
-    @commands.command(name="checkperms")
-    async def check_perms(self, ctx):
-        """Check your permissions for the member list"""
-        user = ctx.author
-        
-        # Check which ADD_ROLES user has
-        user_role_ids = [role.id for role in user.roles]
-        matching_roles = []
-        
-        for role_id in self.ADD_ROLES:
-            if role_id in user_role_ids:
-                role = ctx.guild.get_role(role_id)
-                matching_roles.append(role.mention if role else f"Role {role_id}")
-        
-        embed = discord.Embed(
-            title="🔍 Permission Check",
-            color=discord.Color.blue()
+        await ctx.send(
+            f"✅ Newbie roles configured:\n"
+            f"• Newbie Role: {newbie_role.mention}\n"
+            f"• Male Role: {male_role.mention}\n"
+            f"• Female Role: {female_role.mention}"
         )
-        
-        embed.add_field(
-            name="Configured ADD_ROLES",
-            value="\n".join([f"• <@&{role_id}> ({role_id})" for role_id in self.ADD_ROLES]) or "None",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="Your Roles",
-            value="\n".join([f"• {role.mention} ({role.id})" for role in user.roles[1:]]) or "None",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="Matching Roles",
-            value="\n".join(matching_roles) if matching_roles else "❌ No matching roles",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="Has Permission?",
-            value="✅ YES" if matching_roles or not self.ADD_ROLES else "❌ NO",
-            inline=False
-        )
-        
-        await ctx.send(embed=embed)
     
     @commands.command(name="listconfig")
     @commands.has_permissions(administrator=True)
     async def list_config(self, ctx):
-        """Show current configuration (Admin only)"""
-        embed = discord.Embed(
-            title="⚙️ Dynamic Member List Configuration",
-            color=discord.Color.green()
-        )
+        """Show current configuration"""
+        newbie_role = ctx.guild.get_role(self.NEWBIE_ROLE_ID)
+        male_role = ctx.guild.get_role(self.MALE_ROLE_ID)
+        female_role = ctx.guild.get_role(self.FEMALE_ROLE_ID)
+        
+        embed = discord.Embed(title="⚙️ Newbie List Configuration", color=discord.Color.green())
         
         embed.add_field(
-            name="Max Members",
-            value=str(self.MAX_MEMBERS),
-            inline=True
-        )
-        
-        embed.add_field(
-            name="Expiry Days",
-            value=str(self.MEMBER_EXPIRY_DAYS),
-            inline=True
-        )
-        
-        embed.add_field(
-            name="Add Roles",
-            value="\n".join([f"• <@&{role_id}>" for role_id in self.ADD_ROLES]) or "None (everyone can add)",
+            name="Auto-Categorization Roles",
+            value=(
+                f"👦 Newbie Role: {newbie_role.mention if newbie_role else '❌ Not set'}\n"
+                f"👦 Male Role: {male_role.mention if male_role else '❌ Not set'}\n"
+                f"👧 Female Role: {female_role.mention if female_role else '❌ Not set'}"
+            ),
             inline=False
         )
         
         embed.add_field(
-            name="Active Lists",
-            value=str(len(self.member_lists)),
-            inline=True
+            name="Manual List Settings",
+            value=(
+                f"👥 Max Members: {self.MAX_MEMBERS}\n"
+                f"⏳ Expiry: {self.MEMBER_EXPIRY_DAYS} days\n"
+                f"🔑 Add Roles: {', '.join([f'<@&{r}>' for r in self.ADD_ROLES]) or 'Everyone'}"
+            ),
+            inline=False
+        )
+        
+        embed.add_field(
+            name="System Status",
+            value=(
+                f"📊 Active Lists: {len(self.member_lists)}\n"
+                f"🔄 Auto Refresh: Every 5 minutes\n"
+                f"🧹 Cleanup: Hourly"
+            ),
+            inline=False
         )
         
         await ctx.send(embed=embed)
     
-    @commands.command(name="showmembers")
-    async def show_members(self, ctx):
-        """Show all members in the current list"""
+    @commands.command(name="forceremove")
+    @commands.has_permissions(administrator=True)
+    async def force_remove(self, ctx, member: discord.Member):
+        """Force remove member from manual list"""
         channel_id = str(ctx.channel.id)
-        
         if channel_id not in self.member_lists:
-            await ctx.send("❌ No member list exists in this channel!")
+            await ctx.send("❌ No list system here!")
             return
         
         list_data = self.member_lists[channel_id]
-        members = list_data['members']
+        mid = str(member.id)
         
-        if not members:
-            await ctx.send("📭 The list is currently empty!")
+        if mid not in list_data['members']:
+            await ctx.send(f"❌ {member.mention} not in manual list!")
             return
         
-        # Create an embed
-        embed = discord.Embed(
-            title="👥 Members in List",
-            color=discord.Color.blue(),
-            timestamp=datetime.now(pytz.UTC)
-        )
+        data = list_data['members'].pop(mid)
+        list_data['removed_members'].append({
+            'id': mid,
+            'name': data['name'],
+            'removed_at': datetime.now(pytz.UTC).isoformat(),
+            'removed_by': str(ctx.author.id),
+            'reason': 'admin_force_remove'
+        })
+        self.save_data()
         
-        member_text = ""
-        member_count = 1
-        
-        for member_id, member_data in members.items():
-            member = ctx.guild.get_member(int(member_id))
-            
-            if member:
-                member_text += f"**{member_count}.** **{member.display_name or member.name}** (@{member.name})\n"
-                member_count += 1
-            else:
-                # Member left - skip (should have been removed)
-                continue
-        
-        embed.add_field(
-            name=f"Total: {len(members)}/{self.MAX_MEMBERS}",
-            value=member_text or "No active members in the list.",
-            inline=False
-        )
-        
-        await ctx.send(embed=embed)
+        males, females = self.get_auto_newbies(ctx.guild)
+        await self.update_all_messages(ctx.channel, list_data, males, females)
+        await ctx.send(f"✅ Force removed {member.mention} from manual list")
 
 async def setup(bot):
     await bot.add_cog(DynamicMemberList(bot))
