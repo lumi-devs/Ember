@@ -3,7 +3,6 @@ from discord.ext import commands, tasks
 from github import Github, GithubException
 from pathlib import Path
 import os
-import base64
 import logging
 import asyncio
 from typing import Optional
@@ -68,7 +67,8 @@ class GitHubSync(commands.Cog):
 
     async def download_missing_files(self):
         """Pull files from GitHub only if they do not exist locally."""
-        if not self.repo: return
+        if not self.repo: 
+            return
 
         def pull_logic():
             try:
@@ -83,6 +83,8 @@ class GitHubSync(commands.Cog):
                         # Mirror only: Pull if missing
                         if not local_path.exists():
                             local_path.parent.mkdir(parents=True, exist_ok=True)
+                            
+                            # Get raw binary content from GitHub
                             with open(local_path, "wb") as f:
                                 f.write(file_content.decoded_content)
                             print(f"  📥 Recovered: {local_path}")
@@ -106,7 +108,6 @@ class GitHubSync(commands.Cog):
             try:
                 with open(file_path, 'rb') as f:
                     content_bytes = f.read()
-                content_base64 = base64.b64encode(content_bytes).decode('utf-8')
 
                 # Using a while loop for controlled retries (max 3)
                 success = False
@@ -117,10 +118,12 @@ class GitHubSync(commands.Cog):
                         try:
                             existing = self.repo.get_contents(github_path, ref="main")
                             current_sha = existing.sha
-                            online_content = existing.content.replace('\n', '')
-
-                            # 2. Skip if content is already identical
-                            if online_content == content_base64:
+                            
+                            # 2. Get existing content for comparison
+                            existing_content = existing.decoded_content
+                            
+                            # 3. Skip if content is already identical
+                            if existing_content == content_bytes:
                                 success = True
                                 break
                         except GithubException as e:
@@ -129,12 +132,12 @@ class GitHubSync(commands.Cog):
                             else:
                                 raise e
 
-                        # 3. Perform the Update or Create
+                        # 4. Perform the Update or Create
                         if current_sha:
                             self.repo.update_file(
                                 github_path,
                                 f"Update {rel_path}",
-                                content_base64,
+                                content_bytes,  # Pass raw bytes
                                 current_sha,
                                 branch="main"
                             )
@@ -142,7 +145,7 @@ class GitHubSync(commands.Cog):
                             self.repo.create_file(
                                 github_path,
                                 f"Add {rel_path}",
-                                content_base64,
+                                content_bytes,  # Pass raw bytes
                                 branch="main"
                             )
 
@@ -211,6 +214,8 @@ class GitHubSync(commands.Cog):
                 else:
                     local_path = Path(file_content.path)
                     local_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # Get raw binary content from GitHub
                     with open(local_path, "wb") as f:
                         f.write(file_content.decoded_content)
 
