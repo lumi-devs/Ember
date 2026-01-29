@@ -3,7 +3,6 @@ from discord.ext import commands, tasks
 from github import Github, GithubException
 from pathlib import Path
 import os
-import base64
 import logging
 import asyncio
 from typing import Optional
@@ -68,7 +67,8 @@ class GitHubSync(commands.Cog):
 
     async def download_missing_files(self):
         """Pull files from GitHub only if they do not exist locally."""
-        if not self.repo: return
+        if not self.repo: 
+            return
 
         def pull_logic():
             try:
@@ -84,19 +84,10 @@ class GitHubSync(commands.Cog):
                         if not local_path.exists():
                             local_path.parent.mkdir(parents=True, exist_ok=True)
                             
-                            # Decode base64 content from GitHub
-                            try:
-                                # The content from GitHub is base64 encoded
-                                decoded_content = base64.b64decode(file_content.content)
-                                
-                                with open(local_path, "wb") as f:
-                                    f.write(decoded_content)
-                                print(f"  📥 Recovered: {local_path}")
-                            except Exception as decode_error:
-                                logging.error(f"❌ Failed to decode base64 for {local_path}: {decode_error}")
-                                # Try to save raw content as fallback
-                                with open(local_path, "wb") as f:
-                                    f.write(file_content.decoded_content)
+                            # Get raw binary content from GitHub
+                            with open(local_path, "wb") as f:
+                                f.write(file_content.decoded_content)
+                            print(f"  📥 Recovered: {local_path}")
             except Exception as e:
                 logging.error(f"❌ Pull logic error: {e}")
 
@@ -117,7 +108,6 @@ class GitHubSync(commands.Cog):
             try:
                 with open(file_path, 'rb') as f:
                     content_bytes = f.read()
-                content_base64 = base64.b64encode(content_bytes).decode('utf-8')
 
                 # Using a while loop for controlled retries (max 3)
                 success = False
@@ -128,35 +118,26 @@ class GitHubSync(commands.Cog):
                         try:
                             existing = self.repo.get_contents(github_path, ref="main")
                             current_sha = existing.sha
-                            online_content = existing.content.replace('\n', '')
                             
-                            # Decode the online content for comparison
-                            try:
-                                decoded_online = base64.b64decode(online_content)
-                                # Re-encode for comparison to avoid encoding differences
-                                reencoded_online = base64.b64encode(decoded_online).decode('utf-8')
-                                
-                                # 2. Skip if content is already identical
-                                if reencoded_online == content_base64:
-                                    success = True
-                                    break
-                            except Exception as decode_error:
-                                # If we can't decode online content, just proceed with update
-                                logging.warning(f"⚠️ Could not decode online content for {rel_path}, forcing update")
-                                pass
-                                
+                            # 2. Get existing content for comparison
+                            existing_content = existing.decoded_content
+                            
+                            # 3. Skip if content is already identical
+                            if existing_content == content_bytes:
+                                success = True
+                                break
                         except GithubException as e:
                             if e.status == 404:
                                 current_sha = None  # New file
                             else:
                                 raise e
 
-                        # 3. Perform the Update or Create
+                        # 4. Perform the Update or Create
                         if current_sha:
                             self.repo.update_file(
                                 github_path,
                                 f"Update {rel_path}",
-                                content_base64,
+                                content_bytes,  # Pass raw bytes
                                 current_sha,
                                 branch="main"
                             )
@@ -164,7 +145,7 @@ class GitHubSync(commands.Cog):
                             self.repo.create_file(
                                 github_path,
                                 f"Add {rel_path}",
-                                content_base64,
+                                content_bytes,  # Pass raw bytes
                                 branch="main"
                             )
 
@@ -234,18 +215,9 @@ class GitHubSync(commands.Cog):
                     local_path = Path(file_content.path)
                     local_path.parent.mkdir(parents=True, exist_ok=True)
                     
-                    # Decode base64 content from GitHub
-                    try:
-                        # The content from GitHub is base64 encoded
-                        decoded_content = base64.b64decode(file_content.content)
-                        
-                        with open(local_path, "wb") as f:
-                            f.write(decoded_content)
-                    except Exception as decode_error:
-                        logging.error(f"❌ Failed to decode base64 for {local_path}: {decode_error}")
-                        # Try to save raw content as fallback
-                        with open(local_path, "wb") as f:
-                            f.write(file_content.decoded_content)
+                    # Get raw binary content from GitHub
+                    with open(local_path, "wb") as f:
+                        f.write(file_content.decoded_content)
 
         await asyncio.to_thread(force_pull)
         await ctx.send("✅ Local files updated from GitHub!")
