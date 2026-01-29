@@ -214,22 +214,24 @@ class HumanBotCog(commands.Cog):
         
         media_bonus = 0.12 if msg.attachments or msg.embeds else 0.0
         mention_bonus = 0.18 if self.bot.user in msg.mentions else 0.0
+        base_increment = 0.09
+        current_time = time.time()
         
         cur.execute("""
             INSERT INTO friendships (user_id, channel_id, affinity, last_interaction, msgs_exchanged)
             VALUES (?, ?, 0.5, ?, 1)
             ON CONFLICT(user_id, channel_id) DO UPDATE SET
-                affinity = MIN(affinity + ? + ? + 0.06, 1.0),
+                affinity = MIN(affinity + ? + ? + ?, 1.0),
                 last_interaction = ?,
                 msgs_exchanged = msgs_exchanged + 1
         """, (
-            msg.author.id, 
-            msg.channel.id, 
-            time.time(),
-            0.09,
-            media_bonus,
-            mention_bonus,
-            time.time()
+            msg.author.id,        # user_id
+            msg.channel.id,       # channel_id
+            current_time,         # last_interaction (for INSERT)
+            base_increment,       # base +0.09
+            media_bonus,          # +0.12 if media
+            mention_bonus,        # +0.18 if mentioned
+            current_time          # last_interaction (for UPDATE)
         ))
         db.commit()
 
