@@ -17,14 +17,13 @@ class DynamicMemberList(commands.Cog):
         self.MEMBER_EXPIRY_DAYS = 2
         
         # Role IDs for auto-categorization (SET THESE IN YOUR BOT CONFIG)
-        self.NEWBIE_ROLE_ID = os.environ.get("NEWBIE_ROLE_ID")  # Replace with actual newbie role ID
-        self.MALE_ROLE_ID = os.environ.get("MALE_ROLE_ID")    # Replace with actual male role ID
-        self.FEMALE_ROLE_ID = os.environ.get("FEMALE_ROLE_ID")  # Replace with actual female role ID
+        self.NEWBIE_ROLE_ID = int(os.environ.get("NEWBIE_ROLE_ID"))  # Replace with actual newbie role ID
+        self.MALE_ROLE_ID = int(os.environ.get("MALE_ROLE_ID"))    # Replace with actual male role ID
+        self.FEMALE_ROLE_ID = int(os.environ.get("FEMALE_ROLE_ID"))  # Replace with actual female role ID
 
         # Permission roles (manual list only)
         self.ADD_ROLES = os.environ.get("ADD_NEWBIES_ROLE_ID")
         self.REMOVE_ROLES = os.environ.get("REMOVE_NEWBIES_ROLE_ID")
-        [1406324000736542911]
         
         # Load existing data
         self.member_lists = self.load_data()
