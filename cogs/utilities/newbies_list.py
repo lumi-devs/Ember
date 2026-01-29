@@ -223,7 +223,7 @@ class DynamicMemberList(commands.Cog):
         if list_data.get('plain_males_id'):
             try:
                 msg = await channel.fetch_message(int(list_data['plain_males_id']))
-                await self.update_plain_mentions(msg, auto_males)
+                await self.update_plain_mentions(msg, auto_males, "MALE NEWBIES")
             except:
                 pass
         
@@ -231,15 +231,16 @@ class DynamicMemberList(commands.Cog):
         if list_data.get('plain_females_id'):
             try:
                 msg = await channel.fetch_message(int(list_data['plain_females_id']))
-                await self.update_plain_mentions(msg, auto_females)
+                await self.update_plain_mentions(msg, auto_females, "FEMALE NEWBIES")
             except:
                 pass
+
         
         # 6. Update plain collected (combined)
         if list_data.get('plain_collected_id'):
             try:
                 msg = await channel.fetch_message(int(list_data['plain_collected_id']))
-                await self.update_plain_mentions(msg, auto_males + auto_females)
+                await self.update_plain_mentions(msg, auto_males + auto_females, "COLLECTIVE NEWBIES")
             except:
                 pass
         
@@ -268,7 +269,7 @@ class DynamicMemberList(commands.Cog):
         if members:
             member_text = ""
             for i, member in enumerate(members[:25], 1):  # Limit to 25 for embed
-                member_text += f"{i}. {member.mention} (joined <t:{int(member.joined_at.timestamp())}:R>)\n"
+                member_text += f"{i}. {member.mention}\n"
             
             embed.description = f"**Total: {len(members)}**\n{member_text}"
             embed.set_footer(text="Auto-updated every 5 minutes • Members with Newbie + Gender roles")
@@ -318,29 +319,30 @@ class DynamicMemberList(commands.Cog):
         view = self.MembersMainView(cog=self, channel=message.channel)
         await message.edit(embed=embed, view=view)
     
-    async def update_plain_mentions(self, message, members):
-        """Update plain text message with @mentions for easy copying"""
+    async def update_plain_mentions(self, message, members, label=""):
+        """Update plain text message with label and @mentions"""
         if members:
-            content = " ".join([m.mention for m in members])
+            content = f"{label}\n" + " ".join([m.mention for m in members])
         else:
-            content = "*No members to display*"
+            content = f"{label}\n*No members to display*"
         await message.edit(content=content)
     
     async def update_plain_manual(self, message, list_data):
-        """Update plain text for manually added members"""
+        """Update plain text for manually added members with label"""
         members = list_data['members']
         if members:
             sorted_members = sorted(
                 members.items(),
                 key=lambda x: datetime.fromisoformat(x[1]['added_at'])
             )
-            content = " ".join([
+            mentions = " ".join([
                 message.guild.get_member(int(mid)).mention 
                 for mid, _ in sorted_members 
                 if message.guild.get_member(int(mid))
             ])
+            content = f"MANUAL NEWBIES\n{mentions}"
         else:
-            content = "*No manually added members*"
+            content = "MANUAL NEWBIES\n*No manually added members*"
         await message.edit(content=content)
     
     # ------------------------------------------------------------
@@ -772,22 +774,23 @@ class DynamicMemberList(commands.Cog):
         list_data['manual_message_id'] = str(msg3.id)
         
         # 4. Plain Males
-        content_males = " ".join([m.mention for m in males]) if males else "*No newbie males*"
+        content_males = "MALE NEWBIES\n" + (" ".join([m.mention for m in males]) if males else "*No newbie males*")
         msg4 = await ctx.send(content_males)
         list_data['plain_males_id'] = str(msg4.id)
         
         # 5. Plain Females
-        content_females = " ".join([m.mention for m in females]) if females else "*No newbie females*"
+        content_females = "FEMALE NEWBIES\n" + (" ".join([m.mention for m in females]) if females else "*No newbie females*")
         msg5 = await ctx.send(content_females)
         list_data['plain_females_id'] = str(msg5.id)
         
         # 6. Plain Collected (Combined)
-        content_collected = " ".join([m.mention for m in males + females]) if (males or females) else "*No newbies*"
+        all_auto = males + females
+        content_collected = "COLLECTIVE NEWBIES\n" + (" ".join([m.mention for m in all_auto]) if all_auto else "*No newbies*")
         msg6 = await ctx.send(content_collected)
         list_data['plain_collected_id'] = str(msg6.id)
         
         # 7. Plain Manual
-        msg7 = await ctx.send("*No manually added newbies*")
+        msg7 = await ctx.send("MANUAL NEWBIES\n*No manually added newbies*")
         list_data['plain_manual_id'] = str(msg7.id)
         
         # Save data
