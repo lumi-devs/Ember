@@ -742,7 +742,8 @@ class HumanBotCog(commands.Cog):
         # Check silent mode
         cur = db.cursor()
         cur.execute("SELECT silent_mode FROM channel_settings WHERE channel_id = ?", (msg.channel.id,))
-        if cur.fetchone() and cur.fetchone()[0] == 1:
+        row = cur.fetchone()
+        if row and row[0] == 1:
             return
         
         affinity = self._get_affinity(guild_id, msg.author.id, msg.channel.id)
