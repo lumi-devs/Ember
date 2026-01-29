@@ -399,7 +399,7 @@ class DynamicMemberList(commands.Cog):
                 label="➕ Add Newbies",
                 style=discord.ButtonStyle.primary,
                 custom_id="dml_add_members_button",
-                emoji="👦👧",
+                emoji="👥",
                 row=0
             )
             self.cog = cog
