@@ -33,7 +33,7 @@ class DynamicMemberList(commands.Cog):
         self.refresh_auto_lists.start()
         
         # Register persistent views
-        self.bot.add_view(self.MembersMainView(cog=self))
+        self.bot.add_view(DynamicMemberList.MembersMainView(cog=self))
         
         print(f"[DynamicMemberList] Loaded {len(self.member_lists)} existing lists")
     
@@ -44,11 +44,15 @@ class DynamicMemberList(commands.Cog):
         self.save_data()
     
     def load_data(self):
-        """Load member list data from file"""
         if os.path.exists(self.data_file):
             try:
                 with open(self.data_file, 'r') as f:
                     data = json.load(f)
+                # Clean up legacy keys
+                for list_data in data.values():
+                    list_data.pop('plain_males_id', None)
+                    list_data.pop('plain_females_id', None)
+                    list_data.pop('plain_collected_id', None)
                 return data
             except Exception as e:
                 print(f"[ERROR] Failed to load data: {e}")
@@ -191,7 +195,7 @@ class DynamicMemberList(commands.Cog):
     # ------------------------------------------------------------
     
     async def update_all_messages(self, channel, list_data, auto_males=None, auto_females=None):
-        """Update all 7 messages for a list"""
+        """Update all messages for a list (only 4 messages now)"""
         if auto_males is None or auto_females is None:
             auto_males, auto_females = self.get_auto_newbies(channel.guild)
         
@@ -219,32 +223,7 @@ class DynamicMemberList(commands.Cog):
             except:
                 pass
         
-        # 4. Update plain males
-        if list_data.get('plain_males_id'):
-            try:
-                msg = await channel.fetch_message(int(list_data['plain_males_id']))
-                await self.update_plain_mentions(msg, auto_males, "MALE NEWBIES")
-            except:
-                pass
-        
-        # 5. Update plain females
-        if list_data.get('plain_females_id'):
-            try:
-                msg = await channel.fetch_message(int(list_data['plain_females_id']))
-                await self.update_plain_mentions(msg, auto_females, "FEMALE NEWBIES")
-            except:
-                pass
-
-        
-        # 6. Update plain collected (combined)
-        if list_data.get('plain_collected_id'):
-            try:
-                msg = await channel.fetch_message(int(list_data['plain_collected_id']))
-                await self.update_plain_mentions(msg, auto_males + auto_females, "COLLECTIVE NEWBIES")
-            except:
-                pass
-        
-        # 7. Update plain manual
+        # 4. Update plain manual (ONLY plain message kept)
         if list_data.get('plain_manual_id'):
             try:
                 msg = await channel.fetch_message(int(list_data['plain_manual_id']))
@@ -739,7 +718,7 @@ class DynamicMemberList(commands.Cog):
         
         # Get current auto newbies
         males, females = self.get_auto_newbies(ctx.guild)
-        
+
         # 1. Auto Males Embed
         embed_males = discord.Embed(
             title="👦 Newbie Males",
@@ -748,7 +727,7 @@ class DynamicMemberList(commands.Cog):
         )
         msg1 = await ctx.send(embed=embed_males)
         list_data['auto_males_message_id'] = str(msg1.id)
-        
+
         # 2. Auto Females Embed
         embed_females = discord.Embed(
             title="👧 Newbie Females",
@@ -757,7 +736,7 @@ class DynamicMemberList(commands.Cog):
         )
         msg2 = await ctx.send(embed=embed_females)
         list_data['auto_females_message_id'] = str(msg2.id)
-        
+
         # 3. Manual List Embed
         embed_manual = discord.Embed(
             title="📋 Manual Newbie List",
@@ -769,29 +748,13 @@ class DynamicMemberList(commands.Cog):
             value="*No manually added members*\nUse **➕ Add Newbies** button below",
             inline=False
         )
-        view = self.MembersMainView(cog=self, channel=ctx.channel)
+        view = self.MembersMainView(cog=self)  # ← No channel needed
         msg3 = await ctx.send(embed=embed_manual, view=view)
         list_data['manual_message_id'] = str(msg3.id)
-        
-        # 4. Plain Males
-        content_males = "MALE NEWBIES\n" + (" ".join([m.mention for m in males]) if males else "*No newbie males*")
-        msg4 = await ctx.send(content_males)
-        list_data['plain_males_id'] = str(msg4.id)
-        
-        # 5. Plain Females
-        content_females = "FEMALE NEWBIES\n" + (" ".join([m.mention for m in females]) if females else "*No newbie females*")
-        msg5 = await ctx.send(content_females)
-        list_data['plain_females_id'] = str(msg5.id)
-        
-        # 6. Plain Collected (Combined)
-        all_auto = males + females
-        content_collected = "COLLECTIVE NEWBIES\n" + (" ".join([m.mention for m in all_auto]) if all_auto else "*No newbies*")
-        msg6 = await ctx.send(content_collected)
-        list_data['plain_collected_id'] = str(msg6.id)
-        
-        # 7. Plain Manual
-        msg7 = await ctx.send("MANUAL NEWBIES\n*No manually added newbies*")
-        list_data['plain_manual_id'] = str(msg7.id)
+
+        # 4. PLAIN TEXT: ONLY MANUAL MEMBERS (as requested)
+        msg4 = await ctx.send("MANUAL NEWBIES\n*No manually added newbies*")
+        list_data['plain_manual_id'] = str(msg4.id)
         
         # Save data
         self.member_lists[channel_id] = list_data
@@ -810,8 +773,10 @@ class DynamicMemberList(commands.Cog):
         
         list_data = self.member_lists[channel_id]
         message_ids = [
-            'auto_males_message_id', 'auto_females_message_id', 'manual_message_id',
-            'plain_males_id', 'plain_females_id', 'plain_collected_id', 'plain_manual_id'
+            'auto_males_message_id',
+            'auto_females_message_id',
+            'manual_message_id',
+            'plain_manual_id' 
         ]
         
         # Attempt to delete all messages
