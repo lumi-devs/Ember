@@ -1,17 +1,22 @@
-# Bot commands
+# Bot commands - FIXED VERSION
 import discord
 from discord.ext import commands
 from datetime import datetime
 import pytz
 from typing import Optional
 
-async def setup_commands(cog):
-    """Setup all commands for the cog"""
-    
-    @cog.command(name="createlist")
+def setup(bot):
+    """Register commands with the bot"""
+
+    @bot.command(name="createlist")
     @commands.has_permissions(administrator=True)
     async def create_list(ctx):
         """Create complete newbie list system"""
+        cog = ctx.bot.get_cog('DynamicMemberList')
+        if not cog:
+            await ctx.send("❌ Cog not loaded!")
+            return
+            
         channel_id = str(ctx.channel.id)
         if channel_id in cog.member_lists:
             await ctx.send("⚠️ List system already exists here! Use `.deletelist` first.")
@@ -70,10 +75,15 @@ async def setup_commands(cog):
         
         await ctx.send("✅ Newbie list system created!", delete_after=5)
     
-    @cog.command(name="deletelist")
+    @bot.command(name="deletelist")
     @commands.has_permissions(administrator=True)
     async def delete_list(ctx):
         """Delete entire newbie list system from channel"""
+        cog = ctx.bot.get_cog('DynamicMemberList')
+        if not cog:
+            await ctx.send("❌ Cog not loaded!")
+            return
+            
         channel_id = str(ctx.channel.id)
         if channel_id not in cog.member_lists:
             await ctx.send("❌ No list system exists here!")
@@ -101,10 +111,15 @@ async def setup_commands(cog):
         await ctx.send("✅ Newbie list system deleted!")
     
     # Auto-pair system commands
-    @cog.command(name="paircomplete")
+    @bot.command(name="paircomplete")
     @commands.has_permissions(administrator=True)
     async def pair_complete(ctx, member: discord.Member):
         """Mark a pairing as completed"""
+        cog = ctx.bot.get_cog('DynamicMemberList')
+        if not cog:
+            await ctx.send("❌ Cog not loaded!")
+            return
+            
         member_id = str(member.id)
         pairing_data = cog.auto_pair_system.system_data.get("pairings", {}).get(member_id)
         
@@ -119,10 +134,15 @@ async def setup_commands(cog):
         
         await ctx.send(f"✅ Marked pairing for {member.mention} as completed!")
     
-    @cog.command(name="checkstatus")
+    @bot.command(name="checkstatus")
     @commands.has_permissions(administrator=True)
     async def check_status(ctx, member: Optional[discord.Member] = None):
         """Check newbie status (activity and pairings)"""
+        cog = ctx.bot.get_cog('DynamicMemberList')
+        if not cog:
+            await ctx.send("❌ Cog not loaded!")
+            return
+            
         target = member or ctx.author
         
         embed = discord.Embed(
@@ -183,10 +203,15 @@ async def setup_commands(cog):
         
         await ctx.send(embed=embed)
     
-    @cog.command(name="forcepair")
+    @bot.command(name="forcepair")
     @commands.has_permissions(administrator=True)
     async def force_pair(ctx, mod: discord.Member, newbie: discord.Member):
         """Force pair a mod with a newbie"""
+        cog = ctx.bot.get_cog('DynamicMemberList')
+        if not cog:
+            await ctx.send("❌ Cog not loaded!")
+            return
+            
         newbie_role = ctx.guild.get_role(cog.NEWBIE_ROLE_ID)
         if not newbie_role or newbie_role not in newbie.roles:
             await ctx.send(f"❌ {newbie.mention} doesn't have the newbie role!")
@@ -198,7 +223,6 @@ async def setup_commands(cog):
             if role and role in mod.roles:
                 is_mod = True
                 break
-        
         
         if not is_mod:
             await ctx.send(f"❌ {mod.mention} doesn't have mod permissions!")
@@ -230,10 +254,15 @@ async def setup_commands(cog):
         
         await ctx.send(f"✅ Successfully paired {mod.mention} with {newbie.mention}!")
     
-    @cog.command(name="listpairings")
+    @bot.command(name="listpairings")
     @commands.has_permissions(administrator=True)
     async def list_pairings(ctx):
         """List all active pairings"""
+        cog = ctx.bot.get_cog('DynamicMemberList')
+        if not cog:
+            await ctx.send("❌ Cog not loaded!")
+            return
+            
         active_pairings = []
         
         for newbie_id, data in cog.auto_pair_system.system_data.get("pairings", {}).items():
@@ -279,11 +308,3 @@ async def setup_commands(cog):
             embed.set_footer(text=f"And {len(active_pairings) - 10} more pairings...")
         
         await ctx.send(embed=embed)
-    
-    # Add command setup to cog
-    cog.create_list = create_list
-    cog.delete_list = delete_list
-    cog.pair_complete = pair_complete
-    cog.check_status = check_status
-    cog.force_pair = force_pair
-    cog.list_pairings = list_pairings

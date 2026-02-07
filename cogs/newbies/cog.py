@@ -18,6 +18,7 @@ class DynamicMemberList(commands.Cog):
         # Configuration
         self.MAX_MEMBERS = 12
         self.MEMBER_EXPIRY_DAYS = 2
+        self.MIN_UPDATE_INTERVAL = 30
         
         # Role IDs from environment
         self.NEWBIE_ROLE_ID = int(os.environ.get("NEWBIE_ROLE_ID"))
@@ -35,9 +36,6 @@ class DynamicMemberList(commands.Cog):
         self.data_manager = DataManager()
         self.auto_pair_system = AutoPairSystem(self)
         
-
-        from .commands import setup_commands
-        asyncio.create_task(setup_commands(self))
         # Load data
         self.member_lists = self.data_manager.load_member_data()
         
@@ -101,6 +99,36 @@ class DynamicMemberList(commands.Cog):
         
         return males, females
     
+    async def needs_update(self, channel, list_data, new_males, new_females):
+        """Check if messages actually need updating"""
+        try:
+            # Get current male embed
+            if list_data.get('auto_males_message_id'):
+                msg = await channel.fetch_message(int(list_data['auto_males_message_id']))
+                if msg.embeds:
+                    embed = msg.embeds[0]
+                    # Check if count matches
+                    lines = embed.description.split('\n')
+                    if lines and 'Total:' in lines[0]:
+                        current_count = int(lines[0].split('Total: ')[1].split(')')[0])
+                        if current_count == len(new_males):
+                            return False
+            
+            # Get current female embed  
+            if list_data.get('auto_females_message_id'):
+                msg = await channel.fetch_message(int(list_data['auto_females_message_id']))
+                if msg.embeds:
+                    embed = msg.embeds[0]
+                    lines = embed.description.split('\n')
+                    if lines and 'Total:' in lines[0]:
+                        current_count = int(lines[0].split('Total: ')[1].split(')')[0])
+                        if current_count == len(new_females):
+                            return False
+        except:
+            pass
+        
+        return True
+
     @tasks.loop(minutes=5)
     async def refresh_auto_lists(self):
         """Refresh auto-categorized newbie lists periodically"""
@@ -108,6 +136,12 @@ class DynamicMemberList(commands.Cog):
         
         for channel_id, list_data in list(self.member_lists.items()):
             try:
+                # Check rate limit
+                now = datetime.now(pytz.UTC).timestamp()
+                last_update = self.last_message_update.get(channel_id, 0)
+                if now - last_update < self.MIN_UPDATE_INTERVAL:
+                    continue  # Skip if updated recently
+                
                 channel = self.bot.get_channel(int(channel_id))
                 if not channel or not isinstance(channel, discord.TextChannel):
                     continue
@@ -115,7 +149,13 @@ class DynamicMemberList(commands.Cog):
                 guild = channel.guild
                 males, females = self.get_auto_newbies(guild)
                 
+                # Check if actually needs update
+                if not await self.needs_update(channel, list_data, males, females):
+                    continue
+                
                 await self.update_all_messages(channel, list_data, males, females)
+                self.last_message_update[channel_id] = now
+                
             except Exception as e:
                 print(f"[ERROR] Failed to refresh auto list in channel {channel_id}: {e}")
     
@@ -132,64 +172,89 @@ class DynamicMemberList(commands.Cog):
         if auto_males is None or auto_females is None:
             auto_males, auto_females = self.get_auto_newbies(channel.guild)
         
-        # Update auto males embed
+        # Update with error handling for rate limits
+        messages_to_update = []
+        
+        # Auto males
         if list_data.get('auto_males_message_id'):
             try:
                 msg = await channel.fetch_message(int(list_data['auto_males_message_id']))
-                await self.update_auto_embed(msg, auto_males, "blue", "👦 Newbie Males")
-            except:
-                pass
+                messages_to_update.append((msg, auto_males, "blue", "👦 Newbie Males"))
+            except discord.errors.HTTPException as e:
+                if e.status == 429:
+                    print(f"[RATE LIMIT] Skipping auto males update in {channel.id}")
         
-        # Update auto females embed
+        # Auto females
         if list_data.get('auto_females_message_id'):
             try:
                 msg = await channel.fetch_message(int(list_data['auto_females_message_id']))
-                await self.update_auto_embed(msg, auto_females, "pink", "👧 Newbie Females")
-            except:
-                pass
+                messages_to_update.append((msg, auto_females, "pink", "👧 Newbie Females"))
+            except discord.errors.HTTPException as e:
+                if e.status == 429:
+                    print(f"[RATE LIMIT] Skipping auto females update in {channel.id}")
         
-        # Update manual embed
+        # Manual embed
         if list_data.get('manual_message_id'):
             try:
                 msg = await channel.fetch_message(int(list_data['manual_message_id']))
                 await self.update_manual_embed(msg, list_data)
-            except:
-                pass
+            except discord.errors.HTTPException as e:
+                if e.status == 429:
+                    print(f"[RATE LIMIT] Skipping manual embed update in {channel.id}")
         
-        # Update plain manual
+        # Plain manual
         if list_data.get('plain_manual_id'):
             try:
                 msg = await channel.fetch_message(int(list_data['plain_manual_id']))
                 await self.update_plain_manual(msg, list_data)
-            except:
-                pass
+            except discord.errors.HTTPException as e:
+                if e.status == 429:
+                    print(f"[RATE LIMIT] Skipping plain manual update in {channel.id}")
+        
+        # Update auto embeds with delay
+        for msg, members, color_name, title in messages_to_update:
+            try:
+                await self.update_auto_embed(msg, members, color_name, title)
+                await asyncio.sleep(1)  # 1 second delay between updates
+            except discord.errors.HTTPException as e:
+                if e.status == 429:
+                    print(f"[RATE LIMIT] Could not update {title} in {channel.id}")
+                    retry_after = e.retry_after if hasattr(e, 'retry_after') else 5
+                    await asyncio.sleep(retry_after)
     
     async def update_auto_embed(self, message, members, color_name, title):
         """Update auto-categorized embed"""
-        color_map = {
-            "blue": discord.Color.blue(),
-            "pink": discord.Color.magenta()
-        }
-        color = color_map.get(color_name, discord.Color.blue())
-        
-        embed = discord.Embed(
-            title=title,
-            color=color,
-            timestamp=datetime.now(pytz.UTC)
-        )
-        
-        if members:
-            member_text = ""
-            for i, member in enumerate(members[:25], 1):
-                member_text += f"{i}. {member.mention}\n"
+        try:
+            color_map = {
+                "blue": discord.Color.blue(),
+                "pink": discord.Color.magenta()
+            }
+            color = color_map.get(color_name, discord.Color.blue())
             
-            embed.description = f"**Total: {len(members)}**\n{member_text}"
-            embed.set_footer(text="Auto-updated every 5 minutes")
-        else:
-            embed.description = "*No members with required roles*"
-            embed.set_footer(text="Auto-updated • Requires Newbie + Gender roles")
-        
-        await message.edit(embed=embed)
+            embed = discord.Embed(
+                title=title,
+                color=color,
+                timestamp=datetime.now(pytz.UTC)
+            )
+            
+            if members:
+                member_text = ""
+                for i, member in enumerate(members[:25], 1):
+                    member_text += f"{i}. {member.mention}\n"
+                
+                embed.description = f"**Total: {len(members)}**\n{member_text}"
+                embed.set_footer(text="Auto-updated every 5 minutes")
+            else:
+                embed.description = "*No members with required roles*"
+                embed.set_footer(text="Auto-updated • Requires Newbie + Gender roles")
+            
+            await message.edit(embed=embed)
+        except discord.errors.NotFound:
+            print(f"[WARNING] Message for {title} not found, may have been deleted")
+        except discord.errors.HTTPException as e:
+            if e.status == 429:
+                print(f"[RATE LIMIT] Could not update {title} embed")
+                raise
     
     async def update_manual_embed(self, message, list_data):
         """Update manual newbie list embed"""
