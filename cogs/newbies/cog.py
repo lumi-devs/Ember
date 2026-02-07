@@ -1,4 +1,3 @@
-# Main cog that ties everything together
 import asyncio
 import discord
 from discord.ext import commands, tasks
@@ -39,9 +38,21 @@ class DynamicMemberList(commands.Cog):
         # Load data
         self.member_lists = self.data_manager.load_member_data()
         
+        # Track last message updates
+        self.last_message_update = {}
+        
+        print(f"[DynamicMemberList] Loaded {len(self.member_lists)} existing lists")
+    
+    async def cog_load(self):
+        """Setup after cog is loaded (async version of __init__ for async setup)"""
         # Start background tasks
         self.cleanup_expired_members.start()
         self.refresh_auto_lists.start()
+        
+        # Initialize auto-pair system after bot is ready
+        await self.auto_pair_system.initialize_after_ready()
+        
+        # Add event listeners
         self.bot.add_listener(self.auto_pair_system.on_message, 'on_message')
         self.bot.add_listener(self.on_member_update, 'on_member_update')
         self.bot.add_listener(self.on_member_remove, 'on_member_remove')
@@ -51,9 +62,9 @@ class DynamicMemberList(commands.Cog):
         # Register persistent views
         self.bot.add_view(MembersMainView(cog=self))
         
-        print(f"[DynamicMemberList] Loaded {len(self.member_lists)} existing lists")
+        print(f"[DynamicMemberList] Initialization complete")
     
-    def cog_unload(self):
+    async def cog_unload(self):
         """Cleanup when cog is unloaded"""
         self.cleanup_expired_members.cancel()
         self.refresh_auto_lists.cancel()

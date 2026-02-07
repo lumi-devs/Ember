@@ -28,7 +28,6 @@ class AutoPairSystem:
         self.system_data = self.data_manager.load_system_data()
         
         # Event-based activity tracking
-        self.member_activity = {}  # member_id -> {"last_message": timestamp, "message_count": int}
         self.last_seen_times = {}  # member_id -> last_seen timestamp
         self.activity_check_queue = asyncio.Queue()
         self.debounce_tasks = {}  # member_id -> asyncio.Task
@@ -39,14 +38,38 @@ class AutoPairSystem:
         self.CACHE_TTL_SECONDS = 300  # 5 minutes
         
         # Messages to delete after 1 hour
+        self.system_data = self.data_manager.load_system_data()
+        self.member_activity = self.system_data.get("member_activity", {})
+        self.priority_queue = self.system_data.get("priority_queue", [])
         self.messages_to_delete = {}
-        
+        for msg_id, data in self.system_data.get("messages_to_delete", {}).items():
+            if "delete_at" in data:
+                data["delete_at"] = datetime.fromisoformat(data["delete_at"])
+                self.messages_to_delete[int(msg_id)] = data
+
         # Start cleanup task only (event-based for main logic)
         self.cleanup_old_messages.start()
         self.periodic_scan.start()
+        self.periodic_data_save.start()
         # Dynamic priority queue
-        self.priority_queue = []  # List of (priority_score, member_id, guild_id)
         self.priority_lock = asyncio.Lock()
+        
+
+    async def initialize_after_ready(self):
+        """Initialize after bot is ready"""
+        await self.bot.wait_until_ready()
+        
+        # Validate queue
+        await self.validate_priority_queue()
+        
+        # Clean up invalid pairings
+        await self.cleanup_invalid_pairings()
+        
+        # Start periodic scans for all guilds
+        for guild in self.bot.guilds:
+            await self.periodic_scan_single_guild(guild)
+        
+        print(f"[Auto-Pair] Initialized with {len(self.priority_queue)} in queue, {len(self.system_data.get('pairings', {}))} pairings")
         
     def stop_tasks(self):
         """Stop all background tasks"""
@@ -662,11 +685,91 @@ class AutoPairSystem:
                 return None
         return None
     
+
+    async def cleanup_invalid_pairings(self):
+        """Remove pairings with invalid members or expired"""
+        now = datetime.now(pytz.UTC)
+        pairings_to_remove = []
+        
+        for newbie_id, pairing_data in list(self.system_data.get("pairings", {}).items()):
+            guild_id = pairing_data.get("guild_id")
+            if not guild_id:
+                continue
+                
+            guild = self.bot.get_guild(int(guild_id))
+            if not guild:
+                pairings_to_remove.append(newbie_id)
+                continue
+            
+            # Check if newbie still exists
+            newbie = guild.get_member(int(newbie_id))
+            if not newbie or newbie.bot:
+                pairings_to_remove.append(newbie_id)
+                continue
+            
+            # Check if mod still exists
+            mod_id = pairing_data.get("mod_id")
+            if mod_id:
+                mod = guild.get_member(int(mod_id))
+                if not mod or mod.bot:
+                    pairings_to_remove.append(newbie_id)
+                    continue
+            
+            # Check if pairing is too old (more than 7 days)
+            paired_at_str = pairing_data.get("paired_at")
+            if paired_at_str:
+                try:
+                    paired_at = datetime.fromisoformat(paired_at_str)
+                    if (now - paired_at).days > 7:
+                        pairings_to_remove.append(newbie_id)
+                except:
+                    pairings_to_remove.append(newbie_id)
+        
+        # Remove invalid pairings
+        for newbie_id in pairings_to_remove:
+            self.system_data["pairings"].pop(newbie_id, None)
+        
+        if pairings_to_remove:
+            self.data_manager.save_system_data(self.system_data)
+            print(f"[Auto-Pair] Cleaned up {len(pairings_to_remove)} invalid pairings")
+
+
+    async def validate_priority_queue(self):
+        """Remove invalid entries from priority queue after restart"""
+        async with self.priority_lock:
+            valid_queue = []
+            
+            for score, member_id, guild_id in self.priority_queue:
+                guild = self.bot.get_guild(int(guild_id)) if guild_id else None
+                if not guild:
+                    continue
+                    
+                member = guild.get_member(int(member_id))
+                if not member or member.bot:
+                    continue
+                
+                # Check if still has newbie role
+                newbie_role = guild.get_role(self.cog.NEWBIE_ROLE_ID)
+                if not newbie_role or newbie_role not in member.roles:
+                    continue
+                
+                # Check cooldown
+                last_paired = self.get_last_pairing_time(member_id)
+                if last_paired:
+                    hours_since = (datetime.now(pytz.UTC) - last_paired).total_seconds() / 3600
+                    if hours_since < self.PAIRING_COOLDOWN_HOURS:
+                        continue
+                
+                valid_queue.append((score, member_id, guild_id))
+            
+            self.priority_queue = valid_queue
+            print(f"[Auto-Pair] Priority queue validated: {len(valid_queue)} valid entries")
+
     # ========== PERIODIC MAINTENANCE (for edge cases) ==========
     
     @tasks.loop(hours=6)
     async def periodic_scan(self):
-        """Periodic scan for edge cases (e.g., members who joined while bot was offline)"""
+        """Periodic scan for edge cases and data restoration"""
         await self.bot.wait_until_ready()
         
         for guild in self.bot.guilds:
@@ -679,7 +782,37 @@ class AutoPairSystem:
             for member_id in newbie_member_ids:
                 member = guild.get_member(member_id)
                 if member and not member.bot:
-                    # Check if we have activity data
-                    if str(member.id) not in self.member_activity:
+                    member_id_str = str(member_id)
+                    
+                    # If no activity data exists, initialize with join time
+                    if member_id_str not in self.member_activity:
+                        self.member_activity[member_id_str] = {
+                            "last_message": member.joined_at.replace(tzinfo=pytz.UTC) if member.joined_at else datetime.now(pytz.UTC),
+                            "message_count": 0,
+                            "guild_id": str(guild.id),
+                            "join_time": member.joined_at.isoformat() if member.joined_at else datetime.now(pytz.UTC).isoformat()
+                        }
                         # Add to priority queue with medium priority
                         await self.add_to_priority_queue(member)
+                    else:
+                        # Refresh existing entry with current guild info
+                        self.member_activity[member_id_str]["guild_id"] = str(guild.id)
+
+
+    @tasks.loop(minutes=5)
+    async def periodic_data_save(self):
+        """Periodically save activity data to disk"""
+        self.system_data["member_activity"] = self.member_activity
+        self.system_data["priority_queue"] = self.priority_queue
+        
+        # Convert messages_to_delete timestamps to ISO format for saving
+        messages_to_save = {}
+        for msg_id, data in self.messages_to_delete.items():
+            save_data = data.copy()
+            if "delete_at" in save_data and isinstance(save_data["delete_at"], datetime):
+                save_data["delete_at"] = save_data["delete_at"].isoformat()
+            messages_to_save[str(msg_id)] = save_data
+        
+        self.system_data["messages_to_delete"] = messages_to_save
+        
+        self.data_manager.save_system_data(self.system_data)
