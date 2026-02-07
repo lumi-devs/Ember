@@ -1,4 +1,5 @@
 import asyncio
+from typing import Optional
 import discord
 from discord.ext import commands, tasks
 import os
