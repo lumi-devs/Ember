@@ -111,6 +111,8 @@ class TempVoice(commands.Cog):
                     channelNumber INTEGER NOT NULL,
                     channelName TEXT NOT NULL,
                     channelLimit INTEGER,
+                    locked BOOLEAN DEFAULT FALSE,
+                    hidden BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
