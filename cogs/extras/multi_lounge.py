@@ -60,23 +60,34 @@ class SmartLoungeCog(commands.Cog):
             'avg_users_per_lounge': 0.0,
             'busy_percentage': 0.0
         }
-        
+
         try:
-            if os.path.exists(self.data_file):
-                with open(self.data_file, 'r') as f:
-                    loaded = json.load(f)
-                    
-                    # Convert string timestamps back to datetime objects
-                    for time_key in ['last_creation_time', 'last_deletion_time', 'peak_users_time']:
-                        if loaded.get(time_key):
-                            loaded[time_key] = datetime.fromisoformat(loaded[time_key])
-                    
-                    return loaded
-            else:
+            # Ensure the folder exists
+            folder = os.path.dirname(self.data_file)
+            if not os.path.exists(folder):
+                os.makedirs(folder)
+
+            # If file doesn't exist, create it with default stats
+            if not os.path.exists(self.data_file):
+                with open(self.data_file, 'w') as f:
+                    json.dump(default_stats, f, indent=2)
                 return default_stats
+
+            # If file exists, load it
+            with open(self.data_file, 'r') as f:
+                loaded = json.load(f)
+
+            # Convert string timestamps back to datetime objects
+            for time_key in ['last_creation_time', 'last_deletion_time', 'peak_users_time']:
+                if loaded.get(time_key):
+                    loaded[time_key] = datetime.fromisoformat(loaded[time_key])
+
+            return loaded
+
         except Exception as e:
             self.logger.error(f"⚠️ Error loading stats from JSON: {e}")
             return default_stats
+
 
     def save_stats(self):
         """Save statistics to JSON file."""
