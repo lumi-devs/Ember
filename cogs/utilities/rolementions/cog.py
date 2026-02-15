@@ -7,7 +7,7 @@ from .data_manager import DataManager
 from .tracker import RoleMentionTracker
 from .automod_manager import AutoModManager
 
-class RoleMentionTracker(commands.Cog):
+class RoleMentionCog(commands.Cog):  # ← Better name
     def __init__(self, bot):
         self.bot = bot
         
