@@ -1,12 +1,10 @@
-from asyncio import tasks
+from discord.ext import tasks
 import discord
-from discord import AutoModRule, AutoModTrigger, AutoModRuleAction
+from discord import AutoModTrigger, AutoModRuleAction
 from discord.enums import AutoModRuleEventType, AutoModRuleTriggerType
 from datetime import datetime, timedelta
 import pytz
-import asyncio
 from discord.ext import commands
-from typing import List, Set
 
 class AutoModManager:
     def __init__(self, cog):
@@ -15,7 +13,7 @@ class AutoModManager:
         self.ist = pytz.timezone('Asia/Kolkata')
         
         # Keywords that trigger auto-mod blocking
-        self.TRIGGER_KEYWORDS = ["revive", "newbies", "newbie", "active", "inactive"]
+        self.TRIGGER_KEYWORDS = ["revive", "newbies", "night"]
         
         # Track active rules: rule_id -> {guild_id, role_ids, expires_at}
         self.active_rules = self.cog.data_manager.load_automod_rules()
@@ -106,7 +104,7 @@ class AutoModManager:
             value=(
                 f"**Rule Name:** {rule.name}\n"
                 f"**Rule ID:** `{rule.id}`\n"
-                f"**Action:** Block message + Alert staff"
+                f"**Action:** Block message"
             ),
             inline=False
         )
@@ -175,7 +173,6 @@ class AutoModManager:
                 if (rule_data.get("guild_id") == guild_id and 
                     rule_data.get("role_id") == role_id):
                     # Rule already exists, just log this mention
-                    await self.log_triggered_mention(message, role, rule_data)
                     return
             
             # Create new auto-mod rule
@@ -207,10 +204,6 @@ class AutoModManager:
                         type=discord.AutoModRuleActionType.block_message,
                         custom_message=f"This role ({role.name}) is temporarily blocked due to mention spam. Please wait 2 hours."
                     ),
-                    AutoModRuleAction(
-                        type=discord.AutoModRuleActionType.send_alert_message,
-                        channel_id=self.cog.LOG_CHANNEL_ID
-                    )
                 ],
                 enabled=True,
                 reason=f"Auto-block triggered by mention of {role.name} in #{trigger_message.channel.name}"
@@ -248,58 +241,6 @@ class AutoModManager:
             await self.log_error(guild, "Missing permissions to create auto-mod rules")
         except Exception as e:
             await self.log_error(guild, f"Error creating auto-mod rule: {str(e)}")
-    
-    async def log_triggered_mention(self, message: discord.Message, role: discord.Role, rule_data: dict):
-        """Log when a role is mentioned while a block rule is active"""
-        log_channel = self.cog.get_log_channel()
-        if not log_channel:
-            return
-        
-        expires_at = rule_data.get("expires_at")
-        
-        embed = discord.Embed(
-            title="⚠️ Blocked Role Mention Attempt",
-            description=f"A role with an active block rule was mentioned",
-            color=discord.Color.orange(),
-            timestamp=datetime.now(pytz.UTC)
-        )
-        
-        embed.set_author(
-            name=f"{message.author.name} ({message.author.id})",
-            icon_url=message.author.avatar.url if message.author.avatar else None
-        )
-        
-        embed.add_field(
-            name="Role",
-            value=f"{role.mention} (`{role.name}`)",
-            inline=True
-        )
-        
-        embed.add_field(
-            name="Channel",
-            value=message.channel.mention,
-            inline=True
-        )
-        
-        embed.add_field(
-            name="Message Link",
-            value=f"[Jump to Message]({message.jump_url})",
-            inline=True
-        )
-        
-        embed.add_field(
-            name="Block Rule Expires",
-            value=f"<t:{int(expires_at.timestamp())}:R>",
-            inline=True
-        )
-        
-        embed.add_field(
-            name="Message Content",
-            value=f"```{message.content[:500]}```",
-            inline=False
-        )
-        
-        await log_channel.send(embed=embed)
     
     async def log_error(self, guild, error_message: str):
         """Log auto-mod errors"""
