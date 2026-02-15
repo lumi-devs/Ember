@@ -615,15 +615,6 @@ class AutoModManager:
         else:
             duration_display = f"{duration_minutes} minutes"
         
-        # Also notify in the trigger channel
-        try:
-            await message.channel.send(
-                f"⚠️ **Role Protection Activated**\n"
-                f"Role {role.mention} is now protected from mention spam for {duration_display}.\n"
-                f"Anyone mentioning this role will have their message blocked."
-            )
-        except:
-            pass
     
     @commands.group(name="automod", aliases=["am"])
     @commands.has_permissions(manage_guild=True)
