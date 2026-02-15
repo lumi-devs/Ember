@@ -26,7 +26,7 @@ class DynamicMemberList(commands.Cog):
         self.FEMALE_ROLE_ID = int(os.environ.get("FEMALE_ROLE_ID"))
         
         # Channel IDs from environment
-        self.STAFF_CHANNEL_ID = int(os.environ.get("STAFF_CHANNEL_ID", 0))
+        self.AUTO_PAIR_CHANNEL_ID = int(os.environ.get("AUTO_PAIR_CHANNEL_ID", 0))
         
         # Permission roles
         self.ADD_ROLES = ast.literal_eval(os.environ.get("ADD_NEWBIES_ROLE_ID"))
@@ -75,8 +75,8 @@ class DynamicMemberList(commands.Cog):
     
     def get_staff_channel(self, guild):
         """Get the staff channel for announcements"""
-        if hasattr(self, 'STAFF_CHANNEL_ID') and self.STAFF_CHANNEL_ID:
-            return guild.get_channel(self.STAFF_CHANNEL_ID)
+        if hasattr(self, 'AUTO_PAIR_CHANNEL_ID') and self.AUTO_PAIR_CHANNEL_ID:
+            return guild.get_channel(self.AUTO_PAIR_CHANNEL_ID)
         return None
     
     # ------------------------------------------------------------
