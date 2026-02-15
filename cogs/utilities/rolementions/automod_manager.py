@@ -17,10 +17,20 @@ class AutoModManager:
         # Load configuration from environment variables
         self.load_config_from_env()
         
-        # Track active rules: rule_id -> {guild_id, role_ids, expires_at}
-        self.active_rules = self.cog.data_manager.load_automod_rules()
+        # SINGLE RULE APPROACH - We'll maintain one rule that we update
+        self.main_rule_id = None  # This will store our single rule's ID
+        self.rule_guild_id = None  # The guild where our rule exists
         
-        # Start cleanup task
+        # Track active role blocks: role_id -> {expires_at, role_name}
+        self.active_blocks = self.cog.data_manager.load_automod_rules()
+        
+        # Track keywords currently in the rule
+        self.current_keywords = []
+        
+        # Start the main rule management task
+        self.rule_manager_task.start()
+        
+        # Start cleanup task for expired blocks
         self.cleanup_task.start()
     
     def load_config_from_env(self):
@@ -49,60 +59,171 @@ class AutoModManager:
     
     def cog_unload(self):
         """Cleanup when cog is unloaded"""
+        self.rule_manager_task.cancel()
         self.cleanup_task.cancel()
+    
+    @tasks.loop(seconds=60)  # Check every minute
+    async def rule_manager_task(self):
+        """Ensure the main AutoMod rule exists and is properly configured"""
+        await self.bot.wait_until_ready()
+        
+        # If we don't have a rule yet, try to find or create one
+        if not self.main_rule_id and self.bot.guilds:
+            # Use the first guild (or you might want to specify which guild)
+            guild = self.bot.guilds[0]
+            await self.ensure_main_rule_exists(guild)
+        
+        # If we have a rule, make sure it has the correct keywords
+        if self.main_rule_id and self.rule_guild_id:
+            await self.update_rule_keywords()
+    
+    async def ensure_main_rule_exists(self, guild):
+        """Create the main AutoMod rule if it doesn't exist"""
+        try:
+            # Check if bot has permissions
+            if not guild.me.guild_permissions.manage_guild:
+                print(f"[AutoMod] Missing 'Manage Guild' permission in {guild.name}")
+                return
+            
+            # Look for existing rule with our special name
+            existing_rules = await guild.fetch_automod_rules()
+            for rule in existing_rules:
+                if rule.name == "🛡️ Dynamic Role Protection":
+                    self.main_rule_id = str(rule.id)
+                    self.rule_guild_id = str(guild.id)
+                    
+                    # Get current keywords from the rule
+                    if hasattr(rule.trigger, 'keyword_filter'):
+                        self.current_keywords = rule.trigger.keyword_filter
+                    
+                    print(f"[AutoMod] Found existing main rule: {self.main_rule_id}")
+                    return
+            
+            # Create new rule if none exists
+            rule = await guild.create_automod_rule(
+                name="🛡️ Dynamic Role Protection",
+                event_type=AutoModRuleEventType.message_send,
+                trigger=AutoModTrigger(
+                    type=AutoModRuleTriggerType.keyword,
+                    keyword_filter=["dummy_keyword_that_will_be_replaced"]  # Temporary placeholder
+                ),
+                actions=[
+                    AutoModRuleAction(
+                        type=discord.AutoModRuleActionType.block_message,
+                        custom_message=f"This role is temporarily protected from mention spam."
+                    )
+                ],
+                enabled=True,
+                reason="Dynamic role protection system initialized"
+            )
+            
+            self.main_rule_id = str(rule.id)
+            self.rule_guild_id = str(guild.id)
+            self.current_keywords = []
+            
+            print(f"[AutoMod] Created main rule: {self.main_rule_id}")
+            
+            # Update with actual keywords
+            await self.update_rule_keywords()
+            
+        except Exception as e:
+            print(f"[AutoMod] Error ensuring main rule exists: {e}")
+    
+    async def update_rule_keywords(self):
+        """Update the main rule's keyword list based on active blocks"""
+        if not self.main_rule_id or not self.rule_guild_id:
+            return
+        
+        # Build keyword list from active blocks
+        new_keywords = []
+        guild = self.bot.get_guild(int(self.rule_guild_id))
+        
+        if not guild:
+            return
+        
+        for role_id, block_data in self.active_blocks.items():
+            # Add the role mention as a keyword
+            role_mention = f"<@&{role_id}>"
+            new_keywords.append(role_mention)
+            
+            # Also add the role name for text-based detection
+            role = guild.get_role(int(role_id))
+            if role:
+                new_keywords.append(role.name.lower())
+        
+        # If no active blocks, add a dummy keyword (AutoMod requires at least 1)
+        if not new_keywords:
+            new_keywords = ["no_active_blocks_placeholder"]
+        
+        # Remove duplicates
+        new_keywords = list(set(new_keywords))
+        
+        # Check if keywords have changed
+        if set(new_keywords) != set(self.current_keywords):
+            try:
+                guild = self.bot.get_guild(int(self.rule_guild_id))
+                if guild:
+                    rule = await guild.fetch_automod_rule(int(self.main_rule_id))
+                    
+                    # Update the rule with new keywords
+                    await rule.edit(
+                        trigger=AutoModTrigger(
+                            type=AutoModRuleTriggerType.keyword,
+                            keyword_filter=new_keywords
+                        )
+                    )
+                    
+                    self.current_keywords = new_keywords
+                    print(f"[AutoMod] Updated rule keywords: {len(new_keywords)} total")
+                    
+                    # Log the update if there are active blocks
+                    if self.active_blocks:
+                        await self.log_rule_update(guild, new_keywords)
+                        
+            except Exception as e:
+                print(f"[AutoMod] Error updating rule keywords: {e}")
     
     @tasks.loop(seconds=30)
     async def cleanup_task(self):
-        """Check for expired auto-mod rules and remove them"""
+        """Check for expired role blocks and remove them"""
         await self.bot.wait_until_ready()
         now = datetime.now(self.ist)
-        expired_rules = []
+        expired_blocks = []
         
-        for rule_id, rule_data in list(self.active_rules.items()):
-            expires_at = rule_data.get("expires_at")
+        for role_id, block_data in list(self.active_blocks.items()):
+            expires_at = block_data.get("expires_at")
             if expires_at and expires_at <= now:
-                try:
-                    guild = self.bot.get_guild(int(rule_data["guild_id"]))
-                    if guild:
-                        # Delete the auto-mod rule using fetch_automod_rule
-                        try:
-                            rule = await guild.fetch_automod_rule(int(rule_id))
-                            await rule.delete()
-                            
-                            # Log the removal
-                            await self.log_rule_removal(guild, rule_data)
-                        except discord.NotFound:
-                            print(f"[AutoMod] Rule {rule_id} already deleted")
-                        except Exception as e:
-                            print(f"[AutoMod] Error deleting rule {rule_id}: {e}")
-                    
-                    expired_rules.append(rule_id)
-                except Exception as e:
-                    print(f"[AutoMod] Error removing rule {rule_id}: {e}")
-                    expired_rules.append(rule_id)
+                expired_blocks.append(role_id)
+                
+                # Log the expiration
+                guild = self.bot.get_guild(int(block_data.get("guild_id", 0)))
+                if guild:
+                    await self.log_block_expired(guild, block_data)
         
-        # Remove expired rules from tracking
-        for rule_id in expired_rules:
-            del self.active_rules[rule_id]
+        # Remove expired blocks
+        for role_id in expired_blocks:
+            del self.active_blocks[role_id]
         
-        if expired_rules:
-            self.cog.data_manager.save_automod_rules(self.active_rules)
+        if expired_blocks:
+            self.cog.data_manager.save_automod_rules(self.active_blocks)
+            # Update the rule keywords since we removed some blocks
+            await self.update_rule_keywords()
     
     def is_protected_role(self, role_id: str) -> bool:
         """Check if a role ID is in the protected list"""
         return str(role_id) in self.PROTECTED_ROLE_IDS
     
-    async def log_rule_creation(self, guild, role: discord.Role, rule: discord.AutoModRule, duration_minutes: int):
-        """Log when a new auto-mod rule is created"""
-        log_channel = self.cog.get_log_channel()
+    async def log_block_created(self, guild, role: discord.Role, duration_minutes: int):
+        """Log when a new role block is added"""
+        log_channel: discord.TextChannel = self.cog.get_log_channel()
         if not log_channel:
             return
         
         expires_at = datetime.now(self.ist) + timedelta(minutes=duration_minutes)
         
         embed = discord.Embed(
-            title="🛡️ Auto-Mod Rule Created",
-            description=f"Temporary role mention blocking has been activated",
+            title="🛡️ Role Protection Activated",
+            description=f"Role mention protection has been added",
             color=discord.Color.red(),
             timestamp=datetime.now(pytz.UTC)
         )
@@ -132,31 +253,26 @@ class AutoModManager:
         )
         
         embed.add_field(
-            name="Rule Details",
-            value=(
-                f"**Rule Name:** {rule.name}\n"
-                f"**Rule ID:** `{rule.id}`\n"
-                f"**Action:** Block message"
-            ),
-            inline=False
+            name="Currently Protected Roles",
+            value=f"{len(self.active_blocks)} role(s) protected",
+            inline=True
         )
         
-        embed.set_footer(text="Rule will auto-delete when expired")
+        embed.set_footer(text="Protection will auto-remove when expired")
         
-        await log_channel.send(embed=embed)
+        await log_channel.send(embed=embed, delete_after=3600)
     
-    async def log_rule_removal(self, guild, rule_data):
-        """Log when an auto-mod rule expires and is removed"""
-        log_channel = self.cog.get_log_channel()
+    async def log_block_expired(self, guild, block_data):
+        """Log when a role block expires"""
+        log_channel:discord.TextChannel = self.cog.get_log_channel()
         if not log_channel:
             return
         
-        # Get role name from stored data
-        role_mention = f"<@&{rule_data['role_id']}>" if 'role_id' in rule_data else "Unknown Role"
+        role_mention = f"<@&{block_data['role_id']}>" if 'role_id' in block_data else "Unknown Role"
         
         embed = discord.Embed(
-            title="✅ Auto-Mod Rule Expired",
-            description=f"Temporary role mention blocking has been removed",
+            title="✅ Role Protection Expired",
+            description=f"Role mention protection has been removed",
             color=discord.Color.green(),
             timestamp=datetime.now(pytz.UTC)
         )
@@ -169,127 +285,64 @@ class AutoModManager:
         
         embed.add_field(
             name="Duration",
-            value=f"{rule_data.get('duration_minutes', 120)} minutes",
+            value=f"{block_data.get('duration_minutes', 120)} minutes",
             inline=True
         )
         
         embed.add_field(
             name="Created",
-            value=f"<t:{int(rule_data['created_at'].timestamp())}:R>",
+            value=f"<t:{int(block_data['created_at'].timestamp())}:R>",
             inline=True
         )
         
-        embed.set_footer(text="Normal role mentioning has been restored")
+        embed.add_field(
+            name="Remaining Protected Roles",
+            value=f"{len(self.active_blocks) - 1} role(s) still protected",
+            inline=True
+        )
         
-        await log_channel.send(embed=embed)
+        embed.set_footer(text="Normal role mentioning has been restored for this role")
+        
+        await log_channel.send(embed=embed, delete_after=3600)
     
-    async def check_and_block_role(self, message: discord.Message, role: discord.Role):
-        """Check if a role mention should trigger auto-mod blocking"""
-        # Only check protected roles
-        if not self.is_protected_role(str(role.id)):
+    async def log_rule_update(self, guild, keywords):
+        """Log when the main rule is updated"""
+        log_channel = self.cog.get_log_channel()
+        if not log_channel:
             return
         
-        print(f"[AutoMod] Protected role mentioned: {role.name} ({role.id})")
+        embed = discord.Embed(
+            title="🔄 AutoMod Rule Updated",
+            description=f"Protection list has been updated",
+            color=discord.Color.blue(),
+            timestamp=datetime.now(pytz.UTC)
+        )
         
-        # Look for existing active rule for this role
-        guild_id = str(message.guild.id)
-        role_id = str(role.id)
+        embed.add_field(
+            name="Protected Roles",
+            value=f"{len(self.active_blocks)} role(s)",
+            inline=True
+        )
         
-        for rule_id, rule_data in self.active_rules.items():
-            if (rule_data.get("guild_id") == guild_id and 
-                rule_data.get("role_id") == role_id):
-                print(f"[AutoMod] Rule already exists for this role")
-                return
-        
-        # Create new mention spam rule
-        await self.create_mention_spam_rule(message.guild, role, message)
-    
-    async def create_mention_spam_rule(self, guild: discord.Guild, role: discord.Role, trigger_message: discord.Message):
-        """Create a temporary rule to block excessive mentions of this role"""
-        try:
-            # Check if bot has permissions
-            print(f"[AutoMod] Bot permissions in {guild.name}:")
-            print(f"  - manage_guild: {guild.me.guild_permissions.manage_guild}")
+        # List active roles
+        if self.active_blocks:
+            roles_list = ""
+            for role_id, block_data in list(self.active_blocks.items())[:5]:
+                expires = block_data['expires_at']
+                roles_list += f"• <@&{role_id}> - expires <t:{int(expires.timestamp())}:R>\n"
             
-            if not guild.me.guild_permissions.manage_guild:
-                await self.log_error(guild, "Missing 'Manage Guild' permission")
-                return
+            if len(self.active_blocks) > 5:
+                roles_list += f"*...and {len(self.active_blocks) - 5} more*"
             
-            # Check existing rules to see if we're about to hit limits
-            try:
-                existing_rules = await guild.fetch_automod_rules()
-                print(f"[AutoMod] Server has {len(existing_rules)} existing AutoMod rules")
-                
-                # Discord has a limit of 5 AutoMod rules per guild
-                if len(existing_rules) >= 5:
-                    await self.log_error(guild, "Cannot create rule: Maximum of 5 AutoMod rules reached")
-                    return
-            except Exception as e:
-                print(f"[AutoMod] Error fetching existing rules: {e}")
-            
-            duration_minutes = self.BLOCK_DURATION_MINUTES
-            
-            # Create the auto-mod rule - THIS BLOCKS BASED ON MENTION COUNT
-            rule = await guild.create_automod_rule(
-                name=f"Mention Protection: {role.name}",
-                event_type=AutoModRuleEventType.message_send,
-                trigger=AutoModTrigger(
-                    type=AutoModRuleTriggerType.mention_spam,
-                    mention_total_limit=self.MENTION_LIMIT,
-                    mention_raid_protection_enabled=True  # This enables mention spam protection
-                ),
-                actions=[
-                    AutoModRuleAction(
-                        type=discord.AutoModRuleActionType.block_message,
-                        custom_message=f"Please don't spam mention {role.name}. This role is temporarily protected."
-                    ),
-                    # Optional: Timeout the user
-                    # AutoModRuleAction(
-                    #     type=discord.AutoModRuleActionType.timeout,
-                    #     duration=timedelta(minutes=10)
-                    # )
-                ],
-                enabled=True,
-                reason=f"Mention spam protection triggered by {trigger_message.author} in #{trigger_message.channel.name}"
+            embed.add_field(
+                name="Currently Protected",
+                value=roles_list or "None",
+                inline=False
             )
-            
-            print(f"[AutoMod] Rule created successfully! Rule ID: {rule.id}")
-            
-            # Store the rule
-            rule_data = {
-                "guild_id": str(guild.id),
-                "role_id": str(role.id),
-                "role_name": role.name,
-                "created_at": datetime.now(self.ist),
-                "expires_at": datetime.now(self.ist) + timedelta(minutes=duration_minutes),
-                "duration_minutes": duration_minutes,
-                "trigger_message_id": str(trigger_message.id),
-                "trigger_user_id": str(trigger_message.author.id),
-                "mention_limit": self.MENTION_LIMIT
-            }
-            
-            self.active_rules[str(rule.id)] = rule_data
-            self.cog.data_manager.save_automod_rules(self.active_rules)
-            
-            # Log the creation
-            await self.log_rule_creation(guild, role, rule, duration_minutes)
-            
-            # Also log in the trigger channel
-            try:
-                await trigger_message.channel.send(
-                    f"⚠️ **Mention Protection Activated**\n"
-                    f"Role {role.mention} now has mention spam protection for {duration_minutes} minutes.\n"
-                    f"Users will be blocked if they mention this role more than {self.MENTION_LIMIT} times in a single message."
-                )
-            except:
-                pass
-            
-        except discord.Forbidden:
-            print(f"[AutoMod] Forbidden error: Missing permissions")
-            await self.log_error(guild, "Missing permissions to create auto-mod rules")
-        except Exception as e:
-            print(f"[AutoMod] Error creating rule: {str(e)}")
-            await self.log_error(guild, f"Error creating auto-mod rule: {str(e)}")
+        
+        embed.set_footer(text="Single rule managing all protections")
+        
+        await log_channel.send(embed=embed)
     
     async def log_error(self, guild, error_message: str):
         """Log auto-mod errors"""
@@ -312,6 +365,60 @@ class AutoModManager:
         
         await log_channel.send(embed=embed)
     
+    async def check_and_block_role(self, message: discord.Message, role: discord.Role):
+        """Check if a role mention should trigger adding it to the protection list"""
+        # Only check protected roles
+        if not self.is_protected_role(str(role.id)):
+            return
+        
+        print(f"[AutoMod] Protected role mentioned: {role.name} ({role.id})")
+        
+        # Check if this role is already blocked
+        if str(role.id) in self.active_blocks:
+            print(f"[AutoMod] Role already in protection list")
+            return
+        
+        # Check if message contains trigger keywords (optional - remove if you want to block on ANY mention)
+        content_lower = message.content.lower()
+        has_trigger = any(keyword in content_lower for keyword in ["spam", "mass", "everyone", "here"])
+        
+        # For now, let's block on any mention of protected roles (remove the has_trigger check if you want)
+        # if not has_trigger:
+        #     return
+        
+        # Add role to protection list
+        duration_minutes = self.BLOCK_DURATION_MINUTES
+        
+        block_data = {
+            "guild_id": str(message.guild.id),
+            "role_id": str(role.id),
+            "role_name": role.name,
+            "created_at": datetime.now(self.ist),
+            "expires_at": datetime.now(self.ist) + timedelta(minutes=duration_minutes),
+            "duration_minutes": duration_minutes,
+            "trigger_message_id": str(message.id),
+            "trigger_user_id": str(message.author.id)
+        }
+        
+        self.active_blocks[str(role.id)] = block_data
+        self.cog.data_manager.save_automod_rules(self.active_blocks)
+        
+        # Update the main rule with new keywords
+        await self.update_rule_keywords()
+        
+        # Log the block
+        await self.log_block_created(message.guild, role, duration_minutes)
+        
+        # Also notify in the trigger channel
+        try:
+            await message.channel.send(
+                f"⚠️ **Role Protection Activated**\n"
+                f"Role {role.mention} is now protected from mention spam for {duration_minutes} minutes.\n"
+                f"Anyone mentioning this role will have their message blocked."
+            )
+        except:
+            pass
+    
     @commands.group(name="automod", aliases=["am"])
     @commands.has_permissions(administrator=True)
     async def automod_group(self, ctx):
@@ -319,30 +426,41 @@ class AutoModManager:
         if ctx.invoked_subcommand is None:
             embed = discord.Embed(
                 title="🛡️ Auto-Mod Manager",
-                description="Manage temporary role mention blocking",
+                description="Dynamic role protection system",
                 color=discord.Color.blue()
             )
             
-            # Show active rules
-            active_count = 0
-            for rule_id, rule_data in self.active_rules.items():
-                if rule_data.get("guild_id") == str(ctx.guild.id):
-                    active_count += 1
-            
             embed.add_field(
                 name="Current Status",
-                value=f"Active Rules: {active_count}\n"
-                      f"Protected Roles: {len(self.PROTECTED_ROLE_IDS)}\n"
+                value=f"Protected Roles: {len(self.PROTECTED_ROLE_IDS)}\n"
+                      f"Currently Blocked: {len(self.active_blocks)}\n"
                       f"Mention Limit: {self.MENTION_LIMIT} per message\n"
                       f"Block Duration: {self.BLOCK_DURATION_MINUTES} minutes",
                 inline=False
             )
             
+            # Show currently blocked roles
+            if self.active_blocks:
+                blocks_list = ""
+                for role_id, block_data in list(self.active_blocks.items())[:5]:
+                    expires = block_data['expires_at']
+                    blocks_list += f"• <@&{role_id}> - expires <t:{int(expires.timestamp())}:R>\n"
+                
+                if len(self.active_blocks) > 5:
+                    blocks_list += f"*...and {len(self.active_blocks) - 5} more*"
+                
+                embed.add_field(
+                    name="Currently Blocked Roles",
+                    value=blocks_list,
+                    inline=False
+                )
+            
             embed.add_field(
                 name="Commands",
                 value=(
-                    "**`.automod list`** - List active rules\n"
-                    "**`.automod remove <rule_id>`** - Manually remove a rule\n"
+                    "**`.automod list`** - List blocked roles\n"
+                    "**`.automod remove <role_id>`** - Manually remove a role from protection\n"
+                    "**`.automod add <role_id>`** - Manually add a role to protection\n"
                     "**`.automod reload`** - Reload config from environment"
                 ),
                 inline=False
@@ -352,72 +470,99 @@ class AutoModManager:
     
     @automod_group.command(name="list")
     async def automod_list(self, ctx):
-        """List all active auto-mod rules in this server"""
-        guild_id = str(ctx.guild.id)
-        active_rules = []
-        
-        for rule_id, rule_data in self.active_rules.items():
-            if rule_data.get("guild_id") == guild_id:
-                active_rules.append((rule_id, rule_data))
-        
-        if not active_rules:
-            await ctx.send("No active auto-mod rules in this server.")
+        """List all currently blocked roles"""
+        if not self.active_blocks:
+            await ctx.send("No roles are currently blocked.")
             return
         
         embed = discord.Embed(
-            title=f"Active Auto-Mod Rules ({len(active_rules)})",
+            title=f"Currently Blocked Roles ({len(self.active_blocks)})",
             color=discord.Color.orange()
         )
         
-        for rule_id, rule_data in active_rules:
-            role_mention = f"<@&{rule_data['role_id']}>"
-            expires = rule_data['expires_at']
+        for role_id, block_data in self.active_blocks.items():
+            role_mention = f"<@&{role_id}>"
+            expires = block_data['expires_at']
             
             embed.add_field(
-                name=f"Rule: {rule_data.get('role_name', 'Unknown')}",
+                name=f"Role: {block_data.get('role_name', 'Unknown')}",
                 value=(
                     f"**Role:** {role_mention}\n"
                     f"**Expires:** <t:{int(expires.timestamp())}:R>\n"
-                    f"**Rule ID:** `{rule_id}`\n"
-                    f"**Limit:** {rule_data.get('mention_limit', 3)} mentions/message"
+                    f"**Added:** <t:{int(block_data['created_at'].timestamp())}:R>"
                 ),
                 inline=False
             )
         
         await ctx.send(embed=embed)
     
-    @automod_group.command(name="remove")
-    async def automod_remove(self, ctx, rule_id: str):
-        """Manually remove an auto-mod rule"""
-        if rule_id not in self.active_rules:
-            await ctx.send(f"❌ Rule `{rule_id}` not found!")
+    @automod_group.command(name="add")
+    async def automod_add(self, ctx, role: discord.Role):
+        """Manually add a role to protection"""
+        if str(role.id) in self.active_blocks:
+            await ctx.send(f"❌ Role {role.mention} is already blocked!")
             return
         
-        rule_data = self.active_rules[rule_id]
+        duration_minutes = self.BLOCK_DURATION_MINUTES
         
-        try:
-            guild = self.bot.get_guild(int(rule_data["guild_id"]))
-            if guild:
-                rule = await guild.fetch_automod_rule(int(rule_id))
-                await rule.delete()
-            
-            del self.active_rules[rule_id]
-            self.cog.data_manager.save_automod_rules(self.active_rules)
-            
-            await ctx.send(f"✅ Rule `{rule_id}` has been removed!")
-            
-            # Log the manual removal
-            log_channel = self.cog.get_log_channel()
-            if log_channel:
-                embed = discord.Embed(
-                    title="🛠️ Auto-Mod Rule Manually Removed",
-                    description=f"Rule was removed by {ctx.author.mention}",
-                    color=discord.Color.purple()
-                )
-                await log_channel.send(embed=embed)
-                
-        except Exception as e:
-            await ctx.send(f"❌ Error removing rule: {str(e)}")
+        block_data = {
+            "guild_id": str(ctx.guild.id),
+            "role_id": str(role.id),
+            "role_name": role.name,
+            "created_at": datetime.now(self.ist),
+            "expires_at": datetime.now(self.ist) + timedelta(minutes=duration_minutes),
+            "duration_minutes": duration_minutes,
+            "trigger_message_id": None,
+            "trigger_user_id": str(ctx.author.id),
+            "manually_added": True
+        }
+        
+        self.active_blocks[str(role.id)] = block_data
+        self.cog.data_manager.save_automod_rules(self.active_blocks)
+        
+        # Update the main rule
+        await self.update_rule_keywords()
+        
+        # Log the manual addition
+        await self.log_block_created(ctx.guild, role, duration_minutes)
+        
+        await ctx.send(f"✅ Role {role.mention} has been added to protection for {duration_minutes} minutes!")
+    
+    @automod_group.command(name="remove")
+    async def automod_remove(self, ctx, role: discord.Role):
+        """Manually remove a role from protection"""
+        if str(role.id) not in self.active_blocks:
+            await ctx.send(f"❌ Role {role.mention} is not currently blocked!")
+            return
+        
+        block_data = self.active_blocks[str(role.id)]
+        del self.active_blocks[str(role.id)]
+        self.cog.data_manager.save_automod_rules(self.active_blocks)
+        
+        # Update the main rule
+        await self.update_rule_keywords()
+        
+        # Log the manual removal
+        log_channel = self.cog.get_log_channel()
+        if log_channel:
+            embed = discord.Embed(
+                title="🛠️ Role Protection Manually Removed",
+                description=f"Role was removed by {ctx.author.mention}",
+                color=discord.Color.purple()
+            )
+            embed.add_field(
+                name="Role",
+                value=role.mention,
+                inline=True
+            )
+            embed.add_field(
+                name="Originally Added",
+                value=f"<t:{int(block_data['created_at'].timestamp())}:R>",
+                inline=True
+            )
+            await log_channel.send(embed=embed)
+        
+        await ctx.send(f"✅ Role {role.mention} has been removed from protection!")
     
     @automod_group.command(name="reload")
     @commands.has_permissions(administrator=True)
