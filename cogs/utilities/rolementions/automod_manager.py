@@ -64,15 +64,17 @@ class AutoModManager:
                 try:
                     guild = self.bot.get_guild(int(rule_data["guild_id"]))
                     if guild:
-                        # Delete the auto-mod rule
+                        # Delete the auto-mod rule using fetch_automod_rule
                         try:
-                            rule = await guild.fetch_auto_mod_rule(int(rule_id))
+                            rule = await guild.fetch_automod_rule(int(rule_id))
                             await rule.delete()
                             
                             # Log the removal
                             await self.log_rule_removal(guild, rule_data)
-                        except:
-                            pass
+                        except discord.NotFound:
+                            print(f"[AutoMod] Rule {rule_id} already deleted")
+                        except Exception as e:
+                            print(f"[AutoMod] Error deleting rule {rule_id}: {e}")
                     
                     expired_rules.append(rule_id)
                 except Exception as e:
@@ -213,10 +215,22 @@ class AutoModManager:
                 await self.log_error(guild, "Missing 'Manage Guild' permission")
                 return
             
+            # Check existing rules to see if we're about to hit limits
+            try:
+                existing_rules = await guild.fetch_automod_rules()
+                print(f"[AutoMod] Server has {len(existing_rules)} existing AutoMod rules")
+                
+                # Discord has a limit of 5 AutoMod rules per guild
+                if len(existing_rules) >= 5:
+                    await self.log_error(guild, "Cannot create rule: Maximum of 5 AutoMod rules reached")
+                    return
+            except Exception as e:
+                print(f"[AutoMod] Error fetching existing rules: {e}")
+            
             duration_minutes = self.BLOCK_DURATION_MINUTES
             
             # Create the auto-mod rule - THIS BLOCKS BASED ON MENTION COUNT
-            rule = await guild.create_auto_mod_rule(
+            rule = await guild.create_automod_rule(
                 name=f"Mention Protection: {role.name}",
                 event_type=AutoModRuleEventType.message_send,
                 trigger=AutoModTrigger(
@@ -384,7 +398,7 @@ class AutoModManager:
         try:
             guild = self.bot.get_guild(int(rule_data["guild_id"]))
             if guild:
-                rule = await guild.fetch_auto_mod_rule(int(rule_id))
+                rule = await guild.fetch_automod_rule(int(rule_id))
                 await rule.delete()
             
             del self.active_rules[rule_id]
