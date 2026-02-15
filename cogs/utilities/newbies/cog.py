@@ -1166,3 +1166,6 @@ class DynamicMemberList(commands.Cog):
     @cleanup_expired_members.before_loop
     async def before_cleanup(self):
         await self.bot.wait_until_ready()
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(DynamicMemberList(bot))
