@@ -8,3 +8,4 @@ __pycache__/
 .vscode/settings.json
 cogs/channels/__pycache__/
 data/
+venv/*

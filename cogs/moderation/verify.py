@@ -15,14 +15,6 @@ class Verification(commands.Cog):
         self.VERIFIED_ROLE_ID = 1460679593403879547  # The Verified Role ID
         self.LOG_CHANNEL_ID = 1460688886870180025  # Where logs go
         
-        # 🔒 LIST OF ALLOWED CHANNEL IDs (Comma separated)
-        # The bot will ONLY respond to commands in these channels
-        self.ALLOWED_CHANNEL_IDS = [
-            1413074803421614100,
-            1424670074354143264,   # e.g., #admin-cht
-	    1460993615563329566
-        ]
-        # ------------------------
 
     async def cog_check(self, ctx):
         """
@@ -32,22 +24,13 @@ class Verification(commands.Cog):
         """
         if not ctx.guild:
             return False
-
-        # 1. Channel Check
-        if ctx.channel.id not in self.ALLOWED_CHANNEL_IDS:
-            return False  # Silently ignore commands in wrong channels
-
-        # 2. Role Check
-        # FIXED: Added explicit return statement for both conditions
-        has_role = ctx.guild.get_role(self.STAFF_ROLE_ID) in ctx.author.roles
         
-        # Also allow administrators as a fallback (optional but recommended)
+        has_role = ctx.guild.get_role(self.STAFF_ROLE_ID) in ctx.author.roles
         if not has_role:
             has_role = ctx.author.guild_permissions.administrator
         
         return has_role
 
-    # --- HELPER TO SEND EMBEDS ---
     async def send_embed(self, ctx, message, color):
         embed = discord.Embed(description=message, color=color)
         await ctx.send(embed=embed)

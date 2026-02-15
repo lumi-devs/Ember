@@ -4,7 +4,7 @@ import discord
 from discord.ext import commands, tasks
 import os
 import ast
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 from .data_manager import DataManager
@@ -49,10 +49,10 @@ class DynamicMemberList(commands.Cog):
         # Start background tasks
         self.cleanup_expired_members.start()
         self.refresh_auto_lists.start()
-        
+        self.update_sticky_message.start()
         # Initialize auto-pair system after bot is ready
         await self.auto_pair_system.initialize_after_ready()
-        
+
         # Add event listeners
         self.bot.add_listener(self.auto_pair_system.on_message, 'on_message')
         self.bot.add_listener(self.on_member_update, 'on_member_update')
@@ -71,6 +71,7 @@ class DynamicMemberList(commands.Cog):
         self.refresh_auto_lists.cancel()
         self.auto_pair_system.stop_tasks()
         self.data_manager.save_member_data(self.member_lists)
+        self.update_sticky_message.cancel() 
     
     def get_staff_channel(self, guild):
         """Get the staff channel for announcements"""
@@ -703,6 +704,464 @@ class DynamicMemberList(commands.Cog):
             embed.set_footer(text=f"And {len(active_pairings) - 10} more pairings...")
         
         await ctx.send(embed=embed)
+
+    @commands.command(name="myassigned", aliases=["assigned"])
+    @commands.has_permissions(administrator=True)
+    async def my_assigned(self, ctx):
+        """Show newbies assigned to you and their activity status."""
+        # Check if user has any mod role
+        if not any(role.id in self.auto_pair_system.MOD_ROLES for role in ctx.author.roles):
+            await ctx.send("❌ You don't have permission to use this command.")
+            return
+
+        mod_id = str(ctx.author.id)
+        guild_id = str(ctx.guild.id)
+        pairings = self.auto_pair_system.system_data.get("pairings", {})
+        active = []
+        for newbie_id, data in pairings.items():
+            if data.get("mod_id") == mod_id and data.get("guild_id") == guild_id and data.get("active", False):
+                active.append(data)
+
+        if not active:
+            await ctx.send("📭 You have no active assignments right now.")
+            return
+
+        embed = discord.Embed(
+            title=f"📋 Your Assigned Newbies ({len(active)})",
+            color=discord.Color.blue(),
+            timestamp=datetime.now(pytz.UTC)
+        )
+
+        for data in active:
+            newbie_id = data["newbie_id"]
+            newbie = ctx.guild.get_member(int(newbie_id))
+            if not newbie:
+                continue
+
+            activity = self.auto_pair_system.member_activity.get(newbie_id, {})
+            msg_count = activity.get("message_count", 0)
+            last_msg = activity.get("last_message")
+            if isinstance(last_msg, str):
+                last_msg = datetime.fromisoformat(last_msg)
+            last_msg_str = f"<t:{int(last_msg.timestamp())}:R>" if last_msg else "Never"
+
+            active_threshold = self.auto_pair_system.MIN_MESSAGES_FOR_ACTIVE
+            is_active = msg_count >= active_threshold
+            status = "✅ Active" if is_active else "⚠️ Inactive"
+            reminder = " Consider a checkup!" if not is_active else ""
+
+            value = (f"**Status:** {status}\n"
+                    f"**Messages:** {msg_count}/{active_threshold}\n"
+                    f"**Last message:** {last_msg_str}{reminder}")
+            embed.add_field(
+                name=f"{newbie.display_name} ({newbie.id})",
+                value=value,
+                inline=False
+            )
+
+        await ctx.send(embed=embed)
+
+
+    @commands.command(name="ignore")
+    @commands.has_permissions(administrator=True)
+    async def ignore_newbie(self, ctx, member: discord.Member):
+        """Ignore a newbie for the next 2 cycles (12 hours) – they won't be assigned to you."""
+        if not any(role.id in self.auto_pair_system.MOD_ROLES for role in ctx.author.roles):
+            await ctx.send("❌ You don't have permission to use this command.")
+            return
+
+        self.auto_pair_system.add_ignore(str(ctx.author.id), str(member.id), str(ctx.guild.id), hours=12)
+        await ctx.send(f"✅ You will ignore {member.mention} for the next 12 hours (2 cycles).")
+
+
+    @commands.command(name="unignore")
+    @commands.has_permissions(administrator=True)
+    async def unignore_newbie(self, ctx, member: discord.Member):
+        """Remove ignore for a newbie."""
+        if not any(role.id in self.auto_pair_system.MOD_ROLES for role in ctx.author.roles):
+            await ctx.send("❌ You don't have permission to use this command.")
+            return
+
+        self.auto_pair_system.remove_ignore(str(ctx.author.id), str(member.id), str(ctx.guild.id))
+        await ctx.send(f"✅ Removed ignore for {member.mention}.")
+
+
+    @commands.command(name="ignored")
+    @commands.has_permissions(administrator=True)
+    async def list_ignored(self, ctx):
+        """List newbies you are currently ignoring."""
+        if not any(role.id in self.auto_pair_system.MOD_ROLES for role in ctx.author.roles):
+            await ctx.send("❌ You don't have permission to use this command.")
+            return
+
+        mod_id = str(ctx.author.id)
+        guild_id = str(ctx.guild.id)
+        ignored_list = self.auto_pair_system.system_data.get("ignored", [])
+        now = datetime.now(pytz.UTC)
+        active_ignores = []
+        for rec in ignored_list:
+            if rec["guild_id"] == guild_id and rec["mod_id"] == mod_id:
+                expires = datetime.fromisoformat(rec["expires_at"])
+                if expires > now:
+                    newbie = ctx.guild.get_member(int(rec["newbie_id"]))
+                    name = newbie.mention if newbie else f"<@{rec['newbie_id']}>"
+                    active_ignores.append((name, expires))
+
+        if not active_ignores:
+            await ctx.send("You are not ignoring any newbies.")
+            return
+
+        lines = [f"{name} until <t:{int(exp.timestamp())}:R>" for name, exp in active_ignores]
+        await ctx.send("**Ignored newbies:**\n" + "\n".join(lines))
+
+    @tasks.loop(seconds=60)
+    async def update_sticky_message(self):
+        """Update the sticky dashboard message in each guild's staff channel."""
+        await self.bot.wait_until_ready()
+        for guild in self.bot.guilds:
+            staff_channel = self.get_staff_channel(guild)
+            if not staff_channel:
+                continue
+
+            guild_id = str(guild.id)
+            sticky_data = self.auto_pair_system.system_data.setdefault("sticky_messages", {})
+            message_id = sticky_data.get(guild_id)
+
+            embed = self.build_sticky_embed(guild)
+
+            try:
+                if message_id:
+                    try:
+                        msg = await staff_channel.fetch_message(int(message_id))
+                        await msg.edit(embed=embed)
+                    except discord.NotFound:
+                        # Message was deleted, send a new one
+                        msg = await staff_channel.send(embed=embed)
+                        sticky_data[guild_id] = str(msg.id)
+                        self.auto_pair_system.data_manager.save_system_data(self.auto_pair_system.system_data)
+                    except Exception as e:
+                        print(f"Error updating sticky message in {guild.name}: {e}")
+                else:
+                    # First time – send a new message
+                    msg = await staff_channel.send(embed=embed)
+                    sticky_data[guild_id] = str(msg.id)
+                    self.auto_pair_system.data_manager.save_system_data(self.auto_pair_system.system_data)
+            except Exception as e:
+                print(f"Error with sticky message in {guild.name}: {e}")
+
+    def build_sticky_embed(self, guild):
+        """Build the enhanced dashboard embed with 7 key sections."""
+        pairings = self.auto_pair_system.system_data.get("pairings", {})
+        guild_id = str(guild.id)
+        now = datetime.now(pytz.UTC)
+        
+        # Separate active and completed pairings for this guild
+        active_pairings = []
+        completed_pairings = []
+        for newbie_id, data in pairings.items():
+            if data.get("guild_id") == guild_id:
+                if data.get("active", False):
+                    active_pairings.append(data)
+                else:
+                    completed_pairings.append(data)
+        
+        total_pairings = len(active_pairings) + len(completed_pairings)
+        success_rate = (len(completed_pairings) / total_pairings * 100) if total_pairings > 0 else 0
+        
+        # Active ignore records (not expired)
+        ignores = self.auto_pair_system.system_data.get("ignored", [])
+        active_ignores = []
+        for ign in ignores:
+            if ign.get("guild_id") == guild_id:
+                expires = datetime.fromisoformat(ign["expires_at"])
+                if expires > now:
+                    active_ignores.append(ign)
+        
+        # Count active assignments per mod
+        mod_assignments = {}
+        for pair in active_pairings:
+            mod_id = pair["mod_id"]
+            mod_assignments[mod_id] = mod_assignments.get(mod_id, 0) + 1
+        top_mods_active = sorted(mod_assignments.items(), key=lambda x: x[1], reverse=True)[:3]
+        
+        # Count completed assignments per mod (lifetime)
+        mod_completions = {}
+        mod_response_times = {}  # For efficiency stats
+        for pair in completed_pairings:
+            mod_id = pair["mod_id"]
+            mod_completions[mod_id] = mod_completions.get(mod_id, 0) + 1
+            
+            # Track response time if available (simplified)
+            if "paired_at" in pair and "completed_at" in pair:
+                try:
+                    paired = datetime.fromisoformat(pair["paired_at"])
+                    completed = datetime.fromisoformat(pair["completed_at"])
+                    hours = (completed - paired).total_seconds() / 3600
+                    if mod_id not in mod_response_times:
+                        mod_response_times[mod_id] = []
+                    mod_response_times[mod_id].append(hours)
+                except:
+                    pass
+        
+        top_mods_completed = sorted(mod_completions.items(), key=lambda x: x[1], reverse=True)[:3]
+        
+        # Calculate average response times for top mods
+        mod_avg_times = {}
+        for mod_id, times in mod_response_times.items():
+            if times:
+                avg_hours = sum(times) / len(times)
+                mod_avg_times[mod_id] = avg_hours
+        
+        # Count active ignores per mod
+        mod_ignores = {}
+        for ign in active_ignores:
+            mod_id = ign["mod_id"]
+            mod_ignores[mod_id] = mod_ignores.get(mod_id, 0) + 1
+        top_ignore_mods = sorted(mod_ignores.items(), key=lambda x: x[1], reverse=True)[:3]
+        
+        # --- NEW SECTION 1: 📈 Trend Indicators ---
+        # Compare today vs yesterday (simplified using last 24h vs previous 24h)
+        yesterday = now - timedelta(days=1)
+        day_before = now - timedelta(days=2)
+        
+        new_today = 0
+        new_yesterday = 0
+        completed_today = 0
+        completed_yesterday = 0
+        
+        for pair in active_pairings + completed_pairings:
+            if "paired_at" in pair:
+                paired = datetime.fromisoformat(pair["paired_at"])
+                if paired > yesterday:
+                    new_today += 1
+                elif paired > day_before:
+                    new_yesterday += 1
+            
+            if "completed_at" in pair and pair.get("completed_at"):
+                completed = datetime.fromisoformat(pair["completed_at"])
+                if completed > yesterday:
+                    completed_today += 1
+                elif completed > day_before:
+                    completed_yesterday += 1
+        
+        new_trend = "↑" if new_today > new_yesterday else "↓" if new_today < new_yesterday else "→"
+        complete_trend = "↑" if completed_today > completed_yesterday else "↓" if completed_today < completed_yesterday else "→"
+        
+        # --- NEW SECTION 2: ⚠️ At-Risk Newbies ---
+        at_risk = []
+        for pair in active_pairings:
+            newbie_id = pair["newbie_id"]
+            activity = self.auto_pair_system.member_activity.get(newbie_id, {})
+            msg_count = activity.get("message_count", 0)
+            last_msg = activity.get("last_message")
+            
+            if isinstance(last_msg, str):
+                last_msg = datetime.fromisoformat(last_msg)
+            
+            days_since_join = 0
+            newbie = guild.get_member(int(newbie_id))
+            if newbie and newbie.joined_at:
+                days_since_join = (now - newbie.joined_at.replace(tzinfo=pytz.UTC)).days
+            
+            # Risk factors: low messages, old join, no recent activity
+            if msg_count < 5 or (last_msg and (now - last_msg).days > 1) or days_since_join > 3:
+                at_risk.append((newbie_id, msg_count, days_since_join))
+        
+        at_risk = at_risk[:3]  # Show top 3
+        
+        # --- NEW SECTION 3: 🔄 Queue Status ---
+        queue = self.auto_pair_system.priority_queue
+        queue_count = len(queue)
+        oldest_wait = "N/A"
+        if queue:
+            # Queue items are (score, member_id, guild_id)
+            oldest_score = queue[-1][0] if queue else 0
+            # Rough estimate: higher score = older/longer wait
+            oldest_wait = f"{oldest_score:.1f} priority"
+        
+        # --- NEW SECTION 4: 📋 Recent Activity ---
+        recent_events = []
+        all_events = []
+        
+        # Collect completed pairings
+        for pair in completed_pairings[-5:]:  # Last 5 completed
+            if "completed_at" in pair:
+                all_events.append({
+                    "type": "complete",
+                    "time": datetime.fromisoformat(pair["completed_at"]),
+                    "mod_id": pair["mod_id"],
+                    "newbie_id": pair["newbie_id"]
+                })
+        
+        # Collect new pairings
+        for pair in active_pairings[-5:]:
+            if "paired_at" in pair:
+                all_events.append({
+                    "type": "assign",
+                    "time": datetime.fromisoformat(pair["paired_at"]),
+                    "mod_id": pair["mod_id"],
+                    "newbie_id": pair["newbie_id"]
+                })
+        
+        # Sort by time, newest first
+        all_events.sort(key=lambda x: x["time"], reverse=True)
+        recent_events = all_events[:3]  # Top 3 most recent
+        
+        # --- NEW SECTION 5: 🏆 Achievement Showcase ---
+        # Calculate various achievements
+        achievement_texts = []
+        
+        # Most completions this week
+        week_ago = now - timedelta(days=7)
+        weekly_completions = {}
+        for pair in completed_pairings:
+            if "completed_at" in pair:
+                completed = datetime.fromisoformat(pair["completed_at"])
+                if completed > week_ago:
+                    mod_id = pair["mod_id"]
+                    weekly_completions[mod_id] = weekly_completions.get(mod_id, 0) + 1
+        
+        if weekly_completions:
+            top_weekly = max(weekly_completions.items(), key=lambda x: x[1])
+            mod = guild.get_member(int(top_weekly[0]))
+            name = mod.mention if mod else f"<@{top_weekly[0]}>"
+            achievement_texts.append(f"🔥 Most Completions (Week): {name} ({top_weekly[1]})")
+        
+        # Fastest response (if we have data)
+        if mod_avg_times:
+            fastest = min(mod_avg_times.items(), key=lambda x: x[1])
+            mod = guild.get_member(int(fastest[0]))
+            name = mod.mention if mod else f"<@{fastest[0]}>"
+            hours = fastest[1]
+            achievement_texts.append(f"⚡ Fastest Response: {name} (avg {hours:.1f}h)")
+        
+        # Completion rate leader (among mods with at least 5 assignments)
+        mod_completion_rate = {}
+        for mod_id in set([p["mod_id"] for p in active_pairings + completed_pairings]):
+            mod_total = mod_completions.get(mod_id, 0) + mod_assignments.get(mod_id, 0)
+            if mod_total >= 5:
+                rate = (mod_completions.get(mod_id, 0) / mod_total) * 100
+                mod_completion_rate[mod_id] = rate
+        
+        if mod_completion_rate:
+            top_rate = max(mod_completion_rate.items(), key=lambda x: x[1])
+            mod = guild.get_member(int(top_rate[0]))
+            name = mod.mention if mod else f"<@{top_rate[0]}>"
+            achievement_texts.append(f"🎯 Best Completion Rate: {name} ({top_rate[1]:.0f}%)")
+        
+        # --- NEW SECTION 6: ⚡ Mod Efficiency Stats ---
+        efficiency_texts = []
+        for mod_id, count in top_mods_completed:
+            mod = guild.get_member(int(mod_id))
+            name = mod.mention if mod else f"<@{mod_id}>"
+            
+            # Completion rate
+            total = mod_completions.get(mod_id, 0) + mod_assignments.get(mod_id, 0)
+            rate = (mod_completions.get(mod_id, 0) / total * 100) if total > 0 else 0
+            
+            # Avg response time
+            avg_time = mod_avg_times.get(mod_id)
+            time_str = f", {avg_time:.1f}h avg" if avg_time else ""
+            
+            efficiency_texts.append(f"{name}: {rate:.0f}%{time_str}")
+        
+        # --- NEW SECTION 7: 🚨 Expiring Soon ---
+        expiring_soon = []
+        for pair in active_pairings:
+            if "paired_at" in pair:
+                paired = datetime.fromisoformat(pair["paired_at"])
+                hours_old = (now - paired).total_seconds() / 3600
+                if hours_old > 20:  # Expiring in next 4 hours (assuming 24h expiry)
+                    expiring_soon.append((pair, 24 - hours_old))
+        
+        expiring_soon.sort(key=lambda x: x[1])  # Sort by hours remaining
+        expiring_soon = expiring_soon[:3]  # Top 3 most urgent
+        
+        # --- BUILD THE EMBED ---
+        embed = discord.Embed(
+            title="📊 Newbie Pairing Dashboard",
+            color=discord.Color.gold(),
+            timestamp=now
+        )
+        
+        # Row 1: Key stats
+        embed.add_field(name="Active Pairings", value=str(len(active_pairings)), inline=True)
+        embed.add_field(name="Completed Pairings", value=f"{len(completed_pairings)} ({success_rate:.1f}%)", inline=True)
+        embed.add_field(name="Active Ignores", value=str(len(active_ignores)), inline=True)
+        
+        # Section 1: 📈 Trend Indicators
+        trend_text = f"New: {new_today} ({new_trend} vs yesterday)\nCompletions: {completed_today} ({complete_trend})"
+        embed.add_field(name="📈 24h Trends", value=trend_text, inline=False)
+        
+        # Section 2: ⚠️ At-Risk Newbies
+        if at_risk:
+            risk_text = ""
+            for newbie_id, msg_count, days in at_risk:
+                newbie = guild.get_member(int(newbie_id))
+                name = newbie.mention if newbie else f"<@{newbie_id}>"
+                risk_text += f"• {name}: {msg_count} msgs, {days}d old\n"
+        else:
+            risk_text = "No at-risk newbies! 🎉"
+        embed.add_field(name="⚠️ At-Risk Newbies", value=risk_text, inline=False)
+        
+        # Section 3: 🔄 Queue Status
+        queue_text = f"Waiting: {queue_count}\nOldest wait: {oldest_wait}"
+        embed.add_field(name="🔄 Queue Status", value=queue_text, inline=False)
+        
+        # Section 4: 📋 Recent Activity
+        if recent_events:
+            activity_text = ""
+            for event in recent_events:
+                mod = guild.get_member(int(event["mod_id"]))
+                mod_name = mod.mention if mod else f"<@{event['mod_id']}>"
+                newbie = guild.get_member(int(event["newbie_id"]))
+                newbie_name = newbie.mention if newbie else f"<@{event['newbie_id']}>"
+                
+                if event["type"] == "complete":
+                    activity_text += f"• ✅ {mod_name} completed with {newbie_name}\n"
+                else:
+                    activity_text += f"• 🔄 {mod_name} assigned to {newbie_name}\n"
+        else:
+            activity_text = "No recent activity"
+        embed.add_field(name="📋 Recent Activity", value=activity_text, inline=False)
+        
+        # Section 5: 🏆 Achievement Showcase
+        achievement_value = "\n".join(achievement_texts[:3]) if achievement_texts else "No achievements yet"
+        embed.add_field(name="🏆 Achievements", value=achievement_value, inline=False)
+        
+        # Section 6: ⚡ Mod Efficiency Stats
+        efficiency_value = "\n".join(efficiency_texts[:3]) if efficiency_texts else "No efficiency data yet"
+        embed.add_field(name="⚡ Top Mod Efficiency", value=efficiency_value, inline=False)
+        
+        # Section 7: 🚨 Expiring Soon
+        if expiring_soon:
+            expiring_text = ""
+            for pair, hours_left in expiring_soon:
+                mod = guild.get_member(int(pair["mod_id"]))
+                mod_name = mod.mention if mod else f"<@{pair['mod_id']}>"
+                newbie = guild.get_member(int(pair["newbie_id"]))
+                newbie_name = newbie.mention if newbie else f"<@{pair['newbie_id']}>"
+                expiring_text += f"• {newbie_name} with {mod_name} ({hours_left:.1f}h left)\n"
+        else:
+            expiring_text = "No pairings expiring soon"
+        embed.add_field(name="🚨 Expiring in <4h", value=expiring_text, inline=False)
+        
+        # Quick command reference
+        embed.add_field(
+            name="📝 Quick Commands",
+            value=(
+                "`.myassigned` – View your assigned newbies\n"
+                "`.ignore @user` – Ignore for 12h\n"
+                "`.unignore @user` – Remove ignore\n"
+                "`.ignored` – List your ignores\n"
+                "`.paircomplete @user` – Mark pairing done\n"
+                "`.checkstatus @user` – Check activity"
+            ),
+            inline=False
+        )
+        
+        embed.set_footer(text="Updates every 60 seconds • Dashboard shows last 7 sections")
+        return embed
 
     @cleanup_expired_members.before_loop
     async def before_cleanup(self):

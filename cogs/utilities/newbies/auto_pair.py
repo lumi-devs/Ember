@@ -26,6 +26,7 @@ class AutoPairSystem:
         from .data_manager import DataManager
         self.data_manager = DataManager()
         self.system_data = self.data_manager.load_system_data()
+        self.system_data.setdefault("sticky_messages", {})
         
         # Event-based activity tracking
         self.last_seen_times = {}  # member_id -> last_seen timestamp
@@ -202,6 +203,51 @@ class AutoPairSystem:
             # Add to priority queue with calculated score
             await self.add_to_priority_queue(member)
     
+    def add_ignore(self, mod_id: str, newbie_id: str, guild_id: str, hours: int = 12):
+        """Add an ignore record so that newbie won't be assigned to this mod."""
+        expires_at = datetime.now(pytz.UTC) + timedelta(hours=hours)
+        ignore_record = {
+            "guild_id": guild_id,
+            "mod_id": mod_id,
+            "newbie_id": newbie_id,
+            "expires_at": expires_at.isoformat()
+        }
+        self.system_data.setdefault("ignored", []).append(ignore_record)
+        self.data_manager.save_system_data(self.system_data)
+
+    def remove_ignore(self, mod_id: str, newbie_id: str, guild_id: str):
+        """Remove an existing ignore record."""
+        ignored = self.system_data.get("ignored", [])
+        self.system_data["ignored"] = [
+            i for i in ignored
+            if not (i["guild_id"] == guild_id and i["mod_id"] == mod_id and i["newbie_id"] == newbie_id)
+        ]
+        self.data_manager.save_system_data(self.system_data)
+
+    def is_ignored(self, mod_id: str, newbie_id: str, guild_id: str) -> bool:
+        """Check if a mod is ignoring a newbie (active record)."""
+        self._clean_expired_ignores()
+        ignored = self.system_data.get("ignored", [])
+        now = datetime.now(pytz.UTC)
+        for i in ignored:
+            if i["guild_id"] == guild_id and i["mod_id"] == mod_id and i["newbie_id"] == newbie_id:
+                expires_at = datetime.fromisoformat(i["expires_at"])
+                if expires_at > now:
+                    return True
+        return False
+
+    def _clean_expired_ignores(self):
+        """Remove ignore records that have passed their expiration."""
+        now = datetime.now(pytz.UTC)
+        ignored = self.system_data.get("ignored", [])
+        valid = [
+            i for i in ignored
+            if datetime.fromisoformat(i["expires_at"]) > now
+        ]
+        if len(valid) != len(ignored):
+            self.system_data["ignored"] = valid
+            self.data_manager.save_system_data(self.system_data)
+
     # ========== ROLE MEMBER CACHING IMPROVEMENTS ==========
     
     async def get_cached_role_members(self, guild: discord.Guild, role_id: int) -> Set[int]:
@@ -402,7 +448,7 @@ class AutoPairSystem:
         guild = member.guild
         
         # Get available mods using cached role members
-        available_mods = await self.get_available_mods(guild)
+        available_mods = await self.get_available_mods(guild, for_newbie=member) 
         if not available_mods:
             return
         
@@ -595,25 +641,21 @@ class AutoPairSystem:
                 except Exception as e:
                     print(f"[Auto-Pair] Error clearing pending pairing: {e}")
     
-    async def get_available_mods(self, guild: discord.Guild) -> List[discord.Member]:
-        """Get mods who are available for pairing using cached role members"""
+    async def get_available_mods(self, guild: discord.Guild, for_newbie: discord.Member = None) -> List[discord.Member]:
+        """Get mods who are available and (if for_newbie given) not ignoring that newbie."""
         available_mods = []
-        
-        # Get all mod members from cache
         mod_member_ids = set()
         for role_id in self.MOD_ROLES:
             cached_members = await self.get_cached_role_members(guild, role_id)
             mod_member_ids.update(cached_members)
-        
-        # Convert to member objects
+
         for member_id in mod_member_ids:
             member = guild.get_member(member_id)
             if member and not member.bot:
-                # Check active pairings
-                active_pairings = self.count_active_pairings(str(member.id))
-                if active_pairings < self.MAX_PAIRINGS_PER_MOD:
+                if self.count_active_pairings(str(member.id)) < self.MAX_PAIRINGS_PER_MOD:
+                    if for_newbie and self.is_ignored(str(member.id), str(for_newbie.id), str(guild.id)):
+                        continue
                     available_mods.append(member)
-        
         return available_mods
     
     def count_active_pairings(self, mod_id: str) -> int:
