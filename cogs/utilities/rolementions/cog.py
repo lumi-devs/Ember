@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 import pytz
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .data_manager import DataManager
 from .tracker import RoleMentionTracker
@@ -362,35 +362,270 @@ class RoleMentionCog(commands.Cog):  # ← Better name
         
         await ctx.send("✅ Role mention counters have been reset for this server!")
     
-    # Add auto-mod commands to the main cog
-    @commands.group(name="automod", aliases=["am"])
-    @commands.has_permissions(administrator=True)
-    async def automod_group(self, ctx):
-        """Manage auto-mod blocking settings"""
-        await self.automod.automod_group(ctx)
+    @commands.group(name="automod", aliases=["am"], invoke_without_command=True)
+    @commands.has_permissions(manage_guild=True)
+    async def automod(self, ctx):
+        """Manage auto-mod protection for roles"""
+        embed = discord.Embed(
+            title="🛡️ Auto-Mod Manager",
+            description="Dynamic role protection system",
+            color=discord.Color.blue()
+        )
+        
+        # Format protected roles list
+        protected_list = ""
+        for role_id, minutes in list(self.automod.PROTECTED_ROLES.items())[:5]:
+            if minutes >= 60:
+                duration_display = f"{minutes/60:.1f}h"
+            else:
+                duration_display = f"{minutes}m"
+            role = ctx.guild.get_role(int(role_id))
+            if role:
+                protected_list += f"• {role.mention} - {duration_display}\n"
+            else:
+                protected_list += f"• Unknown Role ({role_id}) - {duration_display}\n"
+        
+        if len(self.automod.PROTECTED_ROLES) > 5:
+            protected_list += f"*...and {len(self.automod.PROTECTED_ROLES) - 5} more*"
+        
+        embed.add_field(
+            name="Protected Roles (with durations)",
+            value=protected_list or "None configured",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Current Status",
+            value=f"Currently Blocked: {len(self.automod.active_blocks)}\n"
+                  f"Mention Limit: {self.automod.MENTION_LIMIT} per message\n"
+                  f"Default Duration: {self.automod.DEFAULT_DURATION} minutes",
+            inline=False
+        )
+        
+        # Show currently blocked roles with remaining time
+        if self.automod.active_blocks:
+            blocks_list = ""
+            for role_id, block_data in list(self.automod.active_blocks.items())[:5]:
+                expires = block_data['expires_at']
+                remaining = self.automod.get_remaining_time(expires)
+                duration_minutes = block_data.get('duration_minutes', 120)
+                role = ctx.guild.get_role(int(role_id))
+                
+                if duration_minutes >= 60:
+                    duration_display = f"{duration_minutes/60:.1f}h"
+                else:
+                    duration_display = f"{duration_minutes}m"
+                
+                if role:
+                    blocks_list += f"• {role.mention} - {duration_display} (remaining: {remaining})\n"
+                else:
+                    blocks_list += f"• Unknown Role ({role_id}) - {duration_display} (remaining: {remaining})\n"
+            
+            if len(self.automod.active_blocks) > 5:
+                blocks_list += f"*...and {len(self.automod.active_blocks) - 5} more*"
+            
+            embed.add_field(
+                name="Currently Blocked Roles",
+                value=blocks_list,
+                inline=False
+            )
+        
+        embed.add_field(
+            name="Commands",
+            value=(
+                "**`.automod list`** - List blocked roles\n"
+                "**`.automod remove <role>`** - Manually remove a role from protection\n"
+                "**`.automod allow <role>`** - Prematurely allow mentions of a role (alias for remove)\n"
+                "**`.automod add <role> [duration]`** - Manually add a role (duration in minutes or '2h')\n"
+                "**`.automod reload`** - Reload config from environment"
+            ),
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
     
-    @automod_group.command(name="list")
+    @automod.command(name="list")
+    @commands.has_permissions(manage_guild=True)
     async def automod_list(self, ctx):
-        """List all active auto-mod rules"""
-        await self.automod.automod_list(ctx)
+        """List all currently blocked roles"""
+        if not self.automod.active_blocks:
+            await ctx.send("No roles are currently blocked.")
+            return
+        
+        embed = discord.Embed(
+            title=f"Currently Blocked Roles ({len(self.automod.active_blocks)})",
+            color=discord.Color.orange()
+        )
+        
+        for role_id, block_data in self.automod.active_blocks.items():
+            role = ctx.guild.get_role(int(role_id))
+            role_mention = role.mention if role else f"Unknown Role ({role_id})"
+            expires = block_data['expires_at']
+            remaining = self.automod.get_remaining_time(expires)
+            duration_minutes = block_data.get('duration_minutes', 120)
+            
+            if duration_minutes >= 60:
+                duration_display = f"{duration_minutes/60:.1f} hours"
+            else:
+                duration_display = f"{duration_minutes} minutes"
+            
+            embed.add_field(
+                name=f"Role: {block_data.get('role_name', 'Unknown')}",
+                value=(
+                    f"**Role:** {role_mention}\n"
+                    f"**Duration:** {duration_display}\n"
+                    f"**Remaining:** {remaining}\n"
+                    f"**Expires:** <t:{int(expires.timestamp())}:R>\n"
+                    f"**Added:** <t:{int(block_data['created_at'].timestamp())}:R>"
+                ),
+                inline=False
+            )
+        
+        await ctx.send(embed=embed)
     
-    @automod_group.command(name="remove")
-    async def automod_remove(self, ctx, rule_id: str):
-        """Manually remove an auto-mod rule"""
-        await self.automod.automod_remove(ctx, rule_id)
+    @automod.command(name="add")
+    @commands.has_permissions(manage_guild=True)
+    async def automod_add(self, ctx, role: discord.Role, duration: str = None):
+        """Manually add a role to protection
+        Duration can be in minutes (60) or hours (2h, 3h)
+        """
+        if str(role.id) in self.automod.active_blocks:
+            await ctx.send(f"❌ Role {role.mention} is already blocked!")
+            return
+        
+        # Parse duration
+        if duration:
+            duration_str = duration.lower()
+            if duration_str.endswith('h'):
+                try:
+                    duration_minutes = int(duration_str[:-1]) * 60
+                except ValueError:
+                    await ctx.send("❌ Invalid duration format! Use numbers like '60' for minutes or '2h' for hours.")
+                    return
+            else:
+                try:
+                    duration_minutes = int(duration_str)
+                except ValueError:
+                    await ctx.send("❌ Invalid duration format! Use numbers like '60' for minutes or '2h' for hours.")
+                    return
+        else:
+            duration_minutes = self.automod.DEFAULT_DURATION
+        
+        block_data = {
+            "guild_id": str(ctx.guild.id),
+            "role_id": str(role.id),
+            "role_name": role.name,
+            "created_at": datetime.now(self.automod.ist),
+            "expires_at": datetime.now(self.automod.ist) + timedelta(minutes=duration_minutes),
+            "duration_minutes": duration_minutes,
+            "trigger_message_id": None,
+            "trigger_user_id": str(ctx.author.id),
+            "manually_added": True
+        }
+        
+        self.automod.active_blocks[str(role.id)] = block_data
+        self.data_manager.save_automod_rules(self.automod.active_blocks)
+        
+        # Update the main rule
+        await self.automod.update_rule_keywords()
+        
+        # Log the manual addition
+        await self.automod.log_block_created(ctx.guild, role, duration_minutes)
+        
+        # Format duration for message
+        if duration_minutes >= 60:
+            duration_display = f"{duration_minutes/60:.1f} hours"
+        else:
+            duration_display = f"{duration_minutes} minutes"
+        
+        await ctx.send(f"✅ Role {role.mention} has been added to protection for {duration_display}!")
     
-    @automod_group.group(name="keywords")
-    async def automod_keywords(self, ctx):
-        """Manage trigger keywords"""
-        await self.automod.automod_keywords(ctx)
+    @automod.command(name="remove")
+    @commands.has_permissions(manage_guild=True)
+    async def automod_remove(self, ctx, role: discord.Role):
+        """Manually remove a role from protection"""
+        if str(role.id) not in self.automod.active_blocks:
+            await ctx.send(f"❌ Role {role.mention} is not currently blocked!")
+            return
+        
+        block_data = self.automod.active_blocks[str(role.id)]
+        del self.automod.active_blocks[str(role.id)]
+        self.data_manager.save_automod_rules(self.automod.active_blocks)
+        
+        # Update the main rule
+        await self.automod.update_rule_keywords()
+        
+        # Log the manual removal
+        log_channel = self.get_log_channel()
+        if log_channel:
+            embed = discord.Embed(
+                title="🛠️ Role Protection Manually Removed",
+                description=f"Role was removed by {ctx.author.mention}",
+                color=discord.Color.purple()
+            )
+            embed.add_field(
+                name="Role",
+                value=role.mention,
+                inline=True
+            )
+            embed.add_field(
+                name="Originally Added",
+                value=f"<t:{int(block_data['created_at'].timestamp())}:R>",
+                inline=True
+            )
+            embed.add_field(
+                name="Removed Early",
+                value=f"Removed with {self.automod.get_remaining_time(block_data['expires_at'])} remaining",
+                inline=True
+            )
+            await log_channel.send(embed=embed)
+        
+        # Format the remaining time for the response
+        remaining = self.automod.get_remaining_time(block_data['expires_at'])
+        await ctx.send(f"✅ Role {role.mention} has been removed from protection early! (Had {remaining} remaining)")
     
-    @automod_keywords.command(name="add")
-    async def keywords_add(self, ctx, *, keyword: str):
-        """Add a trigger keyword"""
-        await self.automod.keywords_add(ctx, keyword)
+    @automod.command(name="allow")
+    @commands.has_permissions(manage_guild=True)
+    async def automod_allow(self, ctx, role: discord.Role):
+        """Prematurely allow mentions of a role (alias for remove)"""
+        await self.automod_remove(ctx, role)
     
-    @automod_keywords.command(name="remove")
-    async def keywords_remove(self, ctx, *, keyword: str):
-        """Remove a trigger keyword"""
-        await self.automod.keywords_remove(ctx, keyword)
+    @automod.command(name="reload")
+    @commands.has_permissions(administrator=True)
+    async def automod_reload(self, ctx):
+        """Reload configuration from environment variables"""
+        try:
+            old_protected = self.automod.PROTECTED_ROLES.copy()
+            old_limit = self.automod.MENTION_LIMIT
+            old_default = self.automod.DEFAULT_DURATION
+            
+            self.automod.load_config_from_env()
+            
+            embed = discord.Embed(
+                title="🔄 Auto-Mod Config Reloaded",
+                color=discord.Color.green()
+            )
+            
+            embed.add_field(
+                name="Protected Roles",
+                value=f"Old: {len(old_protected)}\nNew: {len(self.automod.PROTECTED_ROLES)}",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Mention Limit",
+                value=f"Old: {old_limit}\nNew: {self.automod.MENTION_LIMIT}",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Default Duration",
+                value=f"Old: {old_default}m\nNew: {self.automod.DEFAULT_DURATION}m",
+                inline=True
+            )
+            
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            await ctx.send(f"❌ Error reloading config: {str(e)}")
 
