@@ -5,6 +5,8 @@ from discord.enums import AutoModRuleEventType, AutoModRuleTriggerType
 from datetime import datetime, timedelta
 import pytz
 from discord.ext import commands
+import os
+import json
 
 class AutoModManager:
     def __init__(self, cog):
@@ -12,14 +14,49 @@ class AutoModManager:
         self.bot = cog.bot
         self.ist = pytz.timezone('Asia/Kolkata')
         
-        # Keywords that trigger auto-mod blocking
-        self.TRIGGER_KEYWORDS = ["revive", "newbies", "night"]
+        # Load configuration from environment variables
+        self.load_config_from_env()
         
         # Track active rules: rule_id -> {guild_id, role_ids, expires_at}
         self.active_rules = self.cog.data_manager.load_automod_rules()
         
         # Start cleanup task
         self.cleanup_task.start()
+    
+    def load_config_from_env(self):
+        """Load configuration from environment variables"""
+        # Load trigger keywords from env (comma-separated list)
+        env_keywords = os.getenv('AUTOMOD_TRIGGER_KEYWORDS', 'revive,newbies,night')
+        if env_keywords:
+            self.TRIGGER_KEYWORDS = [k.strip().lower() for k in env_keywords.split(',') if k.strip()]
+        else:
+            self.TRIGGER_KEYWORDS = ["revive", "newbies", "night"]  # Default
+        
+        # Load protected role IDs from env (JSON array or comma-separated list)
+        env_role_ids = os.getenv('AUTOMOD_PROTECTED_ROLE_IDS', '[]')
+        try:
+            # Try to parse as JSON first
+            self.PROTECTED_ROLE_IDS = json.loads(env_role_ids)
+            if not isinstance(self.PROTECTED_ROLE_IDS, list):
+                self.PROTECTED_ROLE_IDS = []
+        except json.JSONDecodeError:
+            # Fall back to comma-separated list
+            self.PROTECTED_ROLE_IDS = [r.strip() for r in env_role_ids.split(',') if r.strip()]
+        
+        # Load block duration from env (in hours)
+        try:
+            self.BLOCK_DURATION_HOURS = int(os.getenv('AUTOMOD_BLOCK_DURATION_HOURS', '2'))
+        except ValueError:
+            self.BLOCK_DURATION_HOURS = 2
+        
+        # Load check interval from env (in seconds)
+        try:
+            self.CHECK_INTERVAL_SECONDS = int(os.getenv('AUTOMOD_CHECK_INTERVAL_SECONDS', '30'))
+        except ValueError:
+            self.CHECK_INTERVAL_SECONDS = 30
+        
+        # Log configuration
+        print(f"[AutoMod] Loaded config: {len(self.TRIGGER_KEYWORDS)} keywords, {len(self.PROTECTED_ROLE_IDS)} protected roles, {self.BLOCK_DURATION_HOURS}h duration")
     
     def cog_unload(self):
         """Cleanup when cog is unloaded"""
@@ -60,6 +97,10 @@ class AutoModManager:
         if expired_rules:
             self.cog.data_manager.save_automod_rules(self.active_rules)
     
+    def is_protected_role(self, role_id: str) -> bool:
+        """Check if a role ID is in the protected list"""
+        return str(role_id) in self.PROTECTED_ROLE_IDS
+    
     async def log_rule_creation(self, guild, role: discord.Role, rule: discord.AutoModRule, duration_hours: int):
         """Log when a new auto-mod rule is created"""
         log_channel = self.cog.get_log_channel()
@@ -77,7 +118,7 @@ class AutoModManager:
         
         embed.add_field(
             name="Triggered Role",
-            value=f"{role.mention} (`{role.name}`)",
+            value=f"{role.mention} (`{role.name}`) - {'🔒 Protected' if self.is_protected_role(str(role.id)) else '⚠️ Auto-detected'}",
             inline=True
         )
         
@@ -153,30 +194,41 @@ class AutoModManager:
     
     async def check_and_block_role(self, message: discord.Message, role: discord.Role):
         """Check if a role mention should trigger auto-mod blocking"""
-        # Check if any trigger keyword is in the message content
-        content_lower = message.content.lower()
-        
-        # Check if role name contains any trigger keyword
-        role_name_lower = role.name.lower()
-        role_triggers = any(keyword in role_name_lower for keyword in self.TRIGGER_KEYWORDS)
-        
-        # Check if message contains any trigger keyword
-        message_triggers = any(keyword in content_lower for keyword in self.TRIGGER_KEYWORDS)
-        
-        if role_triggers and message_triggers:
-            # Check if we already have an active rule for this role
-            guild_id = str(message.guild.id)
-            role_id = str(role.id)
+        # Check if role is in protected list
+        if self.is_protected_role(str(role.id)):
+            # For protected roles, just check message content
+            content_lower = message.content.lower()
+            message_triggers = any(keyword in content_lower for keyword in self.TRIGGER_KEYWORDS)
             
-            # Look for existing active rule
-            for rule_id, rule_data in self.active_rules.items():
-                if (rule_data.get("guild_id") == guild_id and 
-                    rule_data.get("role_id") == role_id):
-                    # Rule already exists, just log this mention
-                    return
+            if not message_triggers:
+                return  # Protected role but no trigger keywords = no block
+        else:
+            # For auto-detected roles, check both role name and message content
+            role_name_lower = role.name.lower()
+            role_triggers = any(keyword in role_name_lower for keyword in self.TRIGGER_KEYWORDS)
             
-            # Create new auto-mod rule
-            await self.create_block_rule(message.guild, role, message)
+            if not role_triggers:
+                return  # Role name doesn't contain trigger keywords
+            
+            content_lower = message.content.lower()
+            message_triggers = any(keyword in content_lower for keyword in self.TRIGGER_KEYWORDS)
+            
+            if not message_triggers:
+                return  # Message doesn't contain trigger keywords
+        
+        # If we get here, blocking conditions are met
+        guild_id = str(message.guild.id)
+        role_id = str(role.id)
+        
+        # Look for existing active rule
+        for rule_id, rule_data in self.active_rules.items():
+            if (rule_data.get("guild_id") == guild_id and 
+                rule_data.get("role_id") == role_id):
+                # Rule already exists, just log this mention
+                return
+        
+        # Create new auto-mod rule
+        await self.create_block_rule(message.guild, role, message)
     
     async def create_block_rule(self, guild: discord.Guild, role: discord.Role, trigger_message: discord.Message):
         """Create a temporary auto-mod rule to block mentions of this role"""
@@ -186,10 +238,15 @@ class AutoModManager:
                 await self.log_error(guild, "Missing 'Manage Guild' permission")
                 return
             
-            duration_hours = 2  # Block for 2 hours
+            duration_hours = self.BLOCK_DURATION_HOURS
             
-            # Create keyword list (role name + trigger keywords)
-            keywords = [role.name.lower()] + self.TRIGGER_KEYWORDS
+            # Create keyword list based on role type
+            if self.is_protected_role(str(role.id)):
+                # For protected roles, only block when trigger keywords appear
+                keywords = self.TRIGGER_KEYWORDS.copy()
+            else:
+                # For auto-detected roles, block role name + trigger keywords
+                keywords = [role.name.lower()] + self.TRIGGER_KEYWORDS
             
             # Create the auto-mod rule
             rule = await guild.create_auto_mod_rule(
@@ -202,7 +259,7 @@ class AutoModManager:
                 actions=[
                     AutoModRuleAction(
                         type=discord.AutoModRuleActionType.block_message,
-                        custom_message=f"This role ({role.name}) is temporarily blocked due to mention spam. Please wait 2 hours."
+                        custom_message=f"This role ({role.name}) is temporarily blocked due to mention spam. Please wait {duration_hours} hours."
                     ),
                 ],
                 enabled=True,
@@ -218,7 +275,8 @@ class AutoModManager:
                 "expires_at": datetime.now(self.ist) + timedelta(hours=duration_hours),
                 "duration_hours": duration_hours,
                 "trigger_message_id": str(trigger_message.id),
-                "trigger_user_id": str(trigger_message.author.id)
+                "trigger_user_id": str(trigger_message.author.id),
+                "is_protected": self.is_protected_role(str(role.id))
             }
             
             self.active_rules[str(rule.id)] = rule_data
@@ -229,9 +287,10 @@ class AutoModManager:
             
             # Also log in the trigger channel
             try:
+                role_type = "🔒 Protected" if self.is_protected_role(str(role.id)) else "⚠️ Auto-detected"
                 await trigger_message.channel.send(
                     f"⚠️ **Auto-Mod Activated**\n"
-                    f"Mentions of {role.mention} have been temporarily blocked for 2 hours due to potential spam.\n"
+                    f"{role_type} role {role.mention} mentions have been temporarily blocked for {duration_hours} hours due to potential spam.\n"
                     f"Staff has been notified."
                 )
             except:
@@ -276,14 +335,24 @@ class AutoModManager:
             
             # Show active rules
             active_count = 0
+            protected_count = 0
             for rule_id, rule_data in self.active_rules.items():
                 if rule_data.get("guild_id") == str(ctx.guild.id):
                     active_count += 1
+                    if rule_data.get("is_protected"):
+                        protected_count += 1
             
             embed.add_field(
                 name="Current Status",
-                value=f"Active Rules: {active_count}\n"
-                      f"Trigger Keywords: {', '.join(f'`{k}`' for k in self.TRIGGER_KEYWORDS)}",
+                value=f"Active Rules: {active_count} ({protected_count} protected)\n"
+                      f"Trigger Keywords: {', '.join(f'`{k}`' for k in self.TRIGGER_KEYWORDS)}\n"
+                      f"Block Duration: {self.BLOCK_DURATION_HOURS} hours",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="Protected Roles",
+                value=f"{len(self.PROTECTED_ROLE_IDS)} roles configured in env",
                 inline=False
             )
             
@@ -292,7 +361,8 @@ class AutoModManager:
                 value=(
                     "**`.automod list`** - List active rules\n"
                     "**`.automod remove <rule_id>`** - Manually remove a rule\n"
-                    "**`.automod keywords [add/remove] <keyword>`** - Manage trigger keywords"
+                    "**`.automod keywords [add/remove] <keyword>`** - Manage trigger keywords\n"
+                    "**`.automod reload`** - Reload config from environment"
                 ),
                 inline=False
             )
@@ -321,9 +391,10 @@ class AutoModManager:
         for rule_id, rule_data in active_rules:
             role_mention = f"<@&{rule_data['role_id']}>"
             expires = rule_data['expires_at']
+            role_type = "🔒 Protected" if rule_data.get("is_protected") else "⚠️ Auto"
             
             embed.add_field(
-                name=f"Rule: {rule_data.get('role_name', 'Unknown')}",
+                name=f"{role_type} - {rule_data.get('role_name', 'Unknown')}",
                 value=(
                     f"**Role:** {role_mention}\n"
                     f"**Expires:** <t:{int(expires.timestamp())}:R>\n"
@@ -366,6 +437,45 @@ class AutoModManager:
                 
         except Exception as e:
             await ctx.send(f"❌ Error removing rule: {str(e)}")
+    
+    @automod_group.command(name="reload")
+    @commands.has_permissions(administrator=True)
+    async def automod_reload(self, ctx):
+        """Reload configuration from environment variables"""
+        try:
+            old_keywords = self.TRIGGER_KEYWORDS.copy()
+            old_protected = self.PROTECTED_ROLE_IDS.copy()
+            old_duration = self.BLOCK_DURATION_HOURS
+            
+            self.load_config_from_env()
+            
+            embed = discord.Embed(
+                title="🔄 Auto-Mod Config Reloaded",
+                color=discord.Color.green()
+            )
+            
+            embed.add_field(
+                name="Keywords",
+                value=f"Old: {', '.join(old_keywords)}\nNew: {', '.join(self.TRIGGER_KEYWORDS)}",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="Protected Roles",
+                value=f"Old: {len(old_protected)}\nNew: {len(self.PROTECTED_ROLE_IDS)}",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Block Duration",
+                value=f"Old: {old_duration}h\nNew: {self.BLOCK_DURATION_HOURS}h",
+                inline=True
+            )
+            
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            await ctx.send(f"❌ Error reloading config: {str(e)}")
     
     @automod_group.group(name="keywords")
     async def automod_keywords(self, ctx):
