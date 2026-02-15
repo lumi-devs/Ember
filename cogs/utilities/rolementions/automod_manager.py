@@ -7,6 +7,8 @@ import pytz
 from discord.ext import commands
 import os
 import json
+import ast
+import re
 
 class AutoModManager:
     def __init__(self, cog):
@@ -21,7 +23,7 @@ class AutoModManager:
         self.main_rule_id = None  # This will store our single rule's ID
         self.rule_guild_id = None  # The guild where our rule exists
         
-        # Track active role blocks: role_id -> {expires_at, role_name}
+        # Track active role blocks: role_id -> {expires_at, role_name, duration}
         self.active_blocks = self.cog.data_manager.load_automod_rules()
         
         # Track keywords currently in the rule
@@ -32,15 +34,57 @@ class AutoModManager:
         
         # Start cleanup task for expired blocks
         self.cleanup_task.start()
+        
+        # Start message update task
+        self.message_update_task.start()
     
     def load_config_from_env(self):
         """Load configuration from environment variables"""
-        # Load protected role IDs from env (comma-separated list)
-        env_role_ids = os.getenv('AUTOMOD_PROTECTED_ROLE_IDS', '')
-        if env_role_ids:
-            self.PROTECTED_ROLE_IDS = [r.strip() for r in env_role_ids.split(',') if r.strip()]
-        else:
-            self.PROTECTED_ROLE_IDS = []
+        # Load protected roles with durations from env
+        # Format: {"role_id": minutes, "role_id": minutes} or {"role_id": "3h", "role_id": "2h"}
+        env_roles = os.getenv('AUTOMOD_PROTECTED_ROLES', '{}')
+        
+        try:
+            # Try to parse as JSON first
+            raw_roles = json.loads(env_roles)
+            self.PROTECTED_ROLES = {}
+            
+            for role_id, duration in raw_roles.items():
+                # Handle string durations like "3h", "2h", "30m"
+                if isinstance(duration, str):
+                    duration_str = duration.lower()
+                    if duration_str.endswith('h'):
+                        minutes = int(duration_str[:-1]) * 60
+                    elif duration_str.endswith('m'):
+                        minutes = int(duration_str[:-1])
+                    else:
+                        minutes = int(duration_str)  # Assume minutes if just number
+                else:
+                    minutes = int(duration)  # Assume minutes if integer
+                
+                self.PROTECTED_ROLES[str(role_id)] = minutes
+                
+        except (json.JSONDecodeError, ValueError):
+            # Fallback to Python dict syntax
+            try:
+                raw_roles = ast.literal_eval(env_roles)
+                self.PROTECTED_ROLES = {}
+                
+                for role_id, duration in raw_roles.items():
+                    if isinstance(duration, str):
+                        duration_str = duration.lower()
+                        if duration_str.endswith('h'):
+                            minutes = int(duration_str[:-1]) * 60
+                        elif duration_str.endswith('m'):
+                            minutes = int(duration_str[:-1])
+                        else:
+                            minutes = int(duration_str)
+                    else:
+                        minutes = int(duration)
+                    
+                    self.PROTECTED_ROLES[str(role_id)] = minutes
+            except:
+                self.PROTECTED_ROLES = {}
         
         # Load mention limit from env
         try:
@@ -48,19 +92,26 @@ class AutoModManager:
         except ValueError:
             self.MENTION_LIMIT = 3
         
-        # Load block duration from env (in minutes)
+        # Default block duration for roles not specified (in minutes)
         try:
-            self.BLOCK_DURATION_MINUTES = int(os.getenv('AUTOMOD_BLOCK_DURATION_MINUTES', '120'))
+            self.DEFAULT_DURATION = int(os.getenv('AUTOMOD_DEFAULT_DURATION', '120'))
         except ValueError:
-            self.BLOCK_DURATION_MINUTES = 120
+            self.DEFAULT_DURATION = 120
         
         # Log configuration
-        print(f"[AutoMod] Loaded config: {len(self.PROTECTED_ROLE_IDS)} protected roles, limit: {self.MENTION_LIMIT}, duration: {self.BLOCK_DURATION_MINUTES}m")
+        print(f"[AutoMod] Loaded config: {len(self.PROTECTED_ROLES)} protected roles, limit: {self.MENTION_LIMIT}")
+        for role_id, minutes in self.PROTECTED_ROLES.items():
+            hours = minutes / 60
+            if hours >= 1:
+                print(f"  - Role {role_id}: {hours:.1f}h ({minutes} minutes)")
+            else:
+                print(f"  - Role {role_id}: {minutes} minutes")
     
     def cog_unload(self):
         """Cleanup when cog is unloaded"""
         self.rule_manager_task.cancel()
         self.cleanup_task.cancel()
+        self.message_update_task.cancel()
     
     @tasks.loop(seconds=60)  # Check every minute
     async def rule_manager_task(self):
@@ -76,6 +127,93 @@ class AutoModManager:
         # If we have a rule, make sure it has the correct keywords
         if self.main_rule_id and self.rule_guild_id:
             await self.update_rule_keywords()
+    
+    @tasks.loop(seconds=300)  # Update every 5 minutes
+    async def message_update_task(self):
+        """Update the custom block message with current time remaining"""
+        await self.bot.wait_until_ready()
+        
+        if not self.main_rule_id or not self.rule_guild_id or not self.active_blocks:
+            return
+        
+        try:
+            guild = self.bot.get_guild(int(self.rule_guild_id))
+            if not guild:
+                return
+            
+            rule = await guild.fetch_automod_rule(int(self.main_rule_id))
+            
+            # Create new custom message with updated times
+            if len(self.active_blocks) == 1:
+                # Single role - show specific time
+                role_id, block_data = next(iter(self.active_blocks.items()))
+                role = guild.get_role(int(role_id))
+                if role:
+                    remaining = self.get_remaining_time(block_data['expires_at'])
+                    custom_message = f"⚠️ @{role.name} protected ({remaining})"
+                else:
+                    custom_message = "⚠️ Role protected"
+            else:
+                # Multiple roles - compact format with times
+                roles_text = []
+                total_chars = 0
+                for role_id, block_data in self.active_blocks.items():
+                    role = guild.get_role(int(role_id))
+                    if role:
+                        remaining = self.get_remaining_time(block_data['expires_at'])
+                        role_text = f"@{role.name}({remaining})"
+                        
+                        # Check if adding this would exceed Discord's limit (~150 chars)
+                        if total_chars + len(role_text) + 10 < 150:  # Leave room for prefix
+                            roles_text.append(role_text)
+                            total_chars += len(role_text)
+                        else:
+                            roles_text.append(f"+{len(self.active_blocks) - len(roles_text)} more")
+                            break
+                
+                custom_message = f"⚠️ Protected: {' '.join(roles_text)}"
+            
+            # Update the rule with new message (keeping same trigger)
+            await rule.edit(
+                actions=[
+                    AutoModRuleAction(
+                        type=discord.AutoModRuleActionType.block_message,
+                        custom_message=custom_message
+                    )
+                ]
+            )
+            
+            print(f"[AutoMod] Updated block message: {custom_message}")
+            
+        except Exception as e:
+            print(f"[AutoMod] Error updating block message: {e}")
+    
+    def get_remaining_time(self, expires_at):
+        """Get human-readable remaining time"""
+        now = datetime.now(self.ist)
+        if expires_at <= now:
+            return "expired"
+        
+        remaining = expires_at - now
+        total_minutes = int(remaining.total_seconds() / 60)
+        
+        if total_minutes >= 60:
+            hours = total_minutes / 60
+            if hours >= 24:
+                days = int(hours / 24)
+                hours_remain = int(hours % 24)
+                if hours_remain > 0:
+                    return f"{days}d{hours_remain}h"
+                else:
+                    return f"{days}d"
+            else:
+                remaining_minutes = total_minutes % 60
+                if remaining_minutes > 0:
+                    return f"{int(hours)}h{remaining_minutes}m"
+                else:
+                    return f"{int(hours)}h"
+        else:
+            return f"{total_minutes}m"
     
     async def ensure_main_rule_exists(self, guild):
         """Create the main AutoMod rule if it doesn't exist"""
@@ -110,7 +248,7 @@ class AutoModManager:
                 actions=[
                     AutoModRuleAction(
                         type=discord.AutoModRuleActionType.block_message,
-                        custom_message=f"This role is temporarily protected from mention spam."
+                        custom_message="This role is temporarily protected from mention spam."
                     )
                 ],
                 enabled=True,
@@ -176,12 +314,56 @@ class AutoModManager:
                     self.current_keywords = new_keywords
                     print(f"[AutoMod] Updated rule keywords: {len(new_keywords)} total")
                     
+                    # Also update the message for the new role
+                    await self.update_block_message(rule)
+                    
                     # Log the update if there are active blocks
                     if self.active_blocks:
                         await self.log_rule_update(guild, new_keywords)
                         
             except Exception as e:
                 print(f"[AutoMod] Error updating rule keywords: {e}")
+    
+    async def update_block_message(self, rule=None):
+        """Update just the block message without changing keywords"""
+        if not self.main_rule_id or not self.rule_guild_id or not self.active_blocks:
+            return
+        
+        try:
+            guild = self.bot.get_guild(int(self.rule_guild_id))
+            if not guild:
+                return
+            
+            if not rule:
+                rule = await guild.fetch_automod_rule(int(self.main_rule_id))
+            
+            # Get current actions
+            current_actions = rule.actions
+            
+            # Create new custom message with updated times
+            if len(self.active_blocks) == 1:
+                role_id, block_data = next(iter(self.active_blocks.items()))
+                role = guild.get_role(int(role_id))
+                if role:
+                    remaining = self.get_remaining_time(block_data['expires_at'])
+                    custom_message = f"⚠️ **{role.name}** is protected for another {remaining}. Please do not mention this role."
+                else:
+                    custom_message = "This role is temporarily protected from mention spam."
+            else:
+                custom_message = f"⚠️ **{len(self.active_blocks)} roles** are currently protected from mention spam. Please check back later."
+            
+            # Update just the message
+            await rule.edit(
+                actions=[
+                    AutoModRuleAction(
+                        type=discord.AutoModRuleActionType.block_message,
+                        custom_message=custom_message
+                    )
+                ]
+            )
+            
+        except Exception as e:
+            print(f"[AutoMod] Error updating block message: {e}")
     
     @tasks.loop(seconds=30)
     async def cleanup_task(self):
@@ -209,9 +391,13 @@ class AutoModManager:
             # Update the rule keywords since we removed some blocks
             await self.update_rule_keywords()
     
+    def get_role_duration(self, role_id: str) -> int:
+        """Get the duration in minutes for a protected role"""
+        return self.PROTECTED_ROLES.get(str(role_id), self.DEFAULT_DURATION)
+    
     def is_protected_role(self, role_id: str) -> bool:
         """Check if a role ID is in the protected list"""
-        return str(role_id) in self.PROTECTED_ROLE_IDS
+        return str(role_id) in self.PROTECTED_ROLES
     
     async def log_block_created(self, guild, role: discord.Role, duration_minutes: int):
         """Log when a new role block is added"""
@@ -220,6 +406,12 @@ class AutoModManager:
             return
         
         expires_at = datetime.now(self.ist) + timedelta(minutes=duration_minutes)
+        
+        # Format duration nicely
+        if duration_minutes >= 60:
+            duration_display = f"{duration_minutes/60:.1f} hours"
+        else:
+            duration_display = f"{duration_minutes} minutes"
         
         embed = discord.Embed(
             title="🛡️ Role Protection Activated",
@@ -236,7 +428,7 @@ class AutoModManager:
         
         embed.add_field(
             name="Duration",
-            value=f"{duration_minutes} minutes",
+            value=duration_display,
             inline=True
         )
         
@@ -269,6 +461,13 @@ class AutoModManager:
             return
         
         role_mention = f"<@&{block_data['role_id']}>" if 'role_id' in block_data else "Unknown Role"
+        duration_minutes = block_data.get('duration_minutes', 120)
+        
+        # Format duration nicely
+        if duration_minutes >= 60:
+            duration_display = f"{duration_minutes/60:.1f} hours"
+        else:
+            duration_display = f"{duration_minutes} minutes"
         
         embed = discord.Embed(
             title="✅ Role Protection Expired",
@@ -285,7 +484,7 @@ class AutoModManager:
         
         embed.add_field(
             name="Duration",
-            value=f"{block_data.get('duration_minutes', 120)} minutes",
+            value=duration_display,
             inline=True
         )
         
@@ -329,7 +528,15 @@ class AutoModManager:
             roles_list = ""
             for role_id, block_data in list(self.active_blocks.items())[:5]:
                 expires = block_data['expires_at']
-                roles_list += f"• <@&{role_id}> - expires <t:{int(expires.timestamp())}:R>\n"
+                duration_minutes = block_data.get('duration_minutes', 120)
+                remaining = self.get_remaining_time(expires)
+                
+                if duration_minutes >= 60:
+                    duration_display = f"{duration_minutes/60:.1f}h"
+                else:
+                    duration_display = f"{duration_minutes}m"
+                    
+                roles_list += f"• <@&{role_id}> - {duration_display} (remaining: {remaining})\n"
             
             if len(self.active_blocks) > 5:
                 roles_list += f"*...and {len(self.active_blocks) - 5} more*"
@@ -378,17 +585,10 @@ class AutoModManager:
             print(f"[AutoMod] Role already in protection list")
             return
         
-        # Check if message contains trigger keywords (optional - remove if you want to block on ANY mention)
-        content_lower = message.content.lower()
-        has_trigger = any(keyword in content_lower for keyword in ["spam", "mass", "everyone", "here"])
-        
-        # For now, let's block on any mention of protected roles (remove the has_trigger check if you want)
-        # if not has_trigger:
-        #     return
+        # Get duration for this specific role
+        duration_minutes = self.get_role_duration(str(role.id))
         
         # Add role to protection list
-        duration_minutes = self.BLOCK_DURATION_MINUTES
-        
         block_data = {
             "guild_id": str(message.guild.id),
             "role_id": str(role.id),
@@ -409,18 +609,24 @@ class AutoModManager:
         # Log the block
         await self.log_block_created(message.guild, role, duration_minutes)
         
+        # Format duration for message
+        if duration_minutes >= 60:
+            duration_display = f"{duration_minutes/60:.1f} hours"
+        else:
+            duration_display = f"{duration_minutes} minutes"
+        
         # Also notify in the trigger channel
         try:
             await message.channel.send(
                 f"⚠️ **Role Protection Activated**\n"
-                f"Role {role.mention} is now protected from mention spam for {duration_minutes} minutes.\n"
+                f"Role {role.mention} is now protected from mention spam for {duration_display}.\n"
                 f"Anyone mentioning this role will have their message blocked."
             )
         except:
             pass
     
     @commands.group(name="automod", aliases=["am"])
-    @commands.has_permissions(administrator=True)
+    @commands.has_permissions(manage_guild=True)
     async def automod_group(self, ctx):
         """Manage auto-mod blocking settings"""
         if ctx.invoked_subcommand is None:
@@ -430,21 +636,46 @@ class AutoModManager:
                 color=discord.Color.blue()
             )
             
+            # Format protected roles list
+            protected_list = ""
+            for role_id, minutes in list(self.PROTECTED_ROLES.items())[:5]:
+                if minutes >= 60:
+                    duration_display = f"{minutes/60:.1f}h"
+                else:
+                    duration_display = f"{minutes}m"
+                protected_list += f"• <@&{role_id}> - {duration_display}\n"
+            
+            if len(self.PROTECTED_ROLES) > 5:
+                protected_list += f"*...and {len(self.PROTECTED_ROLES) - 5} more*"
+            
             embed.add_field(
-                name="Current Status",
-                value=f"Protected Roles: {len(self.PROTECTED_ROLE_IDS)}\n"
-                      f"Currently Blocked: {len(self.active_blocks)}\n"
-                      f"Mention Limit: {self.MENTION_LIMIT} per message\n"
-                      f"Block Duration: {self.BLOCK_DURATION_MINUTES} minutes",
+                name="Protected Roles (with durations)",
+                value=protected_list or "None configured",
                 inline=False
             )
             
-            # Show currently blocked roles
+            embed.add_field(
+                name="Current Status",
+                value=f"Currently Blocked: {len(self.active_blocks)}\n"
+                      f"Mention Limit: {self.MENTION_LIMIT} per message\n"
+                      f"Default Duration: {self.DEFAULT_DURATION} minutes",
+                inline=False
+            )
+            
+            # Show currently blocked roles with remaining time
             if self.active_blocks:
                 blocks_list = ""
                 for role_id, block_data in list(self.active_blocks.items())[:5]:
                     expires = block_data['expires_at']
-                    blocks_list += f"• <@&{role_id}> - expires <t:{int(expires.timestamp())}:R>\n"
+                    remaining = self.get_remaining_time(expires)
+                    duration_minutes = block_data.get('duration_minutes', 120)
+                    
+                    if duration_minutes >= 60:
+                        duration_display = f"{duration_minutes/60:.1f}h"
+                    else:
+                        duration_display = f"{duration_minutes}m"
+                        
+                    blocks_list += f"• <@&{role_id}> - {duration_display} (remaining: {remaining})\n"
                 
                 if len(self.active_blocks) > 5:
                     blocks_list += f"*...and {len(self.active_blocks) - 5} more*"
@@ -459,8 +690,9 @@ class AutoModManager:
                 name="Commands",
                 value=(
                     "**`.automod list`** - List blocked roles\n"
-                    "**`.automod remove <role_id>`** - Manually remove a role from protection\n"
-                    "**`.automod add <role_id>`** - Manually add a role to protection\n"
+                    "**`.automod remove <role>`** - Manually remove a role from protection\n"
+                    "**`.automod allow <role>`** - Prematurely allow mentions of a role (alias for remove)\n"
+                    "**`.automod add <role> [duration]`** - Manually add a role (duration in minutes or '2h')\n"
                     "**`.automod reload`** - Reload config from environment"
                 ),
                 inline=False
@@ -483,11 +715,20 @@ class AutoModManager:
         for role_id, block_data in self.active_blocks.items():
             role_mention = f"<@&{role_id}>"
             expires = block_data['expires_at']
+            remaining = self.get_remaining_time(expires)
+            duration_minutes = block_data.get('duration_minutes', 120)
+            
+            if duration_minutes >= 60:
+                duration_display = f"{duration_minutes/60:.1f} hours"
+            else:
+                duration_display = f"{duration_minutes} minutes"
             
             embed.add_field(
                 name=f"Role: {block_data.get('role_name', 'Unknown')}",
                 value=(
                     f"**Role:** {role_mention}\n"
+                    f"**Duration:** {duration_display}\n"
+                    f"**Remaining:** {remaining}\n"
                     f"**Expires:** <t:{int(expires.timestamp())}:R>\n"
                     f"**Added:** <t:{int(block_data['created_at'].timestamp())}:R>"
                 ),
@@ -497,13 +738,31 @@ class AutoModManager:
         await ctx.send(embed=embed)
     
     @automod_group.command(name="add")
-    async def automod_add(self, ctx, role: discord.Role):
-        """Manually add a role to protection"""
+    async def automod_add(self, ctx, role: discord.Role, duration: str = None):
+        """Manually add a role to protection
+        Duration can be in minutes (60) or hours (2h, 3h)
+        """
         if str(role.id) in self.active_blocks:
             await ctx.send(f"❌ Role {role.mention} is already blocked!")
             return
         
-        duration_minutes = self.BLOCK_DURATION_MINUTES
+        # Parse duration
+        if duration:
+            duration_str = duration.lower()
+            if duration_str.endswith('h'):
+                try:
+                    duration_minutes = int(duration_str[:-1]) * 60
+                except ValueError:
+                    await ctx.send("❌ Invalid duration format! Use numbers like '60' for minutes or '2h' for hours.")
+                    return
+            else:
+                try:
+                    duration_minutes = int(duration_str)
+                except ValueError:
+                    await ctx.send("❌ Invalid duration format! Use numbers like '60' for minutes or '2h' for hours.")
+                    return
+        else:
+            duration_minutes = self.DEFAULT_DURATION
         
         block_data = {
             "guild_id": str(ctx.guild.id),
@@ -526,7 +785,13 @@ class AutoModManager:
         # Log the manual addition
         await self.log_block_created(ctx.guild, role, duration_minutes)
         
-        await ctx.send(f"✅ Role {role.mention} has been added to protection for {duration_minutes} minutes!")
+        # Format duration for message
+        if duration_minutes >= 60:
+            duration_display = f"{duration_minutes/60:.1f} hours"
+        else:
+            duration_display = f"{duration_minutes} minutes"
+        
+        await ctx.send(f"✅ Role {role.mention} has been added to protection for {duration_display}!")
     
     @automod_group.command(name="remove")
     async def automod_remove(self, ctx, role: discord.Role):
@@ -560,18 +825,30 @@ class AutoModManager:
                 value=f"<t:{int(block_data['created_at'].timestamp())}:R>",
                 inline=True
             )
+            embed.add_field(
+                name="Removed Early",
+                value=f"Removed with {self.get_remaining_time(block_data['expires_at'])} remaining",
+                inline=True
+            )
             await log_channel.send(embed=embed)
         
-        await ctx.send(f"✅ Role {role.mention} has been removed from protection!")
+        # Format the remaining time for the response
+        remaining = self.get_remaining_time(block_data['expires_at'])
+        await ctx.send(f"✅ Role {role.mention} has been removed from protection early! (Had {remaining} remaining)")
+    
+    @automod_group.command(name="allow")
+    async def automod_allow(self, ctx, role: discord.Role):
+        """Prematurely allow mentions of a role (alias for remove)"""
+        await self.automod_remove(ctx, role)
     
     @automod_group.command(name="reload")
     @commands.has_permissions(administrator=True)
     async def automod_reload(self, ctx):
         """Reload configuration from environment variables"""
         try:
-            old_protected = self.PROTECTED_ROLE_IDS.copy()
+            old_protected = self.PROTECTED_ROLES.copy()
             old_limit = self.MENTION_LIMIT
-            old_duration = self.BLOCK_DURATION_MINUTES
+            old_default = self.DEFAULT_DURATION
             
             self.load_config_from_env()
             
@@ -582,7 +859,7 @@ class AutoModManager:
             
             embed.add_field(
                 name="Protected Roles",
-                value=f"Old: {len(old_protected)}\nNew: {len(self.PROTECTED_ROLE_IDS)}",
+                value=f"Old: {len(old_protected)}\nNew: {len(self.PROTECTED_ROLES)}",
                 inline=True
             )
             
@@ -593,8 +870,8 @@ class AutoModManager:
             )
             
             embed.add_field(
-                name="Block Duration",
-                value=f"Old: {old_duration}m\nNew: {self.BLOCK_DURATION_MINUTES}m",
+                name="Default Duration",
+                value=f"Old: {old_default}m\nNew: {self.DEFAULT_DURATION}m",
                 inline=True
             )
             
