@@ -394,5 +394,3 @@ class RoleMentionTracker(commands.Cog):
         """Remove a trigger keyword"""
         await self.automod.keywords_remove(ctx, keyword)
 
-async def setup(bot):
-    await bot.add_cog(RoleMentionTracker(bot))
