@@ -363,7 +363,7 @@ class RoleMentionCog(commands.Cog):  # ← Better name
         await ctx.send("✅ Role mention counters have been reset for this server!")
     
     @commands.group(name="automod", aliases=["am"], invoke_without_command=True)
-    @commands.has_permissions(manage_guild=True)
+    @commands.has_permissions(manage_emojis=True)
     async def automod(self, ctx):
         """Manage auto-mod protection for roles"""
         embed = discord.Embed(
@@ -445,7 +445,7 @@ class RoleMentionCog(commands.Cog):  # ← Better name
         await ctx.send(embed=embed)
     
     @automod.command(name="list")
-    @commands.has_permissions(manage_guild=True)
+    @commands.has_permissions(manage_emojis=True)
     async def automod_list(self, ctx):
         """List all currently blocked roles"""
         if not self.automod.active_blocks:
