@@ -59,25 +59,24 @@ class BasicControlsView(ControlPanel):
             is_locked = False
             is_hidden = False
         
-        # Row 0: Basic Controls
+        # Row 0: Basic Controls (Name, Limit, Delete)
         self.add_item(NameButton())                          # 👤 Name
         self.add_item(LimitButton())                         # 👥 Limit
         self.add_item(DeleteButton())                        # 🗑️ Delete
         
-        # Row 1: Privacy Controls (with dynamic states)
-        self.add_item(LockButton(disabled=is_locked))        # 🔒 Lock
-        self.add_item(UnlockButton(disabled=not is_locked))  # 🔓 Unlock
-        self.add_item(HideButton(disabled=is_hidden))        # 🕵️ Hide
-        self.add_item(UnhideButton(disabled=not is_hidden))  # 👀 Unhide
+        # Row 1: Privacy & Actions (Lock/Unlock, Hide/Unhide, Kick)
+        # These buttons will update dynamically when clicked
+        self.add_item(LockButton(is_locked=is_locked))       # 🔒 Lock / 🔓 Unlock (toggles)
+        self.add_item(HideButton(is_hidden=is_hidden))       # 🕵️ Hide / 👀 Unhide (toggles)
+        self.add_item(KickButton())                           # 👢 Kick
         
-        # Row 2: Member Management (using UserSelect)
+        # Row 2: Member Management (Trust, Untrust, Block, Unblock)
         self.add_item(TrustButton())       # ✅ Trust
         self.add_item(UntrustButton())     # ❌ Untrust
-        self.add_item(KickButton())        # 👢 Kick
         self.add_item(BlockButton())       # 🚫 Block
         self.add_item(UnblockButton())     # ✅ Unblock
         
-        # Row 3: Advanced
+        # Row 3: Advanced (Transfer, Claim)
         self.add_item(TransferButton())    # 🔄 Transfer
         self.add_item(ClaimButton())       # 🎯 Claim
 
@@ -160,14 +159,16 @@ class DeleteButton(Button):
 
 
 class LockButton(Button):
-    def __init__(self, disabled: bool = False):
+    def __init__(self, is_locked: bool = False):
+        # Dynamic label based on state
+        label = "🔓 Unlock" if is_locked else "🔒 Lock"
         super().__init__(
-            label="🔒 Lock", 
-            style=discord.ButtonStyle.secondary, 
-            custom_id="lock", 
-            row=1,
-            disabled=disabled
+            label=label,
+            style=discord.ButtonStyle.secondary,
+            custom_id="lock_unlock",
+            row=1
         )
+        self.is_locked = is_locked
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -178,84 +179,64 @@ class LockButton(Button):
         
         await interaction.response.defer(ephemeral=True)
         
-        # Deny default role connect
         current_overwrites = channel.overwrites_for(interaction.guild.default_role)
-        await channel.set_permissions(
-            interaction.guild.default_role, 
-            connect=False, 
-            view_channel=current_overwrites.view_channel
-        )
         
-        # Grant current members explicit access so they won't be kicked out
-        for member in list(channel.members):
-            try:
-                await channel.set_permissions(member, connect=True, view_channel=True)
-            except Exception:
-                continue
-        
-        await view.update_database(locked=True)
-        
-        # Refresh the view with updated button states
-        new_view = BasicControlsView(view.cog, view.channel_id, view.owner_id)
-        await interaction.edit_original_response(view=new_view)
-        await interaction.followup.send("🔒 Channel locked! Current members kept access.", ephemeral=True)
-
-
-class UnlockButton(Button):
-    def __init__(self, disabled: bool = False):
-        super().__init__(
-            label="🔓 Unlock", 
-            style=discord.ButtonStyle.secondary, 
-            custom_id="unlock", 
-            row=1,
-            disabled=disabled
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        view: ControlPanel = self.view
-        channel = interaction.guild.get_channel(view.channel_id)
-        if not channel:
-            await interaction.response.send_message("❌ Channel not found!", ephemeral=True)
-            return
-        
-        await interaction.response.defer(ephemeral=True)
-        
-        # Restore default connect True
-        current_overwrites = channel.overwrites_for(interaction.guild.default_role)
-        await channel.set_permissions(
-            interaction.guild.default_role, 
-            connect=True, 
-            view_channel=current_overwrites.view_channel
-        )
-        
-        # Remove per-member allows we added earlier (preserve owner)
-        for member in list(channel.guild.members):
-            if member.id == view.owner_id:
-                continue
-            overwrite = channel.overwrites_for(member)
-            if overwrite and (overwrite.connect is True or overwrite.view_channel is True):
+        if self.is_locked:
+            # Currently locked -> Unlock
+            await channel.set_permissions(
+                interaction.guild.default_role,
+                connect=True,
+                view_channel=current_overwrites.view_channel
+            )
+            
+            # Remove per-member allows (preserve owner)
+            for member in list(channel.guild.members):
+                if member.id == view.owner_id:
+                    continue
+                overwrite = channel.overwrites_for(member)
+                if overwrite and (overwrite.connect is True or overwrite.view_channel is True):
+                    try:
+                        await channel.set_permissions(member, overwrite=None)
+                    except Exception:
+                        continue
+            
+            await view.update_database(locked=False)
+            action_msg = "🔓 Channel unlocked!"
+        else:
+            # Currently unlocked -> Lock
+            await channel.set_permissions(
+                interaction.guild.default_role,
+                connect=False,
+                view_channel=current_overwrites.view_channel
+            )
+            
+            # Grant current members explicit access
+            for member in list(channel.members):
                 try:
-                    await channel.set_permissions(member, overwrite=None)
+                    await channel.set_permissions(member, connect=True, view_channel=True)
                 except Exception:
                     continue
-        
-        await view.update_database(locked=False)
+            
+            await view.update_database(locked=True)
+            action_msg = "🔒 Channel locked! Current members kept access."
         
         # Refresh the view with updated button states
         new_view = BasicControlsView(view.cog, view.channel_id, view.owner_id)
         await interaction.edit_original_response(view=new_view)
-        await interaction.followup.send("🔓 Channel unlocked!", ephemeral=True)
+        await interaction.followup.send(action_msg, ephemeral=True)
 
 
 class HideButton(Button):
-    def __init__(self, disabled: bool = False):
+    def __init__(self, is_hidden: bool = False):
+        # Dynamic label based on state
+        label = "👀 Unhide" if is_hidden else "🕵️ Hide"
         super().__init__(
-            label="🕵️ Hide", 
-            style=discord.ButtonStyle.secondary, 
-            custom_id="hide", 
-            row=1,
-            disabled=disabled
+            label=label,
+            style=discord.ButtonStyle.secondary,
+            custom_id="hide_unhide",
+            row=1
         )
+        self.is_hidden = is_hidden
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -266,73 +247,115 @@ class HideButton(Button):
         
         await interaction.response.defer(ephemeral=True)
         
-        # Deny default role view
         current_overwrites = channel.overwrites_for(interaction.guild.default_role)
-        await channel.set_permissions(
-            interaction.guild.default_role, 
-            view_channel=False, 
-            connect=current_overwrites.connect
-        )
         
-        # Grant current members explicit access so they can still see it
-        for member in list(channel.members):
-            try:
-                await channel.set_permissions(member, view_channel=True)
-            except Exception:
-                continue
-        
-        await view.update_database(hidden=True)
-        
-        # Refresh the view with updated button states
-        new_view = BasicControlsView(view.cog, view.channel_id, view.owner_id)
-        await interaction.edit_original_response(view=new_view)
-        await interaction.followup.send("🕵️ Channel hidden! Current members can still see it.", ephemeral=True)
-
-
-class UnhideButton(Button):
-    def __init__(self, disabled: bool = False):
-        super().__init__(
-            label="👀 Unhide", 
-            style=discord.ButtonStyle.secondary, 
-            custom_id="unhide", 
-            row=1,
-            disabled=disabled
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        view: ControlPanel = self.view
-        channel = interaction.guild.get_channel(view.channel_id)
-        if not channel:
-            await interaction.response.send_message("❌ Channel not found!", ephemeral=True)
-            return
-        
-        await interaction.response.defer(ephemeral=True)
-        
-        # Restore default view True
-        current_overwrites = channel.overwrites_for(interaction.guild.default_role)
-        await channel.set_permissions(
-            interaction.guild.default_role, 
-            view_channel=True, 
-            connect=current_overwrites.connect
-        )
-        
-        # Remove per-member allows we added earlier (preserve owner)
-        for member in list(channel.guild.members):
-            if member.id == view.owner_id:
-                continue
-            overwrite = channel.overwrites_for(member)
-            if overwrite and (overwrite.view_channel is True):
+        if self.is_hidden:
+            # Currently hidden -> Unhide
+            await channel.set_permissions(
+                interaction.guild.default_role,
+                view_channel=True,
+                connect=current_overwrites.connect
+            )
+            
+            # Remove per-member allows (preserve owner)
+            for member in list(channel.guild.members):
+                if member.id == view.owner_id:
+                    continue
+                overwrite = channel.overwrites_for(member)
+                if overwrite and (overwrite.view_channel is True):
+                    try:
+                        await channel.set_permissions(member, overwrite=None)
+                    except Exception:
+                        continue
+            
+            await view.update_database(hidden=False)
+            action_msg = "👀 Channel now visible!"
+        else:
+            # Currently visible -> Hide
+            await channel.set_permissions(
+                interaction.guild.default_role,
+                view_channel=False,
+                connect=current_overwrites.connect
+            )
+            
+            # Grant current members explicit access
+            for member in list(channel.members):
                 try:
-                    await channel.set_permissions(member, overwrite=None)
+                    await channel.set_permissions(member, view_channel=True)
                 except Exception:
                     continue
-        
-        await view.update_database(hidden=False)
+            
+            await view.update_database(hidden=True)
+            action_msg = "🕵️ Channel hidden! Current members can still see it."
         
         # Refresh the view with updated button states
         new_view = BasicControlsView(view.cog, view.channel_id, view.owner_id)
         await interaction.edit_original_response(view=new_view)
-        await interaction.followup.send("👀 Channel now visible!", ephemeral=True)
+        await interaction.followup.send(action_msg, ephemeral=True)
+
+
+class KickButton(Button):
+    def __init__(self):
+        super().__init__(label="👢 Kick", style=discord.ButtonStyle.secondary, custom_id="kick", row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: ControlPanel = self.view
+        channel = interaction.guild.get_channel(view.channel_id)
+        if not channel:
+            await interaction.response.send_message("❌ Channel not found!", ephemeral=True)
+            return
+        
+        # Get users in VC (excluding owner)
+        vc_users = [m for m in channel.members if m.id != view.owner_id]
+        
+        if not vc_users:
+            await interaction.response.send_message("❌ No users in VC to kick!", ephemeral=True)
+            return
+        
+        # Create user select menu
+        select_view = View(timeout=60)
+        
+        select = UserSelect(
+            placeholder="Select users to kick...",
+            min_values=1,
+            max_values=min(25, len(vc_users)),
+            row=0
+        )
+        
+        async def select_callback(select_interaction: discord.Interaction):
+            await select_interaction.response.defer(ephemeral=True)
+            successful = []
+            
+            for member in select.values:
+                try:
+                    if member.voice and member.voice.channel == channel:
+                        await member.move_to(None)
+                        successful.append(member.display_name)
+                except Exception as e:
+                    print(f"Error kicking {member.id}: {e}")
+            
+            if successful:
+                await select_interaction.followup.send(f"👢 Kicked: {', '.join(successful)}", ephemeral=True)
+            else:
+                await select_interaction.followup.send("❌ Failed to kick users!", ephemeral=True)
+        
+        select.callback = select_callback
+        select_view.add_item(select)
+        
+        # Add cancel button
+        cancel_button = Button(label="❌ Cancel", style=discord.ButtonStyle.secondary, row=1)
+        
+        async def cancel_callback(cancel_interaction: discord.Interaction):
+            await cancel_interaction.response.edit_message(content="Kick cancelled.", view=None)
+        
+        cancel_button.callback = cancel_callback
+        select_view.add_item(cancel_button)
+        
+        await interaction.response.send_message(
+            "Select users to kick:",
+            view=select_view,
+            ephemeral=True
+        )
 
 
 class TrustButton(Button):
@@ -387,6 +410,15 @@ class TrustButton(Button):
         
         select.callback = select_callback
         select_view.add_item(select)
+        
+        # Add cancel button
+        cancel_button = Button(label="❌ Cancel", style=discord.ButtonStyle.secondary, row=1)
+        
+        async def cancel_callback(cancel_interaction: discord.Interaction):
+            await cancel_interaction.response.edit_message(content="Trust cancelled.", view=None)
+        
+        cancel_button.callback = cancel_callback
+        select_view.add_item(cancel_button)
         
         await interaction.response.send_message("Select users to trust:", view=select_view, ephemeral=True)
 
@@ -444,58 +476,16 @@ class UntrustButton(Button):
         select.callback = select_callback
         select_view.add_item(select)
         
+        # Add cancel button
+        cancel_button = Button(label="❌ Cancel", style=discord.ButtonStyle.secondary, row=1)
+        
+        async def cancel_callback(cancel_interaction: discord.Interaction):
+            await cancel_interaction.response.edit_message(content="Untrust cancelled.", view=None)
+        
+        cancel_button.callback = cancel_callback
+        select_view.add_item(cancel_button)
+        
         await interaction.response.send_message("Select users to untrust:", view=select_view, ephemeral=True)
-
-
-class KickButton(Button):
-    def __init__(self):
-        super().__init__(label="👢 Kick", style=discord.ButtonStyle.secondary, custom_id="kick", row=2)
-
-    async def callback(self, interaction: discord.Interaction):
-        view: ControlPanel = self.view
-        channel = interaction.guild.get_channel(view.channel_id)
-        if not channel:
-            await interaction.response.send_message("❌ Channel not found!", ephemeral=True)
-            return
-        
-        # Get users in VC (excluding owner)
-        vc_users = [m for m in channel.members if m.id != view.owner_id]
-        
-        if not vc_users:
-            await interaction.response.send_message("❌ No users in VC to kick!", ephemeral=True)
-            return
-        
-        # Create user select menu
-        select_view = View(timeout=60)
-        
-        select = UserSelect(
-            placeholder="Select users to kick...",
-            min_values=1,
-            max_values=min(25, len(vc_users)),
-            row=0
-        )
-        
-        async def select_callback(select_interaction: discord.Interaction):
-            await select_interaction.response.defer(ephemeral=True)
-            successful = []
-            
-            for member in select.values:
-                try:
-                    if member.voice and member.voice.channel == channel:
-                        await member.move_to(None)
-                        successful.append(member.display_name)
-                except Exception as e:
-                    print(f"Error kicking {member.id}: {e}")
-            
-            if successful:
-                await select_interaction.followup.send(f"👢 Kicked: {', '.join(successful)}", ephemeral=True)
-            else:
-                await select_interaction.followup.send("❌ Failed to kick users!", ephemeral=True)
-        
-        select.callback = select_callback
-        select_view.add_item(select)
-        
-        await interaction.response.send_message("Select users to kick:", view=select_view, ephemeral=True)
 
 
 class BlockButton(Button):
@@ -556,6 +546,15 @@ class BlockButton(Button):
         select.callback = select_callback
         select_view.add_item(select)
         
+        # Add cancel button
+        cancel_button = Button(label="❌ Cancel", style=discord.ButtonStyle.secondary, row=1)
+        
+        async def cancel_callback(cancel_interaction: discord.Interaction):
+            await cancel_interaction.response.edit_message(content="Block cancelled.", view=None)
+        
+        cancel_button.callback = cancel_callback
+        select_view.add_item(cancel_button)
+        
         await interaction.response.send_message("Select users to block:", view=select_view, ephemeral=True)
 
 
@@ -612,6 +611,15 @@ class UnblockButton(Button):
         select.callback = select_callback
         select_view.add_item(select)
         
+        # Add cancel button
+        cancel_button = Button(label="❌ Cancel", style=discord.ButtonStyle.secondary, row=1)
+        
+        async def cancel_callback(cancel_interaction: discord.Interaction):
+            await cancel_interaction.response.edit_message(content="Unblock cancelled.", view=None)
+        
+        cancel_button.callback = cancel_callback
+        select_view.add_item(cancel_button)
+        
         await interaction.response.send_message("Select users to unblock:", view=select_view, ephemeral=True)
 
 
@@ -642,14 +650,13 @@ class TransferButton(Button):
         select = UserSelect(
             placeholder="Select a user in VC to transfer ownership...",
             min_values=1,
-            max_values=1,  # Max 1 selection
+            max_values=1,
             row=0
         )
         
         async def select_callback(select_interaction: discord.Interaction):
             await select_interaction.response.defer(ephemeral=True)
             
-            # Get the selected user (only one since max_values=1)
             new_owner = select.values[0]
             
             # Verify they're still in the VC
@@ -658,11 +665,6 @@ class TransferButton(Button):
                     "❌ That user is no longer in the voice channel!",
                     ephemeral=True
                 )
-                return
-            
-            # Double-check they're not the owner
-            if new_owner.id == view.owner_id:
-                await select_interaction.followup.send("❌ You are already the owner!", ephemeral=True)
                 return
             
             try:
@@ -675,15 +677,12 @@ class TransferButton(Button):
                     await db.commit()
                 
                 # Update permissions
-                # Remove manage perms from old owner
                 old_owner = interaction.guild.get_member(view.owner_id)
                 if old_owner:
                     await channel.set_permissions(old_owner, manage_channels=False)
                 
-                # Give manage perms to new owner
                 await channel.set_permissions(new_owner, manage_channels=True)
                 
-                # Send confirmation in channel only (no DMs)
                 embed = discord.Embed(
                     title="🔄 VC Ownership Transferred",
                     description=f"{new_owner.mention} is now the owner of this voice channel!",
@@ -696,12 +695,12 @@ class TransferButton(Button):
                     ephemeral=True
                 )
                 
-                # Refresh the original message to show new owner's view
+                # Refresh the original message
                 try:
                     new_view = BasicControlsView(view.cog, view.channel_id, new_owner.id)
                     await interaction.edit_original_response(view=new_view)
                 except:
-                    pass  # Original message might be gone
+                    pass
                 
             except Exception as e:
                 print(f"Error transferring ownership: {e}")
@@ -713,7 +712,7 @@ class TransferButton(Button):
         select.callback = select_callback
         select_view.add_item(select)
         
-        # Add a cancel button
+        # Add cancel button
         cancel_button = Button(label="❌ Cancel", style=discord.ButtonStyle.secondary, row=1)
         
         async def cancel_callback(cancel_interaction: discord.Interaction):
