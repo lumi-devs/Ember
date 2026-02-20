@@ -409,24 +409,30 @@ class TempVoice(commands.Cog):
                 title="🎯 Voice Channel Controls", 
                 description=(
                     "**Use the buttons below to manage your voice channel:**\n"
-                    "**Use `/panel` to access these controls anytime**\n\n"
-                    "**🔒 Access Controls:**\n"
-                    "• Lock/Unlock - Control who can join\n"
-                    "• Hide/Unhide - Control visibility\n"
-                    "**👥 Member Management:**\n"
-                    "• Trust users - Allow specific users to join\n"
-                    "• Ban users - Block specific users\n"
-                    "• Kick users - Remove from VC\n\n"
-                    "**🔄 Advanced:**\n"
-                    "• Limit - Set user limit\n"
-                    "• Transfer - Give ownership to someone else\n\n"
+                    "• 👤 Name - Rename your channel\n"
+                    "• 👥 Limit - Set user limit\n"
+                    "• 🗑️ Delete - Delete the channel\n\n"
+                    "• 🔒/🔓 Lock/Unlock - Control who can join\n"
+                    "• 🕵️/👀 Hide/Unhide - Control visibility\n"
+                    "• 👢 Kick - Remove users from VC\n\n"
+                    "• ✅ Trust - Allow users to join\n"
+                    "• ❌ Untrust - Remove user access\n"
+                    "• 🚫 Block - Block users from VC\n"
+                    "• ✅ Unblock - Unblock users\n\n"
+                    "• 🔄 Transfer - Give ownership to someone in VC\n"
+                    "• 🎯 Claim - Claim ownership when owner is gone\n\n"
                     "**📌 Need help dragging members?**\n"
                     "Use <#1418501302626816010> for drag requests!"
                 ),
                 color=discord.Color.orange()
             )
             embed.set_footer(text="Only the VC owner can use these controls")
+            info_embed=discord.Embed(
+                description=("Use `/panel` to access the controls anytime."),
+                color=discord.Color.orange()
+            )
             await channel.send(embed=embed, view=BasicControlsView(self, channel.id, owner_id))
+            await channel.send(embed=info_embed)
         except Exception:
             pass
 
@@ -473,16 +479,22 @@ class TempVoice(commands.Cog):
             title="🎯 Voice Channel Controls", 
             description=(
                 "**Use the buttons below to manage your voice channel:**\n\n"
-                "**🔒 Access Controls:**\n"
-                "• Lock/Unlock - Control who can join\n"
-                "• Hide/Unhide - Control visibility\n"
-                "**👥 Member Management:**\n"
-                "• Trust users - Allow specific users to join\n"
-                "• Ban users - Block specific users\n"
-                "• Kick users - Remove from VC\n\n"
-                "**🔄 Advanced:**\n"
-                "• Limit - Set user limit\n"
-                "• Transfer - Give ownership to someone else\n\n"
+                "**📝 Basic Controls (Row 1):**\n"
+                "• 👤 Name - Rename your channel\n"
+                "• 👥 Limit - Set user limit\n"
+                "• 🗑️ Delete - Delete the channel\n\n"
+                "**🔒 Privacy & Actions (Row 2):**\n"
+                "• 🔒/🔓 Lock/Unlock - Control who can join\n"
+                "• 🕵️/👀 Hide/Unhide - Control visibility\n"
+                "• 👢 Kick - Remove users from VC\n\n"
+                "**👥 Member Management (Row 3):**\n"
+                "• ✅ Trust - Allow users to join\n"
+                "• ❌ Untrust - Remove user access\n"
+                "• 🚫 Block - Block users from VC\n"
+                "• ✅ Unblock - Unblock users\n\n"
+                "**🔄 Advanced (Row 4):**\n"
+                "• 🔄 Transfer - Give ownership to someone in VC\n"
+                "• 🎯 Claim - Claim ownership when owner is gone\n\n"
                 "**📌 Need help dragging members?**\n"
                 "Use <#1418501302626816010> for drag requests!"
             ),
@@ -493,8 +505,6 @@ class TempVoice(commands.Cog):
         view = BasicControlsView(self, voice_channel.id, owner_id)
         
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-
 async def setup(bot):
     await bot.add_cog(TempVoice(bot))
     print("[TempVoice] loaded with optimized performance ✅")

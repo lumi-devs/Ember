@@ -425,7 +425,7 @@ class TrustButton(Button):
 
 class UntrustButton(Button):
     def __init__(self):
-        super().__init__(label="❌ Untrust", style=discord.ButtonStyle.danger, custom_id="untrust", row=2)
+        super().__init__(label="❌ Untrust", style=discord.ButtonStyle.secondary, custom_id="untrust", row=2)
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -490,7 +490,7 @@ class UntrustButton(Button):
 
 class BlockButton(Button):
     def __init__(self):
-        super().__init__(label="🚫 Block", style=discord.ButtonStyle.danger, custom_id="block", row=2)
+        super().__init__(label="🚫 Block", style=discord.ButtonStyle.secondary, custom_id="block", row=2)
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
