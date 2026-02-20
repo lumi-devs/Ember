@@ -245,7 +245,7 @@ class TempVoice(commands.Cog):
             
             name = f"{clean_base} {channel_number}"
 
-            # 3. Create the Channel - owner gets manage_channels by default in voice channels
+            # 3. Create the Channel - FAST (only this blocks)
             vc = await guild.create_voice_channel(
                 name=name,
                 category=category,
@@ -253,75 +253,13 @@ class TempVoice(commands.Cog):
                 reason=f"Temp VC created by {member}"
             )
 
-            # 4. OPTIMIZED REORGANIZING LOGIC - SINGLE API CALL
-            # Get all channels once
-            all_vcs = category.voice_channels
-            
-            # Pre-calculate groupings
-            generators = []
-            static_vcs = []
-            managed_vcs = []
-            
-            for ch in all_vcs:
-                if ch.id in JOIN_CHANNELS:
-                    generators.append(ch)
-                elif ch.id in db_map or ch.id == vc.id:
-                    managed_vcs.append(ch)
-                else:
-                    static_vcs.append(ch)
-            
-            # Sort generators by position
-            generators.sort(key=lambda x: x.position)
-            
-            # Prepare sorting keys for managed channels
-            sort_keys = {}
-            for ch in managed_vcs:
-                if ch.id == vc.id:
-                    sort_keys[ch.id] = (self.type_order.get(vc_type, 4), channel_number)
-                else:
-                    m_type, m_num = db_map[ch.id]
-                    sort_keys[ch.id] = (self.type_order.get(m_type, 4), m_num)
-            
-            # Sort managed channels
-            managed_vcs.sort(key=lambda x: sort_keys[x.id])
-            
-            # Re-assemble final order
-            final_order = generators + managed_vcs + static_vcs
-            
-            # Prepare position mapping for batch update
-            position_mapping = {}
-            for index, ch in enumerate(final_order):
-                if ch.position != index:
-                    position_mapping[ch] = index
-            
-            # Bulk edit positions - SINGLE API CALL if Discord API supports it
-            if position_mapping:
-                try:
-                    # Use Discord's position parameter with channel IDs for batch update
-                    # This is more efficient than individual edits
-                    payload = []
-                    for ch, pos in position_mapping.items():
-                        payload.append({"id": ch.id, "position": pos})
-                    
-                    await guild.edit_channel_positions(payload)
-                except Exception as e:
-                    print(f"[TempVoice] Batch positioning failed: {e}")
-                    # Fallback to individual edits if batch fails
-                    for ch, pos in position_mapping.items():
-                        try:
-                            await ch.edit(position=pos)
-                        except Exception as inner_e:
-                            print(f"[TempVoice] Individual positioning failed for {ch.name}: {inner_e}")
-
-            # 5. FAST DB INSERT & CACHE UPDATE
-            # No need to set permissions - Discord gives manage_channels to channel creator automatically
-            
+            # 4. Move member immediately (fast)
             try:
                 await member.move_to(vc)
             except:
                 pass
 
-            # Fast DB insert
+            # 5. FAST DB INSERT & CACHE UPDATE
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute(
                     """INSERT OR REPLACE INTO voiceChannel 
@@ -334,7 +272,79 @@ class TempVoice(commands.Cog):
             # Update cache immediately
             self._update_cache(guild.id, vc.id, vc_type, channel_number)
 
+            # 6. OFFLOAD CHANNEL POSITIONING TO BACKGROUND TASK
+            asyncio.create_task(self._reorder_channels_background(guild, category.id, vc.id, vc_type, channel_number))
+
             await self._send_panel(vc, member.id)
+
+    async def _reorder_channels_background(self, guild, category_id, new_vc_id, vc_type, channel_number):
+        """Background task to reorder channels without blocking main flow"""
+        try:
+            # Small delay to ensure channel is fully created and cache is updated
+            await asyncio.sleep(1)
+            
+            category = guild.get_channel(category_id)
+            if not category:
+                return
+            
+            # Get fresh cache
+            db_map = await self._get_cached_channels(guild.id, force_refresh=True)
+            
+            # Get all channels once
+            all_vcs = category.voice_channels
+            
+            # Pre-calculate groupings
+            generators = []
+            static_vcs = []
+            managed_vcs = []
+            
+            for ch in all_vcs:
+                if ch.id in JOIN_CHANNELS:
+                    generators.append(ch)
+                elif ch.id in db_map:
+                    managed_vcs.append(ch)
+                else:
+                    static_vcs.append(ch)
+            
+            # Sort generators by position
+            generators.sort(key=lambda x: x.position)
+            
+            # Prepare sorting keys for managed channels
+            sort_keys = {}
+            for ch in managed_vcs:
+                if ch.id == new_vc_id:
+                    sort_keys[ch.id] = (self.type_order.get(vc_type, 4), channel_number)
+                else:
+                    m_type, m_num = db_map[ch.id]
+                    sort_keys[ch.id] = (self.type_order.get(m_type, 4), m_num)
+            
+            # Sort managed channels
+            managed_vcs.sort(key=lambda x: sort_keys[x.id])
+            
+            # Re-assemble final order
+            final_order = generators + managed_vcs + static_vcs
+            
+            # Create position mapping for channels that need moving
+            position_mapping = {}
+            for index, ch in enumerate(final_order):
+                if ch.position != index:
+                    position_mapping[ch] = index
+            
+            # Apply position changes with delays to avoid rate limits
+            if position_mapping:
+                # Sort by target position to minimize movement
+                sorted_channels = sorted(position_mapping.items(), key=lambda x: x[1])
+                
+                for ch, pos in sorted_channels:
+                    try:
+                        if ch.position != pos:
+                            await ch.edit(position=pos)
+                            await asyncio.sleep(0.3)  # Small delay between edits
+                    except Exception as e:
+                        print(f"[TempVoice] Background positioning failed for {ch.name}: {e}")
+                        
+        except Exception as e:
+            print(f"[TempVoice] Background reordering error: {e}")
                 
     # ---------------- CLEANUP ----------------
     async def _schedule_cleanup(self, ch):
