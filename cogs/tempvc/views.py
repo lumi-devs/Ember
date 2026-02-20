@@ -370,7 +370,7 @@ class TrustButton(Button):
             return
         
         # Create user select menu
-        select_view = View(timeout=60)
+        select_view = View(timeout=None)
         
         # Get all members who don't already have allow perms
         available_users = []
@@ -435,7 +435,7 @@ class UntrustButton(Button):
             return
         
         # Create user select menu
-        select_view = View(timeout=60)
+        select_view = View(timeout=None)
         
         # Get members with allow perms
         trusted_users = []
@@ -500,7 +500,7 @@ class BlockButton(Button):
             return
         
         # Create user select menu
-        select_view = View(timeout=60)
+        select_view = View(timeout=None)
         
         # Get users who aren't already blocked
         available_users = []
@@ -570,7 +570,7 @@ class UnblockButton(Button):
             return
         
         # Create user select menu
-        select_view = View(timeout=60)
+        select_view = View(timeout=None)
         
         # Get blocked users
         blocked_users = []
@@ -645,7 +645,7 @@ class TransferButton(Button):
             return
         
         # Create user select view
-        select_view = View(timeout=60)
+        select_view = View(timeout=None)
         
         select = UserSelect(
             placeholder="Select a user in VC to transfer ownership...",
