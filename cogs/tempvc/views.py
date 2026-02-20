@@ -360,7 +360,7 @@ class KickButton(Button):
 
 class TrustButton(Button):
     def __init__(self):
-        super().__init__(label="✅ Trust", style=discord.ButtonStyle.success, custom_id="trust", row=2)
+        super().__init__(label="✅ Trust", style=discord.ButtonStyle.secondary, custom_id="trust", row=2)
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -560,7 +560,7 @@ class BlockButton(Button):
 
 class UnblockButton(Button):
     def __init__(self):
-        super().__init__(label="✅ Unblock", style=discord.ButtonStyle.success, custom_id="unblock", row=2)
+        super().__init__(label="✅ Unblock", style=discord.ButtonStyle.secondary, custom_id="unblock", row=3)
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
