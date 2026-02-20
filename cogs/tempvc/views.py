@@ -123,7 +123,7 @@ class DeleteButton(Button):
             return
         
         # Create confirmation view
-        confirm_view = View(timeout=30)
+        confirm_view = View(timeout=None)
         
         async def confirm_callback(confirm_interaction: discord.Interaction):
             if confirm_interaction.user.id != view.owner_id:
@@ -313,7 +313,7 @@ class KickButton(Button):
             return
         
         # Create user select menu
-        select_view = View(timeout=60)
+        select_view = View(timeout=None)
         
         select = UserSelect(
             placeholder="Select users to kick...",
