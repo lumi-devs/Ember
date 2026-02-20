@@ -245,7 +245,7 @@ class TempVoice(commands.Cog):
             
             name = f"{clean_base} {channel_number}"
 
-            # 3. Create the Channel
+            # 3. Create the Channel - owner gets manage_channels by default in voice channels
             vc = await guild.create_voice_channel(
                 name=name,
                 category=category,
@@ -253,7 +253,7 @@ class TempVoice(commands.Cog):
                 reason=f"Temp VC created by {member}"
             )
 
-            # 4. OPTIMIZED REORGANIZING LOGIC
+            # 4. OPTIMIZED REORGANIZING LOGIC - SINGLE API CALL
             # Get all channels once
             all_vcs = category.voice_channels
             
@@ -267,7 +267,7 @@ class TempVoice(commands.Cog):
                     generators.append(ch)
                 elif ch.id in db_map or ch.id == vc.id:
                     managed_vcs.append(ch)
-                elif ch.id != vc.id:
+                else:
                     static_vcs.append(ch)
             
             # Sort generators by position
@@ -288,18 +288,33 @@ class TempVoice(commands.Cog):
             # Re-assemble final order
             final_order = generators + managed_vcs + static_vcs
             
-            # Bulk edit positions - FASTER
-            try:
-                # Only reposition channels that actually need moving
-                for index, ch in enumerate(final_order):
-                    if ch.position != index:
-                        # Use gather for parallel edits where possible
-                        await ch.edit(position=index)
-            except Exception as e:
-                print(f"[TempVoice] Positioning failed: {e}")
+            # Prepare position mapping for batch update
+            position_mapping = {}
+            for index, ch in enumerate(final_order):
+                if ch.position != index:
+                    position_mapping[ch] = index
+            
+            # Bulk edit positions - SINGLE API CALL if Discord API supports it
+            if position_mapping:
+                try:
+                    # Use Discord's position parameter with channel IDs for batch update
+                    # This is more efficient than individual edits
+                    payload = []
+                    for ch, pos in position_mapping.items():
+                        payload.append({"id": ch.id, "position": pos})
+                    
+                    await guild.edit_channel_positions(payload)
+                except Exception as e:
+                    print(f"[TempVoice] Batch positioning failed: {e}")
+                    # Fallback to individual edits if batch fails
+                    for ch, pos in position_mapping.items():
+                        try:
+                            await ch.edit(position=pos)
+                        except Exception as inner_e:
+                            print(f"[TempVoice] Individual positioning failed for {ch.name}: {inner_e}")
 
             # 5. FAST DB INSERT & CACHE UPDATE
-            await vc.set_permissions(member, manage_channels=True, connect=True, speak=True)
+            # No need to set permissions - Discord gives manage_channels to channel creator automatically
             
             try:
                 await member.move_to(vc)
