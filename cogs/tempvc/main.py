@@ -30,9 +30,25 @@ class TempVoice(commands.Cog):
         self._last_cache_update = {} # guild_id -> timestamp
         self._cache_ttl = 5         # seconds
 
+
     async def cog_load(self):
         print("[TempVoice] Cog loaded with queue protection ✅")
         await self._init_db()
+        
+        # Load all existing voice channels and register their views
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                async with db.execute("SELECT voiceID, userID FROM voiceChannel") as cursor:
+                    async for row in cursor:
+                        voice_id, user_id = row
+                        # Check if channel still exists
+                        channel = self.bot.get_channel(voice_id)
+                        if channel:
+                            view = BasicControlsView(self, voice_id, user_id)
+                            self.bot.add_view(view, message_id=None)  # Register persistent view
+                            print(f"[TempVoice] Registered persistent view for channel {voice_id}")
+        except Exception as e:
+            print(f"[TempVoice] Error loading persistent views: {e}")
 
     def cog_unload(self):
         self._heartbeat.cancel()
@@ -428,6 +444,7 @@ class TempVoice(commands.Cog):
                 await self._schedule_cleanup(ch)
 
     # ---------------- PANEL ----------------
+
     async def _send_panel(self, channel, owner_id):
         try:
             embed = discord.Embed(
@@ -456,10 +473,16 @@ class TempVoice(commands.Cog):
                 description=("Use `/panel` to access the controls anytime."),
                 color=discord.Color.orange()
             )
-            await channel.send(embed=embed, view=BasicControlsView(self, channel.id, owner_id))
+            
+            # Create and store the view with persistent custom IDs
+            view = BasicControlsView(self, channel.id, owner_id)
+            
+            # Send the message with the view
+            await channel.send(embed=embed, view=view)
             await channel.send(embed=info_embed)
-        except Exception:
-            pass
+            
+        except Exception as e:
+            print(f"[TempVoice] Error sending panel: {e}")
 
     @app_commands.command(name="panel", description="Open your voice channel control panel")
     @app_commands.guild_only()

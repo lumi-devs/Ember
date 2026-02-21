@@ -10,7 +10,8 @@ class ControlPanel(View):
     """Base view for control panels. Interaction checks ensure only the owner can use."""
 
     def __init__(self, cog, channel_id: int, owner_id: int):
-        super().__init__(timeout=None)
+        # timeout=0 means the view never expires
+        super().__init__(timeout=0)
         self.cog = cog
         self.channel_id = channel_id
         self.owner_id = owner_id
@@ -22,6 +23,16 @@ class ControlPanel(View):
             )
             return False
         return True
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item):
+        """Handle errors gracefully"""
+        try:
+            await interaction.response.send_message(
+                f"❌ An error occurred: {str(error)}", ephemeral=True
+            )
+        except:
+            pass
+        print(f"[TempVoice] View error: {error}")
 
     async def update_database(self, **kwargs):
         """Update the voiceChannel table using voiceID as key."""
@@ -42,7 +53,6 @@ class ControlPanel(View):
         return any(getattr(overwrite, p) is False for p in ("connect", "view_channel", "speak", "stream"))
 
 
-# --------------------- MAIN CONTROLS VIEW (ALL BUTTONS IN ONE PLACE) ---------------------
 class BasicControlsView(ControlPanel):
     def __init__(self, cog, channel_id: int, owner_id: int):
         super().__init__(cog, channel_id, owner_id)
@@ -60,32 +70,67 @@ class BasicControlsView(ControlPanel):
             is_hidden = False
         
         # Row 0: Basic Controls (Name, Limit, Delete)
-        self.add_item(NameButton())                          # 👤 Name
-        self.add_item(LimitButton())                         # 👥 Limit
-        self.add_item(DeleteButton())                        # 🗑️ Delete
+        name_btn = NameButton()
+        name_btn.custom_id = f"name_{channel_id}_{owner_id}"
         
-        # Row 1: Privacy & Actions (Lock/Unlock, Hide/Unhide, Kick)
-        # These buttons will update dynamically when clicked
-        self.add_item(LockButton(is_locked=is_locked))       # 🔒 Lock / 🔓 Unlock (toggles)
-        self.add_item(HideButton(is_hidden=is_hidden))       # 🕵️ Hide / 👀 Unhide (toggles)
-        self.add_item(KickButton())                           # 👢 Kick
+        limit_btn = LimitButton()
+        limit_btn.custom_id = f"limit_{channel_id}_{owner_id}"
         
-        # Row 2: Member Management (Trust, Untrust, Block, Unblock)
-        self.add_item(TrustButton())       # ✅ Trust
-        self.add_item(UntrustButton())     # ❌ Untrust
-        self.add_item(BlockButton())       # 🚫 Block
-        self.add_item(UnblockButton())     # ✅ Unblock
+        delete_btn = DeleteButton()
+        delete_btn.custom_id = f"delete_{channel_id}_{owner_id}"
         
-        # Row 3: Advanced (Transfer, Claim)
-        self.add_item(TransferButton())    # 🔄 Transfer
-        self.add_item(ClaimButton())       # 🎯 Claim
+        self.add_item(name_btn)
+        self.add_item(limit_btn)
+        self.add_item(delete_btn)
+        
+        # Row 1: Privacy & Actions
+        lock_btn = LockButton(is_locked=is_locked)
+        lock_btn.custom_id = f"lock_{channel_id}_{owner_id}"
+        
+        hide_btn = HideButton(is_hidden=is_hidden)
+        hide_btn.custom_id = f"hide_{channel_id}_{owner_id}"
+        
+        kick_btn = KickButton()
+        kick_btn.custom_id = f"kick_{channel_id}_{owner_id}"
+        
+        self.add_item(lock_btn)
+        self.add_item(hide_btn)
+        self.add_item(kick_btn)
+        
+        # Row 2: Member Management
+        trust_btn = TrustButton()
+        trust_btn.custom_id = f"trust_{channel_id}_{owner_id}"
+        
+        untrust_btn = UntrustButton()
+        untrust_btn.custom_id = f"untrust_{channel_id}_{owner_id}"
+        
+        block_btn = BlockButton()
+        block_btn.custom_id = f"block_{channel_id}_{owner_id}"
+        
+        unblock_btn = UnblockButton()
+        unblock_btn.custom_id = f"unblock_{channel_id}_{owner_id}"
+        
+        self.add_item(trust_btn)
+        self.add_item(untrust_btn)
+        self.add_item(block_btn)
+        self.add_item(unblock_btn)
+        
+        # Row 3: Advanced
+        transfer_btn = TransferButton()
+        transfer_btn.custom_id = f"transfer_{channel_id}_{owner_id}"
+        
+        claim_btn = ClaimButton()
+        claim_btn.custom_id = f"claim_{channel_id}_{owner_id}"
+        
+        self.add_item(transfer_btn)
+        self.add_item(claim_btn)
 
 
 # --------------------- BUTTON CLASSES ---------------------
 
 class NameButton(Button):
     def __init__(self):
-        super().__init__(label="👤 Name", style=discord.ButtonStyle.secondary, custom_id="name", row=0)
+        super().__init__(label="👤 Name", style=discord.ButtonStyle.secondary, row=0)
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -99,7 +144,7 @@ class NameButton(Button):
 
 class LimitButton(Button):
     def __init__(self):
-        super().__init__(label="👥 Limit", style=discord.ButtonStyle.secondary, custom_id="limit", row=0)
+        super().__init__(label="👥 Limit", style=discord.ButtonStyle.secondary, row=0)
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -113,7 +158,7 @@ class LimitButton(Button):
 
 class DeleteButton(Button):
     def __init__(self):
-        super().__init__(label="🗑️ Delete", style=discord.ButtonStyle.danger, custom_id="delete", row=0)
+        super().__init__(label="🗑️ Delete", style=discord.ButtonStyle.danger, row=0)
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -123,7 +168,7 @@ class DeleteButton(Button):
             return
         
         # Create confirmation view
-        confirm_view = View(timeout=None)
+        confirm_view = View(timeout=60)
         
         async def confirm_callback(confirm_interaction: discord.Interaction):
             if confirm_interaction.user.id != view.owner_id:
@@ -137,7 +182,8 @@ class DeleteButton(Button):
                     await db.commit()
                 await channel.delete(reason="VC owner requested deletion")
                 await confirm_interaction.followup.send("✅ Voice channel deleted!", ephemeral=True)
-            except Exception:
+            except Exception as e:
+                print(f"Error deleting channel: {e}")
                 await confirm_interaction.followup.send("❌ Failed to delete channel!", ephemeral=True)
         
         async def cancel_callback(cancel_interaction: discord.Interaction):
@@ -160,12 +206,10 @@ class DeleteButton(Button):
 
 class LockButton(Button):
     def __init__(self, is_locked: bool = False):
-        # Dynamic label based on state
         label = "🔓 Unlock" if is_locked else "🔒 Lock"
         super().__init__(
             label=label,
             style=discord.ButtonStyle.secondary,
-            custom_id="lock_unlock",
             row=1
         )
         self.is_locked = is_locked
@@ -228,12 +272,10 @@ class LockButton(Button):
 
 class HideButton(Button):
     def __init__(self, is_hidden: bool = False):
-        # Dynamic label based on state
         label = "👀 Unhide" if is_hidden else "🕵️ Hide"
         super().__init__(
             label=label,
             style=discord.ButtonStyle.secondary,
-            custom_id="hide_unhide",
             row=1
         )
         self.is_hidden = is_hidden
@@ -296,7 +338,7 @@ class HideButton(Button):
 
 class KickButton(Button):
     def __init__(self):
-        super().__init__(label="👢 Kick", style=discord.ButtonStyle.secondary, custom_id="kick", row=1)
+        super().__init__(label="👢 Kick", style=discord.ButtonStyle.secondary, row=1)
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -313,7 +355,7 @@ class KickButton(Button):
             return
         
         # Create user select menu
-        select_view = View(timeout=None)
+        select_view = View(timeout=60)
         
         select = UserSelect(
             placeholder="Select users to kick...",
@@ -360,7 +402,7 @@ class KickButton(Button):
 
 class TrustButton(Button):
     def __init__(self):
-        super().__init__(label="✅ Trust", style=discord.ButtonStyle.secondary, custom_id="trust", row=2)
+        super().__init__(label="✅ Trust", style=discord.ButtonStyle.secondary, row=2)
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -370,7 +412,7 @@ class TrustButton(Button):
             return
         
         # Create user select menu
-        select_view = View(timeout=None)
+        select_view = View(timeout=60)
         
         # Get all members who don't already have allow perms
         available_users = []
@@ -425,7 +467,7 @@ class TrustButton(Button):
 
 class UntrustButton(Button):
     def __init__(self):
-        super().__init__(label="❌ Untrust", style=discord.ButtonStyle.secondary, custom_id="untrust", row=2)
+        super().__init__(label="❌ Untrust", style=discord.ButtonStyle.secondary, row=2)
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -435,7 +477,7 @@ class UntrustButton(Button):
             return
         
         # Create user select menu
-        select_view = View(timeout=None)
+        select_view = View(timeout=60)
         
         # Get members with allow perms
         trusted_users = []
@@ -490,7 +532,7 @@ class UntrustButton(Button):
 
 class BlockButton(Button):
     def __init__(self):
-        super().__init__(label="🚫 Block", style=discord.ButtonStyle.secondary, custom_id="block", row=2)
+        super().__init__(label="🚫 Block", style=discord.ButtonStyle.secondary, row=2)
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -500,7 +542,7 @@ class BlockButton(Button):
             return
         
         # Create user select menu
-        select_view = View(timeout=None)
+        select_view = View(timeout=60)
         
         # Get users who aren't already blocked
         available_users = []
@@ -560,7 +602,7 @@ class BlockButton(Button):
 
 class UnblockButton(Button):
     def __init__(self):
-        super().__init__(label="✅ Unblock", style=discord.ButtonStyle.secondary, custom_id="unblock", row=3)
+        super().__init__(label="✅ Unblock", style=discord.ButtonStyle.secondary, row=3)
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -570,7 +612,7 @@ class UnblockButton(Button):
             return
         
         # Create user select menu
-        select_view = View(timeout=None)
+        select_view = View(timeout=60)
         
         # Get blocked users
         blocked_users = []
@@ -625,7 +667,7 @@ class UnblockButton(Button):
 
 class TransferButton(Button):
     def __init__(self):
-        super().__init__(label="🔄 Transfer", style=discord.ButtonStyle.secondary, custom_id="transfer", row=3)
+        super().__init__(label="🔄 Transfer", style=discord.ButtonStyle.secondary, row=3)
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -645,7 +687,7 @@ class TransferButton(Button):
             return
         
         # Create user select view
-        select_view = View(timeout=None)
+        select_view = View(timeout=60)
         
         select = UserSelect(
             placeholder="Select a user in VC to transfer ownership...",
@@ -730,7 +772,7 @@ class TransferButton(Button):
 
 class ClaimButton(Button):
     def __init__(self):
-        super().__init__(label="🎯 Claim", style=discord.ButtonStyle.secondary, custom_id="claim", row=3)
+        super().__init__(label="🎯 Claim", style=discord.ButtonStyle.secondary, row=3)
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
