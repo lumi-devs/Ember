@@ -774,23 +774,45 @@ class ClaimButton(Button):
     def __init__(self):
         super().__init__(label="🎯 Claim", style=discord.ButtonStyle.secondary, row=3)
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Override: Don't require ownership for this button, just require being in the VC"""
+        view: ControlPanel = self.view
+        
+        # Must be in a voice channel
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            await interaction.response.send_message(
+                "❌ You must be in a voice channel to claim it!", 
+                ephemeral=True
+            )
+            return False
+            
+        # Must be in this specific voice channel
+        if interaction.user.voice.channel.id != view.channel_id:
+            await interaction.response.send_message(
+                "❌ You can only claim the channel you're currently in!", 
+                ephemeral=True
+            )
+            return False
+            
+        return True
+
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
         await interaction.response.defer(ephemeral=True)
 
-        # User must be in VC
-        if not interaction.user.voice or not interaction.user.voice.channel:
-            await interaction.followup.send("❌ You must be in a voice channel to claim it!", ephemeral=True)
-            return
-
+        # Get the channel
         channel = interaction.user.voice.channel
         
         # Check if user is trying to claim a generator channel
         if channel.id in JOIN_CHANNELS:
-            await interaction.followup.send("❌ You cannot claim a generator channel!", ephemeral=True)
+            await interaction.followup.send(
+                "❌ You cannot claim a generator channel!", 
+                ephemeral=True
+            )
             return
 
         async with aiosqlite.connect(DB_PATH) as db:
+            # Check if channel exists in database
             async with db.execute(
                 "SELECT userID FROM voiceChannel WHERE voiceID = ?", 
                 (channel.id,)
@@ -798,6 +820,7 @@ class ClaimButton(Button):
                 data = await cursor.fetchone()
 
             if data:
+                # Channel exists in database
                 owner_id = data[0]
                 owner = interaction.guild.get_member(owner_id)
 
@@ -824,22 +847,24 @@ class ClaimButton(Button):
                 
                 cog.creation_cooldowns[claim_lock_key] = current_time
                 
-                # First come, first serve: Update ownership immediately
-                await db.execute(
-                    "UPDATE voiceChannel SET userID = ? WHERE voiceID = ?",
-                    (interaction.user.id, channel.id)
-                )
-                await db.commit()
-                
-                # Update permissions
                 try:
+                    # First come, first serve: Update ownership immediately
+                    await db.execute(
+                        "UPDATE voiceChannel SET userID = ? WHERE voiceID = ?",
+                        (interaction.user.id, channel.id)
+                    )
+                    await db.commit()
+                    
+                    # Update permissions
                     if owner:
                         await channel.set_permissions(owner, manage_channels=False)
                     
                     await channel.set_permissions(interaction.user, manage_channels=True)
                     
+                    # Remove from owner leave tracking
                     cog.owner_leave_times.pop(channel.id, None)
                     
+                    # Send success message in channel
                     embed = discord.Embed(
                         title="🎯 VC Ownership Claimed",
                         description=f"{interaction.user.mention} has claimed ownership of this voice channel!\n"
@@ -848,62 +873,89 @@ class ClaimButton(Button):
                     )
                     await channel.send(embed=embed)
                     
+                    # Send success message to user
                     await interaction.followup.send(
                         f"✅ You have successfully claimed ownership of {channel.mention}!",
                         ephemeral=True
                     )
+                    
+                    # Refresh the control panel for the new owner
+                    try:
+                        # Try to find and update the original control panel message
+                        async for message in channel.history(limit=10):
+                            if message.author == interaction.guild.me and message.embeds:
+                                if "Control Panel" in message.embeds[0].title:
+                                    new_view = BasicControlsView(view.cog, view.channel_id, interaction.user.id)
+                                    await message.edit(view=new_view)
+                                    break
+                    except Exception as e:
+                        print(f"[TempVoice] Error refreshing control panel: {e}")
+                        
                 except Exception as e:
-                    print(f"Error during claim transfer: {e}")
+                    print(f"[TempVoice] Error during claim transfer: {e}")
+                    # Rollback the database change
                     await db.execute(
                         "UPDATE voiceChannel SET userID = ? WHERE voiceID = ?",
                         (owner_id, channel.id)
                     )
                     await db.commit()
-                    await interaction.followup.send("❌ Failed to complete claim. Please try again.", ephemeral=True)
+                    await interaction.followup.send(
+                        "❌ Failed to complete claim. Please try again.", 
+                        ephemeral=True
+                    )
                 finally:
                     cog.creation_cooldowns.pop(claim_lock_key, None)
-                return
-
-            # No owner entry in DB, create new
-            limit = channel.user_limit
-            
-            cog = view.cog
-            current_time = time.time()
-            claim_lock_key = f"claim_{channel.id}"
-            
-            last_claim_attempt = cog.creation_cooldowns.get(claim_lock_key, 0)
-            if current_time - last_claim_attempt < 2:
-                await interaction.followup.send(
-                    "⏳ Someone else is attempting to claim this channel. Please wait...",
-                    ephemeral=True
-                )
-                return
-            
-            cog.creation_cooldowns[claim_lock_key] = current_time
-            
-            try:
-                await db.execute(
-                    "INSERT INTO voiceChannel (userID, voiceID, channelName, channelLimit, guildID, vcType, channelNumber) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (interaction.user.id, channel.id, channel.name, limit, interaction.guild.id, "Other", 1)
-                )
-                await db.commit()
+                    
+            else:
+                # Channel doesn't exist in database (shouldn't happen, but handle it)
+                limit = channel.user_limit
                 
-                await channel.set_permissions(interaction.user, manage_channels=True)
+                cog = view.cog
+                current_time = time.time()
+                claim_lock_key = f"claim_{channel.id}"
                 
-                embed = discord.Embed(
-                    title="🎯 VC Ownership Claimed",
-                    description=f"{interaction.user.mention} has claimed ownership of this voice channel!\n"
-                              f"First come, first served!",
-                    color=discord.Color.blue()
-                )
-                await channel.send(embed=embed)
+                last_claim_attempt = cog.creation_cooldowns.get(claim_lock_key, 0)
+                if current_time - last_claim_attempt < 2:
+                    await interaction.followup.send(
+                        "⏳ Someone else is attempting to claim this channel. Please wait...",
+                        ephemeral=True
+                    )
+                    return
                 
-                await interaction.followup.send(
-                    f"✅ You have successfully claimed {channel.mention}!",
-                    ephemeral=True
-                )
-            except Exception as e:
-                print(f"Error during claim creation: {e}")
-                await interaction.followup.send("❌ Failed to claim channel. Please try again.", ephemeral=True)
-            finally:
-                cog.creation_cooldowns.pop(claim_lock_key, None)
+                cog.creation_cooldowns[claim_lock_key] = current_time
+                
+                try:
+                    # Create new database entry
+                    await db.execute(
+                        """INSERT INTO voiceChannel 
+                           (userID, voiceID, channelName, channelLimit, guildID, vcType, channelNumber) 
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (interaction.user.id, channel.id, channel.name, limit, 
+                         interaction.guild.id, "Other", 1)
+                    )
+                    await db.commit()
+                    
+                    # Set permissions
+                    await channel.set_permissions(interaction.user, manage_channels=True)
+                    
+                    # Send success message
+                    embed = discord.Embed(
+                        title="🎯 VC Ownership Claimed",
+                        description=f"{interaction.user.mention} has claimed ownership of this voice channel!",
+                        color=discord.Color.blue()
+                    )
+                    await channel.send(embed=embed)
+                    
+                    await interaction.followup.send(
+                        f"✅ You have successfully claimed {channel.mention}!",
+                        ephemeral=True
+                    )
+                    
+                except Exception as e:
+                    print(f"[TempVoice] Error during claim creation: {e}")
+                    await interaction.followup.send(
+                        "❌ Failed to claim channel. Please try again.", 
+                        ephemeral=True
+                    )
+                finally:
+                    cog.creation_cooldowns.pop(claim_lock_key, None)
