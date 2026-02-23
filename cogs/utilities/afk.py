@@ -604,7 +604,6 @@ class AFK(commands.Cog):
         embed.set_footer(text=f"Guilds tracked: {len(self._guild_afk_cache)}")
         await ctx.reply(embed=embed, mention_author=False)
     
-    # ─── LISTENERS (COMPATIBLE) ────────────────────────────────────
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -625,13 +624,11 @@ class AFK(commands.Cog):
             for prefix in prefixes:
                 if content.startswith(prefix):
                     is_command = True
-                    # Get the command name after prefix
                     command_content = content[len(prefix):].strip()
                     command_parts = command_content.split()
                     if command_parts and command_parts[0].lower() in ['afk', 'afklist', 'afkstats']:
                         # Specifically handle AFK commands
                         if command_parts[0].lower() == 'afk':
-                            # AFK command should not trigger removal - let the command handler process it
                             pass
                         await self.bot.process_commands(message)
                     break
@@ -640,7 +637,7 @@ class AFK(commands.Cog):
             if not is_command:
                 removed = await self.remove_afk(message.author.id)
                 
-                if removed:  # Only show welcome back if actually removed
+                if removed:
                     # Remove AFK from nickname
                     if message.guild and message.author.display_name.startswith(NICK_PREFIX):
                         await self._safe_edit_nick(

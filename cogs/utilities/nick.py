@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+import asyncio
 
 class NicknameChanger(commands.Cog):
     def __init__(self, bot):
@@ -86,6 +87,15 @@ class NicknameChanger(commands.Cog):
         
         return True, ""
 
+    async def send_temp_message(self, ctx, embed, delete_after=3):
+        """Send a message that will be deleted after specified seconds."""
+        message = await ctx.reply(embed=embed, mention_author=False)
+        await asyncio.sleep(delete_after)
+        try:
+            await message.delete()
+        except (discord.NotFound, discord.Forbidden):
+            pass  # Message already deleted or bot lacks permissions
+
     @commands.command(name='nick')
     async def change_nickname(self, ctx, member: discord.Member, *, new_nick: str = None):
         """Change or reset a member's nickname based on custom hierarchy rules."""
@@ -94,7 +104,7 @@ class NicknameChanger(commands.Cog):
         can_change, reason = self.can_change_nickname(ctx.author, member)
         if not can_change:
             embed = discord.Embed(description=reason, color=discord.Color.red())
-            return await ctx.reply(embed=embed, mention_author=False)
+            return await self.send_temp_message(ctx, embed)
         
         # Check bot's ability to change the nickname
         if member.top_role.position >= ctx.guild.me.top_role.position:
@@ -102,7 +112,7 @@ class NicknameChanger(commands.Cog):
                 description="❌ I can't change the nickname of someone **equal to or higher** than my role.",
                 color=discord.Color.red()
             )
-            return await ctx.reply(embed=embed, mention_author=False)
+            return await self.send_temp_message(ctx, embed)
         
         try:
             old_nick = member.nick or member.name
@@ -134,21 +144,21 @@ class NicknameChanger(commands.Cog):
                 text=f"Changed by {ctx.author} ({executor_title})", 
                 icon_url=ctx.author.avatar.url if ctx.author.avatar else None
             )
-            await ctx.reply(embed=embed, mention_author=False)
+            await self.send_temp_message(ctx, embed)
             
         except discord.Forbidden:
             embed = discord.Embed(
                 description="❌ I don't have permission to change that user's nickname.",
                 color=discord.Color.red()
             )
-            await ctx.reply(embed=embed, mention_author=False)
+            await self.send_temp_message(ctx, embed)
             
         except discord.HTTPException:
             embed = discord.Embed(
                 description="⚠️ Something went wrong while trying to change the nickname.",
                 color=discord.Color.red()
             )
-            await ctx.reply(embed=embed, mention_author=False)
+            await self.send_temp_message(ctx, embed)
 
     @change_nickname.error
     async def nick_error(self, ctx, error):
@@ -157,21 +167,21 @@ class NicknameChanger(commands.Cog):
                 description="❗ Usage:\n`.nick @user` → Reset nickname\n`.nick @user new_nick` → Change nickname",
                 color=discord.Color.orange()
             )
-            await ctx.reply(embed=embed, mention_author=False)
+            await self.send_temp_message(ctx, embed)
             
         elif isinstance(error, commands.BadArgument):
             embed = discord.Embed(
                 description="❗ Couldn't find that user. Make sure you **mention them properly**.",
                 color=discord.Color.orange()
             )
-            await ctx.reply(embed=embed, mention_author=False)
+            await self.send_temp_message(ctx, embed)
             
         else:
             embed = discord.Embed(
                 description="⚠️ An unexpected error occurred.",
                 color=discord.Color.red()
             )
-            await ctx.reply(embed=embed, mention_author=False)
+            await self.send_temp_message(ctx, embed)
 
 async def setup(bot):
     await bot.add_cog(NicknameChanger(bot))
