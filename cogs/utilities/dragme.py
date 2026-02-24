@@ -90,6 +90,20 @@ async def setup(bot: commands.Bot):
     # Start the cleanup task properly
     bot.loop.create_task(cleanup_orphaned_requests())
 
+    # Function to extract user ID from various mention formats
+    def extract_user_id(content):
+        # Pattern for <@USER_ID> or <@!USER_ID> (nickname mention)
+        mention_pattern = r'<@!?(\d+)>'
+        match = re.search(mention_pattern, content)
+        if match:
+            return int(match.group(1))
+        
+        # Check if it's just a raw ID
+        if content.strip().isdigit():
+            return int(content.strip())
+        
+        return None
+
     # Message handler for dragme channel
     @bot.event
     async def on_message(message):
@@ -101,18 +115,37 @@ async def setup(bot: commands.Bot):
         if message.channel.id != DRAGME_CHANNEL_ID:
             return
         
-        # Check if message contains a user mention
-        if not message.mentions:
-            # If no mention, delete message and notify
+        # Try to extract user ID from message content
+        user_id = extract_user_id(message.content)
+        
+        if not user_id:
+            # If no valid mention/ID found, delete message and notify
             try:
                 await message.delete()
-                warning = await message.channel.send(f"{message.author.mention} Please mention a user to request drag! Example: @username", delete_after=5)
+                warning = await message.channel.send(
+                    f"{message.author.mention} ❌ Please mention a user or provide a user ID!\n"
+                    f"Examples: `@username` or `<@123456789>` or `123456789`",
+                    delete_after=8
+                )
             except:
                 pass
             return
         
-        # Get the first mentioned user as target
-        target = message.mentions[0]
+        # Get the target member
+        target = message.guild.get_member(user_id)
+        
+        if not target:
+            # If user not found in server
+            try:
+                await message.delete()
+                warning = await message.channel.send(
+                    f"{message.author.mention} ❌ Could not find that user in this server!",
+                    delete_after=8
+                )
+            except:
+                pass
+            return
+        
         requester = message.author
         
         # Delete the original message
@@ -179,15 +212,9 @@ async def setup(bot: commands.Bot):
                     delete_after=10
                 )
 
-        # --- VC limit check (allow up to limit × 2) ---
+        # --- REMOVED: VC limit check with multiplier ---
+        # Now just check if there's space in the VC normally
         target_channel = target.voice.channel
-        limit = target_channel.user_limit
-        current_users = len(target_channel.members)
-        if limit > 0 and current_users >= (limit * 2):
-            return await channel.send(
-                f"{requester.mention} ⚠️ VC limit reached. (Max {limit * 2})",
-                delete_after=10
-            )
 
         request_key = {"requester": requester.id, "target": target.id}
 
@@ -286,11 +313,11 @@ async def setup(bot: commands.Bot):
 
                 updated_channel = updated_target.voice.channel
                 
-                # Re-check limits only (allow private/locked VCs)
+                # Check if VC is full (normal limit check)
                 limit = updated_channel.user_limit
-                if limit > 0 and len(updated_channel.members) >= (limit * 2):
+                if limit > 0 and len(updated_channel.members) >= limit:
                     return await interaction.response.send_message(
-                        f"⚠️ VC limit reached. (Max {limit * 2})", ephemeral=True
+                        f"⚠️ {updated_channel.name} is full (Max {limit} users).", ephemeral=True
                     )
 
                 # Check if target VC is hidden/private
@@ -375,6 +402,7 @@ async def setup(bot: commands.Bot):
             vc_embed.add_field(name="Requester", value=f"{requester.name}\n{requester.mention}", inline=True)
             vc_embed.add_field(name="Their VC", value=requester.voice.channel.name, inline=True)
             vc_embed.add_field(name="Your VC", value=target_vc.name, inline=True)
+            vc_embed.add_field(name="Current VC Users", value=f"{len(target_vc.members)}/{target_vc.user_limit if target_vc.user_limit > 0 else '∞'}", inline=True)
             vc_embed.set_footer(text=f"Use the buttons below to respond • Expires in {TIMEOUT_DURATION}s")
             
             # Send the request message in the target's VC
