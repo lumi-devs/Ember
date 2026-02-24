@@ -236,164 +236,12 @@ async def setup(bot: commands.Bot):
         # Send confirmation in dragme channel
         await channel.send(f"✅ {requester.mention} Your request was sent to {target.mention}", delete_after=10)
 
-        # Create embed for the target's VC
-        embed = discord.Embed(
-            title="🎯 VC Join Request",
-            description=f"{requester.mention} wants to join your VC **{target_channel.name}**",
-            color=discord.Color.orange()
-        )
-        embed.add_field(name="Requester", value=requester.mention, inline=True)
-        embed.add_field(name="From VC", value=requester.voice.channel.name, inline=True)
-        embed.add_field(name="To VC", value=target_channel.name, inline=True)
-        embed.set_footer(text=f"Request expires in {TIMEOUT_DURATION} seconds")
-
-        class DragmeView(discord.ui.View):
-            def __init__(self):
-                super().__init__(timeout=TIMEOUT_DURATION)
-                self.msg: discord.Message | None = None
-                self.finished = False
-
-            async def remove_request(self):
-                async with requests_lock:
-                    if request_key in active_requests:
-                        active_requests.remove(request_key)
-                        save_requests_safe(active_requests)
-
-            async def finish(self, content: str, color=discord.Color.green(), log_channel=None):
-                self.finished = True
-                await self.remove_request()
-                
-                # Create log embed
-                log_embed = discord.Embed(
-                    description=content,
-                    color=color,
-                    timestamp=discord.utils.utcnow()
-                )
-                log_embed.set_author(name=f"DragMe Request", icon_url=requester.display_avatar.url)
-                
-                # Send to dragme channel if provided
-                if log_channel:
-                    await log_channel.send(embed=log_embed)
-                
-                if self.msg:
-                    await self.msg.edit(embed=log_embed, view=None)
-                self.stop()
-
-            async def on_timeout(self):
-                if not self.finished and self.msg:
-                    await self.remove_request()
-                    embed = discord.Embed(
-                        description=f"⌛ Request from {requester.mention} to {target.mention} timed out.",
-                        color=discord.Color.red(),
-                        timestamp=discord.utils.utcnow()
-                    )
-                    embed.set_author(name="DragMe Request Timed Out", icon_url=requester.display_avatar.url)
-                    
-                    # Send timeout log to dragme channel
-                    dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
-                    if dragme_channel:
-                        await dragme_channel.send(embed=embed)
-                    
-                    if self.msg:
-                        await self.msg.edit(embed=embed, view=None)
-
-            @discord.ui.button(style=discord.ButtonStyle.green, label="✅ Accept")
-            async def accept_button(
-                self, interaction: discord.Interaction, button: discord.ui.Button
-            ):
-                if interaction.user.id != target.id:
-                    return await interaction.response.send_message("❌ This is not your request!", ephemeral=True)
-
-                # Refresh channel info
-                updated_target = interaction.guild.get_member(target.id)
-                if not updated_target or not updated_target.voice or not updated_target.voice.channel:
-                    return await interaction.response.send_message(
-                        "❌ You are no longer in a voice channel.", ephemeral=True
-                    )
-
-                updated_channel = updated_target.voice.channel
-                
-                # Check if VC is full (normal limit check)
-                limit = updated_channel.user_limit
-                if limit > 0 and len(updated_channel.members) >= limit:
-                    return await interaction.response.send_message(
-                        f"⚠️ {updated_channel.name} is full (Max {limit} users).", ephemeral=True
-                    )
-
-                # Check if target VC is hidden/private
-                is_hidden = not updated_channel.permissions_for(interaction.guild.default_role).connect
-
-                try:
-                    # Move requester to target's VC
-                    await requester.move_to(updated_channel)
-                    
-                    # If VC is hidden, give temporary permissions
-                    if is_hidden:
-                        try:
-                            # Grant connect and speak permissions temporarily
-                            await updated_channel.set_permissions(
-                                requester,
-                                connect=True,
-                                speak=True,
-                                reason=f"Temporary access granted via dragme request from {target.display_name}"
-                            )
-                            
-                            # Schedule permission removal after user leaves
-                            async def remove_perms_when_done():
-                                await asyncio.sleep(300)  # 5 minutes timeout
-                                try:
-                                    current_member = interaction.guild.get_member(requester.id)
-                                    if current_member and current_member.voice and current_member.voice.channel == updated_channel:
-                                        # User is still in VC, don't remove perms
-                                        return
-                                    await updated_channel.set_permissions(requester, overwrite=None)
-                                except:
-                                    pass
-                            
-                            asyncio.create_task(remove_perms_when_done())
-                            
-                            success_msg = f"✅ {target.mention} accepted. {requester.mention} was moved to **{updated_channel.name}** (temporary permissions granted for hidden VC)"
-                        except:
-                            success_msg = f"✅ {target.mention} accepted. {requester.mention} was moved to **{updated_channel.name}** (couldn't grant perms for hidden VC, contact admin)"
-                    else:
-                        success_msg = f"✅ {target.mention} accepted. {requester.mention} was moved to **{updated_channel.name}**"
-                    
-                    dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
-                    await self.finish(success_msg, discord.Color.green(), dragme_channel)
-                    
-                except discord.Forbidden:
-                    await self.finish(
-                        f"❌ Missing permissions to move {requester.mention}",
-                        discord.Color.red(),
-                        bot.get_channel(DRAGME_CHANNEL_ID)
-                    )
-                except discord.HTTPException as e:
-                    await self.finish(
-                        f"❌ Failed to move user: {str(e)}",
-                        discord.Color.red(),
-                        bot.get_channel(DRAGME_CHANNEL_ID)
-                    )
-
-            @discord.ui.button(style=discord.ButtonStyle.red, label="❌ Decline")
-            async def decline_button(
-                self, interaction: discord.Interaction, button: discord.ui.Button
-            ):
-                if interaction.user.id != target.id:
-                    return await interaction.response.send_message("❌ This is not your request!", ephemeral=True)
-                
-                dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
-                await self.finish(
-                    f"❌ {target.mention} declined {requester.mention}'s request", 
-                    discord.Color.red(),
-                    dragme_channel
-                )
-
-        view = DragmeView()
+        # Check if target VC is hidden/private
+        is_hidden = not target_channel.permissions_for(target.guild.default_role).connect
         
-        # Send request to target's VC
-        target_vc = target.voice.channel
-        if target_vc:
-            # Create a more prominent embed for VC
+        # Try to send request to target's VC first
+        try:
+            # Create embed for the target's VC
             vc_embed = discord.Embed(
                 title="🔔 New DragMe Request!",
                 description=f"{requester.mention} wants to join your voice channel!",
@@ -401,12 +249,180 @@ async def setup(bot: commands.Bot):
             )
             vc_embed.add_field(name="Requester", value=f"{requester.name}\n{requester.mention}", inline=True)
             vc_embed.add_field(name="Their VC", value=requester.voice.channel.name, inline=True)
-            vc_embed.add_field(name="Your VC", value=target_vc.name, inline=True)
-            vc_embed.add_field(name="Current VC Users", value=f"{len(target_vc.members)}/{target_vc.user_limit if target_vc.user_limit > 0 else '∞'}", inline=True)
+            vc_embed.add_field(name="Your VC", value=target_channel.name, inline=True)
+            vc_embed.add_field(name="Current VC Users", value=f"{len(target_channel.members)}/{target_channel.user_limit if target_channel.user_limit > 0 else '∞'}", inline=True)
             vc_embed.set_footer(text=f"Use the buttons below to respond • Expires in {TIMEOUT_DURATION}s")
+
+            class DragmeView(discord.ui.View):
+                def __init__(self):
+                    super().__init__(timeout=TIMEOUT_DURATION)
+                    self.msg: discord.Message | None = None
+                    self.finished = False
+
+                async def remove_request(self):
+                    async with requests_lock:
+                        if request_key in active_requests:
+                            active_requests.remove(request_key)
+                            save_requests_safe(active_requests)
+
+                async def finish(self, content: str, color=discord.Color.green(), log_channel=None):
+                    self.finished = True
+                    await self.remove_request()
+                    
+                    # Create log embed
+                    log_embed = discord.Embed(
+                        description=content,
+                        color=color,
+                        timestamp=discord.utils.utcnow()
+                    )
+                    log_embed.set_author(name=f"DragMe Request", icon_url=requester.display_avatar.url)
+                    
+                    # Send to dragme channel if provided
+                    if log_channel:
+                        await log_channel.send(embed=log_embed)
+                    
+                    if self.msg:
+                        await self.msg.edit(embed=log_embed, view=None)
+                    self.stop()
+
+                async def on_timeout(self):
+                    if not self.finished and self.msg:
+                        await self.remove_request()
+                        embed = discord.Embed(
+                            description=f"⌛ Request from {requester.mention} to {target.mention} timed out.",
+                            color=discord.Color.red(),
+                            timestamp=discord.utils.utcnow()
+                        )
+                        embed.set_author(name="DragMe Request Timed Out", icon_url=requester.display_avatar.url)
+                        
+                        # Send timeout log to dragme channel
+                        dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
+                        if dragme_channel:
+                            await dragme_channel.send(embed=embed)
+                        
+                        if self.msg:
+                            await self.msg.edit(embed=embed, view=None)
+
+                @discord.ui.button(style=discord.ButtonStyle.green, label="✅ Accept")
+                async def accept_button(
+                    self, interaction: discord.Interaction, button: discord.ui.Button
+                ):
+                    if interaction.user.id != target.id:
+                        return await interaction.response.send_message("❌ This is not your request!", ephemeral=True)
+
+                    # Refresh channel info
+                    updated_target = interaction.guild.get_member(target.id)
+                    if not updated_target or not updated_target.voice or not updated_target.voice.channel:
+                        return await interaction.response.send_message(
+                            "❌ You are no longer in a voice channel.", ephemeral=True
+                        )
+
+                    updated_channel = updated_target.voice.channel
+                    
+                    # Check if VC is full (normal limit check)
+                    limit = updated_channel.user_limit
+                    if limit > 0 and len(updated_channel.members) >= limit:
+                        return await interaction.response.send_message(
+                            f"⚠️ {updated_channel.name} is full (Max {limit} users).", ephemeral=True
+                        )
+
+                    # Check if target VC is hidden/private
+                    is_hidden = not updated_channel.permissions_for(interaction.guild.default_role).connect
+
+                    try:
+                        # Move requester to target's VC
+                        await requester.move_to(updated_channel)
+                        
+                        # If VC is hidden, give temporary permissions
+                        if is_hidden:
+                            try:
+                                # Grant connect and speak permissions temporarily
+                                await updated_channel.set_permissions(
+                                    requester,
+                                    connect=True,
+                                    speak=True,
+                                    reason=f"Temporary access granted via dragme request from {target.display_name}"
+                                )
+                                
+                                # Schedule permission removal after user leaves
+                                async def remove_perms_when_done():
+                                    await asyncio.sleep(300)  # 5 minutes timeout
+                                    try:
+                                        current_member = interaction.guild.get_member(requester.id)
+                                        if current_member and current_member.voice and current_member.voice.channel == updated_channel:
+                                            # User is still in VC, don't remove perms
+                                            return
+                                        await updated_channel.set_permissions(requester, overwrite=None)
+                                    except:
+                                        pass
+                                
+                                asyncio.create_task(remove_perms_when_done())
+                                
+                                success_msg = f"✅ {target.mention} accepted. {requester.mention} was moved to **{updated_channel.name}** (temporary permissions granted for hidden VC)"
+                            except:
+                                success_msg = f"✅ {target.mention} accepted. {requester.mention} was moved to **{updated_channel.name}** (couldn't grant perms for hidden VC, contact admin)"
+                        else:
+                            success_msg = f"✅ {target.mention} accepted. {requester.mention} was moved to **{updated_channel.name}**"
+                        
+                        dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
+                        await self.finish(success_msg, discord.Color.green(), dragme_channel)
+                        
+                    except discord.Forbidden:
+                        await self.finish(
+                            f"❌ Missing permissions to move {requester.mention}",
+                            discord.Color.red(),
+                            bot.get_channel(DRAGME_CHANNEL_ID)
+                        )
+                    except discord.HTTPException as e:
+                        await self.finish(
+                            f"❌ Failed to move user: {str(e)}",
+                            discord.Color.red(),
+                            bot.get_channel(DRAGME_CHANNEL_ID)
+                        )
+
+                @discord.ui.button(style=discord.ButtonStyle.red, label="❌ Decline")
+                async def decline_button(
+                    self, interaction: discord.Interaction, button: discord.ui.Button
+                ):
+                    if interaction.user.id != target.id:
+                        return await interaction.response.send_message("❌ This is not your request!", ephemeral=True)
+                    
+                    dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
+                    await self.finish(
+                        f"❌ {target.mention} declined {requester.mention}'s request", 
+                        discord.Color.red(),
+                        dragme_channel
+                    )
+
+            view = DragmeView()
             
-            # Send the request message in the target's VC
-            view.msg = await target_vc.send(f"{target.mention}", embed=vc_embed, view=view)
+            # Try to send to target's VC
+            try:
+                view.msg = await target_channel.send(f"{target.mention}", embed=vc_embed, view=view)
+            except (discord.Forbidden, discord.HTTPException):
+                # If can't send to VC (hidden VC), send to dragme channel instead
+                raise  # Re-raise to trigger the except block below
+                
+        except (discord.Forbidden, discord.HTTPException):
+            # Can't send to VC (hidden or no permission), send to dragme channel instead
+            dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
+            if dragme_channel:
+                # Create alternative embed for dragme channel
+                fallback_embed = discord.Embed(
+                    title="🔔 New DragMe Request (Hidden VC)",
+                    description=f"{requester.mention} wants to join {target.mention}'s hidden voice channel!",
+                    color=discord.Color.purple()
+                )
+                fallback_embed.add_field(name="Requester", value=f"{requester.name}\n{requester.mention}", inline=True)
+                fallback_embed.add_field(name="Target", value=f"{target.name}\n{target.mention}", inline=True)
+                fallback_embed.add_field(name="Their VC", value=requester.voice.channel.name, inline=True)
+                fallback_embed.add_field(name="Target VC", value="🔒 Hidden Voice Channel", inline=True)
+                fallback_embed.add_field(name="Current VC Users", value=f"{len(target_channel.members)}/{target_channel.user_limit if target_channel.user_limit > 0 else '∞'}", inline=True)
+                fallback_embed.set_footer(text=f"Request expires in {TIMEOUT_DURATION} seconds • Target is in hidden VC")
+                
+                # Create new view for the fallback message
+                view = DragmeView()
+                view.msg = await dragme_channel.send(f"{target.mention}", embed=fallback_embed, view=view)
 
     # Keep the active_requests command as a helpful utility
     @bot.tree.command(
