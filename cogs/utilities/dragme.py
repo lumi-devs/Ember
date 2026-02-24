@@ -128,6 +128,7 @@ async def setup(bot: commands.Bot):
     @bot.event
     async def on_message(message):
         # Ignore bot messages
+        print(message)
         if message.author.bot:
             return
         
