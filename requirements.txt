@@ -10,4 +10,5 @@ nltk
 emoji
 langdetect
 openai
+psutil
 pillow
