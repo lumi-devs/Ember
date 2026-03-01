@@ -120,8 +120,12 @@ class RoleColorsModal(ui.Modal, title="Update Role Colors"):
     def hex_to_rgb(self, hex_color: str) -> tuple:
         """Convert hex color to RGB tuple"""
         hex_color = hex_color.lstrip('#')
+        # If it's #000001, it will become '000001' which is valid
         if len(hex_color) == 3:
             hex_color = ''.join([c*2 for c in hex_color])
+        # Handle case where someone might still try to use 000000
+        if hex_color == '000000':
+            hex_color = '000001'
         return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
     
     def create_solid_color_image(self, hex_color: str, size: tuple = (200, 100)) -> io.BytesIO:
@@ -187,6 +191,9 @@ class RoleColorsModal(ui.Modal, title="Update Role Colors"):
         secondary_hex = str(self.secondary_color).strip() if self.secondary_color.value else None
         
         # Validate colors
+        if primary_hex in ['#000000', '000000']:
+            primary_hex = '#000001'
+            
         primary_valid, primary_color_obj = await validate_color(primary_hex)
         if not primary_valid:
             await interaction.followup.send(
@@ -194,9 +201,13 @@ class RoleColorsModal(ui.Modal, title="Update Role Colors"):
                 ephemeral=True
             )
             return
-        
+
         secondary_color_obj = None
         if secondary_hex:
+            # Also check secondary color for pure black
+            if secondary_hex in ['#000000', '000000']:
+                secondary_hex = '#000001'
+                
             secondary_valid, secondary_color_obj = await validate_color(secondary_hex)
             if not secondary_valid:
                 await interaction.followup.send(
