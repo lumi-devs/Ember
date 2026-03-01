@@ -49,6 +49,7 @@ class CutePing(commands.Cog):
             return "❤️", discord.Color.red()    # Slow
     
     @commands.command(name="ping", aliases=["pong", "latency", "🏓"])
+    @commands.has_permissions(manage_messages=True)
     async def cute_ping(self, ctx: commands.Context):
         """🏓 Check my adorable ping and status! ✨"""
         
