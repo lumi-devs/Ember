@@ -1,7 +1,7 @@
 import discord
 from discord.ui import Button, View, UserSelect, Select
 from .modals import RenameModal, LimitModal
-from .config import GAMING_DB_PATH, JOIN_CHANNELS, DB_PATH
+from .config import JOIN_CHANNELS, DB_PATH, GAMING_DB_PATH
 import aiosqlite
 import time
 
@@ -38,7 +38,9 @@ class ControlPanel(View):
         """Update the voiceChannel table using voiceID as key."""
         if not kwargs:
             return
-        async with aiosqlite.connect(DB_PATH) as db:
+        # Use the appropriate database path based on context
+        db_path = getattr(self, 'db_path', DB_PATH)
+        async with aiosqlite.connect(db_path) as db:
             set_clause = ", ".join([f"{key} = ?" for key in kwargs.keys()])
             values = list(kwargs.values()) + [self.channel_id]
             await db.execute(f"UPDATE voiceChannel SET {set_clause} WHERE voiceID = ?", values)
@@ -72,7 +74,7 @@ class BasicControlsView(ControlPanel):
             is_hidden = False
         
         # Row 0: Basic Controls (Name, Limit, Delete)
-        name_btn = NameButton()
+        name_btn = NameButton(is_gaming=is_gaming)
         name_btn.custom_id = f"name_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
         
         limit_btn = LimitButton(is_gaming=is_gaming)
@@ -129,10 +131,12 @@ class BasicControlsView(ControlPanel):
 
 
 # --------------------- BUTTON CLASSES ---------------------
+# Update all button classes to accept is_gaming parameter
 
 class NameButton(Button):
-    def __init__(self):
+    def __init__(self, is_gaming: bool = False):
         super().__init__(label="👤 Name", style=discord.ButtonStyle.secondary, row=0)
+        self.is_gaming = is_gaming
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -140,13 +144,14 @@ class NameButton(Button):
         if not channel:
             await interaction.response.send_message("❌ Channel not found!", ephemeral=True)
             return
-        modal = RenameModal(view.cog, channel)
+        modal = RenameModal(view.cog, channel, is_gaming=self.is_gaming)
         await interaction.response.send_modal(modal)
 
 
 class LimitButton(Button):
-    def __init__(self):
+    def __init__(self, is_gaming: bool = False):
         super().__init__(label="👥 Limit", style=discord.ButtonStyle.secondary, row=0)
+        self.is_gaming = is_gaming
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -154,13 +159,14 @@ class LimitButton(Button):
         if not channel:
             await interaction.response.send_message("❌ Channel not found!", ephemeral=True)
             return
-        modal = LimitModal(view.cog, channel)
+        modal = LimitModal(view.cog, channel, is_gaming=self.is_gaming)
         await interaction.response.send_modal(modal)
 
 
 class DeleteButton(Button):
-    def __init__(self):
+    def __init__(self, is_gaming: bool = False):
         super().__init__(label="🗑️ Delete", style=discord.ButtonStyle.danger, row=0)
+        self.is_gaming = is_gaming
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -179,7 +185,8 @@ class DeleteButton(Button):
             
             await confirm_interaction.response.defer(ephemeral=True)
             try:
-                async with aiosqlite.connect(DB_PATH) as db:
+                db_path = GAMING_DB_PATH if self.is_gaming else DB_PATH
+                async with aiosqlite.connect(db_path) as db:
                     await db.execute("DELETE FROM voiceChannel WHERE voiceID = ?", (channel.id,))
                     await db.commit()
                 await channel.delete(reason="VC owner requested deletion")
@@ -207,7 +214,7 @@ class DeleteButton(Button):
 
 
 class LockButton(Button):
-    def __init__(self, is_locked: bool = False):
+    def __init__(self, is_locked: bool = False, is_gaming: bool = False):
         label = "🔓 Unlock" if is_locked else "🔒 Lock"
         super().__init__(
             label=label,
@@ -215,6 +222,7 @@ class LockButton(Button):
             row=1
         )
         self.is_locked = is_locked
+        self.is_gaming = is_gaming
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -267,13 +275,13 @@ class LockButton(Button):
             action_msg = "🔒 Channel locked! Current members kept access."
         
         # Refresh the view with updated button states
-        new_view = BasicControlsView(view.cog, view.channel_id, view.owner_id)
+        new_view = BasicControlsView(view.cog, view.channel_id, view.owner_id, is_gaming=self.is_gaming)
         await interaction.edit_original_response(view=new_view)
         await interaction.followup.send(action_msg, ephemeral=True)
 
 
 class HideButton(Button):
-    def __init__(self, is_hidden: bool = False):
+    def __init__(self, is_hidden: bool = False, is_gaming: bool = False):
         label = "👀 Unhide" if is_hidden else "🕵️ Hide"
         super().__init__(
             label=label,
@@ -281,6 +289,7 @@ class HideButton(Button):
             row=1
         )
         self.is_hidden = is_hidden
+        self.is_gaming = is_gaming
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -333,14 +342,15 @@ class HideButton(Button):
             action_msg = "🕵️ Channel hidden! Current members can still see it."
         
         # Refresh the view with updated button states
-        new_view = BasicControlsView(view.cog, view.channel_id, view.owner_id)
+        new_view = BasicControlsView(view.cog, view.channel_id, view.owner_id, is_gaming=self.is_gaming)
         await interaction.edit_original_response(view=new_view)
         await interaction.followup.send(action_msg, ephemeral=True)
 
 
 class KickButton(Button):
-    def __init__(self):
+    def __init__(self, is_gaming: bool = False):
         super().__init__(label="👢 Kick", style=discord.ButtonStyle.secondary, row=1)
+        self.is_gaming = is_gaming
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -403,8 +413,9 @@ class KickButton(Button):
 
 
 class TrustButton(Button):
-    def __init__(self):
+    def __init__(self, is_gaming: bool = False):
         super().__init__(label="✅ Trust", style=discord.ButtonStyle.secondary, row=2)
+        self.is_gaming = is_gaming
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -468,8 +479,9 @@ class TrustButton(Button):
 
 
 class UntrustButton(Button):
-    def __init__(self):
+    def __init__(self, is_gaming: bool = False):
         super().__init__(label="❌ Untrust", style=discord.ButtonStyle.secondary, row=2)
+        self.is_gaming = is_gaming
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -533,8 +545,9 @@ class UntrustButton(Button):
 
 
 class BlockButton(Button):
-    def __init__(self):
+    def __init__(self, is_gaming: bool = False):
         super().__init__(label="🚫 Block", style=discord.ButtonStyle.secondary, row=2)
+        self.is_gaming = is_gaming
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -603,8 +616,9 @@ class BlockButton(Button):
 
 
 class UnblockButton(Button):
-    def __init__(self):
+    def __init__(self, is_gaming: bool = False):
         super().__init__(label="✅ Unblock", style=discord.ButtonStyle.secondary, row=3)
+        self.is_gaming = is_gaming
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -668,8 +682,9 @@ class UnblockButton(Button):
 
 
 class TransferButton(Button):
-    def __init__(self):
+    def __init__(self, is_gaming: bool = False):
         super().__init__(label="🔄 Transfer", style=discord.ButtonStyle.secondary, row=3)
+        self.is_gaming = is_gaming
 
     async def callback(self, interaction: discord.Interaction):
         view: ControlPanel = self.view
@@ -712,8 +727,9 @@ class TransferButton(Button):
                 return
             
             try:
+                db_path = GAMING_DB_PATH if self.is_gaming else DB_PATH
                 # Update database
-                async with aiosqlite.connect(DB_PATH) as db:
+                async with aiosqlite.connect(db_path) as db:
                     await db.execute(
                         "UPDATE voiceChannel SET userID = ? WHERE voiceID = ?",
                         (new_owner.id, channel.id)
@@ -741,7 +757,7 @@ class TransferButton(Button):
                 
                 # Refresh the original message
                 try:
-                    new_view = BasicControlsView(view.cog, view.channel_id, new_owner.id)
+                    new_view = BasicControlsView(view.cog, view.channel_id, new_owner.id, is_gaming=self.is_gaming)
                     await interaction.edit_original_response(view=new_view)
                 except:
                     pass
@@ -773,8 +789,9 @@ class TransferButton(Button):
 
 
 class ClaimButton(Button):
-    def __init__(self):
+    def __init__(self, is_gaming: bool = False):
         super().__init__(label="🎯 Claim", style=discord.ButtonStyle.secondary, row=3)
+        self.is_gaming = is_gaming
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """Override: Don't require ownership for this button, just require being in the VC"""
@@ -813,7 +830,8 @@ class ClaimButton(Button):
             )
             return
 
-        async with aiosqlite.connect(DB_PATH) as db:
+        db_path = GAMING_DB_PATH if self.is_gaming else DB_PATH
+        async with aiosqlite.connect(db_path) as db:
             # Check if channel exists in database
             async with db.execute(
                 "SELECT userID FROM voiceChannel WHERE voiceID = ?", 
@@ -886,8 +904,8 @@ class ClaimButton(Button):
                         # Try to find and update the original control panel message
                         async for message in channel.history(limit=10):
                             if message.author == interaction.guild.me and message.embeds:
-                                if "Control Panel" in message.embeds[0].title:
-                                    new_view = BasicControlsView(view.cog, view.channel_id, interaction.user.id)
+                                if "Control Panel" in message.embeds[0].title or "Voice Channel Controls" in message.embeds[0].title:
+                                    new_view = BasicControlsView(view.cog, view.channel_id, interaction.user.id, is_gaming=self.is_gaming)
                                     await message.edit(view=new_view)
                                     break
                     except Exception as e:

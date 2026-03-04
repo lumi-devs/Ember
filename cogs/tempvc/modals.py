@@ -1,17 +1,19 @@
 import discord
-from .config import JOIN_CHANNELS, DB_PATH
+from .config import JOIN_CHANNELS, DB_PATH, GAMING_DB_PATH
 import aiosqlite
 
 class LimitModal(discord.ui.Modal, title="Set User Limit"):
-    def __init__(self, cog, channel):
+    def __init__(self, cog, channel, is_gaming: bool = False):
         super().__init__()
         self.cog = cog
         self.channel = channel
+        self.is_gaming = is_gaming
+        self.db_path = GAMING_DB_PATH if is_gaming else DB_PATH
         
         self.limit_input = discord.ui.TextInput(
             label="User Limit (0-99)",
             placeholder="Enter 0 for no limit...",
-            default=str(channel.user_limit),
+            default=str(channel.user_limit if channel.user_limit else 0),
             max_length=2,
             required=True
         )
@@ -25,10 +27,10 @@ class LimitModal(discord.ui.Modal, title="Set User Limit"):
                 await interaction.followup.send("❌ Limit must be between 0 and 99!", ephemeral=True)
                 return
             
-            await self.channel.edit(user_limit=limit)
+            await self.channel.edit(user_limit=limit if limit > 0 else None)
             
-            async with aiosqlite.connect(DB_PATH) as db:
-                await db.execute("UPDATE voiceChannel SET channelLimit = ? WHERE voiceID = ?", (limit, self.channel.id))
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("UPDATE voiceChannel SET channelLimit = ? WHERE voiceID = ?", (limit if limit > 0 else None, self.channel.id))
                 await db.commit()
             
             await interaction.followup.send(
@@ -40,10 +42,12 @@ class LimitModal(discord.ui.Modal, title="Set User Limit"):
             await interaction.followup.send("❌ Please enter a valid number!", ephemeral=True)
 
 class RenameModal(discord.ui.Modal, title="Rename Voice Channel"):
-    def __init__(self, cog, channel):
+    def __init__(self, cog, channel, is_gaming: bool = False):
         super().__init__()
         self.cog = cog
         self.channel = channel
+        self.is_gaming = is_gaming
+        self.db_path = GAMING_DB_PATH if is_gaming else DB_PATH
         
         self.name_input = discord.ui.TextInput(
             label="New Channel Name",
@@ -64,7 +68,7 @@ class RenameModal(discord.ui.Modal, title="Rename Voice Channel"):
         old_name = self.channel.name
         await self.channel.edit(name=name)
         
-        async with aiosqlite.connect(DB_PATH) as db:
+        async with aiosqlite.connect(self.db_path) as db:
             await db.execute("UPDATE voiceChannel SET channelName = ? WHERE voiceID = ?", (name, self.channel.id))
             await db.commit()
         
