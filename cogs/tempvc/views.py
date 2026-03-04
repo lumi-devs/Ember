@@ -1,7 +1,7 @@
 import discord
 from discord.ui import Button, View, UserSelect, Select
 from .modals import RenameModal, LimitModal
-from .config import JOIN_CHANNELS, DB_PATH
+from .config import GAMING_DB_PATH, JOIN_CHANNELS, DB_PATH
 import aiosqlite
 import time
 
@@ -54,8 +54,10 @@ class ControlPanel(View):
 
 
 class BasicControlsView(ControlPanel):
-    def __init__(self, cog, channel_id: int, owner_id: int):
+    def __init__(self, cog, channel_id: int, owner_id: int, is_gaming: bool = False):
         super().__init__(cog, channel_id, owner_id)
+        self.is_gaming = is_gaming
+        self.db_path = GAMING_DB_PATH if is_gaming else DB_PATH
         
         # Get channel to check current states
         channel = cog.bot.get_channel(channel_id)
@@ -71,44 +73,44 @@ class BasicControlsView(ControlPanel):
         
         # Row 0: Basic Controls (Name, Limit, Delete)
         name_btn = NameButton()
-        name_btn.custom_id = f"name_{channel_id}_{owner_id}"
+        name_btn.custom_id = f"name_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
         
-        limit_btn = LimitButton()
-        limit_btn.custom_id = f"limit_{channel_id}_{owner_id}"
+        limit_btn = LimitButton(is_gaming=is_gaming)
+        limit_btn.custom_id = f"limit_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
         
-        delete_btn = DeleteButton()
-        delete_btn.custom_id = f"delete_{channel_id}_{owner_id}"
+        delete_btn = DeleteButton(is_gaming=is_gaming)
+        delete_btn.custom_id = f"delete_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
         
         self.add_item(name_btn)
         self.add_item(limit_btn)
         self.add_item(delete_btn)
         
         # Row 1: Privacy & Actions
-        lock_btn = LockButton(is_locked=is_locked)
-        lock_btn.custom_id = f"lock_{channel_id}_{owner_id}"
+        lock_btn = LockButton(is_locked=is_locked, is_gaming=is_gaming)
+        lock_btn.custom_id = f"lock_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
         
-        hide_btn = HideButton(is_hidden=is_hidden)
-        hide_btn.custom_id = f"hide_{channel_id}_{owner_id}"
+        hide_btn = HideButton(is_hidden=is_hidden, is_gaming=is_gaming)
+        hide_btn.custom_id = f"hide_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
         
-        kick_btn = KickButton()
-        kick_btn.custom_id = f"kick_{channel_id}_{owner_id}"
+        kick_btn = KickButton(is_gaming=is_gaming)
+        kick_btn.custom_id = f"kick_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
         
         self.add_item(lock_btn)
         self.add_item(hide_btn)
         self.add_item(kick_btn)
         
         # Row 2: Member Management
-        trust_btn = TrustButton()
-        trust_btn.custom_id = f"trust_{channel_id}_{owner_id}"
+        trust_btn = TrustButton(is_gaming=is_gaming)
+        trust_btn.custom_id = f"trust_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
         
-        untrust_btn = UntrustButton()
-        untrust_btn.custom_id = f"untrust_{channel_id}_{owner_id}"
+        untrust_btn = UntrustButton(is_gaming=is_gaming)
+        untrust_btn.custom_id = f"untrust_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
         
-        block_btn = BlockButton()
-        block_btn.custom_id = f"block_{channel_id}_{owner_id}"
+        block_btn = BlockButton(is_gaming=is_gaming)
+        block_btn.custom_id = f"block_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
         
-        unblock_btn = UnblockButton()
-        unblock_btn.custom_id = f"unblock_{channel_id}_{owner_id}"
+        unblock_btn = UnblockButton(is_gaming=is_gaming)
+        unblock_btn.custom_id = f"unblock_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
         
         self.add_item(trust_btn)
         self.add_item(untrust_btn)
@@ -116,11 +118,11 @@ class BasicControlsView(ControlPanel):
         self.add_item(unblock_btn)
         
         # Row 3: Advanced
-        transfer_btn = TransferButton()
-        transfer_btn.custom_id = f"transfer_{channel_id}_{owner_id}"
+        transfer_btn = TransferButton(is_gaming=is_gaming)
+        transfer_btn.custom_id = f"transfer_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
         
-        claim_btn = ClaimButton()
-        claim_btn.custom_id = f"claim_{channel_id}_{owner_id}"
+        claim_btn = ClaimButton(is_gaming=is_gaming)
+        claim_btn.custom_id = f"claim_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
         
         self.add_item(transfer_btn)
         self.add_item(claim_btn)

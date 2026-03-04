@@ -475,7 +475,7 @@ class TempVoice(commands.Cog):
             )
             
             # Create and store the view with persistent custom IDs
-            view = BasicControlsView(self, channel.id, owner_id)
+            view = BasicControlsView(self, channel.id, owner_id, is_gaming=False)
             
             # Send the message with the view
             await channel.send(embed=embed, view=view)

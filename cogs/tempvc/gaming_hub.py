@@ -421,22 +421,26 @@ class GamingTempVoice(commands.Cog):
             print(f"[GamingTempVoice] Reordering error: {e}")
 
     async def _send_gaming_panel(self, channel, owner_id, game_name, game_role):
-        """Send gaming-specific control panel"""
+        """Send gaming-specific control panel with persistent buttons"""
         try:
             embed = discord.Embed(
                 title=f"🎮 {game_name} Voice Channel Controls",
                 description=(
-                    "**Use the buttons below to manage your gaming voice channel:**\n"
+                    "**Use the buttons below to manage your gaming voice channel:**\n\n"
+                    "**📝 Basic Controls (Row 1):**\n"
                     "• 👤 Name - Rename your channel\n"
                     "• 👥 Limit - Set user limit (currently 8)\n"
                     "• 🗑️ Delete - Delete the channel\n\n"
+                    "**🔒 Privacy & Actions (Row 2):**\n"
                     "• 🔒/🔓 Lock/Unlock - Control who can join\n"
                     "• 🕵️/👀 Hide/Unhide - Control visibility\n"
                     "• 👢 Kick - Remove users from VC\n\n"
+                    "**👥 Member Management (Row 3):**\n"
                     "• ✅ Trust - Allow users to join\n"
                     "• ❌ Untrust - Remove user access\n"
                     "• 🚫 Block - Block users from VC\n"
                     "• ✅ Unblock - Unblock users\n\n"
+                    "**🔄 Advanced (Row 4):**\n"
                     "• 🔄 Transfer - Give ownership to someone in VC\n"
                     "• 🎯 Claim - Claim ownership when owner is gone\n\n"
                     f"**🎯 Game Role:** {game_role.mention if game_role else 'None'}\n"
@@ -457,15 +461,25 @@ class GamingTempVoice(commands.Cog):
                 color=discord.Color.orange()
             )
             
-            # Create and store the view with persistent custom IDs
-            view = BasicControlsView(self, channel.id, owner_id)
+            # Create the view with persistent buttons - IMPORTANT: timeout=0 for permanent persistence
+            view = BasicControlsView(self, channel.id, owner_id, is_gaming=True)
             
-            # Send the message with the view
-            await channel.send(embed=embed, view=view)
+            # Register the view with the bot for persistence across restarts
+            # We don't have a message_id yet, so we'll register after sending
+            message = await channel.send(embed=embed, view=view)
+            
+            # Register the view with the message ID for persistence
+            self.bot.add_view(view, message_id=message.id)
+            
+            # Send info embed without buttons
             await channel.send(embed=info_embed)
+            
+            print(f"[GamingTempVoice] Sent persistent control panel for channel {channel.id}")
             
         except Exception as e:
             print(f"[GamingTempVoice] Error sending panel: {e}")
+            import traceback
+            traceback.print_exc()
 
     # ---------------- CLEANUP ----------------
     async def _schedule_cleanup(self, ch):
