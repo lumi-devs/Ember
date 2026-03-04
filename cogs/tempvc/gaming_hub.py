@@ -8,9 +8,20 @@ import traceback
 from collections import deque
 import time
 import re
+import json  # Add this import
 
 from .config import GAME_ROLES, GAMING_DB_PATH, GAMING_GENERATOR_ID, MAIN_GAMING_CHAT
 from .views import BasicControlsView
+
+# Parse GAME_ROLES if it's a string
+if isinstance(GAME_ROLES, str):
+    try:
+        GAME_ROLES = json.loads(GAME_ROLES)
+    except json.JSONDecodeError:
+        print(f"[GamingTempVoice] Warning: GAME_ROLES is not valid JSON, using empty dict")
+        GAME_ROLES = {}
+elif GAME_ROLES is None:
+    GAME_ROLES = {}
 
 class GameSelect(discord.ui.Select):
     """Game selection dropdown"""
@@ -125,6 +136,17 @@ class GamingTempVoice(commands.Cog):
         self.cleanup_locks = {}     # guild.id -> asyncio.Lock()
         self.owner_leave_times = {}  # channel_id -> timestamp when owner left
         self._heartbeat.start()
+        
+        # Parse GAME_ROLES again in case it's still a string (safety check)
+        global GAME_ROLES
+        if isinstance(GAME_ROLES, str):
+            try:
+                GAME_ROLES = json.loads(GAME_ROLES)
+            except json.JSONDecodeError:
+                print(f"[GamingTempVoice] Warning: GAME_ROLES is not valid JSON, using empty dict")
+                GAME_ROLES = {}
+        elif GAME_ROLES is None:
+            GAME_ROLES = {}
         
         # Create order mapping based on GAME_ROLES order
         self.game_order = {game: idx for idx, game in enumerate(GAME_ROLES.keys())}
@@ -421,26 +443,22 @@ class GamingTempVoice(commands.Cog):
             print(f"[GamingTempVoice] Reordering error: {e}")
 
     async def _send_gaming_panel(self, channel, owner_id, game_name, game_role):
-        """Send gaming-specific control panel with persistent buttons"""
+        """Send gaming-specific control panel"""
         try:
             embed = discord.Embed(
                 title=f"🎮 {game_name} Voice Channel Controls",
                 description=(
-                    "**Use the buttons below to manage your gaming voice channel:**\n\n"
-                    "**📝 Basic Controls (Row 1):**\n"
+                    "**Use the buttons below to manage your gaming voice channel:**\n"
                     "• 👤 Name - Rename your channel\n"
                     "• 👥 Limit - Set user limit (currently 8)\n"
                     "• 🗑️ Delete - Delete the channel\n\n"
-                    "**🔒 Privacy & Actions (Row 2):**\n"
                     "• 🔒/🔓 Lock/Unlock - Control who can join\n"
                     "• 🕵️/👀 Hide/Unhide - Control visibility\n"
                     "• 👢 Kick - Remove users from VC\n\n"
-                    "**👥 Member Management (Row 3):**\n"
                     "• ✅ Trust - Allow users to join\n"
                     "• ❌ Untrust - Remove user access\n"
                     "• 🚫 Block - Block users from VC\n"
                     "• ✅ Unblock - Unblock users\n\n"
-                    "**🔄 Advanced (Row 4):**\n"
                     "• 🔄 Transfer - Give ownership to someone in VC\n"
                     "• 🎯 Claim - Claim ownership when owner is gone\n\n"
                     f"**🎯 Game Role:** {game_role.mention if game_role else 'None'}\n"
@@ -461,25 +479,15 @@ class GamingTempVoice(commands.Cog):
                 color=discord.Color.orange()
             )
             
-            # Create the view with persistent buttons - IMPORTANT: timeout=0 for permanent persistence
-            view = BasicControlsView(self, channel.id, owner_id, is_gaming=True)
+            # Create and store the view with persistent custom IDs
+            view = BasicControlsView(self, channel.id, owner_id)
             
-            # Register the view with the bot for persistence across restarts
-            # We don't have a message_id yet, so we'll register after sending
-            message = await channel.send(embed=embed, view=view)
-            
-            # Register the view with the message ID for persistence
-            self.bot.add_view(view, message_id=message.id)
-            
-            # Send info embed without buttons
+            # Send the message with the view
+            await channel.send(embed=embed, view=view)
             await channel.send(embed=info_embed)
-            
-            print(f"[GamingTempVoice] Sent persistent control panel for channel {channel.id}")
             
         except Exception as e:
             print(f"[GamingTempVoice] Error sending panel: {e}")
-            import traceback
-            traceback.print_exc()
 
     # ---------------- CLEANUP ----------------
     async def _schedule_cleanup(self, ch):
