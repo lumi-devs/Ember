@@ -299,5 +299,22 @@ class CreateDebateView(View):
     
     @discord.ui.button(label="Create New Debate", style=discord.ButtonStyle.primary, emoji="🆕", custom_id="create_debate_persistent")
     async def create_button(self, interaction: discord.Interaction, button: Button):
-        modal = DebateSubmissionModal(self.bot)
-        await interaction.response.send_modal(modal)
+        # Check if interaction is already responded to
+        if not interaction.response.is_done():
+            try:
+                modal = DebateSubmissionModal(self.bot)
+                await interaction.response.send_modal(modal)
+            except Exception as e:
+                print(f"Error in create_button: {e}")
+                try:
+                    await interaction.response.send_message("❌ An error occurred. Please try again.", ephemeral=True)
+                except:
+                    pass
+        else:
+            # If response was already done, try to send a followup
+            try:
+                await interaction.followup.send("⏳ Processing your request...", ephemeral=True)
+                # You might want to create the modal differently here
+                # But modals can only be sent via response, not followup
+            except:
+                pass
