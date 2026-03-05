@@ -264,7 +264,7 @@ class GameCog(commands.Cog):
             today = time.strftime("%Y-%m-%d")
             daily_used = len([t for t in self.daily_usage[ctx.author.id] if time.strftime("%Y-%m-%d", time.localtime(t)) == today])
             dm_embed.add_field(name="Remaining Daily Pings", value=f"{self.MAX_PINGS_PER_DAY - daily_used}")
-            await ctx.author.send(embed=dm_embed)
+            await ctx.send(embed=dm_embed, delete_after=10)
         except:
             pass  # User might have DMs disabled
     
