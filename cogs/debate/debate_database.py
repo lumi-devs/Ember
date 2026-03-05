@@ -40,7 +40,7 @@ class DebateDatabase:
                 )
             """)
 
-            # Weekly leaderboard
+            # Weekly leaderboard - NOW INCLUDES last_updated
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS weekly_scores (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,6 +49,7 @@ class DebateDatabase:
                     score INTEGER DEFAULT 0,
                     debates_created INTEGER DEFAULT 0,
                     messages_sent INTEGER DEFAULT 0,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(user_id, week_start)
                 )
             """)
@@ -64,7 +65,7 @@ class DebateDatabase:
                 )
             """)
 
-            # Muted users table for persistence
+            # Muted users table
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS muted_users (
                     user_id TEXT PRIMARY KEY,
@@ -87,12 +88,19 @@ class DebateDatabase:
                 )
             """)
 
+            # NEW: Config table
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS config (
                     key TEXT PRIMARY KEY,
                     value TEXT
                 )
             """)
+
+            # ALSO: Add last_updated to existing weekly_scores if missing
+            try:
+                await db.execute("ALTER TABLE weekly_scores ADD COLUMN last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+            except:
+                pass  # Column already exists
 
             await db.commit()
 
