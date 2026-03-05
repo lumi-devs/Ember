@@ -87,6 +87,26 @@ class DebateDatabase:
                 )
             """)
 
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS config (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
+
+            await db.commit()
+
+    async def get_config(self, key: str) -> str | None:
+        """Retrieve a config value by key."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("SELECT value FROM config WHERE key = ?", (key,))
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+    async def set_config(self, key: str, value: str) -> None:
+        """Set a config key-value pair."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", (key, value))
             await db.commit()
 
     # Helper method to execute queries without connection reuse issues

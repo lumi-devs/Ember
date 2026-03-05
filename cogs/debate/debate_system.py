@@ -149,7 +149,7 @@ class DebateSystem(commands.Cog):
             color=COLORS["analytics"],
         )
         analytics_msg = await dashboard_thread.send(embed=analytics_embed)
-        self.bot.analytics_message_id = analytics_msg.id
+        await self.bot.db.set_config("analytics_message_id", str(analytics_msg.id))
 
         # Post create debate button embed
         create_embed = discord.Embed(
