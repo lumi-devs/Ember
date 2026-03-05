@@ -76,7 +76,7 @@ class DebateSystem(commands.Cog):
         await ctx.send(embed=embed)
 
     @debate.command(name="setup")
-    # @commands.has_permissions(administrator=True)
+    @commands.has_permissions(manage_guild=True)
     async def setup_debate_channel(self, ctx, channel: discord.ForumChannel = None):
         """
         Setup the debate forum with rules, stats, and create button
