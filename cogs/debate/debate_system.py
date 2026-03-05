@@ -36,9 +36,9 @@ class DebateSystem(commands.Cog):
             color=COLORS["info"]
         )
         embed.add_field(name="📊 `debate stats [@user]`", value="View debate stats for yourself or another user", inline=False)
-        embed.add_field(name="🔒 `debate close #thread`", value="Force close a debate (Mod only)", inline=False)
-        embed.add_field(name="🔒 `debate lock #thread [reason]`", value="Lock a debate thread (Mod only)", inline=False)
-        embed.add_field(name="🔓 `debate unlock #thread`", value="Unlock a debate thread (Mod only)", inline=False)
+        embed.add_field(name="🔒 `debate close`", value="Force close a debate (Mod only)", inline=False)
+        embed.add_field(name="🔒 `debate lock [reason]`", value="Lock a debate thread (Mod only)", inline=False)
+        embed.add_field(name="🔓 `debate unlock`", value="Unlock a debate thread (Mod only)", inline=False)
         embed.add_field(name="🔇 `debate mute @user [duration] [reason]`", value="Silence a user in debates (Mod only)", inline=False)
         embed.add_field(name="🔊 `debate unmute @user`", value="Remove silence from a user (Mod only)", inline=False)
         embed.add_field(name="📋 `debate muted`", value="List all silenced users (Mod only)", inline=False)
@@ -284,35 +284,7 @@ class DebateSystem(commands.Cog):
     
     # No need to send confirmation in the command channel since we're in the thread
     
-    @debate.command(name="unlock")
-    @commands.has_role(MOD_ROLE_ID)
-    async def unlock_debate(self, ctx, thread: discord.Thread):
-        """Unlock a previously locked debate thread"""
-        if not isinstance(thread.parent, discord.ForumChannel) or thread.parent.id != FORUM_CHANNEL_ID:
-            await ctx.send("❌ That's not a debate thread!")
-            return
-        
-        if not thread.locked:
-            await ctx.send("❌ This debate is not locked!")
-            return
-        
-        # Unlock the thread
-        await thread.edit(
-            locked=False,
-            name=thread.name[2:] if thread.name.startswith("🔒") else thread.name
-        )
-        
-        # Send unlock notification
-        embed = discord.Embed(
-            title="🔓 Debate Unlocked",
-            description=f"This debate has been unlocked by {ctx.author.mention}",
-            color=COLORS["success"],
-            timestamp=datetime.now()
-        )
-        await thread.send(embed=embed)
-        
-        await ctx.send(f"✅ Debate {thread.mention} has been unlocked.")
-    
+
     @debate.command(name="mute")
     @commands.has_role(MOD_ROLE_ID)
     async def mute_user(self, ctx, user: discord.Member, duration: str = "1h", *, reason: str = "No reason provided"):
