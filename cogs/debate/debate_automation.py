@@ -286,10 +286,12 @@ class DebateAutomation(commands.Cog):
         
         if not reaction_counted:
             # Add bonus points (0.5 per reaction) - with anti-spam
+            # FIXED: Removed from_reaction argument
             points_added = await self.bot.db.add_weekly_score(
                 str(reaction.message.author.id), 
                 0.5,
-                from_reaction=True
+                message_sent=False,  # This is a reaction, not a message
+                debate_created=False
             )
             
             # Record this reaction to prevent duplicates
@@ -309,7 +311,6 @@ class DebateAutomation(commands.Cog):
                     )
                 except discord.HTTPException:
                     pass
-
 
 async def setup(bot):
     await bot.add_cog(DebateAutomation(bot))
