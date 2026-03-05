@@ -4,6 +4,7 @@ import random
 
 DURATION = 10
 
+
 class CustomStatusRotator(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -32,9 +33,9 @@ class CustomStatusRotator(commands.Cog):
             "Meow meow???",
             "Kims IS A 13YO!",
             "Aster and chai in gulugulu mood 24/7",
-            "aagmeinghee swaha!"
+            "aagmeinghee swaha!",
         ]
-        self.queue = []          # Random order list
+        self.queue = []  # Random order list
         self.last_status = None  # To avoid accidental repeat
         self.update_status.start()
 
@@ -65,11 +66,12 @@ class CustomStatusRotator(commands.Cog):
         next_status = self.get_next_status()
         activity = discord.CustomActivity(name=next_status)
         await self.bot.change_presence(status=discord.Status.idle, activity=activity)
-        #print(f"🔁 Status changed to: {next_status}")
+        # print(f"🔁 Status changed to: {next_status}")
 
     @update_status.before_loop
     async def before_update(self):
         await self.bot.wait_until_ready()
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(CustomStatusRotator(bot))

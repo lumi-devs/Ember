@@ -6,6 +6,7 @@ import time
 
 CONFESSION_CHANNEL_ID = 1424080881265541241
 
+
 class ConfessionCleaner(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -29,7 +30,7 @@ class ConfessionCleaner(commands.Cog):
         if message.author.id in self.allowed_users:
             # Remove user immediately (only 1 message allowed)
             self.allowed_users.discard(message.author.id)
-            
+
             # Delete after 8 seconds with better error handling
             async def delete_later():
                 await asyncio.sleep(8)
@@ -44,7 +45,7 @@ class ConfessionCleaner(commands.Cog):
                         del self.pending_deletions[user_key]
 
             self.pending_deletions[user_key] = asyncio.create_task(delete_later())
-            
+
         else:
             # Delete immediately with retry logic
             async def delete_immediately():
@@ -75,11 +76,12 @@ class ConfessionCleaner(commands.Cog):
         """Clean up pending deletions if message is deleted manually"""
         if message.author.bot:
             return
-            
+
         user_key = (message.author.id, message.channel.id)
         if user_key in self.pending_deletions:
             self.pending_deletions[user_key].cancel()
             del self.pending_deletions[user_key]
+
 
 async def setup(bot):
     await bot.add_cog(ConfessionCleaner(bot))

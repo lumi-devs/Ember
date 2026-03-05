@@ -1,8 +1,12 @@
 import discord
 from discord.ext import commands, tasks
 
-
-CHANNEL_IDS=[1388612947344883732, 1400546651046809650, 1393171114158719047, 1399822388727648407]
+CHANNEL_IDS = [
+    1388612947344883732,
+    1400546651046809650,
+    1393171114158719047,
+    1399822388727648407,
+]
 
 
 class WelcomePing(commands.Cog):
@@ -17,6 +21,7 @@ class WelcomePing(commands.Cog):
             if channel:
                 msg = await channel.send(f"{member.mention}")
                 await msg.delete(delay=5)
+
 
 # Setup function to load the cog
 async def setup(bot):

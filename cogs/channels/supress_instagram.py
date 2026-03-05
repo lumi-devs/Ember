@@ -4,17 +4,13 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 
-
-BLOCK_CHANNELS = {
-    1393171137017413712,
-    1393171121154560010
-}
+BLOCK_CHANNELS = {1393171137017413712, 1393171121154560010}
 # -------------------------------------
 
 INSTAGRAM_RE = re.compile(
-    r"(https?://)?(www\.)?(instagram\.com|instagr\.am)(/[^\s]*)?",
-    flags=re.IGNORECASE
+    r"(https?://)?(www\.)?(instagram\.com|instagr\.am)(/[^\s]*)?", flags=re.IGNORECASE
 )
+
 
 class NoInstaEmbed(commands.Cog):
     def __init__(self, bot: commands.Bot):

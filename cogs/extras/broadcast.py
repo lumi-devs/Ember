@@ -4,6 +4,7 @@ from discord import app_commands
 import asyncio
 from typing import Optional
 
+
 class BroadcastCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -17,13 +18,15 @@ class BroadcastCog(commands.Cog):
         """Security check to prevent mass DM abuse"""
         # Limit to prevent accidental mass DMs
         MAX_MEMBERS_WARNING = 100
-        
+
         if member_count > MAX_MEMBERS_WARNING:
             return False
         return True
 
     # Broadcast command group
-    broadcast_group = app_commands.Group(name="broadcast", description="Broadcast messages to users")
+    broadcast_group = app_commands.Group(
+        name="broadcast", description="Broadcast messages to users"
+    )
 
     @broadcast_group.command(name="user", description="Send a DM to a specific user")
     @app_commands.describe(
@@ -33,7 +36,7 @@ class BroadcastCog(commands.Cog):
         footer="Embed footer text",
         color="Embed color (hex code without #)",
         thumbnail_url="Thumbnail URL",
-        image_url="Image URL"
+        image_url="Image URL",
     )
     async def broadcast_user(
         self,
@@ -44,14 +47,14 @@ class BroadcastCog(commands.Cog):
         footer: Optional[str] = None,
         color: Optional[str] = "5865F2",
         thumbnail_url: Optional[str] = None,
-        image_url: Optional[str] = None
+        image_url: Optional[str] = None,
     ):
         """Send a DM to a specific user"""
         if not await self.is_owner(interaction):
             embed = discord.Embed(
                 title="❌ Access Denied",
                 description="Only the bot owner can use this command.",
-                color=discord.Color.red()
+                color=discord.Color.red(),
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -62,7 +65,7 @@ class BroadcastCog(commands.Cog):
             embed = discord.Embed(
                 title="❌ Error",
                 description="User not found.",
-                color=discord.Color.red()
+                color=discord.Color.red(),
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -80,7 +83,7 @@ class BroadcastCog(commands.Cog):
             title=title,
             description=description,
             color=embed_color,
-            timestamp=discord.utils.utcnow()
+            timestamp=discord.utils.utcnow(),
         )
 
         if footer:
@@ -97,18 +100,20 @@ class BroadcastCog(commands.Cog):
             success_embed = discord.Embed(
                 title="✅ Message Sent",
                 description=f"Successfully sent message to {user.mention}",
-                color=discord.Color.green()
+                color=discord.Color.green(),
             )
             await interaction.response.send_message(embed=success_embed, ephemeral=True)
         except discord.Forbidden:
             error_embed = discord.Embed(
                 title="❌ Cannot Send",
                 description=f"Could not send message to {user.mention}. They may have DMs disabled.",
-                color=discord.Color.red()
+                color=discord.Color.red(),
             )
             await interaction.response.send_message(embed=error_embed, ephemeral=True)
 
-    @broadcast_group.command(name="role", description="Send a DM to all users with a specific role")
+    @broadcast_group.command(
+        name="role", description="Send a DM to all users with a specific role"
+    )
     @app_commands.describe(
         role="The role to broadcast to",
         title="Embed title",
@@ -116,7 +121,7 @@ class BroadcastCog(commands.Cog):
         footer="Embed footer text",
         color="Embed color (hex code without #)",
         thumbnail_url="Thumbnail URL",
-        image_url="Image URL"
+        image_url="Image URL",
     )
     async def broadcast_role(
         self,
@@ -127,26 +132,26 @@ class BroadcastCog(commands.Cog):
         footer: Optional[str] = None,
         color: Optional[str] = "5865F2",
         thumbnail_url: Optional[str] = None,
-        image_url: Optional[str] = None
+        image_url: Optional[str] = None,
     ):
         """Send a DM to all users with a specific role"""
         if not await self.is_owner(interaction):
             embed = discord.Embed(
                 title="❌ Access Denied",
                 description="Only the bot owner can use this command.",
-                color=discord.Color.red()
+                color=discord.Color.red(),
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
         # Get all members with the role
         members = [member for member in role.members if not member.bot]
-        
+
         if not members:
             error_embed = discord.Embed(
                 title="❌ No Members",
                 description=f"No human members found with the {role.mention} role.",
-                color=discord.Color.orange()
+                color=discord.Color.orange(),
             )
             await interaction.response.send_message(embed=error_embed, ephemeral=True)
             return
@@ -156,12 +161,12 @@ class BroadcastCog(commands.Cog):
             warning_embed = discord.Embed(
                 title="⚠️ Security Warning",
                 description=f"This would send DMs to {len(members)} members. This is a large number of users.",
-                color=discord.Color.orange()
+                color=discord.Color.orange(),
             )
             warning_embed.add_field(
                 name="Confirmation Required",
                 value="Use the command again if you're sure you want to proceed.",
-                inline=False
+                inline=False,
             )
             await interaction.response.send_message(embed=warning_embed, ephemeral=True)
             return
@@ -176,7 +181,7 @@ class BroadcastCog(commands.Cog):
             title=title,
             description=description,
             color=embed_color,
-            timestamp=discord.utils.utcnow()
+            timestamp=discord.utils.utcnow(),
         )
 
         if footer:
@@ -192,7 +197,7 @@ class BroadcastCog(commands.Cog):
         progress_embed = discord.Embed(
             title="📤 Starting Broadcast",
             description=f"Sending message to {len(members)} members with {role.mention}...",
-            color=discord.Color.blue()
+            color=discord.Color.blue(),
         )
         await interaction.response.send_message(embed=progress_embed, ephemeral=True)
 
@@ -216,12 +221,14 @@ class BroadcastCog(commands.Cog):
         # Send results
         result_embed = discord.Embed(
             title="📊 Broadcast Complete",
-            color=discord.Color.green() if success_count > 0 else discord.Color.orange()
+            color=(
+                discord.Color.green() if success_count > 0 else discord.Color.orange()
+            ),
         )
         result_embed.add_field(name="✅ Successful", value=success_count, inline=True)
         result_embed.add_field(name="❌ Failed", value=fail_count, inline=True)
         result_embed.add_field(name="📝 Total", value=len(members), inline=True)
-        
+
         if failed_users:
             failed_list = ", ".join(failed_users[:5])  # Show first 5 failed users
             if len(failed_users) > 5:
@@ -230,14 +237,16 @@ class BroadcastCog(commands.Cog):
 
         await interaction.edit_original_response(embed=result_embed)
 
-    @broadcast_group.command(name="all", description="Send a DM to all server members (USE WITH CAUTION)")
+    @broadcast_group.command(
+        name="all", description="Send a DM to all server members (USE WITH CAUTION)"
+    )
     @app_commands.describe(
         title="Embed title",
         description="Embed description",
         footer="Embed footer text",
         color="Embed color (hex code without #)",
         thumbnail_url="Thumbnail URL",
-        image_url="Image URL"
+        image_url="Image URL",
     )
     async def broadcast_all(
         self,
@@ -247,14 +256,14 @@ class BroadcastCog(commands.Cog):
         footer: Optional[str] = None,
         color: Optional[str] = "5865F2",
         thumbnail_url: Optional[str] = None,
-        image_url: Optional[str] = None
+        image_url: Optional[str] = None,
     ):
         """Send a DM to all server members - USE WITH CAUTION"""
         if not await self.is_owner(interaction):
             embed = discord.Embed(
                 title="❌ Access Denied",
                 description="Only the bot owner can use this command.",
-                color=discord.Color.red()
+                color=discord.Color.red(),
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -270,7 +279,7 @@ class BroadcastCog(commands.Cog):
             error_embed = discord.Embed(
                 title="❌ No Members",
                 description="No human members found in any server.",
-                color=discord.Color.orange()
+                color=discord.Color.orange(),
             )
             await interaction.response.send_message(embed=error_embed, ephemeral=True)
             return
@@ -279,30 +288,32 @@ class BroadcastCog(commands.Cog):
         warning_embed = discord.Embed(
             title="🚨 MASS BROADCAST WARNING",
             description=f"This will send DMs to **{len(all_members)}** members across **{len(self.bot.guilds)}** servers!",
-            color=discord.Color.red()
+            color=discord.Color.red(),
         )
         warning_embed.add_field(
             name="⚠️ Are you sure?",
             value="This action cannot be undone and may result in rate limits or other issues.",
-            inline=False
+            inline=False,
         )
         warning_embed.add_field(
             name="✅ To proceed:",
             value="Run this command again to confirm the broadcast.",
-            inline=False
+            inline=False,
         )
-        
+
         await interaction.response.send_message(embed=warning_embed, ephemeral=True)
         return
 
-    @broadcast_group.command(name="preview", description="Preview your embed before sending")
+    @broadcast_group.command(
+        name="preview", description="Preview your embed before sending"
+    )
     @app_commands.describe(
         title="Embed title",
         description="Embed description",
         footer="Embed footer text",
         color="Embed color (hex code without #)",
         thumbnail_url="Thumbnail URL",
-        image_url="Image URL"
+        image_url="Image URL",
     )
     async def broadcast_preview(
         self,
@@ -312,14 +323,14 @@ class BroadcastCog(commands.Cog):
         footer: Optional[str] = None,
         color: Optional[str] = "5865F2",
         thumbnail_url: Optional[str] = None,
-        image_url: Optional[str] = None
+        image_url: Optional[str] = None,
     ):
         """Preview your embed before sending"""
         if not await self.is_owner(interaction):
             embed = discord.Embed(
                 title="❌ Access Denied",
                 description="Only the bot owner can use this command.",
-                color=discord.Color.red()
+                color=discord.Color.red(),
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -334,7 +345,7 @@ class BroadcastCog(commands.Cog):
             title=title,
             description=description,
             color=embed_color,
-            timestamp=discord.utils.utcnow()
+            timestamp=discord.utils.utcnow(),
         )
 
         if footer:
@@ -349,11 +360,12 @@ class BroadcastCog(commands.Cog):
         preview_embed = discord.Embed(
             title="👀 Embed Preview",
             description="This is how your embed will look:",
-            color=discord.Color.blue()
+            color=discord.Color.blue(),
         )
 
         await interaction.response.send_message(embed=preview_embed, ephemeral=True)
         await interaction.followup.send(embed=embed, ephemeral=True)
+
 
 async def setup(bot):
     cog = BroadcastCog(bot)

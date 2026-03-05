@@ -9,7 +9,7 @@ DELETE_DELAY = 10  # 10 minutes
 # Matches most "caught cat" message variants
 CAUGHT_CAT_PATTERN = re.compile(
     r"(cought.*cat|cat.*cought|fella.*cought|☔.*cats|</rain:\d+>)",
-    re.IGNORECASE | re.DOTALL
+    re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -27,7 +27,7 @@ class AutoDelete(commands.Cog):
             await asyncio.sleep(DELETE_DELAY)
             try:
                 await message.delete()
-                #print(f"🧹 Deleted a caught-cat message in #{message.channel}")
+                # print(f"🧹 Deleted a caught-cat message in #{message.channel}")
             except discord.NotFound:
                 pass
             except discord.Forbidden:

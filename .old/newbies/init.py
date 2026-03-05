@@ -1,5 +1,6 @@
 from .cog import DynamicMemberList
 
+
 async def setup(bot):
     cog = DynamicMemberList(bot)
     await bot.add_cog(cog)

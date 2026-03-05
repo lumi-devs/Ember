@@ -4,8 +4,9 @@ from discord.ext import commands
 
 WATCH_CHANNEL_IDS = [
     1418501302626816010,  # dragrequest
-    1399658407178272798   # confession
+    1399658407178272798,  # confession
 ]
+
 
 class DeleteAll(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -16,7 +17,7 @@ class DeleteAll(commands.Cog):
         # Ignore bots
         if message.author.bot:
             return
-        
+
         # Ignore threads
         if isinstance(message.channel, discord.Thread):
             return
@@ -31,6 +32,6 @@ class DeleteAll(commands.Cog):
         except Exception as e:
             print(f"[DeleteAll] Failed to delete message: {e}")
 
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(DeleteAll(bot))
-

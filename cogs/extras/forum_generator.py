@@ -25,12 +25,16 @@ class ForumPostCog(commands.Cog):
 
         # Check if user already has an active creation
         if user_id in self.active_creations:
-            await ctx.send("You already have a forum post in creation! Use `.cancel` to cancel it.")
+            await ctx.send(
+                "You already have a forum post in creation! Use `.cancel` to cancel it."
+            )
             return
 
         # Validate count
         if count < 1 or count > 10:
-            await ctx.send("You can create 1-10 forum posts at once. Please use `.forum 1` to `.forum 10`.")
+            await ctx.send(
+                "You can create 1-10 forum posts at once. Please use `.forum 1` to `.forum 10`."
+            )
             return
 
         # Initialize creation data
@@ -43,15 +47,12 @@ class ForumPostCog(commands.Cog):
             "post_count": count,
             "current_post": 1,
             "created_posts": [],  # Store created post links
-            "skip_tags": False  # Track if user wants to skip tags
+            "skip_tags": False,  # Track if user wants to skip tags
         }
 
         # Store multi-mode info
         if count > 1:
-            self.multi_mode_users[user_id] = {
-                "total_posts": count,
-                "created_posts": []
-            }
+            self.multi_mode_users[user_id] = {"total_posts": count, "created_posts": []}
 
         # Start the interactive creation
         await self.start_forum_creation(ctx)
@@ -63,28 +64,26 @@ class ForumPostCog(commands.Cog):
         # Show multi-post info if applicable
         title = "📝 Forum Post Creator"
         if data["post_count"] > 1:
-            title = f"📝 Forum Post Creator ({data['current_post']}/{data['post_count']})"
+            title = (
+                f"📝 Forum Post Creator ({data['current_post']}/{data['post_count']})"
+            )
 
         embed = discord.Embed(
             title=title,
             description="I'll guide you through creating a forum post!",
-            color=discord.Color.blue()
+            color=discord.Color.blue(),
         )
 
         steps = "1. Choose forum channel\n2. Set post title\n3. Add tags (or skip)\n4. Write content\n5. Add attachments"
         if data["post_count"] > 1:
             steps += f"\n\n**Creating {data['post_count']} posts** - After each post, you'll be asked if you want to continue."
 
-        embed.add_field(
-            name="Steps:",
-            value=steps,
-            inline=False
-        )
+        embed.add_field(name="Steps:", value=steps, inline=False)
 
         embed.add_field(
             name="Commands during creation:",
             value="• Type `next` to continue\n• Type `back` to go back\n• Type `cancel` to stop\n• Type `skip` to skip current step (if applicable)",
-            inline=False
+            inline=False,
         )
 
         msg = await ctx.send(embed=embed)
@@ -103,18 +102,20 @@ class ForumPostCog(commands.Cog):
         embed = discord.Embed(
             title=title,
             description="Please **mention or type the name** of the forum channel where you want to create the post.",
-            color=discord.Color.blue()
+            color=discord.Color.blue(),
         )
 
         forum_channels = self.get_forum_channels(ctx.guild)
         embed.add_field(
             name="Available Forum Channels:",
             value=forum_channels if forum_channels else "No forum channels found",
-            inline=False
+            inline=False,
         )
 
         if data["post_count"] > 1:
-            embed.set_footer(text=f"Post {data['current_post']} of {data['post_count']}")
+            embed.set_footer(
+                text=f"Post {data['current_post']} of {data['post_count']}"
+            )
 
         await data["message"].edit(embed=embed)
 
@@ -129,17 +130,19 @@ class ForumPostCog(commands.Cog):
         embed = discord.Embed(
             title=title,
             description="What should be the **title** of your forum post?",
-            color=discord.Color.blue()
+            color=discord.Color.blue(),
         )
 
         embed.add_field(
             name="Tips:",
             value="• Keep it clear and descriptive\n• 5-10 words is ideal\n• Make it searchable",
-            inline=False
+            inline=False,
         )
 
         if data["post_count"] > 1:
-            embed.set_footer(text=f"Post {data['current_post']} of {data['post_count']}")
+            embed.set_footer(
+                text=f"Post {data['current_post']} of {data['post_count']}"
+            )
 
         await data["message"].edit(embed=embed)
 
@@ -152,12 +155,20 @@ class ForumPostCog(commands.Cog):
         available_tags = ""
 
         # FIXED: Check if available_tags exists and is not None
-        if forum_channel and hasattr(forum_channel, 'available_tags') and forum_channel.available_tags:
-            tags_list = [tag.name for tag in forum_channel.available_tags[:10] if tag]  # First 10 tags, filter None
+        if (
+            forum_channel
+            and hasattr(forum_channel, "available_tags")
+            and forum_channel.available_tags
+        ):
+            tags_list = [
+                tag.name for tag in forum_channel.available_tags[:10] if tag
+            ]  # First 10 tags, filter None
             if tags_list:
                 available_tags = f"**Available tags:** {', '.join(tags_list)}\n"
                 if len(forum_channel.available_tags) > 10:
-                    available_tags += f"...and {len(forum_channel.available_tags) - 10} more\n"
+                    available_tags += (
+                        f"...and {len(forum_channel.available_tags) - 10} more\n"
+                    )
         else:
             available_tags = "No existing tags in this forum.\n"
 
@@ -174,17 +185,19 @@ class ForumPostCog(commands.Cog):
                 f"💡 Type `skip` to **skip tags** for this post\n"
                 f"💡 New tags will be created automatically!"
             ),
-            color=discord.Color.blue()
+            color=discord.Color.blue(),
         )
 
         embed.add_field(
             name="Note:",
             value="• Up to 5 tags\n• Type `skip` to skip tags\n• New tags will be created if they don't exist\n• Tag names max 20 characters",
-            inline=False
+            inline=False,
         )
 
         if data["post_count"] > 1:
-            embed.set_footer(text=f"Post {data['current_post']} of {data['post_count']}")
+            embed.set_footer(
+                text=f"Post {data['current_post']} of {data['post_count']}"
+            )
 
         await data["message"].edit(embed=embed)
 
@@ -194,28 +207,32 @@ class ForumPostCog(commands.Cog):
 
         title = "Step 4: Post Content"
         if data["post_count"] > 1:
-            title = f"Step 4: Post Content ({data['current_post']}/{data['post_count']})"
+            title = (
+                f"Step 4: Post Content ({data['current_post']}/{data['post_count']})"
+            )
 
         embed = discord.Embed(
             title=title,
             description="Write the main content of your forum post.\n**💡 Type `skip` to skip content and create post with just title and attachments**",
-            color=discord.Color.blue()
+            color=discord.Color.blue(),
         )
 
         embed.add_field(
             name="Formatting Tips:",
             value="• Use `**bold**` for emphasis\n• Use code blocks for code: ```python\ncode here\n```\n• Keep paragraphs short",
-            inline=False
+            inline=False,
         )
 
         embed.add_field(
             name="Note:",
             value="You can use Discord markdown and mentions.",
-            inline=False
+            inline=False,
         )
 
         if data["post_count"] > 1:
-            embed.set_footer(text=f"Post {data['current_post']} of {data['post_count']}")
+            embed.set_footer(
+                text=f"Post {data['current_post']} of {data['post_count']}"
+            )
 
         await data["message"].edit(embed=embed)
 
@@ -230,23 +247,25 @@ class ForumPostCog(commands.Cog):
         embed = discord.Embed(
             title=title,
             description="Do you want to attach any files to your post?",
-            color=discord.Color.blue()
+            color=discord.Color.blue(),
         )
 
         embed.add_field(
             name="Options:",
             value="• Upload images/files now (they'll be attached)\n• Type `skip` to continue without attachments\n• Type `done` when finished uploading",
-            inline=False
+            inline=False,
         )
 
         embed.add_field(
             name="Supported files:",
             value="Images, text files, code files, PDFs (up to 25MB total)",
-            inline=False
+            inline=False,
         )
 
         if data["post_count"] > 1:
-            embed.set_footer(text=f"Post {data['current_post']} of {data['post_count']}")
+            embed.set_footer(
+                text=f"Post {data['current_post']} of {data['post_count']}"
+            )
 
         await data["message"].edit(embed=embed)
 
@@ -258,37 +277,34 @@ class ForumPostCog(commands.Cog):
         if data["post_count"] > 1:
             title = f"📋 Post Preview ({data['current_post']}/{data['post_count']})"
 
-        embed = discord.Embed(
-            title=title,
-            color=discord.Color.gold()
-        )
+        embed = discord.Embed(title=title, color=discord.Color.gold())
 
         # Build preview
         preview_text = f"**Channel:** {data['forum_channel'].mention if data['forum_channel'] else 'Not set'}\n"
         preview_text += f"**Title:** {data['data'].get('title', 'Not set')}\n"
 
         # Handle tags preview
-        tags = data['data'].get('tags', [])
+        tags = data["data"].get("tags", [])
         if tags:
             preview_text += f"**Tags:** {', '.join(tags)}\n"
-        elif data.get('skip_tags', False):
+        elif data.get("skip_tags", False):
             preview_text += f"**Tags:** Skipped\n"
         else:
             preview_text += f"**Tags:** Not set\n"
 
         # Handle content preview
-        content = data['data'].get('content', '')
+        content = data["data"].get("content", "")
         if content:
             preview_text += f"**Content Preview:** {content[:100]}...\n"
-        elif data.get('skip_content', False):
+        elif data.get("skip_content", False):
             preview_text += f"**Content:** Skipped\n"
         else:
             preview_text += f"**Content:** Not set\n"
 
         # Handle attachments preview
-        attachments = data['data'].get('attachments', [])
+        attachments = data["data"].get("attachments", [])
         if attachments:
-            file_names = [att.get('filename', 'Unknown') for att in attachments[:3]]
+            file_names = [att.get("filename", "Unknown") for att in attachments[:3]]
             preview_text += f"**Attachments:** {', '.join(file_names)}"
             if len(attachments) > 3:
                 preview_text += f" (+{len(attachments) - 3} more)\n"
@@ -302,11 +318,13 @@ class ForumPostCog(commands.Cog):
         embed.add_field(
             name="Options:",
             value="• Type `post` to create the forum post\n• Type `edit` to modify something\n• Type `cancel` to discard",
-            inline=False
+            inline=False,
         )
 
         if data["post_count"] > 1:
-            embed.set_footer(text=f"Post {data['current_post']} of {data['post_count']}")
+            embed.set_footer(
+                text=f"Post {data['current_post']} of {data['post_count']}"
+            )
 
         await data["message"].edit(embed=embed)
 
@@ -319,21 +337,21 @@ class ForumPostCog(commands.Cog):
             embed = discord.Embed(
                 title="🎉 Post Created!",
                 description=f"✅ Post #{data['current_post']} has been created!\n\n"
-                            f"Do you want to create the next post ({data['current_post'] + 1}/{data['post_count']})?",
-                color=discord.Color.green()
+                f"Do you want to create the next post ({data['current_post'] + 1}/{data['post_count']})?",
+                color=discord.Color.green(),
             )
 
             embed.add_field(
                 name="Options:",
                 value="• Type `yes` to create another post\n• Type `no` to finish\n• Type `same` to use same settings as previous post",
-                inline=False
+                inline=False,
             )
 
             if data["current_post"] > 1:
                 embed.add_field(
                     name="Quick Settings:",
                     value="Type `same` to use:\n- Same forum channel\n- Same tags (if any)\n- Same attachments (if any)",
-                    inline=False
+                    inline=False,
                 )
 
             await data["message"].edit(embed=embed)
@@ -377,7 +395,9 @@ class ForumPostCog(commands.Cog):
         elif content == "back":
             await self.previous_step(message)
             return
-        elif content in ["yes", "no", "same"] and data.get("step") == 7:  # Create more step
+        elif (
+            content in ["yes", "no", "same"] and data.get("step") == 7
+        ):  # Create more step
             await self.handle_create_more_response(message, content)
             return
 
@@ -404,10 +424,14 @@ class ForumPostCog(commands.Cog):
             if content == "skip":
                 data["skip_tags"] = True
                 data["data"]["tags"] = []
-                await message.channel.send("✅ Skipped tags for this post.", delete_after=3)
+                await message.channel.send(
+                    "✅ Skipped tags for this post.", delete_after=3
+                )
                 await self.next_step(message)
             else:
-                tags = [tag.strip() for tag in message.content.split(",") if tag.strip()]
+                tags = [
+                    tag.strip() for tag in message.content.split(",") if tag.strip()
+                ]
                 data["data"]["tags"] = tags[:5]  # Limit to 5 tags
                 data["skip_tags"] = False
                 await self.next_step(message)
@@ -416,7 +440,9 @@ class ForumPostCog(commands.Cog):
             if content == "skip":
                 data["skip_content"] = True
                 data["data"]["content"] = ""  # Empty content
-                await message.channel.send("✅ Skipped content for this post.", delete_after=3)
+                await message.channel.send(
+                    "✅ Skipped content for this post.", delete_after=3
+                )
                 await self.next_step(message)
             else:
                 data["data"]["content"] = message.content
@@ -425,7 +451,9 @@ class ForumPostCog(commands.Cog):
         elif data["step"] == 5:  # Attachments
             if message.content.lower() == "skip":
                 data["data"]["attachments"] = []  # Store as list of file data
-                data["data"]["attachment_files"] = []  # Store as list of discord.File objects
+                data["data"][
+                    "attachment_files"
+                ] = []  # Store as list of discord.File objects
                 await self.next_step(message)
             elif message.content.lower() == "done":
                 # Check if we have stored attachments
@@ -434,7 +462,7 @@ class ForumPostCog(commands.Cog):
                 if attachments_data:
                     await message.channel.send(
                         f"✅ Ready with {len(attachments_data)} file(s).",
-                        delete_after=5
+                        delete_after=5,
                     )
                     await self.next_step(message)
                 else:
@@ -443,7 +471,7 @@ class ForumPostCog(commands.Cog):
                         "❓ No attachments stored yet. Did you upload any files?\n"
                         "• Upload files and then type `done` again\n"
                         "• Type `skip` to continue without attachments",
-                        delete_after=10
+                        delete_after=10,
                     )
             elif message.attachments:
                 # User uploaded files - store them immediately
@@ -460,30 +488,36 @@ class ForumPostCog(commands.Cog):
                             "url": attachment.url,
                             "data": file_data,
                             "content_type": attachment.content_type,
-                            "size": len(file_data)
+                            "size": len(file_data),
                         }
 
                         # Check if we already have this file (by filename)
-                        if not any(a.get("filename") == attachment.filename for a in attachments_data):
+                        if not any(
+                            a.get("filename") == attachment.filename
+                            for a in attachments_data
+                        ):
                             attachments_data.append(attachment_info)
-                            print(f"Stored attachment: {attachment.filename} ({len(file_data)} bytes)")
+                            print(
+                                f"Stored attachment: {attachment.filename} ({len(file_data)} bytes)"
+                            )
 
                             # Send confirmation
                             await message.channel.send(
-                                f"📎 **Added:** {attachment.filename}",
-                                delete_after=3
+                                f"📎 **Added:** {attachment.filename}", delete_after=3
                             )
                         else:
                             await message.channel.send(
                                 f"⚠️ **Duplicate:** {attachment.filename} already added",
-                                delete_after=3
+                                delete_after=3,
                             )
 
                     except Exception as e:
-                        print(f"Failed to process attachment {attachment.filename}: {e}")
+                        print(
+                            f"Failed to process attachment {attachment.filename}: {e}"
+                        )
                         await message.channel.send(
                             f"❌ Failed to process {attachment.filename}: {str(e)[:50]}",
-                            delete_after=5
+                            delete_after=5,
                         )
 
                 # Update stored attachments
@@ -495,10 +529,12 @@ class ForumPostCog(commands.Cog):
                         f"✅ **Total attachments:** {len(attachments_data)}\n"
                         f"📦 **Total size:** {sum(a.get('size', 0) for a in attachments_data) / 1024:.1f} KB\n"
                         f"Type `done` when finished or `skip` to continue without attachments.",
-                        delete_after=8
+                        delete_after=8,
                     )
             else:
-                await message.channel.send("Please upload files or type `skip`/`done`.", delete_after=5)
+                await message.channel.send(
+                    "Please upload files or type `skip`/`done`.", delete_after=5
+                )
         elif data["step"] == 6:  # Preview actions
             if message.content.lower() == "post":
                 await self.create_forum_post_final(message)
@@ -521,8 +557,9 @@ class ForumPostCog(commands.Cog):
         # If not a mention, search by name
         if not forum_channel:
             for channel in message.guild.channels:
-                if isinstance(channel, discord.ForumChannel) and channel.name.lower() == input_text.lower().replace("#",
-                                                                                                                    ""):
+                if isinstance(
+                    channel, discord.ForumChannel
+                ) and channel.name.lower() == input_text.lower().replace("#", ""):
                     forum_channel = channel
                     break
 
@@ -531,17 +568,21 @@ class ForumPostCog(commands.Cog):
 
             # FIXED: Add debug info about tags availability
             tag_info = ""
-            if hasattr(forum_channel, 'available_tags'):
+            if hasattr(forum_channel, "available_tags"):
                 if forum_channel.available_tags is None:
                     tag_info = " (no tags available)"
                 else:
                     tag_info = f" ({len(forum_channel.available_tags)} tags available)"
 
-            await message.channel.send(f"✅ Selected forum: {forum_channel.mention}{tag_info}", delete_after=5)
+            await message.channel.send(
+                f"✅ Selected forum: {forum_channel.mention}{tag_info}", delete_after=5
+            )
             await self.next_step(message)
         else:
-            await message.channel.send("❌ Couldn't find that forum channel. Please try again or mention the channel.",
-                                       delete_after=5)
+            await message.channel.send(
+                "❌ Couldn't find that forum channel. Please try again or mention the channel.",
+                delete_after=5,
+            )
 
     async def handle_create_more_response(self, message, response):
         """Handle yes/no/same response for creating more posts"""
@@ -563,7 +604,9 @@ class ForumPostCog(commands.Cog):
                 "title": "",
                 "content": "",  # Always start with empty content
                 "tags": previous_data.get("tags", []),  # Keep same tags
-                "attachments": previous_data.get("attachments", [])  # Keep attachment data
+                "attachments": previous_data.get(
+                    "attachments", []
+                ),  # Keep attachment data
             }
 
             # Keep forum channel and skip settings
@@ -581,7 +624,6 @@ class ForumPostCog(commands.Cog):
             data["skip_content"] = False  # Reset skip content
 
             await self.ask_forum_channel(message)
-
 
     async def next_step(self, message):
         user_id = message.author.id
@@ -636,17 +678,21 @@ class ForumPostCog(commands.Cog):
         embed = discord.Embed(
             title=title,
             description="Type the number of what you want to edit:\n1. Forum Channel\n2. Title\n3. Tags\n4. Content\n5. Attachments",
-            color=discord.Color.orange()
+            color=discord.Color.orange(),
         )
 
         msg = await message.channel.send(embed=embed, delete_after=30)
 
         def check(m):
-            return m.author.id == user_id and m.channel == message.channel and m.content.isdigit() and 1 <= int(
-                m.content) <= 5
+            return (
+                m.author.id == user_id
+                and m.channel == message.channel
+                and m.content.isdigit()
+                and 1 <= int(m.content) <= 5
+            )
 
         try:
-            response = await self.bot.wait_for('message', timeout=30.0, check=check)
+            response = await self.bot.wait_for("message", timeout=30.0, check=check)
             choice = int(response.content)
 
             # Set step to the chosen edit point
@@ -668,7 +714,9 @@ class ForumPostCog(commands.Cog):
             await msg.delete()
 
         except asyncio.TimeoutError:
-            await msg.edit(content="Edit timed out. Returning to preview...", embed=None)
+            await msg.edit(
+                content="Edit timed out. Returning to preview...", embed=None
+            )
             await self.show_preview(message)
 
     async def create_forum_post_final(self, message):
@@ -682,13 +730,20 @@ class ForumPostCog(commands.Cog):
                 forum_channel = data["forum_channel"]
 
                 # Check if available_tags exists and is not None
-                if forum_channel and hasattr(forum_channel, 'available_tags') and forum_channel.available_tags:
+                if (
+                    forum_channel
+                    and hasattr(forum_channel, "available_tags")
+                    and forum_channel.available_tags
+                ):
                     for tag_name in data["data"]["tags"][:5]:  # Limit to 5 tags
                         tag_found = False
 
                         # First, try to find existing tag
                         for available_tag in forum_channel.available_tags:
-                            if available_tag and tag_name.lower() == available_tag.name.lower():
+                            if (
+                                available_tag
+                                and tag_name.lower() == available_tag.name.lower()
+                            ):
                                 tags.append(available_tag)
                                 tag_found = True
                                 break
@@ -698,8 +753,10 @@ class ForumPostCog(commands.Cog):
                             try:
                                 # Create new tag
                                 new_tag = await forum_channel.create_tag(
-                                    name=tag_name[:20],  # Discord limits tag names to 20 chars
-                                    reason=f"Created via forum post by {message.author.name}"
+                                    name=tag_name[
+                                        :20
+                                    ],  # Discord limits tag names to 20 chars
+                                    reason=f"Created via forum post by {message.author.name}",
                                 )
                                 tags.append(new_tag)
                                 print(f"Created new tag: {tag_name}")
@@ -707,13 +764,13 @@ class ForumPostCog(commands.Cog):
                                 print(f"Failed to create tag '{tag_name}': {e}")
                                 await message.channel.send(
                                     f"⚠️ Couldn't create tag '{tag_name}': {str(e)[:100]}",
-                                    delete_after=5
+                                    delete_after=5,
                                 )
                 else:
                     # Forum channel doesn't support tags or tags list is None/empty
                     await message.channel.send(
                         "ℹ️ This forum channel doesn't support tags or has no available tags.",
-                        delete_after=5
+                        delete_after=5,
                     )
             else:
                 # Tags were skipped or no tags provided
@@ -721,14 +778,16 @@ class ForumPostCog(commands.Cog):
 
             # Handle the case where forum_channel might be None
             if not data["forum_channel"]:
-                await message.channel.send("❌ No forum channel selected!", delete_after=5)
+                await message.channel.send(
+                    "❌ No forum channel selected!", delete_after=5
+                )
                 return
 
             # Create the forum post - FIXED: Use empty list instead of None when no tags
             thread = await data["forum_channel"].create_thread(
                 name=data["data"].get("title", "Untitled Post")[:100],  # Discord limit
                 content=data["data"].get("content", ""),
-                applied_tags=tags  # This should always be a list (even if empty)
+                applied_tags=tags,  # This should always be a list (even if empty)
             )
 
             # Add attachments if any
@@ -742,13 +801,12 @@ class ForumPostCog(commands.Cog):
                         # Create discord.File from stored bytes
                         file_obj = discord.File(
                             io.BytesIO(attachment_info["data"]),
-                            filename=attachment_info["filename"]
+                            filename=attachment_info["filename"],
                         )
 
                         # Send the file
                         await thread.thread.send(
-                            f"📎 {attachment_info['filename']}",
-                            file=file_obj
+                            f"📎 {attachment_info['filename']}", file=file_obj
                         )
                         attachment_count += 1
                         await asyncio.sleep(1)  # Avoid rate limits
@@ -756,7 +814,9 @@ class ForumPostCog(commands.Cog):
                         print(f"Uploaded attachment: {attachment_info['filename']}")
 
                     except Exception as e:
-                        print(f"Failed to upload attachment {attachment_info.get('filename', 'unknown')}: {e}")
+                        print(
+                            f"Failed to upload attachment {attachment_info.get('filename', 'unknown')}: {e}"
+                        )
                         # Try to send as URL if file upload fails
                         try:
                             url = attachment_info.get("url")
@@ -769,13 +829,15 @@ class ForumPostCog(commands.Cog):
                             print(f"Failed to send URL: {e2}")
 
                 if attachment_count > 0:
-                    await thread.thread.send(f"📁 **{attachment_count} attachment(s) uploaded**")
+                    await thread.thread.send(
+                        f"📁 **{attachment_count} attachment(s) uploaded**"
+                    )
 
             # Store created post info for multi-mode
             post_info = {
                 "title": data["data"].get("title", "Untitled"),
                 "link": thread.thread.jump_url,
-                "channel": data["forum_channel"].name
+                "channel": data["forum_channel"].name,
             }
 
             # Store in multi-mode if applicable
@@ -788,14 +850,26 @@ class ForumPostCog(commands.Cog):
                 embed = discord.Embed(
                     title="✅ Forum Post Created!",
                     description=f"Your post has been created in {data['forum_channel'].mention}",
-                    color=discord.Color.green()
+                    color=discord.Color.green(),
                 )
-                embed.add_field(name="Post Title", value=data["data"].get("title", "Untitled"), inline=False)
+                embed.add_field(
+                    name="Post Title",
+                    value=data["data"].get("title", "Untitled"),
+                    inline=False,
+                )
 
                 if tags:
-                    embed.add_field(name="Tags", value=", ".join([tag.name for tag in tags]), inline=False)
+                    embed.add_field(
+                        name="Tags",
+                        value=", ".join([tag.name for tag in tags]),
+                        inline=False,
+                    )
 
-                embed.add_field(name="Post Link", value=f"[Go to post]({thread.thread.jump_url})", inline=False)
+                embed.add_field(
+                    name="Post Link",
+                    value=f"[Go to post]({thread.thread.jump_url})",
+                    inline=False,
+                )
 
                 await data["message"].edit(embed=embed)
 
@@ -836,7 +910,7 @@ class ForumPostCog(commands.Cog):
                 embed = discord.Embed(
                     title="🎉 Multiple Forum Posts Created!",
                     description=f"Successfully created {len(multi_data['created_posts'])} posts:",
-                    color=discord.Color.green()
+                    color=discord.Color.green(),
                 )
 
                 # List all created posts
@@ -844,11 +918,13 @@ class ForumPostCog(commands.Cog):
                     embed.add_field(
                         name=f"Post #{i}: {post['title']}",
                         value=f"[Go to post]({post['link']}) in #{post['channel']}",
-                        inline=False
+                        inline=False,
                     )
 
                 # Add summary
-                embed.set_footer(text=f"Created {len(multi_data['created_posts'])}/{multi_data['total_posts']} posts")
+                embed.set_footer(
+                    text=f"Created {len(multi_data['created_posts'])}/{multi_data['total_posts']} posts"
+                )
 
                 await data["message"].edit(embed=embed)
 
@@ -866,7 +942,9 @@ class ForumPostCog(commands.Cog):
             del self.multi_mode_users[user_id]
 
         if user_id in self.active_creations:
-            await message.channel.send("❌ Forum post creation cancelled.", delete_after=5)
+            await message.channel.send(
+                "❌ Forum post creation cancelled.", delete_after=5
+            )
             await self.cleanup_creation(user_id)
 
     async def cleanup_creation(self, user_id):
@@ -891,7 +969,9 @@ class ForumPostCog(commands.Cog):
             await ctx.send("✅ Cancelled forum post creation.", delete_after=5)
             await self.cancel_creation(ctx.message)
         else:
-            await ctx.send("You don't have any active forum post creation.", delete_after=5)
+            await ctx.send(
+                "You don't have any active forum post creation.", delete_after=5
+            )
 
     @commands.command(name="forumbulk")
     @commands.has_permissions(manage_guild=True)
@@ -900,25 +980,25 @@ class ForumPostCog(commands.Cog):
         embed = discord.Embed(
             title="📝 Bulk Forum Post Creation",
             description="Create multiple forum posts quickly!",
-            color=discord.Color.blue()
+            color=discord.Color.blue(),
         )
 
         embed.add_field(
             name="Usage:",
             value="`.forum 5` - Create 5 forum posts\n`.forum 10` - Create 10 forum posts",
-            inline=False
+            inline=False,
         )
 
         embed.add_field(
             name="Features:",
             value="• Create 1-10 posts at once\n• Skip tags for individual posts\n• Use same settings for multiple posts\n• Cancel anytime with `.cancel`",
-            inline=False
+            inline=False,
         )
 
         embed.add_field(
             name="During Creation:",
             value="• Type `skip` to skip tags\n• Type `same` to use previous post's settings\n• Type `yes`/`no` to create more posts",
-            inline=False
+            inline=False,
         )
 
         await ctx.send(embed=embed)

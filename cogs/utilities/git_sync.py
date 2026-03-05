@@ -44,7 +44,9 @@ class GitHubSync(commands.Cog):
         """Initialize GitHub connection."""
         try:
             self.github = await asyncio.to_thread(lambda: Github(GITHUB_TOKEN))
-            self.repo = await asyncio.to_thread(lambda: self.github.get_repo(GITHUB_REPO))
+            self.repo = await asyncio.to_thread(
+                lambda: self.github.get_repo(GITHUB_REPO)
+            )
             print("✅ GitHub connection initialized")
         except Exception as e:
             logging.error(f"❌ Failed to initialize GitHub: {e}")
@@ -67,7 +69,7 @@ class GitHubSync(commands.Cog):
 
     async def download_missing_files(self):
         """Pull files from GitHub only if they do not exist locally."""
-        if not self.repo: 
+        if not self.repo:
             return
 
         def pull_logic():
@@ -83,7 +85,7 @@ class GitHubSync(commands.Cog):
                         # Mirror only: Pull if missing
                         if not local_path.exists():
                             local_path.parent.mkdir(parents=True, exist_ok=True)
-                            
+
                             # Get raw binary content from GitHub
                             with open(local_path, "wb") as f:
                                 f.write(file_content.decoded_content)
@@ -106,7 +108,7 @@ class GitHubSync(commands.Cog):
             github_path = f"data/{rel_path}"
 
             try:
-                with open(file_path, 'rb') as f:
+                with open(file_path, "rb") as f:
                     content_bytes = f.read()
 
                 # Using a while loop for controlled retries (max 3)
@@ -118,10 +120,10 @@ class GitHubSync(commands.Cog):
                         try:
                             existing = self.repo.get_contents(github_path, ref="main")
                             current_sha = existing.sha
-                            
+
                             # 2. Get existing content for comparison
                             existing_content = existing.decoded_content
-                            
+
                             # 3. Skip if content is already identical
                             if existing_content == content_bytes:
                                 success = True
@@ -139,14 +141,14 @@ class GitHubSync(commands.Cog):
                                 f"Update {rel_path}",
                                 content_bytes,  # Pass raw bytes
                                 current_sha,
-                                branch="main"
+                                branch="main",
                             )
                         else:
                             self.repo.create_file(
                                 github_path,
                                 f"Add {rel_path}",
                                 content_bytes,  # Pass raw bytes
-                                branch="main"
+                                branch="main",
                             )
 
                         success = True
@@ -157,9 +159,12 @@ class GitHubSync(commands.Cog):
                         # Catch 409 (Conflict) or 422 (Unprocessable/Missing SHA)
                         if e.status in [409, 422]:
                             attempts += 1
-                            logging.warning(f"🔄 SHA Conflict for {rel_path} (Attempt {attempts}). Re-fetching...")
+                            logging.warning(
+                                f"🔄 SHA Conflict for {rel_path} (Attempt {attempts}). Re-fetching..."
+                            )
                             # Small sleep to let GitHub API catch its breath
                             import time
+
                             time.sleep(1)
                             continue
                         else:
@@ -190,7 +195,7 @@ class GitHubSync(commands.Cog):
 
         # Checkpoint AFK data if applicable
         afk_cog = self.bot.get_cog("AFK")
-        if afk_cog and hasattr(afk_cog, 'force_checkpoint'):
+        if afk_cog and hasattr(afk_cog, "force_checkpoint"):
             await afk_cog.force_checkpoint()
 
         await self.upload_all_files()
@@ -214,7 +219,7 @@ class GitHubSync(commands.Cog):
                 else:
                     local_path = Path(file_content.path)
                     local_path.parent.mkdir(parents=True, exist_ok=True)
-                    
+
                     # Get raw binary content from GitHub
                     with open(local_path, "wb") as f:
                         f.write(file_content.decoded_content)

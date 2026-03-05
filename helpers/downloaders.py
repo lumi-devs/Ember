@@ -21,6 +21,7 @@ SESSION_FILE = Path("ig_settings.json")
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
 
+
 # -------------------------------
 # Helper Functions
 # -------------------------------
@@ -29,6 +30,7 @@ def _create_temp_dir() -> Path:
     temp_dir = DOWNLOADS_DIR / str(uuid.uuid4())
     temp_dir.mkdir(parents=True, exist_ok=True)
     return temp_dir
+
 
 # -------------------------------
 # YouTube Downloader
@@ -56,6 +58,8 @@ def download_youtube(url: str) -> Tuple[List[str], str, str]:
     except Exception as e:
         print(f"❌ Failed to download YouTube video: {e}")
         return [], "", ""
+
+
 # -------------------------------
 # Instagram Downloader
 # -------------------------------
@@ -63,10 +67,9 @@ import os
 import instaloader
 from typing import List, Tuple
 
+
 def download_instagram(
-    url: str,
-    session_file: str = "instagram_session",
-    caption: str = ""
+    url: str, session_file: str = "instagram_session", caption: str = ""
 ) -> Tuple[List[str], str, str]:
     temp_dir = str(_create_temp_dir())
     files: List[str] = []
@@ -81,11 +84,15 @@ def download_instagram(
             download_video_thumbnails=False,
             download_geotags=False,
             download_comments=False,
-            compress_json=False
+            compress_json=False,
         )
 
         L.load_session_from_file(username="reejit.biswas", filename=session_file)
-        shortcode = url.split("/")[4].split("?")[0] if any(x in url for x in ["/p/", "/reel/", "/reels/", "/tv/"]) else None
+        shortcode = (
+            url.split("/")[4].split("?")[0]
+            if any(x in url for x in ["/p/", "/reel/", "/reels/", "/tv/"])
+            else None
+        )
         if not shortcode:
             raise ValueError("Could not extract shortcode from URL")
         post = instaloader.Post.from_shortcode(L.context, shortcode)
@@ -93,14 +100,20 @@ def download_instagram(
 
         L.download_post(post, target=temp_dir)
         for f in os.listdir(temp_dir):
-                files.append(os.path.join(temp_dir, f))
-        files = [f for f in files if not f.endswith('_thumbnails.jpg') and not f.endswith('.txt')]
+            files.append(os.path.join(temp_dir, f))
+        files = [
+            f
+            for f in files
+            if not f.endswith("_thumbnails.jpg") and not f.endswith(".txt")
+        ]
 
         print(files)
 
     except Exception as e:
         print(f"❌ Failed to download Instagram media: {e}")
     return files, title, caption
+
+
 # -------------------------------
 # Reddit Downloader
 # -------------------------------
@@ -109,8 +122,9 @@ REDDIT_CLIENT_SECRET = "***REDDIT_SECRET_REMOVED***"
 reddit = praw.Reddit(
     client_id=REDDIT_CLIENT_ID,
     client_secret=REDDIT_CLIENT_SECRET,
-    user_agent=USER_AGENT
+    user_agent=USER_AGENT,
 )
+
 
 def download_reddit(url: str) -> Tuple[List[str], str, str]:
     """Download Reddit post media and return files + title + caption."""
@@ -139,7 +153,7 @@ def download_reddit(url: str) -> Tuple[List[str], str, str]:
     try:
         submission = reddit.submission(url=url)
         if submission.over_18:
-            files=[]
+            files = []
             return
         title = submission.title.strip()
         caption = submission.selftext.strip()
@@ -149,70 +163,72 @@ def download_reddit(url: str) -> Tuple[List[str], str, str]:
         headers["Referer"] = url
 
         # Gallery
-        if getattr(submission, 'is_gallery', False):
-            for i, item in enumerate(submission.gallery_data['items']):
-                media_id = item['media_id']
+        if getattr(submission, "is_gallery", False):
+            for i, item in enumerate(submission.gallery_data["items"]):
+                media_id = item["media_id"]
                 metadata = submission.media_metadata[media_id]
-                if metadata['e'] == 'Image':
+                if metadata["e"] == "Image":
                     # Get the highest quality image available
-                    image_url = metadata['s']['u'].split("?")[0].replace("preview", "i")
+                    image_url = metadata["s"]["u"].split("?")[0].replace("preview", "i")
                     filename = temp_dir / f"gallery_{i}_{uuid.uuid4().hex}.jpg"
-                    
+
                     try:
                         print(image_url)
-                        filename=wget.download(image_url, out=str(filename))
+                        filename = wget.download(image_url, out=str(filename))
                         files.append(filename)
                         print(f"✅ Saved gallery image: {filename}")
                     except Exception as e:
                         print(f"❌ Failed to download gallery image {image_url}: {e}")
 
         # Video
-        elif getattr(submission, 'is_video', False):
+        elif getattr(submission, "is_video", False):
             try:
-                video_url = submission.media['reddit_video']['fallback_url']
+                video_url = submission.media["reddit_video"]["fallback_url"]
                 filename = temp_dir / f"video_{uuid.uuid4().hex}.mp4"
-                filename=wget.download(video_url, out=str(filename))
+                filename = wget.download(video_url, out=str(filename))
                 files.append(filename)
                 print(f"✅ Downloaded Reddit video: {filename}")
-                
+
                 # Try to get audio if available (Reddit separates audio and video)
                 try:
-                    if 'dash_audio' in submission.media['reddit_video']:
-                        audio_url = submission.media['reddit_video']['dash_audio']['fallback_url']
+                    if "dash_audio" in submission.media["reddit_video"]:
+                        audio_url = submission.media["reddit_video"]["dash_audio"][
+                            "fallback_url"
+                        ]
                         audio_filename = temp_dir / f"audio_{uuid.uuid4().hex}.mp4"
                         files.append(filename)
-                        audio_filename=wget.download(audio_url)
-                        
+                        audio_filename = wget.download(audio_url)
+
                         # You could use ffmpeg here to merge video and audio
                         print(f"✅ Downloaded Reddit audio: {audio_filename}")
                 except Exception as e:
                     print(f"⚠️ Could not download audio: {e}")
-                    
+
             except Exception as e:
                 print(f"❌ Failed to download Reddit video: {e}")
 
         # Direct media link
-        elif getattr(submission, 'url', None):
+        elif getattr(submission, "url", None):
             media_url = submission.url
-            file_ext = os.path.splitext(media_url.split('?')[0])[1].lower()
-            
+            file_ext = os.path.splitext(media_url.split("?")[0])[1].lower()
+
             # Handle different file types
-            if file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.mp4']:
+            if file_ext in [".jpg", ".jpeg", ".png", ".gif", ".mp4"]:
                 filename = temp_dir / f"media_{uuid.uuid4().hex}{file_ext}"
                 try:
-                    filename=wget.download(media_url, out=str(filename))
+                    filename = wget.download(media_url, out=str(filename))
                     files.append(str(filename))
                     print(f"✅ Downloaded Reddit media: {filename}")
                 except Exception as e:
                     print(f"❌ Failed to download media {media_url}: {e}")
-            
+
             # Handle gifv (which is actually mp4)
-            elif file_ext == '.gifv':
+            elif file_ext == ".gifv":
                 # Convert to mp4
-                mp4_url = media_url.replace('.gifv', '.mp4')
+                mp4_url = media_url.replace(".gifv", ".mp4")
                 filename = temp_dir / f"media_{uuid.uuid4().hex}.mp4"
                 try:
-                    filename=wget.download(mp4_url, out=str(filename))
+                    filename = wget.download(mp4_url, out=str(filename))
                     files.append(str(filename))
                     print(f"✅ Downloaded Reddit GIFV as MP4: {filename}")
                 except Exception as e:

@@ -90,7 +90,7 @@ class IntroChannelCog(commands.Cog):
                 f"Please use the format:\n"
                 f"```Name: \nAge: \nLocation: \nHobbies: \nAbout me:```\n"
                 f"Message will be deleted in {self.auto_delete_time} seconds.",
-                delete_after=self.auto_delete_time
+                delete_after=self.auto_delete_time,
             )
 
             # Wait and delete
@@ -115,7 +115,7 @@ class IntroChannelCog(commands.Cog):
         format_embed = discord.Embed(
             title="📝 Intro Format",
             description="Please use this format for your intro:",
-            color=discord.Color.blue()
+            color=discord.Color.blue(),
         )
 
         format_embed.add_field(
@@ -127,7 +127,7 @@ class IntroChannelCog(commands.Cog):
                 "**Hobbies/Interests:** What you enjoy doing\n"
                 "**About me:** A brief introduction"
             ),
-            inline=False
+            inline=False,
         )
 
         format_embed.add_field(
@@ -139,10 +139,12 @@ class IntroChannelCog(commands.Cog):
                 "Hobbies: Gaming, coding, hiking\n"
                 "About me: Hello! I'm a developer who loves Discord bots!```"
             ),
-            inline=False
+            inline=False,
         )
 
-        format_embed.set_footer(text="Your intro will get auto-reactions if it follows the format!")
+        format_embed.set_footer(
+            text="Your intro will get auto-reactions if it follows the format!"
+        )
         await ctx.send(embed=format_embed)
 
     @commands.command(name="check_intro")
@@ -162,12 +164,14 @@ class IntroChannelCog(commands.Cog):
         is_valid = await self.check_intro_format(intro_text)
 
         if is_valid:
-            await ctx.send("✅ Your intro follows the format! Good job!", ephemeral=True)
+            await ctx.send(
+                "✅ Your intro follows the format! Good job!", ephemeral=True
+            )
         else:
             await ctx.send(
                 "⚠️ Your intro might be missing some required fields.\n"
                 "Use `!intro_format` to see the recommended format.",
-                ephemeral=True
+                ephemeral=True,
             )
 
     @commands.command(name="intro_stats", aliases=["introinfo"])
@@ -193,13 +197,18 @@ class IntroChannelCog(commands.Cog):
                     intro_count += 1
 
         embed = discord.Embed(
-            title="📊 Intro Channel Stats",
-            color=discord.Color.green()
+            title="📊 Intro Channel Stats", color=discord.Color.green()
         )
         embed.add_field(name="Channel", value=channel.mention, inline=True)
-        embed.add_field(name="Intros (Last 7 days)", value=str(intro_count), inline=True)
-        embed.add_field(name="Auto-delete time", value=f"{self.auto_delete_time}s", inline=True)
-        embed.add_field(name="Reaction Emojis", value=" ".join(self.reaction_emojis), inline=False)
+        embed.add_field(
+            name="Intros (Last 7 days)", value=str(intro_count), inline=True
+        )
+        embed.add_field(
+            name="Auto-delete time", value=f"{self.auto_delete_time}s", inline=True
+        )
+        embed.add_field(
+            name="Reaction Emojis", value=" ".join(self.reaction_emojis), inline=False
+        )
 
         await ctx.send(embed=embed)
 

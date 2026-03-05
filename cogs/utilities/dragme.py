@@ -16,6 +16,7 @@ if os.environ.get("BLACKLISTED_VOICE_ROLES"):
         if rid.strip()
     }
 
+
 # --- Persistence helpers ---
 def load_requests():
     if not os.path.exists(REQUESTS_FILE):
@@ -25,6 +26,7 @@ def load_requests():
             return json.load(f)
     except Exception:
         return []
+
 
 def save_requests_safe(requests):
     """Atomic save to prevent partial writes."""
@@ -44,7 +46,7 @@ async def setup(bot: commands.Bot):
     async def cleanup_orphaned_requests():
         """Fixed: Wait for bot to be ready and use proper guild access."""
         await bot.wait_until_ready()  # CRITICAL: Wait for bot to be ready
-        
+
         while not bot.is_closed():
             try:
                 # Use the first available guild instead of hardcoded ID
@@ -52,36 +54,42 @@ async def setup(bot: commands.Bot):
                 for g in bot.guilds:
                     guild = g
                     break
-                
+
                 if not guild:
                     await asyncio.sleep(60)
                     continue
-                
+
                 async with requests_lock:
                     updated_requests = []
                     for request in active_requests[:]:
                         requester_id = request["requester"]
                         target_id = request["target"]
-                        
+
                         requester = guild.get_member(requester_id)
                         target = guild.get_member(target_id)
-                        
+
                         # Remove request if either user left the server or is not in VC anymore
-                        if (not requester or not target or 
-                            not requester.voice or not target.voice or
-                            requester.voice.channel == target.voice.channel):
+                        if (
+                            not requester
+                            or not target
+                            or not requester.voice
+                            or not target.voice
+                            or requester.voice.channel == target.voice.channel
+                        ):
                             continue
-                            
+
                         updated_requests.append(request)
-                    
+
                     if len(updated_requests) != len(active_requests):
                         active_requests.clear()
                         active_requests.extend(updated_requests)
                         save_requests_safe(active_requests)
-                        print(f"[DragMe] Cleaned up {len(active_requests) - len(updated_requests)} orphaned requests")
-                
+                        print(
+                            f"[DragMe] Cleaned up {len(active_requests) - len(updated_requests)} orphaned requests"
+                        )
+
                 await asyncio.sleep(300)  # Check every 5 minutes
-                
+
             except Exception as e:
                 print(f"[DragMe] Cleanup error: {e}")
                 await asyncio.sleep(60)
@@ -90,8 +98,7 @@ async def setup(bot: commands.Bot):
     bot.loop.create_task(cleanup_orphaned_requests())
 
     @bot.tree.command(
-        name="dragme",
-        description="Request to be dragged into another user's VC"
+        name="dragme", description="Request to be dragged into another user's VC"
     )
     @discord.app_commands.describe(user="The user whose VC you want to join")
     async def dragme(interaction: discord.Interaction, user: discord.Member):
@@ -112,7 +119,8 @@ async def setup(bot: commands.Bot):
 
         if interaction.channel_id != DRAGME_CHANNEL_ID:
             return await interaction.followup.send(
-                f"You can only use this command in <#{DRAGME_CHANNEL_ID}>", ephemeral=True
+                f"You can only use this command in <#{DRAGME_CHANNEL_ID}>",
+                ephemeral=True,
             )
 
         if not requester.voice or not requester.voice.channel:
@@ -134,26 +142,28 @@ async def setup(bot: commands.Bot):
         async with requests_lock:
             # Check if requester has any pending requests (as requester OR target)
             user_pending_requests = [
-                r for r in active_requests 
+                r
+                for r in active_requests
                 if r["requester"] == requester.id or r["target"] == requester.id
             ]
-            
+
             if user_pending_requests:
                 return await interaction.followup.send(
                     "❌ You already have a pending request! Please wait for it to complete.",
-                    ephemeral=True
+                    ephemeral=True,
                 )
-            
+
             # Check if target already has pending requests (as requester OR target)
             target_pending_requests = [
-                r for r in active_requests 
+                r
+                for r in active_requests
                 if r["requester"] == target.id or r["target"] == target.id
             ]
-            
+
             if target_pending_requests:
                 return await interaction.followup.send(
                     f"❌ {target.mention} already has a pending request! Please wait for it to complete.",
-                    ephemeral=True
+                    ephemeral=True,
                 )
 
         # --- VC limit check (allow up to limit × 2) ---
@@ -162,24 +172,29 @@ async def setup(bot: commands.Bot):
         current_users = len(target_channel.members)
         if limit > 0 and current_users >= (limit * 2):
             return await interaction.followup.send(
-                f"⚠️ VC limit reached. (Max {limit * 2})",
-                ephemeral=True
+                f"⚠️ VC limit reached. (Max {limit * 2})", ephemeral=True
             )
 
         request_key = {"requester": requester.id, "target": target.id}
 
         async with requests_lock:
             # Check for existing requests in both directions (redundant but safe)
-            existing_request = next((r for r in active_requests 
-                                   if (r["requester"] == requester.id and r["target"] == target.id) or
-                                      (r["requester"] == target.id and r["target"] == requester.id)), None)
-            
+            existing_request = next(
+                (
+                    r
+                    for r in active_requests
+                    if (r["requester"] == requester.id and r["target"] == target.id)
+                    or (r["requester"] == target.id and r["target"] == requester.id)
+                ),
+                None,
+            )
+
             if existing_request:
                 return await interaction.followup.send(
                     f"⚠️ There's already an active request between you and {target.mention}",
                     ephemeral=True,
                 )
-            
+
             active_requests.append(request_key)
             save_requests_safe(active_requests)
 
@@ -189,7 +204,7 @@ async def setup(bot: commands.Bot):
         embed = discord.Embed(
             title="🎯 VC Join Request",
             description=f"{requester.mention} wants to join your VC:- **{target_channel.name}**",
-            color=discord.Color.orange()
+            color=discord.Color.orange(),
         )
         embed.set_footer(text=f"Request expires in {TIMEOUT_DURATION} seconds")
 
@@ -209,10 +224,7 @@ async def setup(bot: commands.Bot):
                 self.finished = True
                 await self.remove_request()
                 if self.msg:
-                    embed = discord.Embed(
-                        description=content,
-                        color=color
-                    )
+                    embed = discord.Embed(description=content, color=color)
                     await self.msg.edit(embed=embed, view=None)
                 self.stop()
 
@@ -220,8 +232,7 @@ async def setup(bot: commands.Bot):
                 if not self.finished and self.msg:
                     await self.remove_request()
                     embed = discord.Embed(
-                        description="⌛ Request timed out.",
-                        color=discord.Color.red()
+                        description="⌛ Request timed out.", color=discord.Color.red()
                     )
                     await self.msg.edit(embed=embed, view=None)
 
@@ -230,17 +241,23 @@ async def setup(bot: commands.Bot):
                 self, interaction: discord.Interaction, button: discord.ui.Button
             ):
                 if interaction.user.id != target.id:
-                    return await interaction.response.send_message("❌ This is not your request!", ephemeral=True)
+                    return await interaction.response.send_message(
+                        "❌ This is not your request!", ephemeral=True
+                    )
 
                 # Refresh channel info
                 updated_target = interaction.guild.get_member(target.id)
-                if not updated_target or not updated_target.voice or not updated_target.voice.channel:
+                if (
+                    not updated_target
+                    or not updated_target.voice
+                    or not updated_target.voice.channel
+                ):
                     return await interaction.response.send_message(
                         "❌ You are no longer in a voice channel.", ephemeral=True
                     )
 
                 updated_channel = updated_target.voice.channel
-                
+
                 # Re-check limits only (allow private/locked VCs)
                 limit = updated_channel.user_limit
                 if limit > 0 and len(updated_channel.members) >= (limit * 2):
@@ -252,17 +269,16 @@ async def setup(bot: commands.Bot):
                     await requester.move_to(updated_channel)
                     await self.finish(
                         f"✅ {target.mention} accepted. {requester.mention} was moved to **{updated_channel.name}**",
-                        discord.Color.green()
+                        discord.Color.green(),
                     )
                 except discord.Forbidden:
                     await self.finish(
                         f"❌ Missing permissions to move {requester.mention}",
-                        discord.Color.red()
+                        discord.Color.red(),
                     )
                 except discord.HTTPException as e:
                     await self.finish(
-                        f"❌ Failed to move user: {str(e)}",
-                        discord.Color.red()
+                        f"❌ Failed to move user: {str(e)}", discord.Color.red()
                     )
 
             @discord.ui.button(style=discord.ButtonStyle.red, label="❌ Decline")
@@ -270,23 +286,30 @@ async def setup(bot: commands.Bot):
                 self, interaction: discord.Interaction, button: discord.ui.Button
             ):
                 if interaction.user.id != target.id:
-                    return await interaction.response.send_message("❌ This is not your request!", ephemeral=True)
-                await self.finish(f"❌ {target.mention} declined {requester.mention}'s request", discord.Color.red())
+                    return await interaction.response.send_message(
+                        "❌ This is not your request!", ephemeral=True
+                    )
+                await self.finish(
+                    f"❌ {target.mention} declined {requester.mention}'s request",
+                    discord.Color.red(),
+                )
 
         view = DragmeView()
         dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
         if dragme_channel:
-            view.msg = await dragme_channel.send(f"{target.mention}", embed=embed, view=view)
+            view.msg = await dragme_channel.send(
+                f"{target.mention}", embed=embed, view=view
+            )
 
     # Add command to view active requests
     @bot.tree.command(
-        name="active_requests",
-        description="View all active dragme requests"
+        name="active_requests", description="View all active dragme requests"
     )
     async def active_requests_cmd(interaction: discord.Interaction):
         if interaction.channel_id != DRAGME_CHANNEL_ID:
             return await interaction.response.send_message(
-                f"This command can only be used in <#{DRAGME_CHANNEL_ID}>", ephemeral=True
+                f"This command can only be used in <#{DRAGME_CHANNEL_ID}>",
+                ephemeral=True,
             )
 
         async with requests_lock:
@@ -296,19 +319,18 @@ async def setup(bot: commands.Bot):
                 )
 
             embed = discord.Embed(
-                title="📋 Active DragMe Requests",
-                color=discord.Color.blue()
+                title="📋 Active DragMe Requests", color=discord.Color.blue()
             )
-            
+
             for request in active_requests:
                 requester = interaction.guild.get_member(request["requester"])
                 target = interaction.guild.get_member(request["target"])
-                
+
                 if requester and target:
                     embed.add_field(
                         name=f"{requester.display_name} → {target.display_name}",
                         value=f"Requester: {requester.mention}\nTarget: {target.mention}",
-                        inline=True
+                        inline=True,
                     )
-            
+
             await interaction.response.send_message(embed=embed, ephemeral=True)

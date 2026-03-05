@@ -10,8 +10,10 @@ JOIN_CHANNELS = {
 GAME_ROLES = os.environ.get("GAME_ROLES")
 
 # Gaming generator channel ID - ONE CHANNEL ONLY
-GAMING_GENERATOR_ID = 1475188995121086625  # Replace with your actual gaming generator ID
-MAIN_GAMING_CHAT=1475188661426327613
+GAMING_GENERATOR_ID = (
+    1475188995121086625  # Replace with your actual gaming generator ID
+)
+MAIN_GAMING_CHAT = 1475188661426327613
 # Gaming-specific database path
 GAMING_DB_PATH = "data/gaming_voice.db"
 

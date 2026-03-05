@@ -26,7 +26,9 @@ class MemberCount(commands.Cog):
         """Start the background worker when cog loads."""
         self.worker_running = True
         asyncio.create_task(self._update_worker(), name="MemberCountWorker")
-        print(f"[MemberCount] Background worker started. Target guild: {TARGET_GUILD_ID}")
+        print(
+            f"[MemberCount] Background worker started. Target guild: {TARGET_GUILD_ID}"
+        )
 
     async def cog_unload(self):
         """Stop the background worker when cog unloads."""
@@ -49,7 +51,7 @@ class MemberCount(commands.Cog):
                 # Process all pending updates in this cycle
                 guilds_to_process = list(self.pending_updates)
                 self.pending_updates.clear()
-                
+
                 for guild_id in guilds_to_process:
                     guild = self.bot.get_guild(guild_id)
                     if not guild:
@@ -62,7 +64,7 @@ class MemberCount(commands.Cog):
                     # Rate limiting check
                     current_time = time.time()
                     last_update = self.last_update.get(guild_id, 0)
-                    
+
                     if current_time - last_update < self.rate_limit_delay:
                         # Too soon, re-add to pending and wait
                         self.pending_updates.add(guild_id)
@@ -85,11 +87,11 @@ class MemberCount(commands.Cog):
         """Request an update for a guild (non-blocking)."""
         if not guild:
             return
-            
+
         # Only add to pending if this is the target guild
         if not self._is_target_guild(guild):
             return
-            
+
         self.pending_updates.add(guild.id)
         print(f"[MemberCount] Update requested for guild: {guild.name} ({guild.id})")
 
@@ -102,11 +104,13 @@ class MemberCount(commands.Cog):
 
             # Get member counts
             total_members = guild.member_count
-            
+
             # Count non-bot members
             non_bots = sum(1 for m in guild.members if not m.bot)
 
-            print(f"[MemberCount] Processing {guild.name}: {total_members} total, {non_bots} humans")
+            print(
+                f"[MemberCount] Processing {guild.name}: {total_members} total, {non_bots} humans"
+            )
 
             # Get channels
             all_channel = guild.get_channel(ALL_MEMBERS_CHANNEL_ID)
@@ -118,9 +122,11 @@ class MemberCount(commands.Cog):
 
             # Verify channel types
             if not isinstance(all_channel, discord.VoiceChannel):
-                print(f"[MemberCount] ERROR: All members channel is not a voice channel")
+                print(
+                    f"[MemberCount] ERROR: All members channel is not a voice channel"
+                )
                 return False
-                
+
             if not isinstance(nonbot_channel, discord.VoiceChannel):
                 print(f"[MemberCount] ERROR: Non-bot channel is not a voice channel")
                 return False
@@ -135,7 +141,9 @@ class MemberCount(commands.Cog):
                     updates_made += 1
                     print(f"[MemberCount] Updated All Members: {total_members}")
                 except discord.Forbidden:
-                    print(f"[MemberCount] Missing permissions to update all members channel")
+                    print(
+                        f"[MemberCount] Missing permissions to update all members channel"
+                    )
                     return False
                 except discord.HTTPException as e:
                     print(f"[MemberCount] HTTP error updating all members channel: {e}")
@@ -148,7 +156,9 @@ class MemberCount(commands.Cog):
                     updates_made += 1
                     print(f"[MemberCount] Updated Non-Bots: {non_bots}")
                 except discord.Forbidden:
-                    print(f"[MemberCount] Missing permissions to update non-bots channel")
+                    print(
+                        f"[MemberCount] Missing permissions to update non-bots channel"
+                    )
                     return False
                 except discord.HTTPException as e:
                     print(f"[MemberCount] HTTP error updating non-bots channel: {e}")
@@ -163,43 +173,42 @@ class MemberCount(commands.Cog):
         except Exception as e:
             print(f"[MemberCount] Critical error updating counts: {e}")
             return False
-        
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-            """Handle member join."""
-            # Debug print to confirm event is firing
-            print(f"[MemberCount] EVENT FIRED: Join - {member.name}")
+        """Handle member join."""
+        # Debug print to confirm event is firing
+        print(f"[MemberCount] EVENT FIRED: Join - {member.name}")
 
-            if not self._is_target_guild(member.guild):
-                return
-                
-            # REMOVED: if member.bot: return
-            # Why? If a bot joins, your "All Members" count still changes! 
-            # You want to trigger an update so "All Members" goes up, even if "Humans" stays same.
-                
-            await asyncio.sleep(3)  # Wait for cache update
-            await self.request_update(member.guild)
+        if not self._is_target_guild(member.guild):
+            return
+
+        # REMOVED: if member.bot: return
+        # Why? If a bot joins, your "All Members" count still changes!
+        # You want to trigger an update so "All Members" goes up, even if "Humans" stays same.
+
+        await asyncio.sleep(3)  # Wait for cache update
+        await self.request_update(member.guild)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
-            """Handle member leave."""
-            print(f"[MemberCount] EVENT FIRED: Leave - {member.name}")
+        """Handle member leave."""
+        print(f"[MemberCount] EVENT FIRED: Leave - {member.name}")
 
-            if not self._is_target_guild(member.guild):
-                return
-                
-            await asyncio.sleep(3)
-            await self.request_update(member.guild)
+        if not self._is_target_guild(member.guild):
+            return
+
+        await asyncio.sleep(3)
+        await self.request_update(member.guild)
 
     @commands.Cog.listener()
     async def on_ready(self):
         """Update counts when bot starts."""
         print("[MemberCount] Bot ready - checking target guild...")
-        
+
         # Wait a bit for everything to stabilize
         await asyncio.sleep(10)
-        
+
         # Only update the target guild
         target_guild = self.bot.get_guild(TARGET_GUILD_ID)
         if target_guild:
@@ -208,7 +217,7 @@ class MemberCount(commands.Cog):
         else:
             print(f"[MemberCount] ❌ Target guild {TARGET_GUILD_ID} not found!")
 
-    @commands.command(name='updatecounts')
+    @commands.command(name="updatecounts")
     @commands.has_permissions(manage_channels=True)
     async def manual_update(self, ctx):
         """Manually update member count channels."""
@@ -216,19 +225,19 @@ class MemberCount(commands.Cog):
         if not self._is_target_guild(ctx.guild):
             embed = discord.Embed(
                 description="❌ This command only works in the target server!",
-                color=discord.Color.red()
+                color=discord.Color.red(),
             )
             await ctx.send(embed=embed, delete_after=10)
             return
-            
+
         await self.request_update(ctx.guild)
         embed = discord.Embed(
             description="✅ Member counts update requested!",
-            color=discord.Color.green()
+            color=discord.Color.green(),
         )
         await ctx.send(embed=embed, delete_after=10)
 
-    @commands.command(name='countstatus')
+    @commands.command(name="countstatus")
     @commands.has_permissions(manage_channels=True)
     async def count_status(self, ctx):
         """Show member count system status."""
@@ -236,35 +245,47 @@ class MemberCount(commands.Cog):
         if not self._is_target_guild(ctx.guild):
             embed = discord.Embed(
                 description="❌ This command only works in the target server!",
-                color=discord.Color.red()
+                color=discord.Color.red(),
             )
             await ctx.send(embed=embed, delete_after=10)
             return
-            
+
         guild_id = ctx.guild.id
         last_update = self.last_update.get(guild_id, 0)
         time_since = time.time() - last_update
-        
-        embed = discord.Embed(title="📊 Member Count Status", color=discord.Color.blue())
-        embed.add_field(name="Pending Updates", value=len(self.pending_updates), inline=True)
+
+        embed = discord.Embed(
+            title="📊 Member Count Status", color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="Pending Updates", value=len(self.pending_updates), inline=True
+        )
         embed.add_field(name="Last Update", value=f"{time_since:.1f}s ago", inline=True)
         embed.add_field(name="Total Members", value=ctx.guild.member_count, inline=True)
-        
+
         human_count = sum(1 for m in ctx.guild.members if not m.bot)
         embed.add_field(name="Human Members", value=human_count, inline=True)
         embed.add_field(name="Worker Running", value=self.worker_running, inline=True)
         embed.add_field(name="Target Guild", value="✅ Connected", inline=True)
-        
+
         # Add channel status
         all_channel = ctx.guild.get_channel(ALL_MEMBERS_CHANNEL_ID)
         nonbot_channel = ctx.guild.get_channel(NON_BOTS_CHANNEL_ID)
-        
-        embed.add_field(name="All Members Channel", value=all_channel.mention if all_channel else "❌ Not Found", inline=True)
-        embed.add_field(name="Non-Bot Channel", value=nonbot_channel.mention if nonbot_channel else "❌ Not Found", inline=True)
-        
+
+        embed.add_field(
+            name="All Members Channel",
+            value=all_channel.mention if all_channel else "❌ Not Found",
+            inline=True,
+        )
+        embed.add_field(
+            name="Non-Bot Channel",
+            value=nonbot_channel.mention if nonbot_channel else "❌ Not Found",
+            inline=True,
+        )
+
         await ctx.send(embed=embed)
 
-    @commands.command(name='forceupdate')
+    @commands.command(name="forceupdate")
     @commands.has_permissions(manage_channels=True)
     async def force_update(self, ctx):
         """Force immediate update bypassing rate limits."""
@@ -272,19 +293,19 @@ class MemberCount(commands.Cog):
         if not self._is_target_guild(ctx.guild):
             embed = discord.Embed(
                 description="❌ This command only works in the target server!",
-                color=discord.Color.red()
+                color=discord.Color.red(),
             )
             await ctx.send(embed=embed, delete_after=10)
             return
-            
+
         self.last_update[ctx.guild.id] = 0  # Reset rate limit
         await self._update_counts(ctx.guild)  # Immediate update
-        
+
         embed = discord.Embed(
-            description="🔄 Force update completed!",
-            color=discord.Color.orange()
+            description="🔄 Force update completed!", color=discord.Color.orange()
         )
         await ctx.send(embed=embed, delete_after=10)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(MemberCount(bot))
