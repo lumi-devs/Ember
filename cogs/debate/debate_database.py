@@ -65,7 +65,7 @@ class DebateDatabase:
                 )
             """)
             
-            # NEW: Muted users table for persistence
+            # Muted users table for persistence
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS muted_users (
                     user_id TEXT PRIMARY KEY,
@@ -76,7 +76,7 @@ class DebateDatabase:
                 )
             """)
             
-            # NEW: Pending submissions table
+            # Pending submissions table
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS pending_submissions (
                     user_id TEXT PRIMARY KEY,
@@ -132,7 +132,7 @@ class DebateDatabase:
             WHERE thread_id = ?
         """, thread_id)
     
-    # NEW: Get debate duration
+    # Get debate duration
     async def get_debate_duration(self, thread_id):
         """Get debate duration in days"""
         async with aiosqlite.connect(self.db_path) as db:
@@ -177,7 +177,7 @@ class DebateDatabase:
                  1 if debate_created else 0))
             await db.commit()
     
-    # NEW: Mute operations
+    # Mute operations
     async def add_mute(self, user_id, expiry, reason, mod_id):
         """Add a muted user to database"""
         async with aiosqlite.connect(self.db_path) as db:
@@ -216,7 +216,7 @@ class DebateDatabase:
             await db.execute("DELETE FROM muted_users WHERE expiry < CURRENT_TIMESTAMP")
             await db.commit()
     
-    # NEW: Pending submissions
+    # Pending submissions
     async def save_submission(self, user_id, topic, opening, why, mod_message_id=None):
         """Save a pending submission"""
         async with aiosqlite.connect(self.db_path) as db:
@@ -300,6 +300,37 @@ class DebateDatabase:
             """, (week_start, limit))
             rows = await cursor.fetchall()
             return [{"user_id": r[0], "score": r[1], "messages": r[2], "debates": r[3]} for r in rows]
+    
+    async def get_trending_debates(self, limit=5):
+        """
+        Get trending debates based on recent activity (last 24h)
+        Returns list of debates with message count and thread IDs
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                SELECT 
+                    d.thread_id,
+                    d.topic,
+                    d.message_count,
+                    COUNT(DISTINCT p.user_id) as participant_count,
+                    MAX(p.last_active) as last_activity
+                FROM debates d
+                LEFT JOIN participants p ON d.thread_id = p.thread_id
+                WHERE d.closed_at IS NULL 
+                    AND d.last_activity > datetime('now', '-24 hours')
+                GROUP BY d.thread_id
+                ORDER BY d.message_count DESC, last_activity DESC
+                LIMIT ?
+            """, (limit,))
+            
+            rows = await cursor.fetchall()
+            return [{
+                "thread_id": r[0],
+                "topic": r[1],
+                "message_count": r[2] or 0,
+                "participant_count": r[3] or 0,
+                "last_activity": r[4]
+            } for r in rows]
     
     async def get_debate_info(self, thread_id):
         """Get debate info for a thread"""

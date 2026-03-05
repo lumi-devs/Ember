@@ -158,26 +158,49 @@ class DebateSystem(commands.Cog):
     
     @debate.command(name="close")
     @commands.has_role(MOD_ROLE_ID)
-    async def force_close(self, ctx, thread: discord.Thread):
-        """Force close a debate (Mod only)"""
+    async def force_close(self, ctx):
+        """
+        Force close the current debate
+        Usage: !debate close
+        Use this command inside the debate thread you want to close
+        """
+        # Check if command is used in a thread
+        if not isinstance(ctx.channel, discord.Thread):
+            await ctx.send("❌ This command must be used inside a debate thread!")
+            return
+        
+        thread = ctx.channel
+        
+        # Verify it's a debate thread
         if not isinstance(thread.parent, discord.ForumChannel) or thread.parent.id != FORUM_CHANNEL_ID:
-            await ctx.send("❌ That's not a debate thread!")
+            await ctx.send("❌ This is not a debate thread!")
             return
         
         await self.bot.db.close_debate(str(thread.id))
         await thread.edit(archived=True, locked=True)
-        await ctx.send(f"✅ Debate {thread.mention} closed.")
+        
+        # Send confirmation in the thread before it closes
+        await thread.send("✅ This debate has been closed by a moderator.")
+        
     
     @debate.command(name="lock")
     @commands.has_role(MOD_ROLE_ID)
-    async def lock_debate(self, ctx, thread: discord.Thread, *, reason: str = "No reason provided"):
+    async def lock_debate(self, ctx, *, reason: str = "No reason provided"):
         """
-        Lock a debate thread - prevents any new messages
-        Usage: !debate lock #thread Too heated, take a break
+        Lock the current debate thread - prevents any new messages
+        Usage: !debate lock Too heated, take a break
+        Use this command inside the debate thread you want to lock
         """
+        # Check if command is used in a thread
+        if not isinstance(ctx.channel, discord.Thread):
+            await ctx.send("❌ This command must be used inside a debate thread!")
+            return
+        
+        thread = ctx.channel
+        
         # Verify it's a debate thread
         if not isinstance(thread.parent, discord.ForumChannel) or thread.parent.id != FORUM_CHANNEL_ID:
-            await ctx.send("❌ That's not a debate thread!")
+            await ctx.send("❌ This is not a debate thread!")
             return
         
         # Check if already locked
@@ -218,7 +241,48 @@ class DebateSystem(commands.Cog):
             log_embed.add_field(name="Reason", value=reason)
             await mod_channel.send(embed=log_embed)
         
-        await ctx.send(f"✅ Debate {thread.mention} has been locked.")
+        # No need to send confirmation in the command channel since we're in the thread
+
+    @debate.command(name="unlock")
+    @commands.has_role(MOD_ROLE_ID)
+    async def unlock_debate(self, ctx):
+        """
+        Unlock the current debate thread
+        Usage: !debate unlock
+        Use this command inside the debate thread you want to unlock
+        """
+        # Check if command is used in a thread
+        if not isinstance(ctx.channel, discord.Thread):
+            await ctx.send("❌ This command must be used inside a debate thread!")
+            return
+        
+        thread = ctx.channel
+        
+        # Verify it's a debate thread
+        if not isinstance(thread.parent, discord.ForumChannel) or thread.parent.id != FORUM_CHANNEL_ID:
+            await ctx.send("❌ This is not a debate thread!")
+            return
+        
+        if not thread.locked:
+            await ctx.send("❌ This debate is not locked!")
+            return
+        
+        # Unlock the thread
+        await thread.edit(
+            locked=False,
+            name=thread.name[2:] if thread.name.startswith("🔒") else thread.name
+        )
+        
+        # Send unlock notification
+        embed = discord.Embed(
+            title="🔓 Debate Unlocked",
+            description=f"This debate has been unlocked by {ctx.author.mention}",
+            color=COLORS["success"],
+            timestamp=datetime.now()
+        )
+        await thread.send(embed=embed)
+    
+    # No need to send confirmation in the command channel since we're in the thread
     
     @debate.command(name="unlock")
     @commands.has_role(MOD_ROLE_ID)

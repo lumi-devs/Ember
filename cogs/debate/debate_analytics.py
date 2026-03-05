@@ -18,7 +18,7 @@ class DebateAnalytics(commands.Cog):
         # Get stats
         stats = await self.bot.db.get_dashboard_stats()
         leaderboard = await self.bot.db.get_weekly_leaderboard(5)
-        trending = await self.bot.db.get_trending_debaters(5)
+        trending_debates = await self.bot.db.get_trending_debates(5)  # New method
         
         # Create embed
         embed = discord.Embed(
@@ -52,22 +52,33 @@ class DebateAnalytics(commands.Cog):
 
         embed.add_field(name="🏆 Weekly Top Debaters", value=lb_text, inline=False)
         
-        # Trending Debaters (Last 24h)
-        if trending:
+        # Trending Debates (Last 24h) - UPDATED to show debates instead of users
+        if trending_debates:
             trending_text = ""
-            for i, user in enumerate(trending):
-                user_obj = self.bot.get_user(int(user['user_id']))
-                name = user_obj.display_name if user_obj else f"User {user['user_id'][:5]}"
-                trending_text += f"**{i+1}.** {name} — {user['recent_messages']} msgs ({user['active_debates']} debates)\n"
+            for i, debate in enumerate(trending_debates):
+                # Get the thread object to create a proper mention/link
+                thread = self.bot.get_channel(int(debate['thread_id']))
+                
+                if thread:
+                    # Use thread mention which automatically creates a clickable link
+                    debate_link = thread.mention
+                else:
+                    # Fallback to manual link if thread not cached
+                    debate_link = f"https://discord.com/channels/{thread.guild.id if thread else '@me'}/{FORUM_CHANNEL_ID}/{debate['thread_id']}"
+                
+                # Truncate topic if too long
+                topic = debate['topic'][:40] + "..." if len(debate['topic']) > 40 else debate['topic']
+                
+                trending_text += f"**{i+1}.** {debate_link} — {debate['message_count']} msgs ({debate['participant_count']} participants)\n"
         else:
-            trending_text = "No active debaters in last 24h"
+            trending_text = "No active debates in last 24h"
         
-        embed.add_field(name="🔥 Trending Now (Last 24h)", value=trending_text, inline=False)
+        embed.add_field(name="🔥 Trending Debates (Last 24h)", value=trending_text, inline=False)
         
-        embed.set_footer(text="Updates every 10 minutes • Anti-spam: 10pts/hour limit")
+        embed.set_footer(text="Updates every 10 minutes")
         
         return embed
-    
+        
     @tasks.loop(minutes=10)
     async def update_analytics(self):
         """Update analytics embed every 10 minutes"""
