@@ -29,13 +29,13 @@ class DebateAnalytics(commands.Cog):
         )
 
         # Stats field
-        stats_text = f"""
-        Total Debates: {stats['total_debates']}
-        Active Now: {stats['active_debates']}
-        Total Messages: {stats['total_messages']}
-        Unique Debaters: {stats['unique_participants']}
-        Avg Debate Length: {stats['avg_length']}h
-        """
+        stats_text = (
+            f"Total Debates: {stats['total_debates']}\n"
+            f"Active Now: {stats['active_debates']}\n"
+            f"Total Messages: {stats['total_messages']}\n"
+            f"Unique Debaters: {stats['unique_participants']}\n"
+            f"Avg Debate Length: {stats['avg_length']}h"
+        )
 
         embed.add_field(
             name="📈 Server Debate Analytics", value=stats_text, inline=False
@@ -73,11 +73,7 @@ class DebateAnalytics(commands.Cog):
                     debate_link = f"https://discord.com/channels/@{'me'}/{FORUM_CHANNEL_ID}/{debate['thread_id']}"
 
                 # Truncate topic if too long - FIXED: assign to variable and use it
-                safe_topic = (
-                    debate["topic"][:40] + "..."
-                    if len(debate["topic"]) > 40
-                    else debate["topic"]
-                )
+                safe_topic = debate["topic"][:40] + "..." if len(debate["topic"]) > 40 else debate["topic"]
 
                 trending_text += f"**{i+1}.** {debate_link} | {safe_topic} — {debate['message_count']} msgs ({debate['participant_count']} participants)\n"
         else:

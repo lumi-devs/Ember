@@ -129,14 +129,14 @@ class DebateSystem(commands.Cog):
         # Post rules embed
         rules_embed = discord.Embed(
             title="📜 Debate Rules",
-            description="""
-            • **No personal attacks** — Argue the idea, not the person
-            • **Stay on topic** — Keep discussions relevant to the debate
-            • **Cite sources** — Back up claims with evidence
-            • **No spam** — Quality over quantity
-            • **Respect all participants** — Civil discourse only
-            • **Follow server guidelines** — Standard rules apply
-            """,
+            description=(
+                "• **No personal attacks** — Argue the idea, not the person\n"
+                "• **Stay on topic** — Keep discussions relevant to the debate\n"
+                "• **Cite sources** — Back up claims with evidence\n"
+                "• **No spam** — Quality over quantity\n"
+                "• **Respect all participants** — Civil discourse only\n"
+                "• **Follow server guidelines** — Standard rules apply"
+            ),
             color=COLORS["rules"],
         )
         rules_embed.set_footer(text="Violations may result in removal from debates")
@@ -529,7 +529,8 @@ class DebateSystem(commands.Cog):
 async def setup(bot):
     await bot.add_cog(DebateSystem(bot))
     from cogs.debate.debate_ui import CreateDebateView, ModApprovalView
-
+    
+    
     # Add the create debate button view
     bot.add_view(CreateDebateView(bot))
 
