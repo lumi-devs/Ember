@@ -236,7 +236,7 @@ class UpcomingBirthdaysView(discord.ui.View):
         embed = discord.Embed(
             title=f"🎈 Upcoming Birthdays in {self.guild_name}",
             description=f"Page {self.current_page + 1}/{self.max_page + 1}",
-            color=discord.Color.blue(),
+            color=discord.Color.orange(),
         )
 
         for idx, (user_id, birth_date, birth_year, timezone) in enumerate(
@@ -632,7 +632,7 @@ class Birthday(commands.Cog):
         embed = discord.Embed(
             title="🌍 Select Your Timezone",
             description="Please select your timezone from the dropdown below.\nThis ensures you get wished at exactly midnight your time!",
-            color=discord.Color.blue(),
+            color=discord.Color.orange(),
         )
         embed.add_field(name="Your Birthday", value=date, inline=True)
 
@@ -668,7 +668,7 @@ class Birthday(commands.Cog):
             embed = discord.Embed(
                 title="📭 No Birthdays",
                 description="No birthdays have been set in this server yet!",
-                color=discord.Color.blue(),
+                color=discord.Color.orange(),
             )
             await interaction.followup.send(embed=embed)
             return
@@ -706,7 +706,7 @@ class Birthday(commands.Cog):
             embed = discord.Embed(
                 title="📭 No Upcoming Birthdays",
                 description="No upcoming birthdays found in this server.",
-                color=discord.Color.blue(),
+                color=discord.Color.orange(),
             )
             await interaction.followup.send(embed=embed)
             return
