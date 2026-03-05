@@ -342,6 +342,43 @@ class DebateAutomation(commands.Cog):
                 except discord.HTTPException:
                     pass
 
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        """Delete any non-bot messages in the dashboard thread to keep it clean"""
+        # Skip bot messages
+        if message.author.bot:
+            return
+
+        # Check if this is in the forum channel
+        if not isinstance(message.channel, discord.Thread):
+            return
+
+        thread = message.channel
+        if (
+            not isinstance(thread.parent, discord.ForumChannel)
+            or thread.parent.id != FORUM_CHANNEL_ID
+        ):
+            return
+
+        # Check if this is the dashboard thread
+        if thread.name == "📋 Debate Dashboard":
+            try:
+                # Delete the user's message
+                await message.delete()
+
+                # Optional: Send a ephemeral-style response (will be deleted quickly)
+                warning = await thread.send(
+                    f"{message.author.mention} ⚠️ Please use the buttons below to interact. "
+                    f"This thread is for dashboard use only.",
+                    delete_after=5,
+                )
+            except discord.Forbidden:
+                # Bot doesn't have permission to delete messages
+                pass
+            except discord.HTTPException as e:
+                # Other errors (rate limits, etc)
+                logger.error(f"Error deleting dashboard message: {e}")
+
 
 async def setup(bot):
     await bot.add_cog(DebateAutomation(bot))
