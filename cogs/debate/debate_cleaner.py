@@ -7,7 +7,7 @@ import asyncio
 
 class DebateCleaner(commands.Cog):
     """Clean up old data and auto-reject expired submissions"""
-    
+
     def __init__(self, bot):
         self.bot = bot
         self.cleanup_task.start()
@@ -21,10 +21,10 @@ class DebateCleaner(commands.Cog):
     async def cleanup_task(self):
         """Clean up old data daily"""
         await self.bot.wait_until_ready()
-        
+
         # Clean data older than 30 days
         await self.bot.db.cleanup_old_data(days=30)
-        
+
         # Log cleanup
         mod_channel = self.bot.get_channel(MOD_CHANNEL_ID)
         if mod_channel:
@@ -32,7 +32,7 @@ class DebateCleaner(commands.Cog):
                 title="🧹 Database Cleanup Complete",
                 description="Old records older than 30 days have been purged.",
                 color=COLORS["info"],
-                timestamp=datetime.now()
+                timestamp=datetime.now(),
             )
             await mod_channel.send(embed=embed)
 
@@ -40,10 +40,10 @@ class DebateCleaner(commands.Cog):
     async def auto_reject_task(self):
         """Auto-reject pending submissions older than 24 hours"""
         await self.bot.wait_until_ready()
-        
+
         # Get expired submissions
         expired = await self.bot.db.auto_reject_expired_submissions(hours=24)
-        
+
         if expired:
             mod_channel = self.bot.get_channel(MOD_CHANNEL_ID)
             if mod_channel:
@@ -55,12 +55,12 @@ class DebateCleaner(commands.Cog):
                             embed = discord.Embed(
                                 title="⏰ Debate Proposal Expired",
                                 description="Your debate proposal was automatically rejected because it wasn't reviewed within 24 hours.",
-                                color=COLORS["warning"]
+                                color=COLORS["warning"],
                             )
                             await user.send(embed=embed)
                         except:
                             pass
-                    
+
                     # Try to update mod message
                     if mod_message_id:
                         try:
@@ -71,15 +71,17 @@ class DebateCleaner(commands.Cog):
                                     new_embed = discord.Embed(
                                         title="⏰ EXPIRED - " + embed.title,
                                         description=embed.description,
-                                        color=COLORS["warning"]
+                                        color=COLORS["warning"],
                                     )
                                     for field in embed.fields:
                                         new_embed.add_field(
                                             name=field.name,
                                             value=field.value,
-                                            inline=field.inline
+                                            inline=field.inline,
                                         )
-                                    new_embed.set_footer(text="Auto-rejected after 24 hours")
+                                    new_embed.set_footer(
+                                        text="Auto-rejected after 24 hours"
+                                    )
                                     await msg.edit(embed=new_embed, view=None)
                         except:
                             pass
@@ -99,14 +101,14 @@ class DebateCleaner(commands.Cog):
     async def force_cleanup(self, ctx, days: int = 30):
         """Force cleanup of old data (Admin only)"""
         await ctx.send(f"🧹 Cleaning up data older than {days} days...")
-        
+
         await self.bot.db.cleanup_old_data(days=days)
-        
+
         embed = discord.Embed(
             title="✅ Manual Cleanup Complete",
             description=f"Records older than {days} days have been purged.",
             color=COLORS["success"],
-            timestamp=datetime.now()
+            timestamp=datetime.now(),
         )
         await ctx.send(embed=embed)
 
@@ -115,39 +117,45 @@ class DebateCleaner(commands.Cog):
     async def check_expired(self, ctx):
         """Check for expired pending submissions (Mod only)"""
         pending = await self.bot.db.get_all_pending_submissions()
-        
+
         if not pending:
             await ctx.send("✅ No pending submissions found.")
             return
-        
+
         expired = []
         active = []
-        
+
         for sub in pending:
             age = datetime.now() - sub["created_at"]
             if age.total_seconds() > 86400:  # 24 hours
                 expired.append(sub)
             else:
                 active.append(sub)
-        
+
         embed = discord.Embed(
             title="📋 Pending Submissions Status",
             color=COLORS["info"],
-            timestamp=datetime.now()
+            timestamp=datetime.now(),
         )
-        
+
         embed.add_field(
             name=f"✅ Active ({len(active)})",
-            value="\n".join([f"<@{s['user_id']}>: {s['topic'][:30]}..." for s in active[:5]]) or "None",
-            inline=False
+            value="\n".join(
+                [f"<@{s['user_id']}>: {s['topic'][:30]}..." for s in active[:5]]
+            )
+            or "None",
+            inline=False,
         )
-        
+
         embed.add_field(
             name=f"⏰ Expired ({len(expired)})",
-            value="\n".join([f"<@{s['user_id']}>: {s['topic'][:30]}..." for s in expired[:5]]) or "None",
-            inline=False
+            value="\n".join(
+                [f"<@{s['user_id']}>: {s['topic'][:30]}..." for s in expired[:5]]
+            )
+            or "None",
+            inline=False,
         )
-        
+
         await ctx.send(embed=embed)
 
 

@@ -73,7 +73,11 @@ class DebateAnalytics(commands.Cog):
                     debate_link = f"https://discord.com/channels/@{'me'}/{FORUM_CHANNEL_ID}/{debate['thread_id']}"
 
                 # Truncate topic if too long - FIXED: assign to variable and use it
-                safe_topic = debate["topic"][:40] + "..." if len(debate["topic"]) > 40 else debate["topic"]
+                safe_topic = (
+                    debate["topic"][:40] + "..."
+                    if len(debate["topic"]) > 40
+                    else debate["topic"]
+                )
 
                 trending_text += f"**{i+1}.** {debate_link} | {safe_topic} — {debate['message_count']} msgs ({debate['participant_count']} participants)\n"
         else:

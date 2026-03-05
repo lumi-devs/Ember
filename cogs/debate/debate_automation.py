@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import asyncio
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -67,7 +68,6 @@ class DebateAutomation(commands.Cog):
 
             # Apply hot tag based on activity level
             await self.apply_hot_tag(thread, message_count or 0, last_activity)
-
 
     async def update_thread_status(self, thread, last_activity, message_count):
         """Update thread title with activity emoji"""

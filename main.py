@@ -39,7 +39,7 @@ async def on_ready():
         logger.info("📜 Registered app commands:")
         for cmd in bot.tree.walk_commands():
             logger.info(f"- {cmd.qualified_name}")
-        
+
     except Exception as e:
         logger.error(f"❌ Error syncing commands: {e}")
 
@@ -56,7 +56,7 @@ async def load_cogs():
     if not cogs_path.exists():
         logger.warning(f"⚠️ Cogs directory not found: {cogs_path}")
         return
-        
+
     for py_file in cogs_path.rglob("*.py"):
         if py_file.name == "__init__.py":
             continue
@@ -72,10 +72,10 @@ async def load_cogs():
 async def main():
     async with bot:
         await load_cogs()
-        
+
         # Add a small delay before starting
         await asyncio.sleep(1)
-        
+
         try:
             await bot.start(BOT_TOKEN)
         except KeyboardInterrupt:

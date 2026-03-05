@@ -37,26 +37,30 @@ class DebateSubmissionModal(Modal, title="Propose New Debate"):
 
     async def on_submit(self, interaction: discord.Interaction):
         # Check for pending submissions limit (max 2)
-        pending_count = await self.bot.db.get_user_pending_submissions_count(str(interaction.user.id))
+        pending_count = await self.bot.db.get_user_pending_submissions_count(
+            str(interaction.user.id)
+        )
         if pending_count >= 2:
             await interaction.response.send_message(
                 "❌ You already have 2 pending debate proposals. Please wait for moderators to review them before submitting more.",
-                ephemeral=True
+                ephemeral=True,
             )
             return
-        
+
         # Check for rate limiting (1 hour cooldown)
-        last_submission = await self.bot.db.get_last_submission_time(str(interaction.user.id))
+        last_submission = await self.bot.db.get_last_submission_time(
+            str(interaction.user.id)
+        )
         if last_submission:
             time_diff = datetime.now() - last_submission
             if time_diff.total_seconds() < 3600:  # 1 hour in seconds
                 minutes_left = 60 - (time_diff.total_seconds() // 60)
                 await interaction.response.send_message(
                     f"⏳ You can only submit one debate proposal per hour. Please wait {int(minutes_left)} more minutes.",
-                    ephemeral=True
+                    ephemeral=True,
                 )
                 return
-        
+
         # Save to database
         await self.bot.db.save_submission(
             str(interaction.user.id),
@@ -87,7 +91,9 @@ class DebateSubmissionModal(Modal, title="Propose New Debate"):
                 name=interaction.user.display_name,
                 icon_url=interaction.user.display_avatar.url,
             )
-            embed.set_footer(text=f"User ID: {interaction.user.id} | Pending: {pending_count + 1}/2")
+            embed.set_footer(
+                text=f"User ID: {interaction.user.id} | Pending: {pending_count + 1}/2"
+            )
 
             # Create persistent view with dynamic custom IDs
             view = ModApprovalView(self.bot, interaction.user.id)
@@ -107,7 +113,7 @@ class DebateSubmissionModal(Modal, title="Propose New Debate"):
         await interaction.response.send_message(
             f"✅ Your debate proposal has been sent to moderators! (Pending: {pending_count + 1}/2)\n"
             f"⏳ Proposals expire in 24 hours if not reviewed.",
-            ephemeral=True
+            ephemeral=True,
         )
 
 
@@ -117,24 +123,24 @@ class ModApprovalView(View):
         super().__init__(timeout=None)
         self.bot = bot
         self.proposer_id = proposer_id
-        
+
         # Create buttons with dynamic custom IDs
         self.approve_button = Button(
             label="Approve",
             style=discord.ButtonStyle.success,
             emoji="✅",
-            custom_id=f"debate_approve_{proposer_id}"
+            custom_id=f"debate_approve_{proposer_id}",
         )
         self.reject_button = Button(
             label="Reject",
             style=discord.ButtonStyle.danger,
             emoji="❌",
-            custom_id=f"debate_reject_{proposer_id}"
+            custom_id=f"debate_reject_{proposer_id}",
         )
-        
+
         self.approve_button.callback = self.approve_callback
         self.reject_button.callback = self.reject_callback
-        
+
         self.add_item(self.approve_button)
         self.add_item(self.reject_button)
 
@@ -259,14 +265,14 @@ class ModApprovalView(View):
         """Post the initial embeds in the new debate thread"""
         rules_embed = discord.Embed(
             title="📜 Debate Rules",
-            description="""
-            • **No personal attacks** — Argue the idea, not the person
-            • **Stay on topic** — Keep discussions relevant to the debate
-            • **Cite sources** — Back up claims with evidence
-            • **No spam** — Quality over quantity
-            • **Respect all participants** — Civil discourse only
-            • **Follow server guidelines** — Standard rules apply
-            """,
+            description=(
+                "• **No personal attacks** — Argue the idea, not the person\n"
+                "• **Stay on topic** — Keep discussions relevant to the debate\n"
+                "• **Cite sources** — Back up claims with evidence\n"
+                "• **No spam** — Quality over quantity\n"
+                "• **Respect all participants** — Civil discourse only\n"
+                "• **Follow server guidelines** — Standard rules apply"
+            ),
             color=COLORS["rules"],
         )
         rules_embed.set_footer(text="Violations may result in removal from debates")
@@ -374,13 +380,13 @@ class CreateDebateView(View):
     def __init__(self, bot):
         super().__init__(timeout=None)
         self.bot = bot
-        
+
         # Create button with persistent custom_id
         self.create_button = Button(
             label="Create New Debate",
             style=discord.ButtonStyle.primary,
             emoji="🆕",
-            custom_id="create_debate_persistent"
+            custom_id="create_debate_persistent",
         )
         self.create_button.callback = self.create_callback
         self.add_item(self.create_button)
