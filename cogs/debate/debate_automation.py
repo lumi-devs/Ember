@@ -11,6 +11,9 @@ from .debate_config import (
 from datetime import datetime, timedelta
 import asyncio
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 class DebateAutomation(commands.Cog):
     def __init__(self, bot):
@@ -56,7 +59,7 @@ class DebateAutomation(commands.Cog):
                 hours=INACTIVE_HOURS
             ):
                 await self.close_debate(thread)
-                await asyncio.sleep(2)  # Rate limit protection
+                await asyncio.sleep(2)  # Rate limit protection for API call
                 continue
 
             # Update status emoji in title
@@ -65,9 +68,6 @@ class DebateAutomation(commands.Cog):
             # Apply hot tag based on activity level
             await self.apply_hot_tag(thread, message_count or 0, last_activity)
 
-            await asyncio.sleep(
-                2
-            )  # Rate limit protection - wait 2 seconds between thread updates
 
     async def update_thread_status(self, thread, last_activity, message_count):
         """Update thread title with activity emoji"""
@@ -146,19 +146,21 @@ class DebateAutomation(commands.Cog):
                 # Add hot tag
                 current_tags.append(hot_tag)
                 await thread.edit(applied_tags=current_tags)
-                print(f"🔥 Applied hot tag to {thread.name}")
+                logger.info(f"🔥 Applied hot tag to {thread.name}")
 
                 # Optional: Send a celebratory message
                 await thread.send(
                     content=f"🔥 This debate is heating up! It's now tagged as **{HOT_TAG_NAME}**!",
                     delete_after=60,
                 )
+                await asyncio.sleep(2)  # Only sleep when we actually made an edit
 
             elif not is_hot and has_hot_tag:
                 # Remove hot tag
                 current_tags.remove(hot_tag)
                 await thread.edit(applied_tags=current_tags)
-                print(f"❄️ Removed hot tag from {thread.name}")
+                logger.info(f"❄️ Removed hot tag from {thread.name}")
+                await asyncio.sleep(2)  # Only sleep when we actually made an edit
 
         except discord.HTTPException as e:
             print(f"Error updating hot tag for {thread.name}: {e}")

@@ -574,3 +574,102 @@ class DebateDatabase:
                 await db.commit()
         except sqlite3.Error as e:
             print(f"Database error in record_reaction: {e}")
+
+    async def get_user_pending_submissions_count(self, user_id):
+        """Get count of pending submissions for a user"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM pending_submissions WHERE user_id = ?",
+                (user_id,)
+            )
+            result = await cursor.fetchone()
+            return result[0] if result else 0
+
+    async def get_last_submission_time(self, user_id):
+        """Get timestamp of user's last submission"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT created_at FROM pending_submissions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+                (user_id,)
+            )
+            result = await cursor.fetchone()
+            return datetime.fromisoformat(result[0]) if result else None
+
+    async def get_all_pending_submissions(self):
+        """Get all pending submissions with their timestamps"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                SELECT user_id, topic, opening, why, mod_message_id, created_at 
+                FROM pending_submissions
+            """)
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "user_id": r[0],
+                    "topic": r[1],
+                    "opening": r[2],
+                    "why": r[3],
+                    "mod_message_id": r[4],
+                    "created_at": datetime.fromisoformat(r[5])
+                }
+                for r in rows
+            ]
+
+    async def get_old_pending_submissions(self, hours=24):
+        """Get pending submissions older than specified hours"""
+        cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT user_id, mod_message_id FROM pending_submissions WHERE created_at < ?",
+                (cutoff,)
+            )
+            return await cursor.fetchall()
+
+    async def cleanup_old_data(self, days=30):
+        """Clean up old data from all tables"""
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            # Clean old reactions
+            await db.execute(
+                "DELETE FROM reactions WHERE created_at < ?",
+                (cutoff,)
+            )
+            
+            # Clean old participant records from closed debates
+            await db.execute("""
+                DELETE FROM participants 
+                WHERE thread_id IN (
+                    SELECT thread_id FROM debates WHERE closed_at < ?
+                )
+            """, (cutoff,))
+            
+            # Archive or delete old closed debates (keep summary data but remove from main tables)
+            # You might want to move these to an archive table instead of deleting
+            await db.execute(
+                "DELETE FROM debates WHERE closed_at < ?",
+                (cutoff,)
+            )
+            
+            await db.commit()
+            return True
+
+    async def auto_reject_expired_submissions(self, hours=24):
+        """Auto-reject submissions older than specified hours"""
+        cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT user_id, mod_message_id FROM pending_submissions WHERE created_at < ?",
+                (cutoff,)
+            )
+            expired = await cursor.fetchall()
+            
+            for user_id, mod_message_id in expired:
+                # Delete from database
+                await db.execute(
+                    "DELETE FROM pending_submissions WHERE user_id = ?",
+                    (user_id,)
+                )
+            
+            await db.commit()
+            return expired

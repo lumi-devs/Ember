@@ -529,12 +529,12 @@ class DebateSystem(commands.Cog):
 async def setup(bot):
     await bot.add_cog(DebateSystem(bot))
     from cogs.debate.debate_ui import CreateDebateView, ModApprovalView
-
+    
+    
     # Add the create debate button view
     bot.add_view(CreateDebateView(bot))
 
     # Re-attach any pending mod approval views from the database
-    # You'll need to query your database for pending submissions with mod_message_id
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT user_id, mod_message_id FROM pending_submissions WHERE mod_message_id IS NOT NULL"

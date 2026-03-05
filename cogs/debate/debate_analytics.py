@@ -58,6 +58,7 @@ class DebateAnalytics(commands.Cog):
         embed.add_field(name="🏆 Weekly Top Debaters", value=lb_text, inline=False)
 
         # Trending Debates (Last 24h) - UPDATED to show debates instead of users
+        # In get_analytics_embed method, around line 58:
         if trending_debates:
             trending_text = ""
             for i, debate in enumerate(trending_debates):
@@ -69,16 +70,12 @@ class DebateAnalytics(commands.Cog):
                     debate_link = thread.mention
                 else:
                     # Fallback to manual link if thread not cached
-                    debate_link = f"https://discord.com/channels/{thread.guild.id if thread else '@me'}/{FORUM_CHANNEL_ID}/{debate['thread_id']}"
+                    debate_link = f"https://discord.com/channels/@{'me'}/{FORUM_CHANNEL_ID}/{debate['thread_id']}"
 
-                # Truncate topic if too long
-                (
-                    debate["topic"][:40] + "..."
-                    if len(debate["topic"]) > 40
-                    else debate["topic"]
-                )
+                # Truncate topic if too long - FIXED: assign to variable and use it
+                safe_topic = debate["topic"][:40] + "..." if len(debate["topic"]) > 40 else debate["topic"]
 
-                trending_text += f"**{i+1}.** {debate_link} — {debate['message_count']} msgs ({debate['participant_count']} participants)\n"
+                trending_text += f"**{i+1}.** {debate_link} | {safe_topic} — {debate['message_count']} msgs ({debate['participant_count']} participants)\n"
         else:
             trending_text = "No active debates in last 24h"
 

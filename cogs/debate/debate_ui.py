@@ -2,6 +2,9 @@ import discord
 from discord.ui import Modal, TextInput, View, Button, Select
 from .debate_config import COLORS, MOD_ROLE_ID, FORUM_CHANNEL_ID
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class DebateSubmissionModal(Modal, title="Propose New Debate"):
@@ -33,6 +36,27 @@ class DebateSubmissionModal(Modal, title="Propose New Debate"):
         self.bot = bot
 
     async def on_submit(self, interaction: discord.Interaction):
+        # Check for pending submissions limit (max 2)
+        pending_count = await self.bot.db.get_user_pending_submissions_count(str(interaction.user.id))
+        if pending_count >= 2:
+            await interaction.response.send_message(
+                "❌ You already have 2 pending debate proposals. Please wait for moderators to review them before submitting more.",
+                ephemeral=True
+            )
+            return
+        
+        # Check for rate limiting (1 hour cooldown)
+        last_submission = await self.bot.db.get_last_submission_time(str(interaction.user.id))
+        if last_submission:
+            time_diff = datetime.now() - last_submission
+            if time_diff.total_seconds() < 3600:  # 1 hour in seconds
+                minutes_left = 60 - (time_diff.total_seconds() // 60)
+                await interaction.response.send_message(
+                    f"⏳ You can only submit one debate proposal per hour. Please wait {int(minutes_left)} more minutes.",
+                    ephemeral=True
+                )
+                return
+        
         # Save to database
         await self.bot.db.save_submission(
             str(interaction.user.id),
@@ -63,12 +87,12 @@ class DebateSubmissionModal(Modal, title="Propose New Debate"):
                 name=interaction.user.display_name,
                 icon_url=interaction.user.display_avatar.url,
             )
-            embed.set_footer(text=f"User ID: {interaction.user.id}")
+            embed.set_footer(text=f"User ID: {interaction.user.id} | Pending: {pending_count + 1}/2")
 
-            # Create persistent view with custom IDs
+            # Create persistent view with dynamic custom IDs
             view = ModApprovalView(self.bot, interaction.user.id)
 
-            # Send the message with the view - Discord.py automatically registers it
+            # Send the message with the view
             mod_message = await mod_channel.send(embed=embed, view=view)
 
             # Update submission with message ID
@@ -80,27 +104,41 @@ class DebateSubmissionModal(Modal, title="Propose New Debate"):
                 str(mod_message.id),
             )
 
-            # NO NEED to manually store in persistent_views - Discord handles this!
-
         await interaction.response.send_message(
-            "✅ Your debate proposal has been sent to moderators!", ephemeral=True
+            f"✅ Your debate proposal has been sent to moderators! (Pending: {pending_count + 1}/2)\n"
+            f"⏳ Proposals expire in 24 hours if not reviewed.",
+            ephemeral=True
         )
 
 
 class ModApprovalView(View):
     def __init__(self, bot, proposer_id):
-        # Set custom_id for persistence
+        # Set dynamic custom_ids for persistence
         super().__init__(timeout=None)
         self.bot = bot
         self.proposer_id = proposer_id
+        
+        # Create buttons with dynamic custom IDs
+        self.approve_button = Button(
+            label="Approve",
+            style=discord.ButtonStyle.success,
+            emoji="✅",
+            custom_id=f"debate_approve_{proposer_id}"
+        )
+        self.reject_button = Button(
+            label="Reject",
+            style=discord.ButtonStyle.danger,
+            emoji="❌",
+            custom_id=f"debate_reject_{proposer_id}"
+        )
+        
+        self.approve_button.callback = self.approve_callback
+        self.reject_button.callback = self.reject_callback
+        
+        self.add_item(self.approve_button)
+        self.add_item(self.reject_button)
 
-    @discord.ui.button(
-        label="Approve",
-        style=discord.ButtonStyle.success,
-        emoji="✅",
-        custom_id="debate_approve",
-    )
-    async def approve_button(self, interaction: discord.Interaction, button: Button):
+    async def approve_callback(self, interaction: discord.Interaction):
         if not any(role.id == MOD_ROLE_ID for role in interaction.user.roles):
             await interaction.response.send_message(
                 "❌ You don't have permission to approve debates.", ephemeral=True
@@ -197,15 +235,15 @@ class ModApprovalView(View):
                 self.reject_button.disabled = True
                 await interaction.message.edit(view=self)
 
-                if hasattr(self.bot, "persistent_views") and isinstance(
-                    self.bot.persistent_views, dict
-                ):
-                    if interaction.message.id in self.bot.persistent_views:
-                        del self.bot.persistent_views[interaction.message.id]
-
-            except Exception as e:
+            except discord.HTTPException as e:
+                logger.error(f"Error creating debate: {e}")
                 await select_interaction.followup.send(
                     f"❌ Error creating debate: {str(e)}", ephemeral=True
+                )
+            except Exception as e:
+                logger.error(f"Unexpected error: {e}")
+                await select_interaction.followup.send(
+                    "❌ An unexpected error occurred.", ephemeral=True
                 )
 
         select.callback = select_callback
@@ -278,18 +316,11 @@ class ModApprovalView(View):
 
     async def check_and_apply_hot_tag(self, thread):
         """Check if debate should have hot tag and apply it"""
-
         # This will be checked by the automation loop
         # Just initialize the tracking
         await self.bot.db.update_debate_activity(str(thread.id))
 
-    @discord.ui.button(
-        label="Reject",
-        style=discord.ButtonStyle.danger,
-        emoji="❌",
-        custom_id="debate_reject",
-    )
-    async def reject_button(self, interaction: discord.Interaction, button: Button):
+    async def reject_callback(self, interaction: discord.Interaction):
         if not any(role.id == MOD_ROLE_ID for role in interaction.user.roles):
             await interaction.response.send_message(
                 "❌ You don't have permission.", ephemeral=True
@@ -302,13 +333,6 @@ class ModApprovalView(View):
         self.approve_button.disabled = True
         self.reject_button.disabled = True
         await interaction.message.edit(view=self)
-
-        # Remove from persistent views
-        if (
-            hasattr(self.bot, "persistent_views")
-            and str(interaction.message.id) in self.bot.persistent_views
-        ):
-            del self.bot.persistent_views[str(interaction.message.id)]
 
 
 class RejectionReasonModal(Modal, title="Reject Debate Proposal"):
@@ -337,6 +361,7 @@ class RejectionReasonModal(Modal, title="Reject Debate Proposal"):
             try:
                 await user.send(embed=embed)
             except discord.HTTPException:
+                logger.info(f"Could not DM user {self.proposer_id} about rejection")
                 pass  # Can't DM user
 
         await self.bot.db.delete_submission(self.proposer_id)
@@ -349,34 +374,38 @@ class CreateDebateView(View):
     def __init__(self, bot):
         super().__init__(timeout=None)
         self.bot = bot
+        
+        # Create button with persistent custom_id
+        self.create_button = Button(
+            label="Create New Debate",
+            style=discord.ButtonStyle.primary,
+            emoji="🆕",
+            custom_id="create_debate_persistent"
+        )
+        self.create_button.callback = self.create_callback
+        self.add_item(self.create_button)
 
-    @discord.ui.button(
-        label="Create New Debate",
-        style=discord.ButtonStyle.primary,
-        emoji="🆕",
-        custom_id="create_debate_persistent",
-    )
-    async def create_button(self, interaction: discord.Interaction, button: Button):
+    async def create_callback(self, interaction: discord.Interaction):
         # Check if interaction is already responded to
         if not interaction.response.is_done():
             try:
                 modal = DebateSubmissionModal(self.bot)
                 await interaction.response.send_modal(modal)
-            except Exception as e:
-                print(f"Error in create_button: {e}")
+            except discord.HTTPException as e:
+                logger.error(f"Error in create_button: {e}")
                 try:
                     await interaction.response.send_message(
                         "❌ An error occurred. Please try again.", ephemeral=True
                     )
                 except Exception:
                     pass
+            except Exception as e:
+                logger.error(f"Unexpected error in create_button: {e}")
         else:
             # If response was already done, try to send a followup
             try:
                 await interaction.followup.send(
                     "⏳ Processing your request...", ephemeral=True
                 )
-                # You might want to create the modal differently here
-                # But modals can only be sent via response, not followup
-            except Exception:
+            except discord.HTTPException:
                 pass
