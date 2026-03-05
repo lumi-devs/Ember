@@ -1,7 +1,6 @@
 import discord
 from discord.ext import commands, tasks
 from datetime import datetime, timedelta
-import asyncio
 
 
 class VCAFKManager(commands.Cog):

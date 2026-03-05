@@ -3,11 +3,9 @@ import discord
 from discord.ext import commands, tasks
 import aiosqlite
 import asyncio
-from discord import app_commands
 import traceback
 from collections import deque
 import time
-import re
 import json  # Add this import
 
 from .config import GAME_ROLES, GAMING_DB_PATH, GAMING_GENERATOR_ID, MAIN_GAMING_CHAT
@@ -19,7 +17,7 @@ if isinstance(GAME_ROLES, str):
         GAME_ROLES = json.loads(GAME_ROLES)
     except json.JSONDecodeError:
         print(
-            f"[GamingTempVoice] Warning: GAME_ROLES is not valid JSON, using empty dict"
+            "[GamingTempVoice] Warning: GAME_ROLES is not valid JSON, using empty dict"
         )
         GAME_ROLES = {}
 elif GAME_ROLES is None:
@@ -110,7 +108,7 @@ class GameSelect(discord.ui.Select):
         # Delete the selection message immediately
         try:
             await self.message.delete()
-        except:
+        except Exception:
             pass
 
         # Acknowledge immediately to prevent timeout
@@ -135,7 +133,7 @@ class GameSelectView(discord.ui.View):
             message = self.children[0].message if self.children else None
             if message:
                 await message.delete()
-        except:
+        except Exception:
             pass
 
 
@@ -160,7 +158,7 @@ class GamingTempVoice(commands.Cog):
                 GAME_ROLES = json.loads(GAME_ROLES)
             except json.JSONDecodeError:
                 print(
-                    f"[GamingTempVoice] Warning: GAME_ROLES is not valid JSON, using empty dict"
+                    "[GamingTempVoice] Warning: GAME_ROLES is not valid JSON, using empty dict"
                 )
                 GAME_ROLES = {}
         elif GAME_ROLES is None:
@@ -312,7 +310,7 @@ class GamingTempVoice(commands.Cog):
                 await member.move_to(None)
 
                 # Send warning message in generator channel that auto-deletes after 15 seconds
-                warning_msg = await join_channel.send(
+                await join_channel.send(
                     f"⚠️ {member.mention} You're creating channels too quickly! Please wait **{wait:.1f} seconds** before creating another gaming channel.",
                     delete_after=15,
                 )
@@ -380,7 +378,7 @@ class GamingTempVoice(commands.Cog):
                 # Move member immediately
                 try:
                     await member.move_to(vc)
-                except:
+                except Exception:
                     pass
 
                 # Save to database (fire and forget)
@@ -426,7 +424,7 @@ class GamingTempVoice(commands.Cog):
                 await interaction.followup.send(
                     f"❌ Failed to create gaming channel: {str(e)}", ephemeral=True
                 )
-            except:
+            except Exception:
                 pass
 
     async def _save_to_db(
@@ -740,7 +738,7 @@ class GamingTempVoice(commands.Cog):
                 await asyncio.sleep(30)
                 try:
                     await message.delete()
-                except:
+                except Exception:
                     pass
 
             asyncio.create_task(delete_later())

@@ -4,7 +4,7 @@ Handles Discord thread creation, management, and cleanup.
 """
 
 import discord
-from typing import Optional, Set, List
+from typing import Optional, Set
 import asyncio
 from . import constants
 from .utils import get_thread_by_id, format_thread_name
@@ -246,7 +246,7 @@ class ThreadManager:
         try:
             await thread.delete(reason=reason)
             print(f"[Shadow Chat] Successfully deleted {thread.id}")
-        except Exception as e:
+        except Exception:
             # Silently fail for individual threads so others continue
             pass
 
@@ -273,7 +273,7 @@ class ThreadManager:
         try:
             async for thread in self.parent_channel.archived_threads():
                 threads.append(thread)
-        except:
+        except Exception:
             pass
 
         return threads

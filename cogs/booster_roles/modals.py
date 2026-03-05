@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw
 
 # Updated imports for SQLite database
 from .database import get_db  # Adjust import path as needed
-from .helpers import validate_role_name, validate_color, save_role_to_db
+from .helpers import validate_role_name, validate_color
 
 
 class CreateRoleModal(ui.Modal, title="Create Booster Role"):

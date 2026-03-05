@@ -6,7 +6,6 @@ import time
 import psutil
 import os
 from datetime import datetime
-from typing import Optional
 
 
 class CutePing(commands.Cog):
@@ -165,7 +164,7 @@ class CutePing(commands.Cog):
 
         # Get system stats
         cpu_usage = self.process.cpu_percent(interval=0.5)
-        memory_usage = self.process.memory_percent()
+        self.process.memory_percent()
         memory_mb = self.process.memory_info().rss / 1024 / 1024
 
         # Count guilds, users, channels

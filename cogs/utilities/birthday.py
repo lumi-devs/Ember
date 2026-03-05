@@ -153,7 +153,7 @@ class ConfirmButton(discord.ui.Button):
         # Success message
         embed = discord.Embed(
             title="✅ Birthday Set!",
-            description=f"Your birthday has been saved!",
+            description="Your birthday has been saved!",
             color=discord.Color.green(),
         )
         embed.add_field(name="Date", value=view.birth_date, inline=True)
@@ -543,7 +543,7 @@ class Birthday(commands.Cog):
                                 guild.id, user_id, BIRTHDAY_ROLE_ID, 86400
                             )
                         )
-                    except:
+                    except Exception:
                         pass
 
             # Mark as announced
@@ -575,7 +575,7 @@ class Birthday(commands.Cog):
         if role:
             try:
                 await member.remove_roles(role, reason="Birthday role expired")
-            except:
+            except Exception:
                 pass
 
     # ─── COMMANDS ─────────────────────────────────────────────────
@@ -674,7 +674,7 @@ class Birthday(commands.Cog):
             return
 
         # Calculate days until next birthday for each user
-        now = datetime.now()
+        datetime.now()
         upcoming = []
 
         for user_id, birth_date, birth_year, tz_name in all_users:

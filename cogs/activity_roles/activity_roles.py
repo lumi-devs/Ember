@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 import asyncio
-from typing import Set, Dict, List, Optional
+from typing import Set, Dict, Optional
 from collections import defaultdict
 import time
 

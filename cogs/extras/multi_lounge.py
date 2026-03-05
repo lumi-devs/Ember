@@ -1,8 +1,7 @@
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 import re
 import asyncio
-import traceback
 import time
 import json
 import os
@@ -158,7 +157,7 @@ class SmartLoungeCog(commands.Cog):
             self.manage_lounges_loop.cancel()
         # Save stats on unload
         self.save_stats()
-        self.logger.info(f"🛑 Smart Lounge System stopped. Stats saved.")
+        self.logger.info("🛑 Smart Lounge System stopped. Stats saved.")
 
     def get_lounge_number(self, channel_name):
         match = self.name_pattern.search(channel_name)
@@ -280,14 +279,16 @@ class SmartLoungeCog(commands.Cog):
             return
 
         # Update statistics
-        total_users = sum(l["count"] for l in lounges)
+        total_users = sum(lounge["count"] for lounge in lounges)
         total_lounges = len(lounges)
 
         self.stats["avg_users_per_lounge"] = (
             total_users / total_lounges if total_lounges > 0 else 0
         )
 
-        busy_lounges = sum(1 for l in lounges if l["count"] >= self.busy_threshold)
+        busy_lounges = sum(
+            1 for lounge in lounges if lounge["count"] >= self.busy_threshold
+        )
         self.stats["busy_percentage"] = (
             (busy_lounges / total_lounges * 100) if total_lounges > 0 else 0
         )
@@ -300,7 +301,9 @@ class SmartLoungeCog(commands.Cog):
         # --- PHASE 1: CREATION (The "Fill the Holes" Logic) ---
 
         # Check: Are ALL lounges currently busy?
-        all_lounges_busy = all(l["count"] >= self.busy_threshold for l in lounges)
+        all_lounges_busy = all(
+            lounge["count"] >= self.busy_threshold for lounge in lounges
+        )
 
         # Check cooldown
         current_time = time.time()
@@ -314,7 +317,7 @@ class SmartLoungeCog(commands.Cog):
                     return
 
                 all_lounges_busy = all(
-                    l["count"] >= self.busy_threshold for l in lounges
+                    lounge["count"] >= self.busy_threshold for lounge in lounges
                 )
                 if not all_lounges_busy:
                     return
@@ -333,7 +336,7 @@ class SmartLoungeCog(commands.Cog):
                         highest_channel_id
                     )
                     target_position = fresh_highest_channel.position
-                except:
+                except Exception:
                     # Fallback to cached position if fetch fails
                     target_position = lounges[-1]["channel"].position
 
@@ -348,7 +351,9 @@ class SmartLoungeCog(commands.Cog):
         # --- PHASE 2: DELETION (The "Keep Lowest Spare" Logic) ---
 
         # Identify "Custom Spares" (Lounge 3+ that are completely empty)
-        custom_spares = [l for l in lounges if l["count"] == 0 and l["num"] > 1]
+        custom_spares = [
+            lounge for lounge in lounges if lounge["count"] == 0 and lounge["num"] > 1
+        ]
 
         # We allow exactly 1 custom spare to exist (Lounge 3).
         # If we have > 1, we must delete the extras.
@@ -359,7 +364,11 @@ class SmartLoungeCog(commands.Cog):
                 if not lounges:
                     return
 
-                custom_spares = [l for l in lounges if l["count"] == 0 and l["num"] > 1]
+                custom_spares = [
+                    lounge
+                    for lounge in lounges
+                    if lounge["count"] == 0 and lounge["num"] > 1
+                ]
                 if len(custom_spares) <= 1:
                     return
 
@@ -498,24 +507,30 @@ class SmartLoungeCog(commands.Cog):
             return
 
         # Calculate stats
-        total_users = sum(l["count"] for l in lounges)
+        total_users = sum(lounge["count"] for lounge in lounges)
         total_lounges = len(lounges)
-        active_lounges = sum(1 for l in lounges if l["count"] > 0)
-        empty_lounges = sum(1 for l in lounges if l["count"] == 0)
-        busy_lounges = sum(1 for l in lounges if l["count"] >= self.busy_threshold)
+        active_lounges = sum(1 for lounge in lounges if lounge["count"] > 0)
+        sum(1 for lounge in lounges if lounge["count"] == 0)
+        busy_lounges = sum(
+            1 for lounge in lounges if lounge["count"] >= self.busy_threshold
+        )
 
-        avg_users = total_users / total_lounges if total_lounges > 0 else 0
-        utilization = (active_lounges / total_lounges * 100) if total_lounges > 0 else 0
+        total_users / total_lounges if total_lounges > 0 else 0
+        (active_lounges / total_lounges * 100) if total_lounges > 0 else 0
 
         # --- PREDICTIVE LOGIC FOR NEXT ACTION ---
-        all_lounges_busy = all(l["count"] >= self.busy_threshold for l in lounges)
+        all_lounges_busy = all(
+            lounge["count"] >= self.busy_threshold for lounge in lounges
+        )
         current_time = time.time()
         cooldown_remaining = max(
             0, int(self.creation_cooldown - (current_time - self.last_creation_time))
         )
         can_create = cooldown_remaining <= 0
 
-        custom_spares = [l for l in lounges if l["count"] == 0 and l["num"] > 1]
+        custom_spares = [
+            lounge for lounge in lounges if lounge["count"] == 0 and lounge["num"] > 1
+        ]
 
         if all_lounges_busy:
             if can_create:
@@ -523,7 +538,7 @@ class SmartLoungeCog(commands.Cog):
             else:
                 next_action = f"⏳ **WAIT:** All rooms busy, but on cooldown for `{cooldown_remaining}s`."
         elif len(custom_spares) > 1:
-            spare_nums = [l["num"] for l in custom_spares[1:]]
+            spare_nums = [lounge["num"] for lounge in custom_spares[1:]]
             next_action = f"📉 **DELETE:** Excess spares detected. Will remove Lounge(s): `{', '.join(map(str, spare_nums))}`."
         else:
             next_action = "✅ **STABLE:** No creation or deletion needed at this time."
@@ -565,16 +580,16 @@ class SmartLoungeCog(commands.Cog):
 
         # 4. Current State with Limits
         state_list = []
-        for l in lounges[:10]:  # Show first 10 lounges
-            limit = l["channel"].user_limit
+        for lounge in lounges[:10]:  # Show first 10 lounges
+            limit = lounge["channel"].user_limit
             cap_str = "∞" if limit == 0 else str(limit)
             status_icon = (
                 "🚨"
-                if l["count"] >= self.busy_threshold
-                else "💤" if l["count"] == 0 else "✅"
+                if lounge["count"] >= self.busy_threshold
+                else "💤" if lounge["count"] == 0 else "✅"
             )
             state_list.append(
-                f"**L{l['num']}:** {l['count']}/{cap_str} users {status_icon}"
+                f"**L{lounge['num']}:** {lounge['count']}/{cap_str} users {status_icon}"
             )
 
         embed.add_field(
@@ -640,9 +655,9 @@ class SmartLoungeCog(commands.Cog):
         if len(lounges) <= 15:  # Only if not too many
             detailed = "\n".join(
                 [
-                    f"**#{l['num']}:** {l['name']} → {l['count']}/{l['channel'].user_limit if l['channel'].user_limit != 0 else '∞'} users "
-                    f"(ID: `{l['id']}`)"
-                    for l in lounges
+                    f"**#{lounge['num']}:** {lounge['name']} → {lounge['count']}/{lounge['channel'].user_limit if lounge['channel'].user_limit != 0 else '∞'} users "
+                    f"(ID: `{lounge['id']}`)"
+                    for lounge in lounges
                 ]
             )
 

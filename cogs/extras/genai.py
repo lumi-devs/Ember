@@ -12,15 +12,14 @@ import json
 import os
 from pathlib import Path
 import emoji
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict
 import nltk
-from nltk.tokenize import word_tokenize, sent_tokenize
+from nltk.tokenize import word_tokenize
 from nltk import pos_tag
-from nltk.corpus import stopwords
 from nltk.sentiment import SentimentIntensityAnalyzer
 from collections import Counter
 import math
-from langdetect import detect, DetectorFactory
+from langdetect import DetectorFactory
 
 # Ensure consistent language detection
 DetectorFactory.seed = 0
@@ -170,7 +169,7 @@ class EnhancedMarkovCog(commands.Cog):
             logger.info(
                 f"Loaded {len(self.stop_words)} stopwords (English + Extended Hinglish)"
             )
-        except:
+        except Exception:
             self.stop_words = set()
 
         # INITIALIZATION FLAGS
@@ -184,10 +183,9 @@ class EnhancedMarkovCog(commands.Cog):
 
         # Alternative: Use textblob for language detection and basic processing
         try:
-            from textblob import TextBlob
 
             self.textblob_available = True
-        except:
+        except Exception:
             self.textblob_available = False
             logger.warning("TextBlob not available. Install with: pip install textblob")
 
@@ -753,7 +751,6 @@ class EnhancedMarkovCog(commands.Cog):
             "me": "me",
             "in": "me",
             "pe": "pe",
-            "on": "pe",
             "tak": "tak",
             "until": "tak",
             "bhi": "bhi",
@@ -766,11 +763,8 @@ class EnhancedMarkovCog(commands.Cog):
             "agar": "agar",
             "if": "agar",
             "to": "to",
-            "then": "to",
             "jo": "jo",
             "that": "jo",
-            "ki": "ki",
-            "that": "ki",
             "jab": "jab",
             "when": "jab",
             "jahan": "jahan",
@@ -829,7 +823,6 @@ class EnhancedMarkovCog(commands.Cog):
 
         for word in words:
             lower_word = word.lower()
-            original_word = word
 
             # Check if word is already in Devanagari (Hindi script)
             # We typically don't lemmatize Devanagari without proper tools
@@ -1174,7 +1167,7 @@ class EnhancedMarkovCog(commands.Cog):
                     for k, v in state["reply_cooldowns"].items():
                         try:
                             self.reply_cooldowns[int(k)] = datetime.fromisoformat(v)
-                        except:
+                        except Exception:
                             pass
 
         except Exception as e:
@@ -1996,7 +1989,7 @@ class EnhancedMarkovCog(commands.Cog):
 
                     if self.TOPIC_COHERENCE and topic_keywords:
                         topic_condition = " OR ".join(
-                            [f"word_a LIKE ? OR word_b LIKE ?" for _ in topic_keywords]
+                            ["word_a LIKE ? OR word_b LIKE ?" for _ in topic_keywords]
                         )
                         query += f" AND ({topic_condition})"
                         params = [seed_word, seed_word]
@@ -2060,7 +2053,7 @@ class EnhancedMarkovCog(commands.Cog):
                         if self.TOPIC_COHERENCE and topic_keywords:
                             topic_condition = " OR ".join(
                                 [
-                                    f"word_a LIKE ? OR word_b LIKE ?"
+                                    "word_a LIKE ? OR word_b LIKE ?"
                                     for _ in topic_keywords
                                 ]
                             )
@@ -2275,7 +2268,7 @@ class EnhancedMarkovCog(commands.Cog):
                                 f":{emoji_name}:", language="alias"
                             )
                             readable_sentence.append(emoji_char)
-                        except:
+                        except Exception:
                             readable_sentence.append(f":{emoji_name}:")
 
                     elif word.startswith("<:") and word.endswith(">"):
@@ -2344,7 +2337,7 @@ class EnhancedMarkovCog(commands.Cog):
                     return False
 
                 # Add punctuation (but NOT if message ends with an emoji)
-                if result and not result[-1] in ".!?;" and not ends_with_emoji(result):
+                if result and result[-1] not in ".!?;" and not ends_with_emoji(result):
                     last_words = result.lower().split()[-2:]
 
                     question_words = [
@@ -2446,7 +2439,7 @@ class EnhancedMarkovCog(commands.Cog):
                 )
                 if ref_msg.author.id == self.bot.user.id:
                     is_reply_to_me = True
-            except:
+            except Exception:
                 pass
 
         is_thread = isinstance(message.channel, discord.Thread)
@@ -2693,7 +2686,7 @@ class EnhancedMarkovCog(commands.Cog):
                     self.stats["unique_users"] = result[0] if result else 0
 
                 # Update today's messages count
-                today = datetime.utcnow().date().isoformat()
+                datetime.utcnow().date().isoformat()
                 async with db.execute(
                     "SELECT COUNT(*) FROM message_log WHERE DATE(timestamp) = DATE('now')"
                 ) as cursor:
@@ -2718,7 +2711,7 @@ class EnhancedMarkovCog(commands.Cog):
                 hindi_regex = r"[\u0900-\u097F]"
 
                 async with db.execute(
-                    f"""
+                    """
                     SELECT COUNT(DISTINCT next_word) as unique_hindi_words
                     FROM markov_chain 
                     WHERE next_word REGEXP ?
@@ -2930,7 +2923,7 @@ class EnhancedMarkovCog(commands.Cog):
                 return f"{days}d {hours}h {minutes}m"
             else:
                 return f"{hours}h {minutes}m {seconds}s"
-        except:
+        except Exception:
             return "Unknown"
 
     @commands.command(name="generate")
@@ -2950,7 +2943,7 @@ class EnhancedMarkovCog(commands.Cog):
                 )
                 if seed_word:
                     embed.set_footer(text=f"Seeded with: {seed_word}")
-                msg = await ctx.send(embed=embed)
+                await ctx.send(embed=embed)
                 self.record_bot_message(ctx.channel.id)
             else:
                 await ctx.send(
@@ -3079,7 +3072,7 @@ class EnhancedMarkovCog(commands.Cog):
                                 emoji_list.append(
                                     f"{emoji_char}: {emoji_row['usage_count']:,}"
                                 )
-                            except:
+                            except Exception:
                                 emoji_list.append(
                                     f":{emoji_name}: {emoji_row['usage_count']:,}"
                                 )

@@ -1,15 +1,13 @@
-import asyncio
 import os
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import List, Optional
 
 import discord
 from discord.ext import commands, tasks
 from discord import Embed, Color
 
 # Import your Database class (make sure this is in the same directory or adjust import)
-from .database import get_db, Database  # Adjust import path as needed
+from .database import get_db  # Adjust import path as needed
 
 
 class BoosterRoleCleaner(commands.Cog):
@@ -58,7 +56,7 @@ class BoosterRoleCleaner(commands.Cog):
 
         try:
             await channel.send(embed=embed)
-        except:
+        except Exception:
             pass
 
     @tasks.loop(hours=1)
@@ -251,7 +249,7 @@ class BoosterRoleCleaner(commands.Cog):
                     test_role = guild.get_role(role.id)
                     if not test_role:
                         raise ValueError("Role not accessible")
-                except:
+                except Exception:
                     report["issues_found"].append(f"{member}: Role not manageable")
                     report["cleaned_users"].append(str(member))
                     await db.delete_role(user_id)
@@ -377,7 +375,7 @@ class BoosterRoleCleaner(commands.Cog):
                                 text="Thank you for boosting while you did! ✨"
                             )
                             await member.send(embed=embed)
-                        except:
+                        except Exception:
                             pass
 
                         # Log the removal

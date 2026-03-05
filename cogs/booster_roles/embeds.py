@@ -76,7 +76,7 @@ async def create_role_creation_success_embed(
     ]
 
     embed.set_image(url=success_gifs[now_ist.second % len(success_gifs)])
-    embed.description = f"🎉 **Your custom booster role is ready!**"
+    embed.description = "🎉 **Your custom booster role is ready!**"
 
     return embed
 
@@ -345,5 +345,5 @@ async def create_bestowed_management_embed(
         inline=False,
     )
 
-    embed.set_footer(text=f"Use the buttons below to manage bestowed roles")
+    embed.set_footer(text="Use the buttons below to manage bestowed roles")
     return embed

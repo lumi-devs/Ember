@@ -3,7 +3,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Set, Optional
+from typing import Dict, Optional
 import math
 import logging
 
@@ -337,7 +337,7 @@ class VoteTimeout(commands.Cog):
         if vote_data.get("passed", False):
             try:
                 await reaction.remove(user)
-            except:
+            except Exception:
                 pass
             return
 
@@ -346,7 +346,7 @@ class VoteTimeout(commands.Cog):
             # Remove their reaction if they already voted
             try:
                 await reaction.remove(user)
-            except:
+            except Exception:
                 pass
             return
 
@@ -356,7 +356,7 @@ class VoteTimeout(commands.Cog):
             # Remove reaction if user isn't valid
             try:
                 await reaction.remove(user)
-            except:
+            except Exception:
                 pass
             return
 
@@ -385,7 +385,7 @@ class VoteTimeout(commands.Cog):
                         color=discord.Color.red(),
                     )
                 )
-            except:
+            except Exception:
                 pass
             finally:
                 # Safely delete from active votes
@@ -419,7 +419,7 @@ class VoteTimeout(commands.Cog):
             # Remove invalid reaction
             try:
                 await reaction.remove(user)
-            except:
+            except Exception:
                 pass
             vote_data["voters"].remove(
                 user.id
@@ -538,7 +538,7 @@ class VoteTimeout(commands.Cog):
                         # Target not found (possibly left server), still show success
                         success_embed = discord.Embed(
                             title="✅ Vote Passed!",
-                            description=f"Vote passed but user is no longer in the server.",
+                            description="Vote passed but user is no longer in the server.",
                             color=discord.Color.green(),
                         )
                         success_embed.add_field(
@@ -629,7 +629,7 @@ class VoteTimeout(commands.Cog):
                     inline=False,
                 )
                 await reaction.message.edit(embed=embed)
-            except:
+            except Exception:
                 pass
 
     @commands.Cog.listener()

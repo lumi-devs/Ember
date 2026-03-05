@@ -278,7 +278,6 @@ class ModApprovalView(View):
 
     async def check_and_apply_hot_tag(self, thread):
         """Check if debate should have hot tag and apply it"""
-        from .debate_config import ACTIVITY_THRESHOLD
 
         # This will be checked by the automation loop
         # Just initialize the tracking
@@ -331,7 +330,7 @@ class RejectionReasonModal(Modal, title="Reject Debate Proposal"):
         if user:
             embed = discord.Embed(
                 title="❌ Debate Proposal Rejected",
-                description=f"Your debate proposal was rejected.",
+                description="Your debate proposal was rejected.",
                 color=COLORS["warning"],
             )
             embed.add_field(name="Reason", value=self.reason.value)
@@ -369,7 +368,7 @@ class CreateDebateView(View):
                     await interaction.response.send_message(
                         "❌ An error occurred. Please try again.", ephemeral=True
                     )
-                except:
+                except Exception:
                     pass
         else:
             # If response was already done, try to send a followup
@@ -379,5 +378,5 @@ class CreateDebateView(View):
                 )
                 # You might want to create the modal differently here
                 # But modals can only be sent via response, not followup
-            except:
+            except Exception:
                 pass

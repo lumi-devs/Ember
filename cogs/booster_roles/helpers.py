@@ -2,7 +2,6 @@ import asyncio
 import re
 import aiohttp
 from typing import Tuple, Optional
-from datetime import datetime, timezone, timedelta
 
 import discord
 from discord import Color
@@ -100,7 +99,7 @@ async def ensure_role_position(
                 await asyncio.sleep(2)
 
         except discord.Forbidden:
-            print(f"✗ Missing permissions to edit role position")
+            print("✗ Missing permissions to edit role position")
             return False
         except discord.HTTPException as e:
             print(f"⚠ HTTP error setting role position (attempt {attempt + 1}): {e}")

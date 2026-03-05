@@ -6,7 +6,7 @@ Monitors sessions for inactivity and cleans up old sessions using async concurre
 import asyncio
 import discord
 import datetime
-from typing import Dict, List, Optional
+from typing import Dict
 from .constants import SESSION_TIMEOUT_MINUTES, GUILD_ID, COLOR_WARNING, COLOR_ERROR
 from .session_manager import SessionManager
 from .models import ShadowSession
@@ -173,7 +173,7 @@ class InactivityWatcher:
         embed.add_field(
             name="To Continue", value="Send a message to reset the timer.", inline=False
         )
-        embed.set_footer(text=f"You'll receive another warning at 1 minute remaining.")
+        embed.set_footer(text="You'll receive another warning at 1 minute remaining.")
 
         # Send warnings in parallel
         await asyncio.gather(
@@ -237,7 +237,7 @@ class InactivityWatcher:
         # Create closure embed
         embed = discord.Embed(
             title="🔒 Session Ended",
-            description=f"**Session has been closed due to inactivity.**",
+            description="**Session has been closed due to inactivity.**",
             color=COLOR_ERROR,
         )
         embed.add_field(name="Reason", value=reason, inline=False)

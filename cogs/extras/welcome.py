@@ -1,5 +1,4 @@
-import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 
 CHANNEL_IDS = [
     1388612947344883732,

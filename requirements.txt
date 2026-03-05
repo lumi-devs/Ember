@@ -1,7 +1,6 @@
 discord.py
 dateparser
 PyGithub
-flask
 python-dotenv
 aiofiles
 wget

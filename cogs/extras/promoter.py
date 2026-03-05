@@ -1,8 +1,7 @@
 import discord
 from discord.ext import tasks, commands
 import sqlite3
-from datetime import datetime, timedelta
-import asyncio
+from datetime import datetime
 
 
 class PromoterRole(commands.Cog):
@@ -45,7 +44,7 @@ class PromoterRole(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        print(f"🚀 PromoterRole cog loaded!")
+        print("🚀 PromoterRole cog loaded!")
         print(f"📊 Monitoring: Status & Primary Guild Tag '{self.server_tag}'")
         self.fallback_check.start()
 
@@ -67,7 +66,7 @@ class PromoterRole(commands.Cog):
 
         # Check if status content actually changed
         if current_status != previous_status:
-            await self.instant_member_check(after, f"Status changed")
+            await self.instant_member_check(after, "Status changed")
 
     @commands.Cog.listener()
     async def on_member_update(self, before, after):

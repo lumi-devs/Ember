@@ -149,7 +149,7 @@ class ConfessBan(commands.Cog):
                 try:
                     user = await self.bot.fetch_user(user_id)
                     user_text = f"{user.mention} ({user.id})"
-                except:
+                except Exception:
                     user_text = f"Unknown User ({user_id})"
 
                 ban_info = f"**Banned on:** {banned_at}\n"

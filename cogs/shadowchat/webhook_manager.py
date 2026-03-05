@@ -10,14 +10,13 @@ import secrets
 import discord
 import io
 import aiohttp
-from typing import Optional, Dict, Tuple, List, Any
+from typing import Optional, Dict, Tuple, List
 from . import constants
 import os
 import logging
 from .models import Database
 import time
-from datetime import datetime, timedelta
-import hashlib
+from datetime import datetime
 import json
 
 # Set up logging
@@ -1122,7 +1121,7 @@ class WebhookManager:
                                 )
 
                             if attachment_texts:
-                                reply_embed.description = f"\n".join(attachment_texts)
+                                reply_embed.description = "\n".join(attachment_texts)
                             else:
                                 reply_embed.description = (
                                     f"📎 [Attachment]({message_link})"

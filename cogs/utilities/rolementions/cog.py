@@ -129,7 +129,7 @@ class RoleMentionCog(commands.Cog):  # ← Better name
             inline=True,
         )
 
-        embed.set_footer(text=f"Logged at")
+        embed.set_footer(text="Logged at")
 
         # Send the log message
         await log_channel.send(content=f"{message.author.mention}", embed=embed)
@@ -218,12 +218,12 @@ class RoleMentionCog(commands.Cog):  # ← Better name
             )
             embed.add_field(name="Today's Mentions", value=str(role_count), inline=True)
             embed.add_field(name="Role ID", value=f"`{role.id}`", inline=True)
-            embed.set_footer(text=f"Data resets daily at 4 AM IST")
+            embed.set_footer(text="Data resets daily at 4 AM IST")
 
         else:
             # Get all role stats
             embed = discord.Embed(
-                title=f"Role Mention Statistics",
+                title="Role Mention Statistics",
                 description=f"**Total mentions today:** `{stats['total']}`\n"
                 f"**Unique roles mentioned:** `{stats['unique']}`",
                 color=discord.Color.blue(),
@@ -327,7 +327,7 @@ class RoleMentionCog(commands.Cog):  # ← Better name
                 inline=False,
             )
 
-        embed.set_footer(text=f"Resets daily at 4 AM IST")
+        embed.set_footer(text="Resets daily at 4 AM IST")
 
         await ctx.send(embed=embed)
 
@@ -344,7 +344,7 @@ class RoleMentionCog(commands.Cog):  # ← Better name
         if log_channel:
             embed = discord.Embed(
                 title="🔄 Manual Role Mention Reset",
-                description=f"Role mention counters have been manually reset",
+                description="Role mention counters have been manually reset",
                 color=discord.Color.orange(),
             )
             embed.add_field(

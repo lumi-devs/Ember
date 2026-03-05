@@ -1,7 +1,5 @@
 import sqlite3
 import aiosqlite
-import asyncio
-import json
 from datetime import datetime, timedelta
 from .debate_config import DB_PATH
 
@@ -182,34 +180,6 @@ class DebateDatabase:
             user_id,
             thread_id,
         )
-
-    # Weekly scores
-    async def add_weekly_score(
-        self, user_id, points, message_sent=False, debate_created=False
-    ):
-        week_start = datetime.now().strftime("%Y-%W")
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """
-                INSERT INTO weekly_scores (user_id, week_start, score, messages_sent, debates_created)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(user_id, week_start) DO UPDATE SET
-                    score = score + ?,
-                    messages_sent = messages_sent + ?,
-                    debates_created = debates_created + ?
-            """,
-                (
-                    user_id,
-                    week_start,
-                    points,
-                    1 if message_sent else 0,
-                    1 if debate_created else 0,
-                    points,
-                    1 if message_sent else 0,
-                    1 if debate_created else 0,
-                ),
-            )
-            await db.commit()
 
     # Mute operations
     async def add_mute(self, user_id, expiry, reason, mod_id):
@@ -512,7 +482,7 @@ class DebateDatabase:
                 await db.execute(
                     "ALTER TABLE weekly_scores ADD COLUMN last_updated TIMESTAMP"
                 )
-            except:
+            except Exception:
                 pass  # Column already exists
 
             await db.execute(

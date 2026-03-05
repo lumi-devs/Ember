@@ -4,11 +4,9 @@ from discord import AutoModTrigger, AutoModRuleAction
 from discord.enums import AutoModRuleEventType, AutoModRuleTriggerType
 from datetime import datetime, timedelta
 import pytz
-from discord.ext import commands
 import os
 import json
 import ast
-import re
 
 
 class AutoModManager:
@@ -84,7 +82,7 @@ class AutoModManager:
                         minutes = int(duration)
 
                     self.PROTECTED_ROLES[str(role_id)] = minutes
-            except:
+            except Exception:
                 self.PROTECTED_ROLES = {}
 
         # Load mention limit from env
@@ -347,7 +345,6 @@ class AutoModManager:
                 rule = await guild.fetch_automod_rule(int(self.main_rule_id))
 
             # Get current actions
-            current_actions = rule.actions
 
             # Create new custom message with updated times
             if len(self.active_blocks) == 1:
@@ -426,7 +423,7 @@ class AutoModManager:
 
         embed = discord.Embed(
             title="🛡️ Role Protection Activated",
-            description=f"Role mention protection has been added",
+            description="Role mention protection has been added",
             color=discord.Color.red(),
             timestamp=datetime.now(pytz.UTC),
         )
@@ -478,7 +475,7 @@ class AutoModManager:
 
         embed = discord.Embed(
             title="✅ Role Protection Expired",
-            description=f"Role mention protection has been removed",
+            description="Role mention protection has been removed",
             color=discord.Color.green(),
             timestamp=datetime.now(pytz.UTC),
         )
@@ -511,7 +508,7 @@ class AutoModManager:
 
         embed = discord.Embed(
             title="🔄 AutoMod Rule Updated",
-            description=f"Protection list has been updated",
+            description="Protection list has been updated",
             color=discord.Color.blue(),
             timestamp=datetime.now(pytz.UTC),
         )
@@ -577,7 +574,7 @@ class AutoModManager:
 
         # Check if this role is already blocked
         if str(role.id) in self.active_blocks:
-            print(f"[AutoMod] Role already in protection list")
+            print("[AutoMod] Role already in protection list")
             return
 
         # Get duration for this specific role
@@ -606,6 +603,6 @@ class AutoModManager:
 
         # Format duration for message
         if duration_minutes >= 60:
-            duration_display = f"{duration_minutes/60:.1f} hours"
+            f"{duration_minutes/60:.1f} hours"
         else:
-            duration_display = f"{duration_minutes} minutes"
+            pass

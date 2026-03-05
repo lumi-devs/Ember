@@ -17,7 +17,6 @@ from .helpers import (
     get_role_from_db,
     delete_role_from_db,
 )
-from .modals import CreateRoleModal, RoleNameModal, RoleColorsModal
 from .views import BoosterRoleView, RenounceConfirmationView
 from .embeds import (
     create_progress_embed,
@@ -46,7 +45,7 @@ class BoosterRolesCog(commands.Cog):
         embed = await create_progress_embed(title, description, color, status)
         try:
             return await interaction.followup.send(embed=embed, wait=True)
-        except:
+        except Exception:
             return None
 
     async def process_role_creation(self, interaction: Interaction, name: str):
@@ -237,7 +236,7 @@ class BoosterRolesCog(commands.Cog):
                 # Delete role if position failed
                 try:
                     await role.delete(reason="Failed to set position")
-                except:
+                except Exception:
                     pass
 
                 if progress_msg:
@@ -307,7 +306,7 @@ class BoosterRolesCog(commands.Cog):
                 "updated_at": ist_time.isoformat(),
             }
 
-            save_success = await save_role_to_db(interaction.user.id, role_data)
+            await save_role_to_db(interaction.user.id, role_data)
 
             # Step 6: Final celebration!
             if progress_msg:
@@ -333,7 +332,7 @@ class BoosterRolesCog(commands.Cog):
             if progress_msg:
                 try:
                     await progress_msg.delete()
-                except:
+                except Exception:
                     pass
 
             await interaction.followup.send(embed=embed)
@@ -609,7 +608,7 @@ class BoosterRolesCog(commands.Cog):
                 # Clean up the message
                 try:
                     await msg.delete()
-                except:
+                except Exception:
                     pass
 
                 # Process selection
@@ -710,7 +709,7 @@ class BoosterRolesCog(commands.Cog):
             # Clean up orphaned entry
             await delete_role_from_db(target_user.id)
             await interaction.followup.send(
-                f"❌ Role not found. Database entry has been cleaned up.",
+                "❌ Role not found. Database entry has been cleaned up.",
                 ephemeral=True,
             )
             return

@@ -77,7 +77,7 @@ class Verification(commands.Cog):
         except discord.HTTPException as e:
             await self.send_embed(
                 ctx,
-                f"❌ **Error:** Failed to add role. Please try again.",
+                "❌ **Error:** Failed to add role. Please try again.",
                 discord.Color.red(),
             )
             logger.error(f"HTTP error when adding role: {e}")
@@ -122,7 +122,7 @@ class Verification(commands.Cog):
         except discord.HTTPException as e:
             await self.send_embed(
                 ctx,
-                f"❌ **Error:** Failed to remove role. Please try again.",
+                "❌ **Error:** Failed to remove role. Please try again.",
                 discord.Color.red(),
             )
             logger.error(f"HTTP error when removing role: {e}")
@@ -249,7 +249,7 @@ class Verification(commands.Cog):
         # Create view with navigation buttons if multiple chunks
         if len(chunks) > 1:
             view = self.VerifiedListView(ctx, chunks, embed, role)
-            message = await ctx.send(embed=embed, view=view)
+            await ctx.send(embed=embed, view=view)
         else:
             await ctx.send(embed=embed)
 
@@ -406,7 +406,7 @@ class Verification(commands.Cog):
 
             try:
                 await self.message.edit(view=self)
-            except:
+            except Exception:
                 pass
 
 

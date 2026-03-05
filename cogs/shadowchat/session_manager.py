@@ -9,15 +9,12 @@ from typing import Optional, Tuple, List
 import discord
 
 from . import constants
-from .models import Database, ShadowSession
+from .models import ShadowSession
 from .utils import (
     generate_session_id,
-    format_thread_name,
     get_thread_by_id,
     generate_user_code,
 )
-from .thread_manager import ThreadManager
-from .webhook_manager import WebhookManager
 
 
 class SessionManager:
@@ -306,7 +303,7 @@ class SessionManager:
             try:
                 await header1.pin()
                 await header2.pin()
-            except:
+            except Exception:
                 pass  # Can't pin, that's okay
 
             # Send initial greeting message
@@ -441,9 +438,6 @@ class SessionManager:
 
         # Get user objects
         skipping_user = self.bot.get_user(user_id)
-        other_user_id = (
-            session.user2_id if user_id == session.user1_id else session.user1_id
-        )
 
         # Send final skip notification to both threads (already sent in handle_skip_chat)
 
@@ -597,7 +591,7 @@ class SessionManager:
         if not user1 or not user2:
             return
 
-        print(f"[Shadow Chat] Revealing identities:")
+        print("[Shadow Chat] Revealing identities:")
         print(f"  User 1: {user1.display_name} ({user1.id})")
         print(f"  User 2: {user2.display_name} ({user2.id})")
 
@@ -616,7 +610,7 @@ class SessionManager:
 
             # print(f"[Shadow Chat] Identities revealed successfully!")
         else:
-            print(f"[Shadow Chat] Failed to reveal identities")
+            print("[Shadow Chat] Failed to reveal identities")
 
     async def _notify_reveal_request(
         self, session: ShadowSession, requesting_user_id: int
@@ -640,7 +634,7 @@ class SessionManager:
         # Send notification with confirmation buttons
         embed = discord.Embed(
             title="👁️ Identity Reveal Request",
-            description=f"Your partner wants to reveal identities. Do you agree?",
+            description="Your partner wants to reveal identities. Do you agree?",
             color=constants.COLOR_WARNING,
         )
 
@@ -729,13 +723,13 @@ class SessionManager:
         if thread1:
             try:
                 send_tasks.append(thread1.send(embed=ending_embed))
-            except:
+            except Exception:
                 pass
 
         if thread2:
             try:
                 send_tasks.append(thread2.send(embed=ending_embed))
-            except:
+            except Exception:
                 pass
 
         # Send ending messages in parallel

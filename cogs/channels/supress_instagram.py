@@ -2,7 +2,6 @@
 import re
 import discord
 from discord.ext import commands
-from discord import app_commands
 
 BLOCK_CHANNELS = {1393171137017413712, 1393171121154560010}
 # -------------------------------------

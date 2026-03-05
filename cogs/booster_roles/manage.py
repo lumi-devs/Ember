@@ -3,11 +3,11 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import asyncio
-from typing import Optional, List
+from typing import Optional
 from datetime import datetime, timezone, timedelta
 
 # Import your database module
-from .database import Database, get_db
+from .database import get_db
 
 
 class BoosterRolesManage(commands.Cog):
@@ -221,7 +221,7 @@ class BoosterRolesManage(commands.Cog):
             )
             embed.add_field(name=f"🏷️ {role['name']}", value=field_value, inline=False)
 
-        embed.set_footer(text=f"Use /broles info for detailed information")
+        embed.set_footer(text="Use /broles info for detailed information")
 
         await interaction.followup.send(embed=embed)
 
@@ -462,7 +462,7 @@ class BoosterRolesManage(commands.Cog):
                     f"✅ User `{user_id}` has been added to the blacklist."
                 )
         else:
-            await interaction.followup.send(f"❌ Failed to add user to blacklist.")
+            await interaction.followup.send("❌ Failed to add user to blacklist.")
 
     @broles.command(name="blacklist_remove", description="Remove a user from blacklist")
     async def blacklist_remove(self, interaction: discord.Interaction, user_id: str):
@@ -489,7 +489,7 @@ class BoosterRolesManage(commands.Cog):
                     f"✅ User `{user_id}` has been removed from the blacklist."
                 )
         else:
-            await interaction.followup.send(f"❌ Failed to remove user from blacklist.")
+            await interaction.followup.send("❌ Failed to remove user from blacklist.")
 
     @broles.command(name="blacklist_list", description="List all blacklisted users")
     async def list_blacklist(self, interaction: discord.Interaction):

@@ -60,7 +60,7 @@ class ConfessionCleaner(commands.Cog):
                     await asyncio.sleep(1)
                     try:
                         await message.delete()
-                    except:
+                    except Exception:
                         pass
 
             asyncio.create_task(delete_immediately())
@@ -68,7 +68,7 @@ class ConfessionCleaner(commands.Cog):
     async def allow_user_once(self, user_id: int):
         """Allow a user to send a single message with cleanup."""
         # Clean up expired allowances
-        current_time = time.time()
+        time.time()
         self.allowed_users.add(user_id)
 
     @commands.Cog.listener()

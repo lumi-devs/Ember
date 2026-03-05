@@ -1,5 +1,4 @@
 from .cog import RoleMentionCog  # ← Updated import
-from .automod_manager import AutoModManager
 from discord.ext import commands
 
 

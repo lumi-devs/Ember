@@ -1,7 +1,6 @@
 import discord
 from discord.ext import commands
 import aiohttp
-import io
 import re
 from typing import Optional, List, Tuple, Dict, Set, Union
 import asyncio
@@ -176,7 +175,7 @@ class StealEmoji(commands.Cog):
         except discord.HTTPException as e:
             if "image" in str(e).lower():
                 return False, "invalid_image"
-            return False, f"http_error"
+            return False, "http_error"
         except Exception as e:
             print(f"Error stealing emoji {emoji_name}: {e}")
             return False, str(e)
@@ -196,7 +195,7 @@ class StealEmoji(commands.Cog):
         """
         try:
             await ctx.message.delete()
-        except:
+        except Exception:
             pass
 
         # Check rate limit
@@ -233,7 +232,7 @@ class StealEmoji(commands.Cog):
                 if int(emoji_id) in existing_ids:
                     embed = discord.Embed(
                         title="❌ Already Exists",
-                        description=f"That exact emoji is already on this server!",
+                        description="That exact emoji is already on this server!",
                         color=discord.Color.orange(),
                     )
                     msg = await ctx.send(embed=embed)

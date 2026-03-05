@@ -2,10 +2,9 @@ from datetime import datetime, timedelta
 import aiosqlite
 import discord
 from discord.ext import commands
-from .debate_config import *
+from .debate_config import STATUS_EMOJIS, DB_PATH
 from .debate_database import DebateDatabase
 from .debate_ui import CreateDebateView
-import asyncio
 from .debate_config import (
     FORUM_CHANNEL_ID,
     MOD_CHANNEL_ID,
@@ -13,7 +12,6 @@ from .debate_config import (
     COLORS,
     HOT_TAG_NAME,
     HOT_TAG_EMOJI,
-    HOT_TAG_ID,
 )
 
 
@@ -263,7 +261,7 @@ class DebateSystem(commands.Cog):
         # Send lock notification in thread
         embed = discord.Embed(
             title="🔒 Debate Locked",
-            description=f"This debate has been locked by a moderator.",
+            description="This debate has been locked by a moderator.",
             color=COLORS["warning"],
             timestamp=datetime.now(),
         )
@@ -405,7 +403,7 @@ class DebateSystem(commands.Cog):
             dm_embed.add_field(name="Reason", value=reason)
             dm_embed.add_field(name="Moderator", value=ctx.author.display_name)
             await user.send(embed=dm_embed)
-        except:
+        except Exception:
             pass  # Can't DM user, ignore
 
     @debate.command(name="unmute")
@@ -433,7 +431,7 @@ class DebateSystem(commands.Cog):
             await user.send(
                 f"✅ You have been unsilenced in debates by {ctx.author.display_name}"
             )
-        except:
+        except Exception:
             pass
 
     @debate.command(name="muted")
@@ -490,7 +488,7 @@ class DebateSystem(commands.Cog):
                 return value * 86400
             else:
                 return None
-        except:
+        except Exception:
             return None
 
     async def ensure_hot_tag_exists(self):
@@ -503,7 +501,6 @@ class DebateSystem(commands.Cog):
         for tag in forum.available_tags:
             if tag.name == HOT_TAG_NAME:
                 # Store the tag ID for later use
-                HOT_TAG_ID = tag.id
                 return tag
 
         # Create the hot tag if it doesn't exist
@@ -522,7 +519,6 @@ class DebateSystem(commands.Cog):
                 # Find and store the new tag's ID
                 for tag in forum.available_tags:
                     if tag.name == HOT_TAG_NAME:
-                        HOT_TAG_ID = tag.id
                         return tag
         except Exception as e:
             print(f"Error creating hot tag: {e}")

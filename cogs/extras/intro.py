@@ -1,6 +1,5 @@
 import discord
-from discord.ext import commands, tasks
-from discord import app_commands
+from discord.ext import commands
 import asyncio
 import re
 from typing import Optional
@@ -23,7 +22,7 @@ class IntroChannelCog(commands.Cog):
         """Ensure commands are used in the intro channel"""
         if ctx.channel.id == self.intro_channel_id:
             return True
-        await ctx.send(f"This command only works in the intro channel!", ephemeral=True)
+        await ctx.send("This command only works in the intro channel!", ephemeral=True)
         return False
 
     @commands.Cog.listener()
@@ -78,14 +77,14 @@ class IntroChannelCog(commands.Cog):
             try:
                 await message.add_reaction(emoji)
                 await asyncio.sleep(0.5)  # Delay to avoid rate limits
-            except:
+            except Exception:
                 pass
 
     async def delete_non_intro(self, message):
         """Delete non-intro messages after delay"""
         try:
             # Send warning first
-            warning = await message.reply(
+            await message.reply(
                 f"⚠️ This doesn't look like a proper intro. "
                 f"Please use the format:\n"
                 f"```Name: \nAge: \nLocation: \nHobbies: \nAbout me:```\n"

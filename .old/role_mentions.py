@@ -5,7 +5,6 @@ import os
 from datetime import datetime, timedelta
 import pytz
 from collections import defaultdict
-import asyncio
 
 
 class RoleMentionTracker(commands.Cog):
@@ -41,7 +40,7 @@ class RoleMentionTracker(commands.Cog):
                         guild_data[guild_id] = defaultdict(int, roles)
 
                     return defaultdict(lambda: defaultdict(int), guild_data)
-            except:
+            except Exception:
                 return defaultdict(lambda: defaultdict(int))
         return defaultdict(lambda: defaultdict(int))
 
@@ -77,7 +76,7 @@ class RoleMentionTracker(commands.Cog):
                     )
                     embed.set_footer(text="Counters reset daily at 4:00 AM IST")
                     await log_channel.send(embed=embed)
-            except:
+            except Exception:
                 pass
 
             # Reset all counters
@@ -209,7 +208,7 @@ class RoleMentionTracker(commands.Cog):
             inline=True,
         )
 
-        embed.set_footer(text=f"Logged at")
+        embed.set_footer(text="Logged at")
 
         # Send the log message
         await log_channel.send(content=f"{message.author.mention}", embed=embed)
@@ -298,7 +297,7 @@ class RoleMentionTracker(commands.Cog):
             )
             embed.add_field(name="Today's Mentions", value=str(role_count), inline=True)
             embed.add_field(name="Role ID", value=f"`{role.id}`", inline=True)
-            embed.set_footer(text=f"Data resets daily at 4 AM IST")
+            embed.set_footer(text="Data resets daily at 4 AM IST")
 
         else:
             # Get all role stats
@@ -317,7 +316,7 @@ class RoleMentionTracker(commands.Cog):
             all_roles_info.sort(key=lambda x: x[1], reverse=True)
 
             embed = discord.Embed(
-                title=f"Role Mention Statistics",
+                title="Role Mention Statistics",
                 description=f"**Total mentions today:** `{total_mentions}`\n"
                 f"**Unique roles mentioned:** `{len(all_roles_info)}`",
                 color=discord.Color.blue(),
@@ -413,7 +412,7 @@ class RoleMentionTracker(commands.Cog):
                 inline=False,
             )
 
-        embed.set_footer(text=f"Resets daily at 4 AM IST")
+        embed.set_footer(text="Resets daily at 4 AM IST")
 
         await ctx.send(embed=embed)
 
@@ -433,7 +432,7 @@ class RoleMentionTracker(commands.Cog):
                 if log_channel:
                     embed = discord.Embed(
                         title="🔄 Manual Role Mention Reset",
-                        description=f"Role mention counters have been manually reset",
+                        description="Role mention counters have been manually reset",
                         color=discord.Color.orange(),
                     )
                     embed.add_field(
@@ -445,7 +444,7 @@ class RoleMentionTracker(commands.Cog):
                         text=f"Reset at {datetime.now(self.ist).strftime('%Y-%m-%d %H:%M:%S')} IST"
                     )
                     await log_channel.send(embed=embed)
-            except:
+            except Exception:
                 pass
 
             await ctx.send("✅ Role mention counters have been reset for this server!")

@@ -6,8 +6,7 @@ import aiosqlite
 import asyncio
 from datetime import datetime, timezone
 import time
-from typing import Optional, Dict, Set, List, Tuple, Any
-from collections import deque
+from typing import Optional, Dict, Set, List, Tuple
 from dataclasses import dataclass
 import os
 
@@ -195,7 +194,7 @@ class FastAFK(commands.Cog):
             try:
                 prefixes = await self.bot.get_prefix(message)
                 is_command = message.content.startswith(tuple(prefixes))
-            except:
+            except Exception:
                 # Fallback to simple check if something fails
                 is_command = message.content.startswith(("!", "?", ".", "/"))
 
@@ -286,7 +285,7 @@ class FastAFK(commands.Cog):
         """Set yourself as AFK."""
         try:
             await ctx.message.delete()
-        except:
+        except Exception:
             pass
 
         user = ctx.author
@@ -432,7 +431,7 @@ class FastAFK(commands.Cog):
                 msg = await channel.send(embed=embed)
                 if delete_after:
                     asyncio.create_task(self._auto_delete_message(msg, delete_after))
-            except:
+            except Exception:
                 pass
             finally:
                 queue.task_done()
@@ -451,7 +450,7 @@ class FastAFK(commands.Cog):
         try:
             await member.edit(nick=new_nick)
             self._nick_edit_timestamps[member.id] = current_time
-        except:
+        except Exception:
             pass
 
     async def _auto_delete_message(self, message: discord.Message, delay: int):
@@ -459,7 +458,7 @@ class FastAFK(commands.Cog):
         await asyncio.sleep(delay)
         try:
             await message.delete()
-        except:
+        except Exception:
             pass
 
     async def _batch_processor(self):
@@ -529,7 +528,7 @@ class FastAFK(commands.Cog):
                     )
 
                 await self._db.commit()
-            except:
+            except Exception:
                 await self._db.rollback()
 
     async def cog_unload(self):
@@ -539,7 +538,7 @@ class FastAFK(commands.Cog):
                 task.cancel()
                 try:
                     await task
-                except:
+                except Exception:
                     pass
 
         if self._write_queue.qsize() > 0:

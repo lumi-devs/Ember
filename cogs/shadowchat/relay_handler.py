@@ -5,8 +5,8 @@ Handles message relaying between session threads.
 
 import discord
 import re
-from typing import Optional, Tuple, List
-from .models import Database, ShadowSession
+from typing import Optional, Tuple
+from .models import Database
 from .session_manager import SessionManager
 from .webhook_manager import WebhookManager
 from .constants import GUILD_ID
@@ -251,7 +251,7 @@ class RelayHandler:
 
             # Check if session has valid webhooks
             if not session.webhook1_url or not session.webhook2_url:
-                print(f"[DEBUG] ERROR: Session missing webhooks!")
+                print("[DEBUG] ERROR: Session missing webhooks!")
                 return False, "Session configuration error (missing webhooks)."
 
             # Update session activity

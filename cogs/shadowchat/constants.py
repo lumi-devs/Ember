@@ -3,8 +3,6 @@ SHADOW CHAT - CONSTANTS
 Hardcoded configuration for single-guild operation.
 """
 
-import datetime
-
 # =========================DESGIN SHIT====================
 
 MAIN_MESSAGE_IMAGE = (

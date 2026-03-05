@@ -202,7 +202,7 @@ class Moderation(commands.Cog):
                 text=f"Warning #{warning['id']} | Moderator: {ctx.author}"
             )
             await member.send(embed=dm_embed)
-        except:
+        except Exception:
             pass  # Can't DM the user, ignore
 
         # Create response embed

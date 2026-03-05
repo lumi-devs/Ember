@@ -2,8 +2,7 @@ import os
 import re
 import uuid
 from pathlib import Path
-from typing import List, Optional, Tuple
-import requests
+from typing import List, Tuple
 import instaloader
 from pytubefix import YouTube
 import praw
@@ -63,9 +62,6 @@ def download_youtube(url: str) -> Tuple[List[str], str, str]:
 # -------------------------------
 # Instagram Downloader
 # -------------------------------
-import os
-import instaloader
-from typing import List, Tuple
 
 
 def download_instagram(

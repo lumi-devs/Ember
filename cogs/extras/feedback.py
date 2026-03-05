@@ -66,31 +66,9 @@ class TwoWayMessaging(commands.Cog):
         """Initialize owner info when bot is ready"""
         try:
             await self.get_owner_info()
-            print(f"✅ Feedback system ready! Messages will go to owner's DMs")
+            print("✅ Feedback system ready! Messages will go to owner's DMs")
         except Exception as e:
             print(f"❌ Failed to setup owner info: {e}")
-
-    @commands.Cog.listener()
-    async def on_message(self, message):
-        """Handle incoming messages - both DMs and replies"""
-        # Ignore messages from bots
-        if message.author.bot:
-            return
-
-        # Get owner info
-        try:
-            owner_id, owner_channel = await self.get_owner_info()
-        except:
-            return
-
-        # Ignore messages from owner himself
-        if message.author.id == owner_id:
-            return
-
-        # Handle user DMs to the bot
-        if not message.guild:
-            await self.handle_user_dm(message)
-            return
 
     async def handle_user_dm(self, message):
         """Handle DMs from users"""
@@ -121,7 +99,7 @@ class TwoWayMessaging(commands.Cog):
 
         # Show limited user info to maintain privacy
         embed.set_author(
-            name=f"Anonymous User",  # Hide actual username
+            name="Anonymous User",  # Hide actual username
             icon_url=message.author.display_avatar.url,  # Keep avatar for identification
         )
 
@@ -159,7 +137,7 @@ class TwoWayMessaging(commands.Cog):
         # Get owner info
         try:
             owner_id, owner_channel = await self.get_owner_info()
-        except:
+        except Exception:
             return
 
         # Handle owner replies in their DMs
@@ -185,7 +163,7 @@ class TwoWayMessaging(commands.Cog):
             referenced_msg = await message.channel.fetch_message(
                 message.reference.message_id
             )
-        except:
+        except Exception:
             return
 
         # Check if this is one of our bot's messages

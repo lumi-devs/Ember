@@ -288,18 +288,18 @@ class ForumPostCog(commands.Cog):
         if tags:
             preview_text += f"**Tags:** {', '.join(tags)}\n"
         elif data.get("skip_tags", False):
-            preview_text += f"**Tags:** Skipped\n"
+            preview_text += "**Tags:** Skipped\n"
         else:
-            preview_text += f"**Tags:** Not set\n"
+            preview_text += "**Tags:** Not set\n"
 
         # Handle content preview
         content = data["data"].get("content", "")
         if content:
             preview_text += f"**Content Preview:** {content[:100]}...\n"
         elif data.get("skip_content", False):
-            preview_text += f"**Content:** Skipped\n"
+            preview_text += "**Content:** Skipped\n"
         else:
-            preview_text += f"**Content:** Not set\n"
+            preview_text += "**Content:** Not set\n"
 
         # Handle attachments preview
         attachments = data["data"].get("attachments", [])
@@ -407,7 +407,7 @@ class ForumPostCog(commands.Cog):
         # Delete user's message to keep chat clean
         try:
             await message.delete()
-        except:
+        except Exception:
             pass
 
     async def process_step_input(self, message):
@@ -956,7 +956,7 @@ class ForumPostCog(commands.Cog):
                     # Wait a bit before deleting to let user see final message
                     await asyncio.sleep(10)
                     await data["message"].delete()
-                except:
+                except Exception:
                     pass
 
             # Remove from active creations

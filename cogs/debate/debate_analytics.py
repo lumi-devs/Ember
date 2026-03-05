@@ -72,7 +72,7 @@ class DebateAnalytics(commands.Cog):
                     debate_link = f"https://discord.com/channels/{thread.guild.id if thread else '@me'}/{FORUM_CHANNEL_ID}/{debate['thread_id']}"
 
                 # Truncate topic if too long
-                topic = (
+                (
                     debate["topic"][:40] + "..."
                     if len(debate["topic"]) > 40
                     else debate["topic"]

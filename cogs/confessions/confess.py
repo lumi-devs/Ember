@@ -232,7 +232,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 # User typed 'skip' - delete the skip message
                 try:
                     await msg_received.delete()
-                except:
+                except Exception:
                     pass
                 await interaction.followup.send(
                     "✅ Skipped media upload.", ephemeral=True
@@ -294,7 +294,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 # Invalid input - delete message and send error
                 try:
                     await msg_received.delete()
-                except:
+                except Exception:
                     pass
 
                 # Send detailed ephemeral message
@@ -973,7 +973,7 @@ class Confessions(commands.Cog):
                             print(
                                 f"Error loading view for confession {confession_id}: {e}"
                             )
-            print(f"[Confessions] ✅ Persistent views loaded.")
+            print("[Confessions] ✅ Persistent views loaded.")
         except Exception as e:
             print(f"[Confessions] ❌ Error loading views: {e}")
 

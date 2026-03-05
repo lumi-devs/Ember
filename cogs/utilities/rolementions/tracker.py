@@ -2,7 +2,6 @@ import discord
 from discord.ext import tasks
 from datetime import datetime, timedelta
 import pytz
-from collections import defaultdict
 
 
 class RoleMentionTracker:

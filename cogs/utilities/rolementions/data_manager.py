@@ -24,7 +24,7 @@ class DataManager:
                         guild_data[guild_id] = defaultdict(int, roles)
 
                     return defaultdict(lambda: defaultdict(int), guild_data)
-            except:
+            except Exception:
                 return defaultdict(lambda: defaultdict(int))
         return defaultdict(lambda: defaultdict(int))
 
@@ -59,7 +59,7 @@ class DataManager:
                             )
 
                     return data
-            except:
+            except Exception:
                 return {}
         return {}
 

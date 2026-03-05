@@ -7,8 +7,6 @@ import string
 import datetime
 import re
 import secrets
-import secrets  # Added for security
-import hashlib  # Added for thread-safe determinism
 from typing import Optional, Tuple
 import discord
 from discord import Embed

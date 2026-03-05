@@ -4,7 +4,7 @@ from discord.ext import commands, tasks
 from discord.ui import View, Button, UserSelect
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 
 
@@ -229,7 +229,7 @@ class DynamicMemberList(commands.Cog):
                     int(list_data["auto_males_message_id"])
                 )
                 await self.update_auto_embed(msg, auto_males, "blue", "👦 Newbie Males")
-            except:
+            except Exception:
                 pass
 
         # 2. Update auto females embed
@@ -241,7 +241,7 @@ class DynamicMemberList(commands.Cog):
                 await self.update_auto_embed(
                     msg, auto_females, "pink", "👧 Newbie Females"
                 )
-            except:
+            except Exception:
                 pass
 
         # 3. Update manual embed
@@ -249,7 +249,7 @@ class DynamicMemberList(commands.Cog):
             try:
                 msg = await channel.fetch_message(int(list_data["manual_message_id"]))
                 await self.update_manual_embed(msg, list_data)
-            except:
+            except Exception:
                 pass
 
         # 4. Update plain manual (ONLY plain message kept)
@@ -257,7 +257,7 @@ class DynamicMemberList(commands.Cog):
             try:
                 msg = await channel.fetch_message(int(list_data["plain_manual_id"]))
                 await self.update_plain_manual(msg, list_data)
-            except:
+            except Exception:
                 pass
 
     async def update_auto_embed(self, message, members, color_name, title):
@@ -621,7 +621,7 @@ class DynamicMemberList(commands.Cog):
             try:
                 if not interaction.response.is_done():
                     await interaction.response.defer(ephemeral=True)
-            except:
+            except Exception:
                 await interaction.followup.send(
                     "❌ Interaction expired.", ephemeral=True
                 )
@@ -877,7 +877,7 @@ class DynamicMemberList(commands.Cog):
                 try:
                     msg = await ctx.channel.fetch_message(int(list_data[key]))
                     await msg.delete()
-                except:
+                except Exception:
                     pass
 
         # Remove from data

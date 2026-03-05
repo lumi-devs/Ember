@@ -100,7 +100,7 @@ class DebateAutomation(commands.Cog):
         if current_name != new_name:
             try:
                 await thread.edit(name=new_name)
-            except:
+            except Exception:
                 pass  # Skip if we can't edit
 
     async def apply_hot_tag(self, thread, message_count, last_activity):
@@ -212,7 +212,7 @@ class DebateAutomation(commands.Cog):
         # Post summary and close
         try:
             await thread.send(embed=embed)
-        except:
+        except Exception:
             pass
 
         await self.bot.db.close_debate(str(thread.id))
@@ -225,7 +225,7 @@ class DebateAutomation(commands.Cog):
                     base_name = base_name[len(e) :].strip()
                     break
             await thread.edit(archived=True, locked=True, name=f"🔒 {base_name}")
-        except:
+        except Exception:
             pass
 
     @commands.Cog.listener()
@@ -262,7 +262,7 @@ class DebateAutomation(commands.Cog):
                     # Delete the message
                     try:
                         await message.delete()
-                    except:
+                    except Exception:
                         pass
                     return  # Stop processing this message
 
@@ -286,7 +286,7 @@ class DebateAutomation(commands.Cog):
                 # Remove after 2 seconds
                 await asyncio.sleep(2)
                 await message.clear_reaction("⏳")
-            except:
+            except Exception:
                 pass
 
     @commands.Cog.listener()

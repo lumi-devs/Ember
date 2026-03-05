@@ -1,21 +1,14 @@
 import asyncio
 import discord
 from discord import ui, Interaction, ButtonStyle, SelectOption, Color, Embed
-from typing import Optional, Dict, Any, Set, List
+from typing import Optional, Dict, Any, Set
 from datetime import datetime, timezone, timedelta
-import re
 from discord.ext import commands
 import aiohttp
 
 # Updated imports for SQLite database
 from .database import get_db  # Adjust import path as needed
 from .modals import CreateRoleModal, RoleNameModal, RoleColorsModal
-from .helpers import (
-    extract_emoji,
-    download_emoji_image,
-    delete_role_from_db,
-    get_role_from_db,
-)
 
 
 class RenounceConfirmationView(ui.View):
@@ -41,7 +34,7 @@ class RenounceConfirmationView(ui.View):
         try:
             # Remove role from user
             await inter.user.remove_roles(
-                self.role, reason=f"User renounced bestowed role"
+                self.role, reason="User renounced bestowed role"
             )
 
             # Update database
@@ -101,7 +94,7 @@ class RenounceConfirmationView(ui.View):
                     )
 
                     await owner.send(embed=notify_embed)
-            except:
+            except Exception:
                 pass
 
         except discord.Forbidden:
@@ -150,7 +143,7 @@ class RenounceConfirmationView(ui.View):
                     color=Color.greyple(),
                 )
                 await self.message.edit(embed=embed, view=self)
-            except:
+            except Exception:
                 pass
 
 
@@ -249,7 +242,7 @@ class RoleConflictView(ui.View):
                     color=Color.orange(),
                 )
                 await self.current_owner.send(embed=old_owner_embed)
-            except:
+            except Exception:
                 pass
 
             await inter.followup.send("✅ Successfully switched roles!", ephemeral=True)
@@ -288,7 +281,7 @@ class RoleConflictView(ui.View):
                 color=Color.red(),
             )
             await self.new_owner.send(embed=notify_embed)
-        except:
+        except Exception:
             pass
 
         await inter.followup.send(
@@ -329,7 +322,7 @@ class IconSetupView(ui.View):
             await self.message.edit(
                 content="⏰ Timeout! No emoji received.", embed=None, view=self
             )
-        except:
+        except Exception:
             pass
 
 
@@ -580,7 +573,7 @@ class DeleteConfirmationView(ui.View):
                 await self.message.edit(
                     content="⏰ Deletion timed out. Your role is safe!", view=self
                 )
-            except:
+            except Exception:
                 pass
 
 
@@ -714,7 +707,7 @@ class RoleInvitationView(ui.View):
                     name="Accepted By", value=self.recipient.mention, inline=True
                 )
                 await self.owner.send(embed=owner_embed)
-            except:
+            except Exception:
                 pass
 
         except discord.Forbidden:
@@ -756,7 +749,7 @@ class RoleInvitationView(ui.View):
                 color=Color.red(),
             )
             await self.owner.send(embed=owner_embed)
-        except:
+        except Exception:
             pass
 
     async def on_timeout(self):
@@ -1081,7 +1074,7 @@ class ShareRoleView(ui.View):
             if bestowed_entries
             else 0
         )
-        pending = total - accepted
+        total - accepted
 
         # Max 10 total invitations
         can_send = total < 10
@@ -1108,9 +1101,9 @@ class ShareRoleView(ui.View):
 
         if not can_send:
             await interaction.response.send_message(
-                f"❌ **Capacity Reached!**\n"
-                f"You have already bestowed your role to 10 users.\n"
-                f"To send more invitations, you must remove some existing bestowed users.",
+                "❌ **Capacity Reached!**\n"
+                "You have already bestowed your role to 10 users.\n"
+                "To send more invitations, you must remove some existing bestowed users.",
                 ephemeral=True,
             )
             return
@@ -1137,7 +1130,7 @@ class ShareRoleView(ui.View):
                     child.disabled = True
                 try:
                     await self.message.edit(view=self)
-                except:
+                except Exception:
                     pass
 
         select_view = UserSelectView(self, remaining)
@@ -1877,7 +1870,7 @@ class BoosterRoleView(ui.View):
                             child.disabled = True
                         try:
                             await self.message.edit(view=self)
-                        except:
+                        except Exception:
                             pass
 
                 select_view = RemoveSelectView(self, options)
@@ -1982,9 +1975,9 @@ class BoosterRoleView(ui.View):
 
                 if entry.get("accepted_at"):
                     accepted_at = datetime.fromisoformat(entry["accepted_at"])
-                    accepted_text = f"Accepted: <t:{int(accepted_at.timestamp())}:R>"
+                    f"Accepted: <t:{int(accepted_at.timestamp())}:R>"
                 else:
-                    accepted_text = "Not accepted yet"
+                    pass
 
                 users_list.append(
                     {
@@ -2033,7 +2026,6 @@ class BoosterRoleView(ui.View):
             await interaction.followup.send(embed=pages[0], ephemeral=True)
         else:
             # Simple pagination
-            current_page = 0
 
             class PaginationView(ui.View):
                 def __init__(self, pages):
@@ -2136,7 +2128,7 @@ class RemoveConfirmationView(ui.View):
                     inline=True,
                 )
                 await self.user_to_remove.send(embed=notify_embed)
-            except:
+            except Exception:
                 pass
 
             await inter.response.edit_message(
@@ -2190,5 +2182,5 @@ class RemoveConfirmationView(ui.View):
                 ),
                 view=self,
             )
-        except:
+        except Exception:
             pass

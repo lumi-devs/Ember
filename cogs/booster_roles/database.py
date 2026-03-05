@@ -1,6 +1,6 @@
 import aiosqlite
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional
 from pathlib import Path
 import json
 
@@ -374,7 +374,7 @@ class Database:
             with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            conn = await self.get_connection()
+            await self.get_connection()
 
             # Migrate roles
             roles = data.get("roles", {})

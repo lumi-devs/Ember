@@ -1,5 +1,5 @@
 import discord
-from .config import JOIN_CHANNELS, DB_PATH, GAMING_DB_PATH
+from .config import DB_PATH, GAMING_DB_PATH
 import aiosqlite
 
 

@@ -9,8 +9,7 @@ from typing import List, Optional, Tuple, Dict
 import discord
 
 from . import constants
-from .models import Database, QueueEntry, ShadowSession
-from .utils import generate_session_id, format_thread_name
+from .models import Database, QueueEntry
 from .permissions import AccessController
 
 
@@ -324,7 +323,7 @@ class QueueManager:
                         break
 
                 if not success:
-                    print(f"[Queue] Failed to remove users from queue")
+                    print("[Queue] Failed to remove users from queue")
                     break
 
                 # Get user objects

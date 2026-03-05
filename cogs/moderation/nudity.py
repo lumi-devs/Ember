@@ -2,9 +2,8 @@ import discord
 from discord.ext import commands, tasks
 import aiohttp
 import asyncio
-from datetime import datetime, timedelta
-from typing import Optional, Dict, List
-import re
+from datetime import datetime
+from typing import Optional, Dict
 import openai
 import time
 import hashlib
@@ -286,11 +285,11 @@ class StrictImageModerator(commands.Cog):
 
         except asyncio.TimeoutError:
             if self.checks["debug_mode"]:
-                print(f"⏰ Timeout checking image")
+                print("⏰ Timeout checking image")
             self.api_calls["errors"] += 1
         except openai.RateLimitError:
             if self.checks["debug_mode"]:
-                print(f"⛔ OpenAI rate limit error")
+                print("⛔ OpenAI rate limit error")
             self.api_calls["errors"] += 1
             # Disable further calls for 5 minutes
             self.rate_limit["enabled"] = False
@@ -404,7 +403,7 @@ class StrictImageModerator(commands.Cog):
                 embed.set_footer(text=f"User ID: {message.author.id}")
 
                 await message.author.send(embed=embed)
-            except:
+            except Exception:
                 pass
 
             # Log to mod channel
@@ -547,7 +546,7 @@ class StrictImageModerator(commands.Cog):
 
         try:
             await ctx.send("▶️ Image moderation resumed")
-        except:
+        except Exception:
             pass
 
     @commands.command(name="testimg")

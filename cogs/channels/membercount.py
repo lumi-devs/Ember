@@ -122,13 +122,11 @@ class MemberCount(commands.Cog):
 
             # Verify channel types
             if not isinstance(all_channel, discord.VoiceChannel):
-                print(
-                    f"[MemberCount] ERROR: All members channel is not a voice channel"
-                )
+                print("[MemberCount] ERROR: All members channel is not a voice channel")
                 return False
 
             if not isinstance(nonbot_channel, discord.VoiceChannel):
-                print(f"[MemberCount] ERROR: Non-bot channel is not a voice channel")
+                print("[MemberCount] ERROR: Non-bot channel is not a voice channel")
                 return False
 
             updates_made = 0
@@ -142,7 +140,7 @@ class MemberCount(commands.Cog):
                     print(f"[MemberCount] Updated All Members: {total_members}")
                 except discord.Forbidden:
                     print(
-                        f"[MemberCount] Missing permissions to update all members channel"
+                        "[MemberCount] Missing permissions to update all members channel"
                     )
                     return False
                 except discord.HTTPException as e:
@@ -157,7 +155,7 @@ class MemberCount(commands.Cog):
                     print(f"[MemberCount] Updated Non-Bots: {non_bots}")
                 except discord.Forbidden:
                     print(
-                        f"[MemberCount] Missing permissions to update non-bots channel"
+                        "[MemberCount] Missing permissions to update non-bots channel"
                     )
                     return False
                 except discord.HTTPException as e:
@@ -166,7 +164,7 @@ class MemberCount(commands.Cog):
             if updates_made > 0:
                 print(f"[MemberCount] Successfully updated {updates_made} channel(s)")
             else:
-                print(f"[MemberCount] No updates needed")
+                print("[MemberCount] No updates needed")
 
             return True
 

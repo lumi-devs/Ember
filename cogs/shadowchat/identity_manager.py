@@ -122,10 +122,8 @@ class IdentityManager:
         )
 
         results = await asyncio.gather(task1, task2, return_exceptions=True)
-        failed = False
         for result in results:
             if isinstance(result, Exception) or result is False:
-                failed = True
                 # Log the specific error here so you know WHY it failed
                 print(f"Webhook update failed: {result}")
 

@@ -286,7 +286,7 @@ class TempVoice(commands.Cog):
             # 4. Move member immediately (fast)
             try:
                 await member.move_to(vc)
-            except:
+            except Exception:
                 pass
 
             # 5. FAST DB INSERT & CACHE UPDATE

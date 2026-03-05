@@ -154,7 +154,7 @@ class GameCog(commands.Cog):
             # Silent rate limit after too many attempts
             try:
                 await ctx.message.delete()
-            except:
+            except Exception:
                 pass
 
     @commands.command(name="game", aliases=["g"])
@@ -251,7 +251,7 @@ class GameCog(commands.Cog):
         # Delete the original command message
         try:
             await ctx.message.delete()
-        except:
+        except Exception:
             pass  # Ignore if we can't delete
 
         # Create voice channel invite
@@ -305,7 +305,7 @@ class GameCog(commands.Cog):
                 value=f"{self.MAX_PINGS_PER_DAY - daily_used}",
             )
             await ctx.send(embed=dm_embed, delete_after=10)
-        except:
+        except Exception:
             pass  # User might have DMs disabled
 
     @commands.command(name="listgames", aliases=["games"])

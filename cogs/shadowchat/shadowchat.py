@@ -219,7 +219,7 @@ class ShadowChat(commands.Cog):
                     # Silently ignore duplicate clicks
                     try:
                         await interaction.response.defer(ephemeral=True, thinking=False)
-                    except:
+                    except Exception:
                         pass
                     return
 
@@ -261,7 +261,7 @@ class ShadowChat(commands.Cog):
                     # Silently ignore duplicate clicks
                     try:
                         await interaction.response.defer(ephemeral=True, thinking=False)
-                    except:
+                    except Exception:
                         pass
                     return
 
@@ -303,7 +303,7 @@ class ShadowChat(commands.Cog):
                     # Silently ignore duplicate clicks
                     try:
                         await interaction.response.defer(ephemeral=True, thinking=False)
-                    except:
+                    except Exception:
                         pass
                     return
 
@@ -514,7 +514,7 @@ class ShadowChat(commands.Cog):
         # Clear existing messages (optional)
         try:
             await channel.purge(limit=10)
-        except:
+        except Exception:
             pass
 
         # Create welcome embed
@@ -543,14 +543,13 @@ class ShadowChat(commands.Cog):
 
         # Add queue and rooms status
         if self.initialized:
-            queue_size = await self.db.get_queue_size()
+            await self.db.get_queue_size()
             active_sessions = await self.session_manager.get_all_active_sessions()
             available_rooms = constants.MAX_ACTIVE_SESSIONS - len(active_sessions)
 
             # Show if rooms are full but queue is still open
-            room_status = ""
             if available_rooms <= 0:
-                room_status = " (Rooms full - you'll be queued)"
+                pass
 
         embed.set_footer(text="Use the buttons below to control your queue status")
 
@@ -576,7 +575,7 @@ class ShadowChat(commands.Cog):
                     # Silently ignore duplicate clicks
                     try:
                         await interaction.response.defer(ephemeral=True, thinking=False)
-                    except:
+                    except Exception:
                         pass
                     return
 
@@ -618,7 +617,7 @@ class ShadowChat(commands.Cog):
                     # Silently ignore duplicate clicks
                     try:
                         await interaction.response.defer(ephemeral=True, thinking=False)
-                    except:
+                    except Exception:
                         pass
                     return
 
@@ -660,7 +659,7 @@ class ShadowChat(commands.Cog):
                     # Silently ignore duplicate clicks
                     try:
                         await interaction.response.defer(ephemeral=True, thinking=False)
-                    except:
+                    except Exception:
                         pass
                     return
 
@@ -689,7 +688,7 @@ class ShadowChat(commands.Cog):
 
         # Send message
         self.entry_message = await channel.send(embed=embed, view=EntryView(self))
-        print(f"[Shadow Chat] Entry channel setup complete")
+        print("[Shadow Chat] Entry channel setup complete")
 
     def _calculate_estimated_wait(self, position: int) -> str:
         """Calculate estimated wait time based on position."""
@@ -748,7 +747,7 @@ class ShadowChat(commands.Cog):
             if other_user:
                 embed = discord.Embed(
                     title="👥 Identities Already Revealed",
-                    description=f"You already know each other!",
+                    description="You already know each other!",
                     color=constants.COLOR_SUCCESS,
                 )
                 embed.add_field(
@@ -863,7 +862,7 @@ class ShadowChat(commands.Cog):
 
                 # End the session
                 await self.cog.session_manager.end_session(
-                    self.session_id, f"Session ended by user via /end command"
+                    self.session_id, "Session ended by user via /end command"
                 )
 
                 embed = discord.Embed(
@@ -873,7 +872,7 @@ class ShadowChat(commands.Cog):
                 )
                 try:
                     await interaction.followup.send(embed=embed, ephemeral=True)
-                except:
+                except Exception:
                     pass
 
             @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
@@ -1090,7 +1089,7 @@ class ShadowChat(commands.Cog):
                                 files_to_upload.append(file_obj)
                                 extras.append(f"[IMAGE: {att.filename}]")
                                 evidence_count += 1
-                            except Exception as e:
+                            except Exception:
                                 extras.append(f"[FAILED DOWNLOAD: {att.filename}]")
                         else:
                             extras.append(f"[IMAGE: {att.filename} (Limit Reached)]")
@@ -1423,7 +1422,7 @@ class ShadowChat(commands.Cog):
             session = await self.session_manager.get_session_by_user(user.id)
             if session:
                 await self.session_manager.end_session(
-                    session.session_id, f"User banned by moderator"
+                    session.session_id, "User banned by moderator"
                 )
 
             embed = discord.Embed(
@@ -1572,7 +1571,7 @@ class ShadowChat(commands.Cog):
             # Already processing, ignore duplicate
             try:
                 await interaction.response.defer(ephemeral=True, thinking=False)
-            except:
+            except Exception:
                 pass
             return
 
@@ -1668,7 +1667,7 @@ class ShadowChat(commands.Cog):
                             await interaction.response.defer(
                                 ephemeral=True, thinking=False
                             )
-                        except:
+                        except Exception:
                             pass
                         return
 
@@ -1748,7 +1747,7 @@ class ShadowChat(commands.Cog):
                                     inline=False,
                                 )
 
-                            button.label = f"🔄 Refreshed"
+                            button.label = "🔄 Refreshed"
                             button.disabled = True
 
                             await interaction.edit_original_response(
@@ -1763,7 +1762,7 @@ class ShadowChat(commands.Cog):
                         child.disabled = True
                     try:
                         await self.message.edit(view=self)
-                    except:
+                    except Exception:
                         pass
 
             view = RefreshView(self, interaction_key)
@@ -1782,7 +1781,7 @@ class ShadowChat(commands.Cog):
                     "❌ An error occurred while processing your request.",
                     ephemeral=True,
                 )
-            except:
+            except Exception:
                 pass
         finally:
             # Always clean up, even on error
@@ -1796,7 +1795,7 @@ class ShadowChat(commands.Cog):
         if await self.processed_interactions.get(interaction_key):
             try:
                 await interaction.response.defer(ephemeral=True, thinking=False)
-            except:
+            except Exception:
                 pass
             return
 
@@ -1849,7 +1848,7 @@ class ShadowChat(commands.Cog):
             # Already processing, ignore duplicate
             try:
                 await interaction.response.defer(ephemeral=True, thinking=False)
-            except:
+            except Exception:
                 pass
             return
 
@@ -1898,8 +1897,8 @@ class ShadowChat(commands.Cog):
                 )
                 embed.add_field(
                     name="Current Session",
-                    value=f"• Use `/end` to end your current session\n"
-                    f"• Use `/reveal` to request identity reveal",
+                    value="• Use `/end` to end your current session\n"
+                    "• Use `/reveal` to request identity reveal",
                     inline=False,
                 )
 
@@ -2020,7 +2019,7 @@ class ShadowChat(commands.Cog):
                     "❌ An error occurred while processing your request.",
                     ephemeral=True,
                 )
-            except:
+            except Exception:
                 pass
         finally:
             # Always clean up, even on error
@@ -2164,7 +2163,7 @@ class ShadowChat(commands.Cog):
 
                         skip_embed = discord.Embed(
                             title="⏭️ Session Skipped",
-                            description=f"This session has been skipped.\n\nThis thread will be deleted in 10 seconds.",
+                            description="This session has been skipped.\n\nThis thread will be deleted in 10 seconds.",
                             color=constants.COLOR_WARNING,
                         )
 
@@ -2228,7 +2227,7 @@ class ShadowChat(commands.Cog):
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         except discord.NotFound:
             # The thread or interaction is already gone
-            print(f"[Shadow Chat] Ignored skip interaction for deleted thread")
+            print("[Shadow Chat] Ignored skip interaction for deleted thread")
             return
         except Exception:
             pass
@@ -2279,7 +2278,7 @@ class ShadowChat(commands.Cog):
 
                 # Process end for BOTH users (session ends completely)
                 success = await self.cog.session_manager.end_session(
-                    self.session_id, f"Session ended by user via end button"
+                    self.session_id, "Session ended by user via end button"
                 )
 
                 if success:
@@ -2290,7 +2289,7 @@ class ShadowChat(commands.Cog):
                     )
                     try:
                         await interaction.followup.send(embed=embed, ephemeral=True)
-                    except:
+                    except Exception:
                         pass
                 else:
                     embed = discord.Embed(
@@ -2305,7 +2304,7 @@ class ShadowChat(commands.Cog):
                     child.disabled = True
                 try:
                     await interaction.edit_original_response(view=self)
-                except:
+                except Exception:
                     pass
 
             @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
@@ -2330,11 +2329,11 @@ class ShadowChat(commands.Cog):
     ):
         """Process queue to create matches - called by queue manager."""
         if not self.initialized or not self.session_manager:
-            print(f"[Shadow Chat] Cannot process matchmaking - not initialized")
+            print("[Shadow Chat] Cannot process matchmaking - not initialized")
             return
 
         if not user1 or not user2:
-            print(f"[Shadow Chat] Matchmaking called without users")
+            print("[Shadow Chat] Matchmaking called without users")
             return
 
         try:
@@ -2348,7 +2347,7 @@ class ShadowChat(commands.Cog):
                 # f"for {user1} and {user2}")
                 # DMs are already sent by _send_match_dms in create_session method
             else:
-                print(f"[Shadow Chat] ✗ Failed to create session")
+                print("[Shadow Chat] ✗ Failed to create session")
 
         except Exception as e:
             print(f"[Shadow Chat] Matchmaking error: {e}")
@@ -2452,7 +2451,7 @@ class ShadowChat(commands.Cog):
         if error and "Failed to send" not in error:
             try:
                 await message.reply(f"❌ {error}", delete_after=5)
-            except:
+            except Exception:
                 pass
 
     # ==================== ERROR HANDLING ====================

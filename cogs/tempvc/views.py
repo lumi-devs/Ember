@@ -1,5 +1,5 @@
 import discord
-from discord.ui import Button, View, UserSelect, Select
+from discord.ui import Button, View, UserSelect
 from .modals import RenameModal, LimitModal
 from .config import JOIN_CHANNELS, DB_PATH, GAMING_DB_PATH
 import aiosqlite
@@ -30,7 +30,7 @@ class ControlPanel(View):
             await interaction.response.send_message(
                 f"❌ An error occurred: {str(error)}", ephemeral=True
             )
-        except:
+        except Exception:
             pass
         print(f"[TempVoice] View error: {error}")
 
@@ -888,7 +888,7 @@ class TransferButton(Button):
                         is_gaming=self.is_gaming,
                     )
                     await interaction.edit_original_response(view=new_view)
-                except:
+                except Exception:
                     pass
 
             except Exception as e:

@@ -18,7 +18,7 @@ async def setup(bot: commands.Bot):
         if message.attachments:
             try:
                 thread_name = f"{message.author.display_name}'s thread"
-                thread = await message.channel.create_thread(
+                await message.channel.create_thread(
                     name=thread_name,
                     message=message,
                     type=discord.ChannelType.public_thread,

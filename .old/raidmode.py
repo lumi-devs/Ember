@@ -498,7 +498,7 @@ class RaidMode(commands.Cog):
                         f"All settings restored. Disabled by {ctx.author.mention}.\n"
                         f"No suspicious invite activity detected."
                     )
-            except:
+            except Exception:
                 pass
         elif mod_channel:
             try:
@@ -506,7 +506,7 @@ class RaidMode(commands.Cog):
                     f"**RAID MODE DISABLED**\n"
                     f"All settings restored. Disabled by {ctx.author.mention}."
                 )
-            except:
+            except Exception:
                 pass
 
         # 6. Clean up invite tracking data

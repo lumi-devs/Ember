@@ -75,7 +75,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                 # User typed 'skip' - delete the skip message
                 try:
                     await msg_received.delete()
-                except:
+                except Exception:
                     pass
                 await interaction.followup.send(
                     "✅ Skipped media upload.", ephemeral=True
@@ -115,7 +115,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                 # Invalid input - delete message and send error
                 try:
                     await msg_received.delete()
-                except:
+                except Exception:
                     pass
 
                 # Send detailed ephemeral message
@@ -375,7 +375,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                     f"[DEBUG] Fetching confession message: {self.confession_message_id}"
                 )
                 confession_msg = await channel.fetch_message(self.confession_message_id)
-                print(f"[DEBUG] Found confession message")
+                print("[DEBUG] Found confession message")
             except discord.NotFound:
                 print(
                     f"[DEBUG] Confession message {self.confession_message_id} not found"
@@ -411,7 +411,7 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                             name=f"Replies #{self.confession_id}",
                             auto_archive_duration=60,
                         )
-                        print(f"[DEBUG] Thread created with simple name")
+                        print("[DEBUG] Thread created with simple name")
                     except Exception as e2:
                         print(f"[DEBUG] Failed to create thread: {e2}")
                         return await interaction.followup.send(
@@ -424,14 +424,14 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             print(f"[DEBUG] Reply sent, message ID: {sent_msg.id}")
 
             # Save reply to database
-            print(f"[DEBUG] Saving to database")
+            print("[DEBUG] Saving to database")
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute(
                     "INSERT INTO replies (confession_id, user_id, description, image_url) VALUES (?, ?, ?, ?)",
                     (self.confession_id, self.user_id, self.reply_text, image_url),
                 )
                 await db.commit()
-                print(f"[DEBUG] Database saved")
+                print("[DEBUG] Database saved")
 
             # Logging
             await self.log_reply(image_url, color)
@@ -441,13 +441,13 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                 await self.notify_author(confession_msg)
 
             # Send completion message
-            print(f"[DEBUG] Sending completion message")
+            print("[DEBUG] Sending completion message")
             await interaction.followup.send(
                 f"✅ Your reply has been posted!\n"
                 f"📝 View it here: {sent_msg.jump_url}",
                 ephemeral=True,
             )
-            print(f"[DEBUG] Reply process completed successfully")
+            print("[DEBUG] Reply process completed successfully")
 
         except Exception as e:
             print(f"[DEBUG] Error finalizing reply: {e}")
