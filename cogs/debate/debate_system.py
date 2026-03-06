@@ -72,6 +72,11 @@ class DebateSystem(commands.Cog):
             value="List all silenced users (Mod only)",
             inline=False,
         )
+        embed.add_field(
+            name="📊 `debate fix_analytics`",
+            value="Force update the analytics embed (Mod only)",
+            inline=False,
+        )
         embed.set_footer(text="Duration format: 10m, 1h, 1d, permanent")
         await ctx.send(embed=embed)
 
@@ -433,6 +438,20 @@ class DebateSystem(commands.Cog):
             )
         except Exception:
             pass
+
+    @debate.command(name="fix_analytics")
+    @commands.has_role(MOD_ROLE_ID)
+    async def force_update_analytics(self, ctx):
+        """Force update the analytics embed (Mod only)"""
+        analytics_cog = self.bot.get_cog('DebateAnalytics')
+        if not analytics_cog:
+            await ctx.send("❌ Analytics cog not found!")
+            return
+        
+        await ctx.send("🔄 Forcing analytics update...")
+        await analytics_cog._update_analytics()
+        await ctx.send("✅ Analytics update attempted. Check the dashboard thread.")
+
 
     @debate.command(name="muted")
     @commands.has_role(MOD_ROLE_ID)
