@@ -189,21 +189,17 @@ class GamingTempVoice(commands.Cog):
         try:
             async with aiosqlite.connect(GAMING_DB_PATH) as db:
                 async with db.execute(
-                    "SELECT voiceID, userID, gameName, channelNumber FROM gamingVoiceChannel"
+                    "SELECT voiceID, userID, gameName, channelNumber, panel_message_id FROM gamingVoiceChannel WHERE panel_message_id IS NOT NULL"
                 ) as cursor:
                     async for row in cursor:
-                        voice_id, user_id, game_name, channel_num = row
+                        voice_id, user_id, game_name, channel_num, panel_message_id = row
                         channel = self.bot.get_channel(voice_id)
-                        if channel:
-                            view = BasicControlsView(self, voice_id, user_id)
-                            self.bot.add_view(view, message_id=None)
+                        if channel and panel_message_id:
+                            view = BasicControlsView(self, voice_id, user_id, is_gaming=True, message_id=panel_message_id)
+                            self.bot.add_view(view, message_id=panel_message_id)
                             # Update cache
-                            self._update_cache(
-                                channel.guild.id, voice_id, game_name, channel_num
-                            )
-                            print(
-                                f"[GamingTempVoice] Registered persistent view for gaming channel {voice_id}"
-                            )
+                            self._update_cache(channel.guild.id, voice_id, game_name, channel_num)
+                            print(f"[GamingTempVoice] Registered persistent view for gaming channel {voice_id} with message {panel_message_id}")
         except Exception as e:
             print(f"[GamingTempVoice] Error loading persistent views: {e}")
 
@@ -285,6 +281,7 @@ class GamingTempVoice(commands.Cog):
                     channelLimit INTEGER DEFAULT 8,
                     locked BOOLEAN DEFAULT FALSE,
                     hidden BOOLEAN DEFAULT FALSE,
+                    panel_message_id INTEGER,  
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -546,12 +543,24 @@ class GamingTempVoice(commands.Cog):
             # Create and store the view with persistent custom IDs
             view = BasicControlsView(self, channel.id, owner_id)
 
-            # Send the message with the view
-            await channel.send(embed=embed, view=view)
-            await channel.send(embed=info_embed)
+            message = await channel.send(embed=embed, view=view)
+            info_message = await channel.send(embed=info_embed)
+            
+            # Store message ID for persistence
+            view.message_id = message.id
+            async with aiosqlite.connect(GAMING_DB_PATH) as db:
+                await db.execute(
+                    "UPDATE gamingVoiceChannel SET panel_message_id = ? WHERE voiceID = ?",
+                    (message.id, channel.id)
+                )
+                await db.commit()
+                
+            # Register with Discord with the specific message ID
+            self.bot.add_view(view, message_id=message.id)
 
         except Exception as e:
             print(f"[GamingTempVoice] Error sending panel: {e}")
+
 
     # ---------------- CLEANUP ----------------
     async def _schedule_cleanup(self, ch):

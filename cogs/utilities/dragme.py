@@ -4,9 +4,11 @@ import discord
 from discord.ext import commands
 import asyncio
 import re
+import time
 
 TIMEOUT_DURATION = 60  # seconds
 REQUESTS_FILE = "active_requests.json"
+MESSAGE_CLEANUP_DELAY = 5  # seconds - how long to wait before deleting user messages
 
 # --- Persistence helpers ---
 def load_requests():
@@ -39,12 +41,21 @@ def extract_user_id(content):
 
     return None
 
+async def delete_message_after(message, delay: int):
+    """Delete a message after specified delay"""
+    await asyncio.sleep(delay)
+    try:
+        await message.delete()
+    except (discord.NotFound, discord.Forbidden):
+        pass
+    except Exception:
+        pass
+
 async def setup(bot: commands.Bot):
     # Load environment variables HERE after dotenv has run in main.py
     DRAGME_CHANNEL_ID = os.environ.get("DRAGME_CHANNEL_ID")
     if not DRAGME_CHANNEL_ID:
         print("⚠️ WARNING: DRAGME_CHANNEL_ID not set in environment variables!")
-        # You might want to convert to int here if it's set
         DRAGME_CHANNEL_ID = None
     else:
         try:
@@ -64,6 +75,32 @@ async def setup(bot: commands.Bot):
             }
         except ValueError as e:
             print(f"⚠️ WARNING: Error parsing BLACKLISTED_VOICE_ROLES: {e}")
+
+    # Channel cleanup task - periodically clean old bot messages
+    async def channel_cleanup_task():
+        await bot.wait_until_ready()
+        
+        while not bot.is_closed():
+            try:
+                if DRAGME_CHANNEL_ID:
+                    channel = bot.get_channel(DRAGME_CHANNEL_ID)
+                    if channel:
+                        # Delete bot's own old response messages (older than 1 minute)
+                        async for message in channel.history(limit=50):
+                            if message.author == bot.user:
+                                # Check if message is older than 1 minute
+                                if (discord.utils.utcnow() - message.created_at).total_seconds() > 60:
+                                    try:
+                                        await message.delete()
+                                    except:
+                                        pass
+            except Exception:
+                pass
+            
+            # Run cleanup every 5 minutes
+            await asyncio.sleep(300)
+    
+    bot.loop.create_task(channel_cleanup_task())
 
     # Cleanup task for orphaned requests
     async def cleanup_orphaned_requests():
@@ -111,71 +148,81 @@ async def setup(bot: commands.Bot):
         if not DRAGME_CHANNEL_ID:
             return
             
-        if message.author.bot or message.channel.id != DRAGME_CHANNEL_ID:
+        if message.channel.id != DRAGME_CHANNEL_ID:
             return
 
+        # Schedule deletion for ALL user messages in this channel
+        if not message.author.bot:
+            # Delete user message after a short delay
+            asyncio.create_task(delete_message_after(message, MESSAGE_CLEANUP_DELAY))
+
+        # Handle bot's own messages differently (don't process them as commands)
+        if message.author.bot:
+            return
+
+        # Process the drag request
         user_id = extract_user_id(message.content)
 
         if not user_id:
-            try:
-                await message.delete()
-                await message.channel.send(
-                    f"{message.author.mention} ❌ Please mention a user or provide a user ID!\n"
-                    f"Examples: `@username` or `<@123456789>` or `123456789`",
-                    delete_after=8,
-                )
-            except Exception:
-                pass
+            # Send error message (will be auto-deleted by the task)
+            error_msg = await message.channel.send(
+                f"{message.author.mention} ❌ Please mention a user or provide a user ID!\n"
+                f"Examples: `@username` or `<@123456789>` or `123456789`",
+                delete_after=8,
+            )
+            # Schedule deletion of bot's response too
+            asyncio.create_task(delete_message_after(error_msg, 8))
             return
 
         target = message.guild.get_member(user_id)
 
         if not target:
-            try:
-                await message.delete()
-                await message.channel.send(
-                    f"{message.author.mention} ❌ Could not find that user in this server!",
-                    delete_after=8,
-                )
-            except Exception:
-                pass
+            error_msg = await message.channel.send(
+                f"{message.author.mention} ❌ Could not find that user in this server!",
+                delete_after=8,
+            )
+            asyncio.create_task(delete_message_after(error_msg, 8))
             return
 
         requester = message.author
 
-        try:
-            await message.delete()
-        except Exception:
-            pass
-
+        # Process the drag request (this will send its own messages)
         await process_drag_request(message.channel, requester, target, BLACKLISTED_VOICE_IDS, DRAGME_CHANNEL_ID)
 
     async def process_drag_request(channel, requester, target, BLACKLISTED_VOICE_IDS, DRAGME_CHANNEL_ID):
+        # Helper function to send and track messages for auto-deletion
+        async def send_temp_message(content=None, embed=None, delete_after=10):
+            msg = await channel.send(content=content, embed=embed, delete_after=delete_after)
+            # Also schedule our own deletion task as backup
+            asyncio.create_task(delete_message_after(msg, delete_after))
+            return msg
+
         if requester.id == target.id:
-            return await channel.send(
-                f"{requester.mention} ❌ You cannot drag yourself!", delete_after=10
+            return await send_temp_message(
+                f"{requester.mention} ❌ You cannot drag yourself!", 
+                delete_after=10
             )
 
         if any(role.id in BLACKLISTED_VOICE_IDS for role in requester.roles):
-            return await channel.send(
+            return await send_temp_message(
                 f"{requester.mention} ❌ You are not allowed to use this command.",
                 delete_after=10,
             )
 
         if not requester.voice or not requester.voice.channel:
-            return await channel.send(
+            return await send_temp_message(
                 f"{requester.mention} ❌ You must join a voice channel first.",
                 delete_after=10,
             )
 
         if not target.voice or not target.voice.channel:
-            return await channel.send(
+            return await send_temp_message(
                 f"{requester.mention} ❌ {target.mention} must be in a voice channel.",
                 delete_after=10,
             )
 
         if requester.voice.channel == target.voice.channel:
-            return await channel.send(
+            return await send_temp_message(
                 f"{requester.mention} ⚠️ You're already in {target.mention}'s VC.",
                 delete_after=10,
             )
@@ -188,22 +235,11 @@ async def setup(bot: commands.Bot):
             ]
 
             if user_pending:
-                return await channel.send(
+                return await send_temp_message(
                     f"{requester.mention} ❌ You already have a pending request! Please wait for it to complete.",
                     delete_after=10,
                 )
 
-            target_pending = [
-                r
-                for r in active_requests
-                if r["requester"] == target.id or r["target"] == target.id
-            ]
-
-            if target_pending:
-                return await channel.send(
-                    f"{requester.mention} ❌ {target.mention} already has a pending request! Please wait for it to complete.",
-                    delete_after=10,
-                )
 
         target_channel = target.voice.channel
 
@@ -221,7 +257,7 @@ async def setup(bot: commands.Bot):
             )
 
             if existing:
-                return await channel.send(
+                return await send_temp_message(
                     f"{requester.mention} ⚠️ There's already an active request between you and {target.mention}",
                     delete_after=10,
                 )
@@ -229,7 +265,8 @@ async def setup(bot: commands.Bot):
             active_requests.append(request_key)
             save_requests_safe(active_requests)
 
-        await channel.send(
+        # Send confirmation (will auto-delete)
+        await send_temp_message(
             f"✅ {requester.mention} Your request was sent to {target.mention}",
             delete_after=10,
         )
@@ -244,12 +281,6 @@ async def setup(bot: commands.Bot):
                 description=f"{requester.mention} wants to join your voice channel!",
                 color=discord.Color.gold(),
             )
-            vc_embed.add_field(
-                name="Requester",
-                value=f"{requester.name}\n{requester.mention}",
-                inline=True,
-            )
-            
             
             vc_embed.set_footer(
                 text=f"Use the buttons below to respond • Expires in {TIMEOUT_DURATION}s"
@@ -282,10 +313,14 @@ async def setup(bot: commands.Bot):
 
                     dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
                     if dragme_channel:
-                        await dragme_channel.send(embed=log_embed)
+                        log_msg = await dragme_channel.send(embed=log_embed)
+                        # Schedule deletion of log message after 30 seconds
+                        asyncio.create_task(delete_message_after(log_msg, 30))
 
                     if self.msg:
                         await self.msg.edit(embed=log_embed, view=None)
+                        # Schedule deletion of the original request message
+                        asyncio.create_task(delete_message_after(self.msg, 10))
                     self.stop()
 
                 async def on_timeout(self):
@@ -303,10 +338,12 @@ async def setup(bot: commands.Bot):
 
                         dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
                         if dragme_channel:
-                            await dragme_channel.send(embed=embed)
+                            log_msg = await dragme_channel.send(embed=embed)
+                            asyncio.create_task(delete_message_after(log_msg, 30))
 
                         if self.msg:
                             await self.msg.edit(embed=embed, view=None)
+                            asyncio.create_task(delete_message_after(self.msg, 10))
 
                 @discord.ui.button(style=discord.ButtonStyle.green, label="✅ Accept")
                 async def accept_button(
@@ -328,7 +365,6 @@ async def setup(bot: commands.Bot):
                         )
 
                     updated_channel = updated_target.voice.channel
-
 
                     is_hidden = not updated_channel.permissions_for(
                         interaction.guild.default_role
@@ -403,10 +439,15 @@ async def setup(bot: commands.Bot):
             view = DragmeView()
 
             try:
+                # Send the request message in target's VC
                 view.msg = await target_channel.send(
                     f"{target.mention}", embed=vc_embed, view=view
                 )
+                # Schedule deletion after timeout as backup
+                asyncio.create_task(delete_message_after(view.msg, TIMEOUT_DURATION + 5))
+                
             except (discord.Forbidden, discord.HTTPException):
+                # Fallback to dragme channel if can't send in VC
                 dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
                 if dragme_channel:
                     fallback_embed = discord.Embed(
@@ -415,16 +456,10 @@ async def setup(bot: commands.Bot):
                         color=discord.Color.purple(),
                     )
                     fallback_embed.add_field(
-                        name="Requester",
-                        value=f"{requester.name}\n{requester.mention}",
-                        inline=True,
-                    )
-                    fallback_embed.add_field(
                         name="Target",
                         value=f"{target.name}\n{target.mention}",
                         inline=True,
                     )
-                    
                     
                     fallback_embed.set_footer(
                         text=f"Request expires in {TIMEOUT_DURATION} seconds • Target is in hidden VC"
@@ -434,6 +469,7 @@ async def setup(bot: commands.Bot):
                     view.msg = await dragme_channel.send(
                         f"{target.mention}", embed=fallback_embed, view=view
                     )
+                    asyncio.create_task(delete_message_after(view.msg, TIMEOUT_DURATION + 5))
 
         except Exception as e:
             async with requests_lock:

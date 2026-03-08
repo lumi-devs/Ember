@@ -9,12 +9,13 @@ import time
 class ControlPanel(View):
     """Base view for control panels. Interaction checks ensure only the owner can use."""
 
-    def __init__(self, cog, channel_id: int, owner_id: int):
+    def __init__(self, cog, channel_id: int, owner_id: int, message_id: int = None):
         # timeout=0 means the view never expires
         super().__init__(timeout=0)
         self.cog = cog
         self.channel_id = channel_id
         self.owner_id = owner_id
+        self.message_id = message_id  # Store the message ID for persistence
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
@@ -64,8 +65,8 @@ class ControlPanel(View):
 
 
 class BasicControlsView(ControlPanel):
-    def __init__(self, cog, channel_id: int, owner_id: int, is_gaming: bool = False):
-        super().__init__(cog, channel_id, owner_id)
+    def __init__(self, cog, channel_id: int, owner_id: int, is_gaming: bool = False, message_id: int = None):
+        super().__init__(cog, channel_id, owner_id, message_id)
         self.is_gaming = is_gaming
         self.db_path = GAMING_DB_PATH if is_gaming else DB_PATH
 
@@ -81,19 +82,19 @@ class BasicControlsView(ControlPanel):
             is_locked = False
             is_hidden = False
 
+        # Generate base for custom IDs that will survive restarts
+        # Use a consistent format that doesn't rely on message_id
+        base_id = f"{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
+
         # Row 0: Basic Controls (Name, Limit, Delete)
         name_btn = NameButton(is_gaming=is_gaming)
-        name_btn.custom_id = f"name_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
+        name_btn.custom_id = f"name_{base_id}"
 
         limit_btn = LimitButton(is_gaming=is_gaming)
-        limit_btn.custom_id = (
-            f"limit_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
-        )
+        limit_btn.custom_id = f"limit_{base_id}"
 
         delete_btn = DeleteButton(is_gaming=is_gaming)
-        delete_btn.custom_id = (
-            f"delete_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
-        )
+        delete_btn.custom_id = f"delete_{base_id}"
 
         self.add_item(name_btn)
         self.add_item(limit_btn)
@@ -101,13 +102,13 @@ class BasicControlsView(ControlPanel):
 
         # Row 1: Privacy & Actions
         lock_btn = LockButton(is_locked=is_locked, is_gaming=is_gaming)
-        lock_btn.custom_id = f"lock_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
+        lock_btn.custom_id = f"lock_{base_id}"
 
         hide_btn = HideButton(is_hidden=is_hidden, is_gaming=is_gaming)
-        hide_btn.custom_id = f"hide_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
+        hide_btn.custom_id = f"hide_{base_id}"
 
         kick_btn = KickButton(is_gaming=is_gaming)
-        kick_btn.custom_id = f"kick_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
+        kick_btn.custom_id = f"kick_{base_id}"
 
         self.add_item(lock_btn)
         self.add_item(hide_btn)
@@ -115,24 +116,16 @@ class BasicControlsView(ControlPanel):
 
         # Row 2: Member Management
         trust_btn = TrustButton(is_gaming=is_gaming)
-        trust_btn.custom_id = (
-            f"trust_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
-        )
+        trust_btn.custom_id = f"trust_{base_id}"
 
         untrust_btn = UntrustButton(is_gaming=is_gaming)
-        untrust_btn.custom_id = (
-            f"untrust_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
-        )
+        untrust_btn.custom_id = f"untrust_{base_id}"
 
         block_btn = BlockButton(is_gaming=is_gaming)
-        block_btn.custom_id = (
-            f"block_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
-        )
+        block_btn.custom_id = f"block_{base_id}"
 
         unblock_btn = UnblockButton(is_gaming=is_gaming)
-        unblock_btn.custom_id = (
-            f"unblock_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
-        )
+        unblock_btn.custom_id = f"unblock_{base_id}"
 
         self.add_item(trust_btn)
         self.add_item(untrust_btn)
@@ -141,17 +134,14 @@ class BasicControlsView(ControlPanel):
 
         # Row 3: Advanced
         transfer_btn = TransferButton(is_gaming=is_gaming)
-        transfer_btn.custom_id = (
-            f"transfer_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
-        )
+        transfer_btn.custom_id = f"transfer_{base_id}"
 
         claim_btn = ClaimButton(is_gaming=is_gaming)
-        claim_btn.custom_id = (
-            f"claim_{channel_id}_{owner_id}_{'g' if is_gaming else 'm'}"
-        )
+        claim_btn.custom_id = f"claim_{base_id}"
 
         self.add_item(transfer_btn)
         self.add_item(claim_btn)
+
 
 
 # --------------------- BUTTON CLASSES ---------------------

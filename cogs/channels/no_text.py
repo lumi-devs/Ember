@@ -3,7 +3,6 @@ import asyncio
 from discord.ext import commands
 
 WATCH_CHANNEL_IDS = [
-    1418501302626816010,  # dragrequest
     1399658407178272798,  # confession
 ]
 

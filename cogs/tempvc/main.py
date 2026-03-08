@@ -1,3 +1,5 @@
+from email.mime import message
+
 import discord
 from discord.ext import commands, tasks
 import asyncio
@@ -39,20 +41,18 @@ class TempVoice(commands.Cog):
         try:
             async with aiosqlite.connect(DB_PATH) as db:
                 async with db.execute(
-                    "SELECT voiceID, userID FROM voiceChannel"
+                    "SELECT voiceID, userID, panel_message_id FROM voiceChannel WHERE panel_message_id IS NOT NULL"
                 ) as cursor:
                     async for row in cursor:
-                        voice_id, user_id = row
+                        voice_id, user_id, panel_message_id = row
                         # Check if channel still exists
                         channel = self.bot.get_channel(voice_id)
-                        if channel:
-                            view = BasicControlsView(self, voice_id, user_id)
-                            self.bot.add_view(
-                                view, message_id=None
-                            )  # Register persistent view
-                            print(
-                                f"[TempVoice] Registered persistent view for channel {voice_id}"
-                            )
+                        if channel and panel_message_id:
+                            # Recreate the view for this channel
+                            view = BasicControlsView(self, voice_id, user_id, is_gaming=False, message_id=panel_message_id)
+                            # Register it with Discord with the specific message ID
+                            self.bot.add_view(view, message_id=panel_message_id)
+                            print(f"[TempVoice] Registered persistent view for channel {voice_id} with message {panel_message_id}")
         except Exception as e:
             print(f"[TempVoice] Error loading persistent views: {e}")
 
@@ -137,6 +137,7 @@ class TempVoice(commands.Cog):
                     channelLimit INTEGER,
                     locked BOOLEAN DEFAULT FALSE,
                     hidden BOOLEAN DEFAULT FALSE,
+                    panel_message_id INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -505,6 +506,18 @@ class TempVoice(commands.Cog):
             # Send the message with the view
             await channel.send(embed=embed, view=view)
             await channel.send(embed=info_embed)
+            view.message_id = message.id
+            
+            # Store the message ID in the database for persistence
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute(
+                    "UPDATE voiceChannel SET panel_message_id = ? WHERE voiceID = ?",
+                    (message.id, channel.id)
+                )
+                await db.commit()
+                
+            # Important: Re-add the view with the specific message ID
+            self.bot.add_view(view, message_id=message.id)
 
         except Exception as e:
             print(f"[TempVoice] Error sending panel: {e}")
