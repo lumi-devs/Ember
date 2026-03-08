@@ -547,7 +547,7 @@ class DebateSystem(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(DebateSystem(bot))
-    from cogs.debate.debate_ui import CreateDebateView, ModApprovalView
+    from .debate_ui import CreateDebateView, ModApprovalView
 
     # Add the create debate button view
     bot.add_view(CreateDebateView(bot))
