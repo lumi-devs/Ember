@@ -76,7 +76,7 @@ async def setup(bot: commands.Bot):
         except ValueError as e:
             print(f"⚠️ WARNING: Error parsing BLACKLISTED_VOICE_ROLES: {e}")
 
-    # Channel cleanup task - periodically clean old bot messages
+    # Channel cleanup task - periodically clean old user messages
     async def channel_cleanup_task():
         await bot.wait_until_ready()
         
@@ -85,9 +85,9 @@ async def setup(bot: commands.Bot):
                 if DRAGME_CHANNEL_ID:
                     channel = bot.get_channel(DRAGME_CHANNEL_ID)
                     if channel:
-                        # Delete bot's own old response messages (older than 1 minute)
-                        async for message in channel.history(limit=50):
-                            if message.author == bot.user:
+                        # Delete user messages older than 1 minute
+                        async for message in channel.history(limit=100):
+                            if not message.author.bot:  # Only delete user messages
                                 # Check if message is older than 1 minute
                                 if (discord.utils.utcnow() - message.created_at).total_seconds() > 60:
                                     try:
@@ -151,50 +151,40 @@ async def setup(bot: commands.Bot):
         if message.channel.id != DRAGME_CHANNEL_ID:
             return
 
-        # Schedule deletion for ALL user messages in this channel
+        # Delete user messages after a short delay (keep bot messages)
         if not message.author.bot:
-            # Delete user message after a short delay
             asyncio.create_task(delete_message_after(message, MESSAGE_CLEANUP_DELAY))
 
-        # Handle bot's own messages differently (don't process them as commands)
-        if message.author.bot:
-            return
+            # Process the drag request from user message
+            user_id = extract_user_id(message.content)
 
-        # Process the drag request
-        user_id = extract_user_id(message.content)
+            if not user_id:
+                # Send error message (will be auto-deleted after 8 seconds)
+                error_msg = await message.channel.send(
+                    f"{message.author.mention} ❌ Please mention a user or provide a user ID!\n"
+                    f"Examples: `@username` or `<@123456789>` or `123456789`",
+                    delete_after=8,
+                )
+                return
 
-        if not user_id:
-            # Send error message (will be auto-deleted by the task)
-            error_msg = await message.channel.send(
-                f"{message.author.mention} ❌ Please mention a user or provide a user ID!\n"
-                f"Examples: `@username` or `<@123456789>` or `123456789`",
-                delete_after=8,
-            )
-            # Schedule deletion of bot's response too
-            asyncio.create_task(delete_message_after(error_msg, 8))
-            return
+            target = message.guild.get_member(user_id)
 
-        target = message.guild.get_member(user_id)
+            if not target:
+                error_msg = await message.channel.send(
+                    f"{message.author.mention} ❌ Could not find that user in this server!",
+                    delete_after=8,
+                )
+                return
 
-        if not target:
-            error_msg = await message.channel.send(
-                f"{message.author.mention} ❌ Could not find that user in this server!",
-                delete_after=8,
-            )
-            asyncio.create_task(delete_message_after(error_msg, 8))
-            return
+            requester = message.author
 
-        requester = message.author
-
-        # Process the drag request (this will send its own messages)
-        await process_drag_request(message.channel, requester, target, BLACKLISTED_VOICE_IDS, DRAGME_CHANNEL_ID)
+            # Process the drag request (this will send its own messages)
+            await process_drag_request(message.channel, requester, target, BLACKLISTED_VOICE_IDS, DRAGME_CHANNEL_ID)
 
     async def process_drag_request(channel, requester, target, BLACKLISTED_VOICE_IDS, DRAGME_CHANNEL_ID):
-        # Helper function to send and track messages for auto-deletion
+        # Helper function to send and track messages for auto-deletion (only for response messages)
         async def send_temp_message(content=None, embed=None, delete_after=10):
             msg = await channel.send(content=content, embed=embed, delete_after=delete_after)
-            # Also schedule our own deletion task as backup
-            asyncio.create_task(delete_message_after(msg, delete_after))
             return msg
 
         if requester.id == target.id:
@@ -265,7 +255,7 @@ async def setup(bot: commands.Bot):
             active_requests.append(request_key)
             save_requests_safe(active_requests)
 
-        # Send confirmation (will auto-delete)
+        # Send confirmation (will auto-delete after 10 seconds)
         await send_temp_message(
             f"✅ {requester.mention} Your request was sent to {target.mention}",
             delete_after=10,
@@ -314,13 +304,11 @@ async def setup(bot: commands.Bot):
                     dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
                     if dragme_channel:
                         log_msg = await dragme_channel.send(embed=log_embed)
-                        # Schedule deletion of log message after 30 seconds
+                        # Schedule deletion of log message after 30 seconds (keep logs clean)
                         asyncio.create_task(delete_message_after(log_msg, 30))
 
                     if self.msg:
                         await self.msg.edit(embed=log_embed, view=None)
-                        # Schedule deletion of the original request message
-                        asyncio.create_task(delete_message_after(self.msg, 10))
                     self.stop()
 
                 async def on_timeout(self):
@@ -343,7 +331,6 @@ async def setup(bot: commands.Bot):
 
                         if self.msg:
                             await self.msg.edit(embed=embed, view=None)
-                            asyncio.create_task(delete_message_after(self.msg, 10))
 
                 @discord.ui.button(style=discord.ButtonStyle.green, label="✅ Accept")
                 async def accept_button(
@@ -439,12 +426,10 @@ async def setup(bot: commands.Bot):
             view = DragmeView()
 
             try:
-                # Send the request message in target's VC
+                # Send the request message in target's VC (keep this, it's a bot message)
                 view.msg = await target_channel.send(
                     f"{target.mention}", embed=vc_embed, view=view
                 )
-                # Schedule deletion after timeout as backup
-                asyncio.create_task(delete_message_after(view.msg, TIMEOUT_DURATION + 5))
                 
             except (discord.Forbidden, discord.HTTPException):
                 # Fallback to dragme channel if can't send in VC
@@ -469,7 +454,6 @@ async def setup(bot: commands.Bot):
                     view.msg = await dragme_channel.send(
                         f"{target.mention}", embed=fallback_embed, view=view
                     )
-                    asyncio.create_task(delete_message_after(view.msg, TIMEOUT_DURATION + 5))
 
         except Exception as e:
             async with requests_lock:
@@ -507,3 +491,30 @@ async def setup(bot: commands.Bot):
                     )
 
             await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # Optional: Add a command to manually clean user messages
+    @bot.tree.command(
+        name="clean_dragme", description="Clean all user messages in the dragme channel"
+    )
+    @commands.has_permissions(manage_messages=True)
+    async def clean_dragme(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        if not DRAGME_CHANNEL_ID:
+            return await interaction.followup.send("❌ DragMe channel not configured!", ephemeral=True)
+        
+        channel = bot.get_channel(DRAGME_CHANNEL_ID)
+        if not channel:
+            return await interaction.followup.send("❌ DragMe channel not found!", ephemeral=True)
+        
+        deleted = 0
+        async for message in channel.history(limit=100):
+            if not message.author.bot:  # Only delete user messages
+                try:
+                    await message.delete()
+                    deleted += 1
+                    await asyncio.sleep(0.5)  # Small delay to avoid rate limits
+                except:
+                    pass
+        
+        await interaction.followup.send(f"✅ Cleaned {deleted} user messages from {channel.mention}", ephemeral=True)
