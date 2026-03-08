@@ -318,9 +318,7 @@ async def setup(bot: commands.Bot):
 
                     dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
                     if dragme_channel:
-                        log_msg = await dragme_channel.send(embed=log_embed)
-                        # Schedule deletion of log message after 30 seconds (keep logs clean)
-                        asyncio.create_task(delete_message_after(log_msg, 30))
+                        await dragme_channel.send(embed=log_embed)
 
                     if self.msg:
                         await self.msg.edit(embed=log_embed, view=None)
@@ -341,8 +339,7 @@ async def setup(bot: commands.Bot):
 
                         dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
                         if dragme_channel:
-                            log_msg = await dragme_channel.send(embed=embed)
-                            asyncio.create_task(delete_message_after(log_msg, 30))
+                            await dragme_channel.send(embed=embed)
 
                         if self.msg:
                             await self.msg.edit(embed=embed, view=None)
