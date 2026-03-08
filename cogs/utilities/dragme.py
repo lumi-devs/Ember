@@ -4,26 +4,9 @@ import discord
 from discord.ext import commands
 import asyncio
 import re
-import time
-from collections import defaultdict
 
-DRAGME_CHANNEL_ID = os.environ.get("DRAGME_CHANNEL_ID")
 TIMEOUT_DURATION = 60  # seconds
 REQUESTS_FILE = "active_requests.json"
-
-# Rate limiting
-user_request_times = defaultdict(list)
-RATE_LIMIT = 3  # requests per minute
-RATE_WINDOW = 60  # seconds
-
-BLACKLISTED_VOICE_IDS = set()
-if os.environ.get("BLACKLISTED_VOICE_ROLES"):
-    BLACKLISTED_VOICE_IDS = {
-        int(rid.strip())
-        for rid in os.environ["BLACKLISTED_VOICE_ROLES"].split(",")
-        if rid.strip()
-    }
-
 
 # --- Persistence helpers ---
 def load_requests():
@@ -35,18 +18,15 @@ def load_requests():
     except Exception:
         return []
 
-
 def save_requests_safe(requests):
     tmp = REQUESTS_FILE + ".tmp"
     with open(tmp, "w") as f:
         json.dump(requests, f)
     os.replace(tmp, REQUESTS_FILE)
 
-
 # Global state
 active_requests = load_requests()
 requests_lock = asyncio.Lock()
-
 
 def extract_user_id(content):
     mention_pattern = r"<@!?(\d+)>"
@@ -54,15 +34,37 @@ def extract_user_id(content):
     if match:
         return int(match.group(1))
 
-    # Try to find a standalone number (Discord IDs are 17-20 digits)
-    numbers = re.findall(r"\b(\d{17,20})\b", content)
-    if numbers:
-        return int(numbers[0])
+    if content.strip().isdigit():
+        return int(content.strip())
 
     return None
 
-
 async def setup(bot: commands.Bot):
+    # Load environment variables HERE after dotenv has run in main.py
+    DRAGME_CHANNEL_ID = os.environ.get("DRAGME_CHANNEL_ID")
+    if not DRAGME_CHANNEL_ID:
+        print("⚠️ WARNING: DRAGME_CHANNEL_ID not set in environment variables!")
+        # You might want to convert to int here if it's set
+        DRAGME_CHANNEL_ID = None
+    else:
+        try:
+            DRAGME_CHANNEL_ID = int(DRAGME_CHANNEL_ID)
+        except ValueError:
+            print(f"⚠️ WARNING: DRAGME_CHANNEL_ID must be an integer, got: {DRAGME_CHANNEL_ID}")
+            DRAGME_CHANNEL_ID = None
+
+    # Load blacklisted roles here
+    BLACKLISTED_VOICE_IDS = set()
+    if os.environ.get("BLACKLISTED_VOICE_ROLES"):
+        try:
+            BLACKLISTED_VOICE_IDS = {
+                int(rid.strip())
+                for rid in os.environ["BLACKLISTED_VOICE_ROLES"].split(",")
+                if rid.strip()
+            }
+        except ValueError as e:
+            print(f"⚠️ WARNING: Error parsing BLACKLISTED_VOICE_ROLES: {e}")
+
     # Cleanup task for orphaned requests
     async def cleanup_orphaned_requests():
         await bot.wait_until_ready()
@@ -105,6 +107,10 @@ async def setup(bot: commands.Bot):
 
     @bot.event
     async def on_message(message):
+        # Check if DRAGME_CHANNEL_ID is set
+        if not DRAGME_CHANNEL_ID:
+            return
+            
         if message.author.bot or message.channel.id != DRAGME_CHANNEL_ID:
             return
 
@@ -118,8 +124,8 @@ async def setup(bot: commands.Bot):
                     f"Examples: `@username` or `<@123456789>` or `123456789`",
                     delete_after=8,
                 )
-            except Exception as e:
-                print(f"Failed to delete message or send response: {e}")
+            except Exception:
+                pass
             return
 
         target = message.guild.get_member(user_id)
@@ -131,34 +137,20 @@ async def setup(bot: commands.Bot):
                     f"{message.author.mention} ❌ Could not find that user in this server!",
                     delete_after=8,
                 )
-            except Exception as e:
-                print(f"Failed to delete message or send response: {e}")
+            except Exception:
+                pass
             return
 
         requester = message.author
 
         try:
             await message.delete()
-        except Exception as e:
-            print(f"Failed to delete message: {e}")
+        except Exception:
+            pass
 
-        await process_drag_request(message.channel, requester, target)
+        await process_drag_request(message.channel, requester, target, BLACKLISTED_VOICE_IDS, DRAGME_CHANNEL_ID)
 
-    async def process_drag_request(channel, requester, target):
-        # Rate limiting check
-        now = time.time()
-        user_times = user_request_times[requester.id]
-        # Clean old entries
-        user_times = [t for t in user_times if now - t < RATE_WINDOW]
-        user_request_times[requester.id] = user_times
-        
-        if len(user_times) >= RATE_LIMIT:
-            return await channel.send(
-                f"{requester.mention} ❌ Too many requests. Please wait {RATE_WINDOW} seconds between requests.",
-                delete_after=10
-            )
-        
-        # Basic validation
+    async def process_drag_request(channel, requester, target, BLACKLISTED_VOICE_IDS, DRAGME_CHANNEL_ID):
         if requester.id == target.id:
             return await channel.send(
                 f"{requester.mention} ❌ You cannot drag yourself!", delete_after=10
@@ -188,48 +180,54 @@ async def setup(bot: commands.Bot):
                 delete_after=10,
             )
 
-        # Check if target's VC is full
-        target_channel = target.voice.channel
-        if len(target_channel.members) >= target_channel.user_limit > 0:
-            return await channel.send(
-                f"{requester.mention} ❌ {target.mention}'s VC is full.",
-                delete_after=10
-            )
-
-        # ATOMIC: All checks and request creation inside lock
         async with requests_lock:
-            # Check if requester already has any pending request
-            if any(r["requester"] == requester.id or r["target"] == requester.id for r in active_requests):
+            user_pending = [
+                r
+                for r in active_requests
+                if r["requester"] == requester.id or r["target"] == requester.id
+            ]
+
+            if user_pending:
                 return await channel.send(
                     f"{requester.mention} ❌ You already have a pending request! Please wait for it to complete.",
                     delete_after=10,
                 )
 
-            # Check if target already has any pending request
-            if any(r["requester"] == target.id or r["target"] == target.id for r in active_requests):
+            target_pending = [
+                r
+                for r in active_requests
+                if r["requester"] == target.id or r["target"] == target.id
+            ]
+
+            if target_pending:
                 return await channel.send(
                     f"{requester.mention} ❌ {target.mention} already has a pending request! Please wait for it to complete.",
                     delete_after=10,
                 )
 
-            # Check if there's already a request between these two users
-            if any(
-                (r["requester"] == requester.id and r["target"] == target.id) or
-                (r["requester"] == target.id and r["target"] == requester.id)
-                for r in active_requests
-            ):
+        target_channel = target.voice.channel
+
+        request_key = {"requester": requester.id, "target": target.id}
+
+        async with requests_lock:
+            existing = next(
+                (
+                    r
+                    for r in active_requests
+                    if (r["requester"] == requester.id and r["target"] == target.id)
+                    or (r["requester"] == target.id and r["target"] == requester.id)
+                ),
+                None,
+            )
+
+            if existing:
                 return await channel.send(
                     f"{requester.mention} ⚠️ There's already an active request between you and {target.mention}",
                     delete_after=10,
                 )
 
-            # Create the request
-            request_key = {"requester": requester.id, "target": target.id}
             active_requests.append(request_key)
             save_requests_safe(active_requests)
-            
-            # Add to rate limit after successful request
-            user_request_times[requester.id].append(now)
 
         await channel.send(
             f"✅ {requester.mention} Your request was sent to {target.mention}",
@@ -251,15 +249,8 @@ async def setup(bot: commands.Bot):
                 value=f"{requester.name}\n{requester.mention}",
                 inline=True,
             )
-            vc_embed.add_field(
-                name="Their VC", value=requester.voice.channel.name, inline=True
-            )
-            vc_embed.add_field(name="Your VC", value=target_channel.name, inline=True)
-            vc_embed.add_field(
-                name="Current VC Users",
-                value=f"{len(target_channel.members)}/{target_channel.user_limit if target_channel.user_limit > 0 else '∞'}",
-                inline=True,
-            )
+            
+            
             vc_embed.set_footer(
                 text=f"Use the buttons below to respond • Expires in {TIMEOUT_DURATION}s"
             )
@@ -272,12 +263,9 @@ async def setup(bot: commands.Bot):
 
                 async def remove_request(self):
                     async with requests_lock:
-                        # Find and remove the request
-                        for i, r in enumerate(active_requests):
-                            if r["requester"] == requester.id and r["target"] == target.id:
-                                active_requests.pop(i)
-                                save_requests_safe(active_requests)
-                                break
+                        if request_key in active_requests:
+                            active_requests.remove(request_key)
+                            save_requests_safe(active_requests)
 
                 async def finish(self, content: str, color=discord.Color.green()):
                     self.finished = True
@@ -329,12 +317,6 @@ async def setup(bot: commands.Bot):
                             "❌ This is not your request!", ephemeral=True
                         )
 
-                    # Check bot permissions
-                    if not interaction.guild.me.guild_permissions.move_members:
-                        return await interaction.response.send_message(
-                            "❌ Bot lacks permission to move members.", ephemeral=True
-                        )
-
                     updated_target = interaction.guild.get_member(target.id)
                     if (
                         not updated_target
@@ -347,13 +329,6 @@ async def setup(bot: commands.Bot):
 
                     updated_channel = updated_target.voice.channel
 
-                    # Check if channel is still not full
-                    if len(updated_channel.members) >= updated_channel.user_limit > 0:
-                        return await interaction.response.send_message(
-                            "❌ Your VC is now full.", ephemeral=True
-                        )
-
-                    await interaction.response.defer()
 
                     is_hidden = not updated_channel.permissions_for(
                         interaction.guild.default_role
@@ -387,14 +362,13 @@ async def setup(bot: commands.Bot):
                                         await updated_channel.set_permissions(
                                             requester, overwrite=None
                                         )
-                                    except Exception as e:
-                                        print(f"Failed to remove permissions: {e}")
+                                    except Exception:
+                                        pass
 
                                 asyncio.create_task(remove_perms_when_done())
 
                                 success_msg = f"✅ {target.mention} accepted. {requester.mention} was moved to **{updated_channel.name}**"
-                            except Exception as e:
-                                print(f"Failed to set permissions: {e}")
+                            except Exception:
                                 success_msg = f"✅ {target.mention} accepted. {requester.mention} was moved to **{updated_channel.name}**"
                         else:
                             success_msg = f"✅ {target.mention} accepted. {requester.mention} was moved to **{updated_channel.name}**"
@@ -421,7 +395,6 @@ async def setup(bot: commands.Bot):
                             "❌ This is not your request!", ephemeral=True
                         )
 
-                    await interaction.response.defer()
                     await self.finish(
                         f"❌ {target.mention} declined {requester.mention}'s request",
                         discord.Color.red(),
@@ -433,8 +406,7 @@ async def setup(bot: commands.Bot):
                 view.msg = await target_channel.send(
                     f"{target.mention}", embed=vc_embed, view=view
                 )
-            except (discord.Forbidden, discord.HTTPException) as e:
-                print(f"Failed to send to VC: {e}")
+            except (discord.Forbidden, discord.HTTPException):
                 dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
                 if dragme_channel:
                     fallback_embed = discord.Embed(
@@ -452,17 +424,8 @@ async def setup(bot: commands.Bot):
                         value=f"{target.name}\n{target.mention}",
                         inline=True,
                     )
-                    fallback_embed.add_field(
-                        name="Their VC", value=requester.voice.channel.name, inline=True
-                    )
-                    fallback_embed.add_field(
-                        name="Target VC", value="🔒 Hidden Voice Channel", inline=True
-                    )
-                    fallback_embed.add_field(
-                        name="Current VC Users",
-                        value=f"{len(target_channel.members)}/{target_channel.user_limit if target_channel.user_limit > 0 else '∞'}",
-                        inline=True,
-                    )
+                    
+                    
                     fallback_embed.set_footer(
                         text=f"Request expires in {TIMEOUT_DURATION} seconds • Target is in hidden VC"
                     )
@@ -473,18 +436,16 @@ async def setup(bot: commands.Bot):
                     )
 
         except Exception as e:
-            print(f"Unexpected error in request: {e}")
             async with requests_lock:
-                # Find and remove the request
-                for i, r in enumerate(active_requests):
-                    if r["requester"] == requester.id and r["target"] == target.id:
-                        active_requests.pop(i)
-                        save_requests_safe(active_requests)
-                        break
+                if request_key in active_requests:
+                    active_requests.remove(request_key)
+                    save_requests_safe(active_requests)
+            print(f"Error in drag request: {e}")
 
     @bot.tree.command(
         name="active_requests", description="View all active dragme requests"
     )
+    @commands.has_permissions(manage_guild=True)
     async def active_requests_cmd(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
