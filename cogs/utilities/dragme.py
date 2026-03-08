@@ -76,6 +76,12 @@ async def setup(bot: commands.Bot):
         except ValueError as e:
             print(f"⚠️ WARNING: Error parsing BLACKLISTED_VOICE_ROLES: {e}")
 
+    # Store in bot instance so other cogs can access if needed
+    bot.dragme_config = {
+        "channel_id": DRAGME_CHANNEL_ID,
+        "blacklisted_roles": BLACKLISTED_VOICE_IDS
+    }
+
     # Channel cleanup task - periodically clean old user messages
     async def channel_cleanup_task():
         await bot.wait_until_ready()
@@ -142,8 +148,9 @@ async def setup(bot: commands.Bot):
 
     bot.loop.create_task(cleanup_orphaned_requests())
 
-    @bot.event
-    async def on_message(message):
+    # Use listener with high priority instead of event
+    @bot.listen('on_message')
+    async def dragme_on_message(message):
         # Check if DRAGME_CHANNEL_ID is set
         if not DRAGME_CHANNEL_ID:
             return
@@ -151,8 +158,10 @@ async def setup(bot: commands.Bot):
         if message.channel.id != DRAGME_CHANNEL_ID:
             return
 
+        # ALWAYS process dragme channel messages regardless of other cogs
         # Delete user messages after a short delay (keep bot messages)
         if not message.author.bot:
+            # Schedule deletion of user message
             asyncio.create_task(delete_message_after(message, MESSAGE_CLEANUP_DELAY))
 
             # Process the drag request from user message
@@ -160,7 +169,7 @@ async def setup(bot: commands.Bot):
 
             if not user_id:
                 # Send error message (will be auto-deleted after 8 seconds)
-                error_msg = await message.channel.send(
+                await message.channel.send(
                     f"{message.author.mention} ❌ Please mention a user or provide a user ID!\n"
                     f"Examples: `@username` or `<@123456789>` or `123456789`",
                     delete_after=8,
@@ -170,7 +179,7 @@ async def setup(bot: commands.Bot):
             target = message.guild.get_member(user_id)
 
             if not target:
-                error_msg = await message.channel.send(
+                await message.channel.send(
                     f"{message.author.mention} ❌ Could not find that user in this server!",
                     delete_after=8,
                 )
@@ -178,8 +187,15 @@ async def setup(bot: commands.Bot):
 
             requester = message.author
 
-            # Process the drag request (this will send its own messages)
+            # Process the drag request
             await process_drag_request(message.channel, requester, target, BLACKLISTED_VOICE_IDS, DRAGME_CHANNEL_ID)
+
+    # Keep the original event as backup but with proper returns
+    @bot.event
+    async def on_message(message):
+        # Let other cogs process messages first
+        # This will be overridden by bot.process_commands anyway
+        pass
 
     async def process_drag_request(channel, requester, target, BLACKLISTED_VOICE_IDS, DRAGME_CHANNEL_ID):
         # Helper function to send and track messages for auto-deletion (only for response messages)
@@ -229,7 +245,6 @@ async def setup(bot: commands.Bot):
                     f"{requester.mention} ❌ You already have a pending request! Please wait for it to complete.",
                     delete_after=10,
                 )
-
 
         target_channel = target.voice.channel
 
