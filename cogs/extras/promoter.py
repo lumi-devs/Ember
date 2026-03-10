@@ -16,7 +16,7 @@ class PromoterRole(commands.Cog):
             "discord.gg/aakhristation",
             "aakhristation",
         ]
-        self.server_tag = "Raही"
+        self.server_tag = "qtπ"
         self.log_channel_id = 1443119503285293098
 
         self.init_db()
