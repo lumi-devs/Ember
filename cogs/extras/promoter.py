@@ -1,5 +1,4 @@
 import os
-
 import discord
 from discord.ext import tasks, commands
 import sqlite3
@@ -43,6 +42,36 @@ class PromoterRole(commands.Cog):
             """)
 
             conn.commit()
+
+    @commands.Cog.listener()
+    async def on_guild_update(self, before, after):
+        """Detect when the target guild properties change"""
+        # Only care about our target guild
+        if after.id != self.target_primary_guild_id:
+            return
+            
+        # Check if the tag changed
+        if before.tag != after.tag:
+            print(f"🏷️ Target server tag changed from '{before.tag}' to '{after.tag}'")
+            print(f"🔄 Rechecking all members with this server as primary guild...")
+            
+            # Find all guilds where we need to check members
+            for guild in self.bot.guilds:
+                role = guild.get_role(self.promoter_role_id)
+                if not role:
+                    continue
+                    
+                # Check all members in this guild
+                for member in guild.members:
+                    if member.bot:
+                        continue
+                        
+                    # Only recheck members who have this server as their primary guild
+                    if self.has_target_primary_guild(member):
+                        await self.instant_member_check(
+                            member, 
+                            f"Target server tag changed from '{before.tag}' to '{after.tag}'"
+                        )
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -145,8 +174,11 @@ class PromoterRole(commands.Cog):
         # Check primary guild ID
         if self.has_target_primary_guild(member):
             primary_guild = member.primary_guild
-            if primary_guild and primary_guild.tag:
-                sources.append(f"Primary Guild: {primary_guild.name} (Tag: {primary_guild.tag})")
+            if primary_guild:
+                if primary_guild.tag:
+                    sources.append(f"Primary Guild: {primary_guild.name} (Tag: {primary_guild.tag})")
+                else:
+                    sources.append(f"Primary Guild: {primary_guild.name} (No tag)")
             else:
                 sources.append(f"Primary Guild ID: {self.target_primary_guild_id}")
 
