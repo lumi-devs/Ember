@@ -281,15 +281,15 @@ class PromoterRole(commands.Cog):
 
             if action_type == "assigned":
                 embed = discord.Embed(
-                    title="⚡ New Promoter!",
-                    description=f"**{member.mention}** is promoting our server!",
+                    title=":fish_cake: THANK YOU!!!!",
+                description=f"**{member.mention}** is promoting our server! <:ehm:1390067566503788625>\n\n__YOU JUST RECEIVED THE SOME PERKS!!!__",
                     color=0x00FF00,
                     timestamp=datetime.now(),
                 )
             else:
                 embed = discord.Embed(
-                    title="⚡ Promoter Removed",
-                    description=f"**{member.mention}** stopped promoting",
+                    title=":fish_cake: GOODBYE :(",
+                    description=f"**{member.mention}** stopped promoting us :broken_heart:",
                     color=0xFF9900,
                     timestamp=datetime.now(),
                 )
@@ -300,7 +300,7 @@ class PromoterRole(commands.Cog):
                 )
             embed.set_thumbnail(url=member.display_avatar.url)
 
-            await channel.send(embed=embed)
+            await channel.send(content=member.mention, embed=embed)
 
         except Exception:
             pass
