@@ -280,13 +280,13 @@ class PromoterRole(commands.Cog):
                 return
 
             if action_type == "assigned":
-                embed = discord.Embed(",
+                embed = discord.Embed(
                 description=f"**:fish_cake: THANK YOU!!!!**\n\n**{member.mention}** is promoting our server! <:ehm:1390067566503788625>\n\n**__YOU JUST RECEIVED THE SOME PERKS!!!__**",
                     color=0x00FF00,
                     timestamp=datetime.now(),
                 )
             else:
-                embed = discord.Embed(,
+                embed = discord.Embed(
                     description=f"**:fish_cake: GOODBYE :(**\n\n**{member.mention}** stopped promoting us :broken_heart:",
                     color=0xFF9900,
                     timestamp=datetime.now(),
