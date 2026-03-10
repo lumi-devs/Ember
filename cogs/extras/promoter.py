@@ -284,10 +284,6 @@ class PromoterRole(commands.Cog):
                 embed.add_field(
                     name="Promotion Source", value=f"```{content}```", inline=False
                 )
-
-            embed.add_field(
-                name="Role Action", value=f"<@&{self.promoter_role_id}>", inline=True
-            )
             embed.set_thumbnail(url=member.display_avatar.url)
 
             await channel.send(embed=embed)
