@@ -42,6 +42,33 @@ class PromoterRole(commands.Cog):
 
             conn.commit()
 
+
+    @commands.Cog.listener()
+    async def on_guild_update(self, before, after):
+        """Detect when guild properties change (including tag)"""
+        # Check if the tag changed
+        if before.tag != after.tag:
+            print(f"🏷️ Server tag changed from '{before.tag}' to '{after.tag}'")
+            
+            # If the new tag matches our target tag, we need to check all members
+            if after.tag == self.server_tag:
+                print(f"✅ New tag matches target '{self.server_tag}', checking all members...")
+                
+                # Check all members in this guild
+                for member in after.members:
+                    if not member.bot:
+                        await self.instant_member_check(member, f"Server tag changed to {after.tag}")
+            
+            # If the old tag was our target tag and now it's different
+            elif before.tag == self.server_tag and after.tag != self.server_tag:
+                print(f"❌ Tag changed from target '{self.server_tag}' to '{after.tag}', checking all members...")
+                
+                # Check all members who might lose promoter status
+                for member in after.members:
+                    if not member.bot:
+                        await self.instant_member_check(member, f"Server tag changed from {before.tag} to {after.tag}")
+
+
     @commands.Cog.listener()
     async def on_ready(self):
         print("🚀 PromoterRole cog loaded!")
