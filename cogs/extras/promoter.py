@@ -2,7 +2,8 @@ import os
 import discord
 from discord.ext import tasks, commands
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
+import asyncio
 
 
 class PromoterRole(commands.Cog):
@@ -22,6 +23,10 @@ class PromoterRole(commands.Cog):
 
         self.init_db()
         self.status_cache = {}  # Cache to track status changes
+        
+        # Timer for periodic full rechecks
+        self.full_recheck_interval = 14400  # Recheck every hour (in seconds)
+        self.last_full_recheck = datetime.now()
 
     def init_db(self):
         """Initialize the database tables"""
@@ -77,7 +82,9 @@ class PromoterRole(commands.Cog):
     async def on_ready(self):
         print("🚀 PromoterRole cog loaded!")
         print(f"📊 Monitoring: Status & Primary Guild ID '{self.target_primary_guild_id}'")
+        print(f"⏰ Full recheck timer: Every {self.full_recheck_interval} seconds")
         self.fallback_check.start()
+        self.full_recheck_timer.start()
 
     @commands.Cog.listener()
     async def on_presence_update(self, before, after):
@@ -251,7 +258,7 @@ class PromoterRole(commands.Cog):
 
     @tasks.loop(seconds=30)
     async def fallback_check(self):
-        """30-second fallback check"""
+        """30-second fallback check - only checks mismatches"""
         for guild in self.bot.guilds:
             role = guild.get_role(self.promoter_role_id)
             if not role:
@@ -266,6 +273,83 @@ class PromoterRole(commands.Cog):
                         full_promotion = await self.has_promotion_content(member)
                         if full_promotion != has_role:
                             await self.instant_member_check(member, "30s fallback")
+
+    @tasks.loop(seconds=3600)  # Default to hourly, can be changed
+    async def full_recheck_timer(self):
+        """Periodic full recheck of ALL members (not just mismatches)"""
+        print(f"🔄 Starting scheduled full recheck of all members...")
+        await self.full_recheck_all_members(reason="Scheduled full recheck")
+        self.last_full_recheck = datetime.now()
+
+    async def full_recheck_all_members(self, reason="Full recheck"):
+        """Comprehensive recheck of all members in all guilds"""
+        total_checked = 0
+        total_updated = 0
+        
+        for guild in self.bot.guilds:
+            role = guild.get_role(self.promoter_role_id)
+            if not role:
+                continue
+            
+            print(f"📋 Rechecking guild: {guild.name} ({len(guild.members)} members)")
+            
+            for member in guild.members:
+                if member.bot:
+                    continue
+                
+                total_checked += 1
+                
+                # Clear cache for this member to force fresh check
+                cache_key = f"{guild.id}-{member.id}"
+                if cache_key in self.status_cache:
+                    del self.status_cache[cache_key]
+                
+                # Check current state
+                current_has_promotion = await self.has_promotion_content(member)
+                currently_has_role = role in member.roles
+                
+                if current_has_promotion and not currently_has_role:
+                    await member.add_roles(role, reason=reason)
+                    promotion_content = await self.get_promotion_content(member)
+                    self.log_promotion_action(
+                        guild.id, member.id, str(member), 
+                        "ROLE_ASSIGNED", reason, promotion_content
+                    )
+                    await self.send_promotion_log(member, "assigned", promotion_content)
+                    total_updated += 1
+                    
+                elif not current_has_promotion and currently_has_role:
+                    await member.remove_roles(role, reason=reason)
+                    promotion_content = await self.get_promotion_content(member)
+                    self.log_promotion_action(
+                        guild.id, member.id, str(member), 
+                        "ROLE_REMOVED", reason, promotion_content
+                    )
+                    await self.send_promotion_log(member, "removed", promotion_content)
+                    total_updated += 1
+                
+                # Small delay to avoid rate limits
+                if total_checked % 10 == 0:
+                    await asyncio.sleep(0.5)
+        
+        print(f"✅ Full recheck complete: {total_checked} members checked, {total_updated} updated")
+        
+        # Log to channel if available
+        try:
+            # Find first guild with log channel
+            for guild in self.bot.guilds:
+                channel = guild.get_channel(self.log_channel_id)
+                if channel:
+                    embed = discord.Embed(
+                        title="🔄 Full Recheck Complete",
+                        description=f"**Members Checked:** {total_checked}\n**Members Updated:** {total_updated}\n**Reason:** {reason}",
+                        color=0x7289DA,
+                        timestamp=datetime.now()
+                    )
+                    await channel.send(embed=embed)
+                    break
+        except Exception:
+            pass
 
     async def send_promotion_log(self, member, action_type, content=""):
         """Send log to designated channel"""
@@ -349,22 +433,30 @@ class PromoterRole(commands.Cog):
             if not member.bot and self.has_target_primary_guild(member):
                 members_with_target_guild += 1
 
+        # Calculate time until next full recheck
+        next_recheck = self.last_full_recheck + timedelta(seconds=self.full_recheck_interval)
+        time_until = next_recheck - datetime.now()
+        minutes_until = int(time_until.total_seconds() / 60)
+
         embed = discord.Embed(title="🤖 Promoter System Stats", color=0x7289DA)
         embed.add_field(name="👥 Promoters", value=total_promoters, inline=True)
         embed.add_field(name="🏷️ Has Primary Guild", value=members_with_target_guild, inline=True)
-        embed.add_field(name="🔄 Check Interval", value="30 seconds", inline=True)
+        embed.add_field(name="🔄 Fallback Interval", value="30 seconds", inline=True)
+        embed.add_field(name="⏰ Full Recheck Interval", value=f"{self.full_recheck_interval} seconds", inline=True)
+        embed.add_field(name="⏱️ Next Full Recheck", value=f"In ~{minutes_until} minutes", inline=True)
+        embed.add_field(name="📊 Cache Size", value=len(self.status_cache), inline=True)
 
         await ctx.send(embed=embed)
 
     @commands.command(name="force_check")
     @commands.has_permissions(manage_roles=True)
     async def force_check(self, ctx, member: discord.Member = None):
-        """Force instant check"""
+        """Force instant check (uses cache for status)"""
         if member:
             await self.instant_member_check(member, "Manual force check")
             await ctx.send(f"✅ Checked {member.mention}")
         else:
-            message = await ctx.send("⚡ Checking all members...")
+            message = await ctx.send("⚡ Checking all members (using cache)...")
             checked = 0
             for member in ctx.guild.members:
                 if not member.bot:
@@ -372,6 +464,78 @@ class PromoterRole(commands.Cog):
                     checked += 1
 
             await message.edit(content=f"✅ Checked {checked} members")
+
+    @commands.command(name="force_recheck")
+    @commands.has_permissions(manage_guild=True)
+    async def force_recheck(self, ctx, scope: str = "all"):
+        """
+        Force a FULL recheck from scratch (no cache)
+        
+        Scope options:
+        - all: Recheck all members in all guilds (default)
+        - here: Recheck only members in this guild
+        - promoters: Recheck only current promoters
+        """
+        await ctx.send(f"🔄 Starting full recheck (scope: {scope})...")
+        
+        if scope.lower() == "here":
+            # Recheck only current guild
+            total = 0
+            updated = 0
+            role = ctx.guild.get_role(self.promoter_role_id)
+            
+            for member in ctx.guild.members:
+                if member.bot:
+                    continue
+                
+                # Clear cache
+                cache_key = f"{ctx.guild.id}-{member.id}"
+                if cache_key in self.status_cache:
+                    del self.status_cache[cache_key]
+                
+                current_has_promotion = await self.has_promotion_content(member)
+                currently_has_role = role in member.roles if role else False
+                
+                if current_has_promotion and not currently_has_role:
+                    await member.add_roles(role, reason="Manual full recheck")
+                    updated += 1
+                elif not current_has_promotion and currently_has_role:
+                    await member.remove_roles(role, reason="Manual full recheck")
+                    updated += 1
+                
+                total += 1
+            
+            await ctx.send(f"✅ Recheck complete: {total} members checked, {updated} updated")
+            
+        elif scope.lower() == "promoters":
+            # Recheck only current promoters
+            role = ctx.guild.get_role(self.promoter_role_id)
+            if not role:
+                return await ctx.send("❌ Promoter role not found")
+            
+            promoters = [m for m in ctx.guild.members if role in m.roles and not m.bot]
+            await ctx.send(f"🔄 Rechecking {len(promoters)} current promoters...")
+            
+            updated = 0
+            for member in promoters:
+                # Clear cache
+                cache_key = f"{ctx.guild.id}-{member.id}"
+                if cache_key in self.status_cache:
+                    del self.status_cache[cache_key]
+                
+                if not await self.has_promotion_content(member):
+                    await member.remove_roles(role, reason="Manual promoter recheck")
+                    updated += 1
+                
+                await asyncio.sleep(0.2)  # Small delay
+            
+            await ctx.send(f"✅ Promoter recheck complete: {updated} promoters removed")
+            
+        else:
+            # Recheck all members in all guilds
+            await ctx.send("🔄 Full global recheck started. This may take a while...")
+            await self.full_recheck_all_members(reason="Manual full recheck")
+            await ctx.send("✅ Full global recheck complete!")
 
     @commands.command(name="debug_promoter")
     @commands.has_permissions(manage_roles=True)
@@ -405,6 +569,10 @@ class PromoterRole(commands.Cog):
         role = ctx.guild.get_role(self.promoter_role_id)
         has_role = role in target.roles if role else False
 
+        # Show cache info
+        cache_key = f"{ctx.guild.id}-{target.id}"
+        cached_status = self.status_cache.get(cache_key, "Not cached")
+
         embed.add_field(
             name="📢 Promotion",
             value="✅ Yes" if has_promotion else "❌ No",
@@ -412,6 +580,9 @@ class PromoterRole(commands.Cog):
         )
         embed.add_field(
             name="🎪 Has Role", value="✅ Yes" if has_role else "❌ No", inline=True
+        )
+        embed.add_field(
+            name="💾 Cached Status", value=f"```{cached_status}```", inline=False
         )
 
         await ctx.send(embed=embed)
