@@ -175,10 +175,11 @@ class PromoterRole(commands.Cog):
         if self.has_target_primary_guild(member):
             primary_guild = member.primary_guild
             if primary_guild:
+                # PrimaryGuild only has id and tag attributes, no name
                 if primary_guild.tag:
-                    sources.append(f"Primary Guild: {primary_guild.name} (Tag: {primary_guild.tag})")
+                    sources.append(f"Primary Guild (ID: {primary_guild.id}, Tag: {primary_guild.tag})")
                 else:
-                    sources.append(f"Primary Guild: {primary_guild.name} (No tag)")
+                    sources.append(f"Primary Guild (ID: {primary_guild.id})")
             else:
                 sources.append(f"Primary Guild ID: {self.target_primary_guild_id}")
 
@@ -314,11 +315,12 @@ class PromoterRole(commands.Cog):
 
             embed = discord.Embed(title="🏷️ Primary Guild Information", color=0x7289DA)
             embed.add_field(name="Member", value=member.mention, inline=True)
-            embed.add_field(name="Guild Name", value=primary_guild.name, inline=True)
             embed.add_field(name="Guild ID", value=primary_guild.id, inline=True)
             
             if primary_guild.tag:
                 embed.add_field(name="Guild Tag", value=primary_guild.tag, inline=True)
+            else:
+                embed.add_field(name="Guild Tag", value="None", inline=True)
                 
             embed.add_field(
                 name="Promoter Status",
@@ -385,7 +387,8 @@ class PromoterRole(commands.Cog):
         primary_guild = target.primary_guild
         
         if primary_guild:
-            guild_info = f"{primary_guild.name} (ID: {primary_guild.id})"
+            # PrimaryGuild only has id and tag, no name
+            guild_info = f"ID: {primary_guild.id}"
             if primary_guild.tag:
                 guild_info += f" | Tag: {primary_guild.tag}"
         else:
