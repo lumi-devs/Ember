@@ -5,12 +5,12 @@ from datetime import datetime
 import aiosqlite
 import aiohttp
 import io
-from cogs.confessions.helpers import DB_PATH, extract_url
+from .helpers import DB_PATH, can_user_reply, extract_url, get_hourly_reply_count
 
 CONFESSION_CHANNEL_ID = 1399658407178272798
 LOG_CHANNEL_ID = 1453409054314467339
 MEDIA_CHANNEL_ID = 1424139009931743382
-
+HOURLY_REPLY_LIMIT = 5
 
 class ReplyModal(ui.Modal, title="Anonymous Reply"):
     reply_input = ui.TextInput(
@@ -37,13 +37,27 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
         # Defer immediately to avoid timeout
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        # Send media prompt FIRST
+        # NEW: Check hourly reply limit
+        can_reply, reason, current_count = await can_user_reply(
+            self.user_id, 
+            HOURLY_REPLY_LIMIT
+        )
+        
+        if not can_reply:
+            return await interaction.followup.send(reason, ephemeral=True)
+
+        # Show user their current usage (helpful feedback)
+        remaining = HOURLY_REPLY_LIMIT - current_count
+        usage_msg = f"📊 You've made {current_count}/{HOURLY_REPLY_LIMIT} replies in the last hour. {remaining} remaining."
+
+        # Send media prompt FIRST with usage info
         await interaction.followup.send(
-            "✅ Reply submitted! You have **60 seconds** to reply with an image URL or attachment.\n"
-            "Send `skip` to continue without media.\n\n"
-            "**Accepted formats:**\n"
-            "• Discord image upload (drag & drop)\n"
-            "• Direct image URL (.png/.jpg/.gif/.webp)",
+            f"✅ Reply submitted! {usage_msg}\n\n"
+            f"You have **60 seconds** to reply with an image URL or attachment.\n"
+            f"Send `skip` to continue without media.\n\n"
+            f"**Accepted formats:**\n"
+            f"• Discord image upload (drag & drop)\n"
+            f"• Direct image URL (.png/.jpg/.gif/.webp)",
             ephemeral=True,
         )
 
@@ -146,6 +160,19 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             # Delete the message AFTER successful media processing
             try:
                 await msg_received.delete()
+                if success:
+                    current_count = await get_hourly_reply_count(self.user_id)
+                    remaining = HOURLY_REPLY_LIMIT - current_count
+                    
+                    warning = ""
+                    if remaining <= 2:  # Warn when only 2 or fewer replies left
+                        warning = f"\n⚠️ **Warning:** You only have {remaining} reply{'s' if remaining != 1 else ''} left this hour!"
+                    
+                    await interaction.followup.send(
+                        f"✅ Media added to reply!{warning}", 
+                        ephemeral=True
+                    )
+                    return result
             except discord.Forbidden:
                 print(f"No permission to delete message from {msg_received.author}")
             except discord.NotFound:
@@ -172,8 +199,14 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                 return None
 
         except asyncio.TimeoutError:
+            # Get current count to show updated usage
+            current_count = await get_hourly_reply_count(self.user_id)
+            remaining = HOURLY_REPLY_LIMIT - current_count
+            
             await interaction.followup.send(
-                "⏰ Media upload timed out. Continuing without media.", ephemeral=True
+                f"⏰ Media upload timed out. Continuing without media.\n"
+                f"📊 Your reply has been counted. You have {remaining} replies remaining this hour.",
+                ephemeral=True
             )
             return None
         except Exception as e:

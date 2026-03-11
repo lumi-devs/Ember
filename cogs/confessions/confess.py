@@ -15,7 +15,10 @@ from cogs.confessions.helpers import (
     get_confession_by_id,
 )
 from cogs.confessions.reply import ReplyModal
+from cogs.confessions.helpers import can_user_confess, get_daily_confession_count, get_user_join_date
 
+# Add this configuration near the other CONFIG constants
+DAILY_CONFESSION_LIMIT = 3
 # ==============================
 # CONFIGURATION
 # ==============================
@@ -61,12 +64,21 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
         # Defer immediately to avoid timeout
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        # Check blacklist with improved error handling
+        # Check blacklist
         if await is_user_banned(self.user_id):
             return await interaction.followup.send(
                 "❌ You are banned from submitting confessions.", ephemeral=True
             )
 
+        # NEW: Check join date and daily limit
+        can_confess, reason = await can_user_confess(
+            interaction.guild, 
+            self.user_id, 
+            DAILY_CONFESSION_LIMIT
+        )
+        if not can_confess:
+            return await interaction.followup.send(reason, ephemeral=True)
+        
         channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
         if not channel:
             return await interaction.followup.send(
@@ -922,11 +934,19 @@ class PersistentConfessButton(ui.Button):
                 "❌ You are banned from making confessions.", ephemeral=True
             )
 
+        # NEW: Check join date and daily limit
+        can_confess, reason = await can_user_confess(
+            interaction.guild, 
+            interaction.user.id, 
+            DAILY_CONFESSION_LIMIT
+        )
+        if not can_confess:
+            return await interaction.response.send_message(reason, ephemeral=True)
+
         # Open confession modal
         bot = interaction.client
         modal = ConfessionModal(bot)
         await interaction.response.send_modal(modal)
-
 
 # ==============================
 # MAIN COG
@@ -1005,6 +1025,15 @@ class Confessions(commands.Cog):
                 "❌ You do not have at least LVL 5 required to make confessions.",
                 ephemeral=True,
             )
+
+        # NEW: Check join date and daily limit
+        can_confess, reason = await can_user_confess(
+            interaction.guild, 
+            interaction.user.id, 
+            DAILY_CONFESSION_LIMIT
+        )
+        if not can_confess:
+            return await interaction.response.send_message(reason, ephemeral=True)
 
         modal = ConfessionModal(self.bot)
         await interaction.response.send_modal(modal)
