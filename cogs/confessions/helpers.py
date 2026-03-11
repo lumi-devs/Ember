@@ -27,7 +27,7 @@ async def get_hourly_reply_count(user_id: int) -> int:
     """Get the number of replies a user has made in the last hour."""
     try:
         async with aiosqlite.connect(DB_PATH) as db:
-            one_hour_ago = datetime.utcnow() - datetime.timedelta(hours=1)
+            one_hour_ago = discord.utils.utcnow() - datetime.timedelta(hours=1)
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM replies WHERE user_id = ? AND timestamp >= ?",
                 (user_id, one_hour_ago.isoformat())
