@@ -10,7 +10,7 @@ from .helpers import DB_PATH, can_user_reply, extract_url, get_hourly_reply_coun
 CONFESSION_CHANNEL_ID = 1399658407178272798
 LOG_CHANNEL_ID = 1453409054314467339
 MEDIA_CHANNEL_ID = 1424139009931743382
-HOURLY_REPLY_LIMIT = 5
+HOURLY_REPLY_LIMIT = 8
 
 class ReplyModal(ui.Modal, title="Anonymous Reply"):
     reply_input = ui.TextInput(
