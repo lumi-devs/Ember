@@ -99,9 +99,12 @@ class TimezoneSelect(discord.ui.Select):
             color=discord.Color.gold(),
         )
 
-        birth_display = view.birth_date
+        # Reformat from MM-DD to DD-MM for display
+        month, day = view.birth_date.split("-")
         if view.birth_year:
-            birth_display += f" ({view.birth_year})"
+            birth_display = f"{day}-{month}-{view.birth_year}"  # DD-MM-YYYY
+        else:
+            birth_display = f"{day}-{month}"  # DD-MM
             age = datetime.now().year - view.birth_year
             embed.add_field(name="Age", value=f"{age} years old", inline=True)
 
@@ -585,28 +588,29 @@ class Birthday(commands.Cog):
     )
 
     @birthday_group.command(name="add", description="Set your birthday")
-    @app_commands.describe(date="Your birthday in YYYY-MM-DD format (year optional)")
+    @app_commands.describe(date="Your birthday in DD-MM-YYYY format (year optional)")
     async def birthday_add(self, interaction: discord.Interaction, date: str):
         """Set your birthday with timezone selection."""
         # Validate date format
-        date_pattern = r"^(\d{4}-)?\d{2}-\d{2}$"
+        date_pattern = r"^(\d{2}-\d{2}(-\d{4})?)$"
         if not re.match(date_pattern, date):
             embed = discord.Embed(
                 title="❌ Invalid Format",
-                description="Please use format: `YYYY-MM-DD` or `MM-DD`\nExample: `2000-03-15` or `03-15`",
+                description="Please use format: `DD-MM-YYYY` or `DD-MM`\nExample: `15-03-2000` or `15-03`",
                 color=discord.Color.red(),
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        # Parse date
-        if "-" in date and len(date.split("-")) == 3:
-            year, month, day = map(int, date.split("-"))
-            birth_date = f"{month:02d}-{day:02d}"
+        # Parse date for DD-MM-YYYY or DD-MM format
+        parts = date.split("-")
+        if len(parts) == 3:  # DD-MM-YYYY
+            day, month, year = map(int, parts)
+            birth_date = f"{month:02d}-{day:02d}"  # Store as MM-DD internally
             birth_year = year
-        else:
-            month, day = map(int, date.split("-"))
-            birth_date = f"{month:02d}-{day:02d}"
+        else:  # DD-MM
+            day, month = map(int, parts)
+            birth_date = f"{month:02d}-{day:02d}"  # Store as MM-DD internally
             birth_year = None
 
         # Validate date exists

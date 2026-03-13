@@ -692,7 +692,17 @@ class RoleInvitationView(ui.View):
                 value=f"<t:{int(datetime.now().timestamp())}:R>",
                 inline=True,
             )
-
+            renounce_field = (
+                "**Want to give up this role later?**\n"
+                "You can use the `/renounce` command to remove this role from yourself at any time.\n\n"
+                "**How it works:**\n"
+                "• `/renounce` - Shows a menu of roles you can give up\n"
+                "• `/renounce @role` - Directly give up a specific role\n\n"
+                "This will immediately remove the role from your profile and notify the owner."
+            )
+            success_embed.add_field(
+                name="🚪 How to Give Up This Role", value=renounce_field, inline=False
+            )
             await inter.followup.send(embed=success_embed)
 
             # Notify the owner
