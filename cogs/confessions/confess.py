@@ -1290,12 +1290,6 @@ class Confessions(commands.Cog):
                                     inline=False,
                                 )
 
-                            dm_embed.add_field(
-                                name="Deleted by",
-                                value=f"{interaction.user.name} (Moderator)",
-                                inline=False,
-                            )
-
                             dm_embed.set_footer(text=f"Confession #{confession_id}")
 
                             await author.send(embed=dm_embed)
