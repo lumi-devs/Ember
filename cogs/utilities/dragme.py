@@ -10,6 +10,7 @@ TIMEOUT_DURATION = 60  # seconds
 REQUESTS_FILE = "active_requests.json"
 MESSAGE_CLEANUP_DELAY = 5  # seconds - how long to wait before deleting user messages
 
+
 # --- Persistence helpers ---
 def load_requests():
     if not os.path.exists(REQUESTS_FILE):
@@ -20,15 +21,18 @@ def load_requests():
     except Exception:
         return []
 
+
 def save_requests_safe(requests):
     tmp = REQUESTS_FILE + ".tmp"
     with open(tmp, "w") as f:
         json.dump(requests, f)
     os.replace(tmp, REQUESTS_FILE)
 
+
 # Global state
 active_requests = load_requests()
 requests_lock = asyncio.Lock()
+
 
 def extract_user_id(content):
     mention_pattern = r"<@!?(\d+)>"
@@ -41,6 +45,7 @@ def extract_user_id(content):
 
     return None
 
+
 async def delete_message_after(message, delay: int):
     """Delete a message after specified delay"""
     await asyncio.sleep(delay)
@@ -50,6 +55,7 @@ async def delete_message_after(message, delay: int):
         pass
     except Exception:
         pass
+
 
 async def setup(bot: commands.Bot):
     # Load environment variables HERE after dotenv has run in main.py
@@ -61,7 +67,9 @@ async def setup(bot: commands.Bot):
         try:
             DRAGME_CHANNEL_ID = int(DRAGME_CHANNEL_ID)
         except ValueError:
-            print(f"⚠️ WARNING: DRAGME_CHANNEL_ID must be an integer, got: {DRAGME_CHANNEL_ID}")
+            print(
+                f"⚠️ WARNING: DRAGME_CHANNEL_ID must be an integer, got: {DRAGME_CHANNEL_ID}"
+            )
             DRAGME_CHANNEL_ID = None
 
     # Load blacklisted roles here
@@ -79,13 +87,13 @@ async def setup(bot: commands.Bot):
     # Store in bot instance so other cogs can access if needed
     bot.dragme_config = {
         "channel_id": DRAGME_CHANNEL_ID,
-        "blacklisted_roles": BLACKLISTED_VOICE_IDS
+        "blacklisted_roles": BLACKLISTED_VOICE_IDS,
     }
 
     # Channel cleanup task - periodically clean old user messages
     async def channel_cleanup_task():
         await bot.wait_until_ready()
-        
+
         while not bot.is_closed():
             try:
                 if DRAGME_CHANNEL_ID:
@@ -95,17 +103,19 @@ async def setup(bot: commands.Bot):
                         async for message in channel.history(limit=100):
                             if not message.author.bot:  # Only delete user messages
                                 # Check if message is older than 1 minute
-                                if (discord.utils.utcnow() - message.created_at).total_seconds() > 60:
+                                if (
+                                    discord.utils.utcnow() - message.created_at
+                                ).total_seconds() > 60:
                                     try:
                                         await message.delete()
                                     except:
                                         pass
             except Exception:
                 pass
-            
+
             # Run cleanup every 5 minutes
             await asyncio.sleep(300)
-    
+
     bot.loop.create_task(channel_cleanup_task())
 
     # Cleanup task for orphaned requests
@@ -149,12 +159,12 @@ async def setup(bot: commands.Bot):
     bot.loop.create_task(cleanup_orphaned_requests())
 
     # Use listener with high priority instead of event
-    @bot.listen('on_message')
+    @bot.listen("on_message")
     async def dragme_on_message(message):
         # Check if DRAGME_CHANNEL_ID is set
         if not DRAGME_CHANNEL_ID:
             return
-            
+
         if message.channel.id != DRAGME_CHANNEL_ID:
             return
 
@@ -188,7 +198,13 @@ async def setup(bot: commands.Bot):
             requester = message.author
 
             # Process the drag request
-            await process_drag_request(message.channel, requester, target, BLACKLISTED_VOICE_IDS, DRAGME_CHANNEL_ID)
+            await process_drag_request(
+                message.channel,
+                requester,
+                target,
+                BLACKLISTED_VOICE_IDS,
+                DRAGME_CHANNEL_ID,
+            )
 
     # Keep the original event as backup but with proper returns
     @bot.event
@@ -197,16 +213,19 @@ async def setup(bot: commands.Bot):
         # This will be overridden by bot.process_commands anyway
         pass
 
-    async def process_drag_request(channel, requester, target, BLACKLISTED_VOICE_IDS, DRAGME_CHANNEL_ID):
+    async def process_drag_request(
+        channel, requester, target, BLACKLISTED_VOICE_IDS, DRAGME_CHANNEL_ID
+    ):
         # Helper function to send and track messages for auto-deletion (only for response messages)
         async def send_temp_message(content=None, embed=None, delete_after=10):
-            msg = await channel.send(content=content, embed=embed, delete_after=delete_after)
+            msg = await channel.send(
+                content=content, embed=embed, delete_after=delete_after
+            )
             return msg
 
         if requester.id == target.id:
             return await send_temp_message(
-                f"{requester.mention} ❌ You cannot drag yourself!", 
-                delete_after=10
+                f"{requester.mention} ❌ You cannot drag yourself!", delete_after=10
             )
 
         if any(role.id in BLACKLISTED_VOICE_IDS for role in requester.roles):
@@ -286,7 +305,7 @@ async def setup(bot: commands.Bot):
                 description=f"{requester.mention} wants to join your voice channel!",
                 color=discord.Color.gold(),
             )
-            
+
             vc_embed.set_footer(
                 text=f"Use the buttons below to respond • Expires in {TIMEOUT_DURATION}s"
             )
@@ -442,7 +461,7 @@ async def setup(bot: commands.Bot):
                 view.msg = await target_channel.send(
                     f"{target.mention}", embed=vc_embed, view=view
                 )
-                
+
             except (discord.Forbidden, discord.HTTPException):
                 # Fallback to dragme channel if can't send in VC
                 dragme_channel = bot.get_channel(DRAGME_CHANNEL_ID)
@@ -457,7 +476,7 @@ async def setup(bot: commands.Bot):
                         value=f"{target.name}\n{target.mention}",
                         inline=True,
                     )
-                    
+
                     fallback_embed.set_footer(
                         text=f"Request expires in {TIMEOUT_DURATION} seconds • Target is in hidden VC"
                     )
@@ -511,14 +530,18 @@ async def setup(bot: commands.Bot):
     @commands.has_permissions(manage_messages=True)
     async def clean_dragme(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        
+
         if not DRAGME_CHANNEL_ID:
-            return await interaction.followup.send("❌ DragMe channel not configured!", ephemeral=True)
-        
+            return await interaction.followup.send(
+                "❌ DragMe channel not configured!", ephemeral=True
+            )
+
         channel = bot.get_channel(DRAGME_CHANNEL_ID)
         if not channel:
-            return await interaction.followup.send("❌ DragMe channel not found!", ephemeral=True)
-        
+            return await interaction.followup.send(
+                "❌ DragMe channel not found!", ephemeral=True
+            )
+
         deleted = 0
         async for message in channel.history(limit=100):
             if not message.author.bot:  # Only delete user messages
@@ -528,5 +551,7 @@ async def setup(bot: commands.Bot):
                     await asyncio.sleep(0.5)  # Small delay to avoid rate limits
                 except:
                     pass
-        
-        await interaction.followup.send(f"✅ Cleaned {deleted} user messages from {channel.mention}", ephemeral=True)
+
+        await interaction.followup.send(
+            f"✅ Cleaned {deleted} user messages from {channel.mention}", ephemeral=True
+        )

@@ -7,6 +7,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class DebateAnalytics(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -23,7 +24,7 @@ class DebateAnalytics(commands.Cog):
                 logger.info(f"Loaded analytics message ID: {self.analytics_message_id}")
         except Exception as e:
             logger.error(f"Failed to load analytics message ID: {e}")
-        
+
         # Mark as ready after loading
         self._ready = True
 
@@ -61,7 +62,9 @@ class DebateAnalytics(commands.Cog):
             f"Unique Debaters: {stats['unique_participants']}\n"
             f"Avg Debate Length: {stats['avg_length']}h"
         )
-        embed.add_field(name="📈 Server Debate Analytics", value=stats_text, inline=False)
+        embed.add_field(
+            name="📈 Server Debate Analytics", value=stats_text, inline=False
+        )
 
         if leaderboard:
             lb_text = ""
@@ -69,7 +72,9 @@ class DebateAnalytics(commands.Cog):
             for i, user in enumerate(leaderboard):
                 medal = medals[i] if i < 3 else f"{i+1}."
                 user_obj = self.bot.get_user(int(user["user_id"]))
-                name = user_obj.display_name if user_obj else f"User {user['user_id'][:5]}"
+                name = (
+                    user_obj.display_name if user_obj else f"User {user['user_id'][:5]}"
+                )
                 lb_text += f"{medal} **{name}** — {user['score']} pts\n"
         else:
             lb_text = "No data this week"
@@ -83,11 +88,17 @@ class DebateAnalytics(commands.Cog):
                     debate_link = thread.mention
                 else:
                     debate_link = f"https://discord.com/channels/@{'me'}/{FORUM_CHANNEL_ID}/{debate['thread_id']}"
-                safe_topic = debate["topic"][:40] + "..." if len(debate["topic"]) > 40 else debate["topic"]
+                safe_topic = (
+                    debate["topic"][:40] + "..."
+                    if len(debate["topic"]) > 40
+                    else debate["topic"]
+                )
                 trending_text += f"**{i+1}.** {debate_link} | {safe_topic} — {debate['message_count']} msgs ({debate['participant_count']} participants)\n"
         else:
             trending_text = "No active debates in last 24h"
-        embed.add_field(name="🔥 Trending Debates (Last 24h)", value=trending_text, inline=False)
+        embed.add_field(
+            name="🔥 Trending Debates (Last 24h)", value=trending_text, inline=False
+        )
 
         embed.set_footer(text="Updates every 10 minutes")
         return embed
@@ -121,7 +132,9 @@ class DebateAnalytics(commands.Cog):
             return None
         return None
 
-    async def get_or_create_analytics_message(self, dashboard_thread: discord.Thread) -> discord.Message | None:
+    async def get_or_create_analytics_message(
+        self, dashboard_thread: discord.Thread
+    ) -> discord.Message | None:
         """
         Get the analytics message using stored ID, or find an existing one, or create a new one.
         Updates self.analytics_message_id and stores it in DB.
@@ -132,7 +145,9 @@ class DebateAnalytics(commands.Cog):
                 msg = await dashboard_thread.fetch_message(self.analytics_message_id)
                 return msg
             except discord.NotFound:
-                logger.warning("Stored analytics message not found; will try to find another.")
+                logger.warning(
+                    "Stored analytics message not found; will try to find another."
+                )
                 self.analytics_message_id = None
                 # Clear invalid ID from database
                 await self.bot.db.set_config("analytics_message_id", "")
@@ -147,7 +162,9 @@ class DebateAnalytics(commands.Cog):
                     embed = msg.embeds[0]
                     if embed.title and "Debate Hall of Stats" in embed.title:
                         self.analytics_message_id = msg.id
-                        await self.bot.db.set_config("analytics_message_id", str(msg.id))
+                        await self.bot.db.set_config(
+                            "analytics_message_id", str(msg.id)
+                        )
                         logger.info(f"Found existing analytics message: {msg.id}")
                         return msg
         except Exception as e:
@@ -168,14 +185,16 @@ class DebateAnalytics(commands.Cog):
     async def _update_analytics(self):
         """Internal method to update analytics embed."""
         # Wait for cog to be fully loaded
-        if not hasattr(self, '_ready') or not self._ready:
+        if not hasattr(self, "_ready") or not self._ready:
             logger.info("Analytics cog not ready yet, skipping update")
             return
 
         try:
             dashboard_thread = await self.get_dashboard_thread()
             if not dashboard_thread:
-                logger.error("Dashboard thread not found (even in archives). Skipping analytics update.")
+                logger.error(
+                    "Dashboard thread not found (even in archives). Skipping analytics update."
+                )
                 return
 
             msg = await self.get_or_create_analytics_message(dashboard_thread)
@@ -209,6 +228,7 @@ class DebateAnalytics(commands.Cog):
         logger.info("Bot ready - DebateAnalytics will update soon")
         # Don't update immediately - let the before_loop handle it
         pass
+
 
 async def setup(bot):
     await bot.add_cog(DebateAnalytics(bot))

@@ -12,6 +12,7 @@ LOG_CHANNEL_ID = 1453409054314467339
 MEDIA_CHANNEL_ID = 1424139009931743382
 HOURLY_REPLY_LIMIT = 8
 
+
 class ReplyModal(ui.Modal, title="Anonymous Reply"):
     reply_input = ui.TextInput(
         label="Reply",
@@ -39,10 +40,9 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
 
         # NEW: Check hourly reply limit
         can_reply, reason, current_count = await can_user_reply(
-            self.user_id, 
-            HOURLY_REPLY_LIMIT
+            self.user_id, HOURLY_REPLY_LIMIT
         )
-        
+
         if not can_reply:
             return await interaction.followup.send(reason, ephemeral=True)
 
@@ -163,14 +163,13 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                 if success:
                     current_count = await get_hourly_reply_count(self.user_id)
                     remaining = HOURLY_REPLY_LIMIT - current_count
-                    
+
                     warning = ""
                     if remaining <= 2:  # Warn when only 2 or fewer replies left
                         warning = f"\n⚠️ **Warning:** You only have {remaining} reply{'s' if remaining != 1 else ''} left this hour!"
-                    
+
                     await interaction.followup.send(
-                        f"✅ Media added to reply!{warning}", 
-                        ephemeral=True
+                        f"✅ Media added to reply!{warning}", ephemeral=True
                     )
                     return result
             except discord.Forbidden:
@@ -202,11 +201,11 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             # Get current count to show updated usage
             current_count = await get_hourly_reply_count(self.user_id)
             remaining = HOURLY_REPLY_LIMIT - current_count
-            
+
             await interaction.followup.send(
                 f"⏰ Media upload timed out. Continuing without media.\n"
                 f"📊 Your reply has been counted. You have {remaining} replies remaining this hour.",
-                ephemeral=True
+                ephemeral=True,
             )
             return None
         except Exception as e:

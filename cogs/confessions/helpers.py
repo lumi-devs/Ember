@@ -23,6 +23,7 @@ def extract_url(text: str) -> Optional[str]:
     match = URL_REGEX.search(text)
     return match.group(0) if match else None
 
+
 async def get_hourly_reply_count(user_id: int) -> int:
     """Get the number of replies a user has made in the last hour."""
     try:
@@ -30,7 +31,7 @@ async def get_hourly_reply_count(user_id: int) -> int:
             one_hour_ago = discord.utils.utcnow() - datetime.timedelta(hours=1)
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM replies WHERE user_id = ? AND timestamp >= ?",
-                (user_id, one_hour_ago.isoformat())
+                (user_id, one_hour_ago.isoformat()),
             )
             return (await cursor.fetchone())[0]
     except Exception as e:
@@ -41,12 +42,12 @@ async def get_hourly_reply_count(user_id: int) -> int:
 async def can_user_reply(user_id: int, hourly_limit: int = 5) -> tuple[bool, str, int]:
     """
     Check if a user can make a reply based on hourly limit.
-    
+
     Returns: (can_reply: bool, reason: str, current_count: int)
     """
     try:
         current_count = await get_hourly_reply_count(user_id)
-        
+
         # Check if user has reached the limit
         if current_count >= hourly_limit:
             # Find when the oldest reply in the hour was made to estimate reset time
@@ -55,25 +56,36 @@ async def can_user_reply(user_id: int, hourly_limit: int = 5) -> tuple[bool, str
                     one_hour_ago = discord.utils.utcnow() - datetime.timedelta(hours=1)
                     cursor = await db.execute(
                         "SELECT timestamp FROM replies WHERE user_id = ? AND timestamp >= ? ORDER BY timestamp ASC LIMIT 1",
-                        (user_id, one_hour_ago.isoformat())
+                        (user_id, one_hour_ago.isoformat()),
                     )
                     result = await cursor.fetchone()
                     if result:
                         oldest_time = datetime.fromisoformat(result[0])
-                        reset_in = 3600 - (discord.utils.utcnow() - oldest_time).total_seconds()
+                        reset_in = (
+                            3600
+                            - (discord.utils.utcnow() - oldest_time).total_seconds()
+                        )
                         minutes = int(reset_in // 60)
                         seconds = int(reset_in % 60)
-                        return False, f"❌ You've reached the hourly limit of {hourly_limit} replies. You can reply again in {minutes}m {seconds}s.", current_count
+                        return (
+                            False,
+                            f"❌ You've reached the hourly limit of {hourly_limit} replies. You can reply again in {minutes}m {seconds}s.",
+                            current_count,
+                        )
             except Exception as e:
                 print(f"Error calculating reset time: {e}")
                 # Fall back to generic message if calculation fails
                 pass
-            
-            return False, f"❌ You've reached the hourly limit of {hourly_limit} replies. Please wait an hour before replying again.", current_count
-        
+
+            return (
+                False,
+                f"❌ You've reached the hourly limit of {hourly_limit} replies. Please wait an hour before replying again.",
+                current_count,
+            )
+
         # User hasn't reached the limit
         return True, "", current_count
-        
+
     except Exception as e:
         print(f"Error checking reply limit: {e}")
         return True, "", 0  # Allow on error to prevent blocking legitimate users
@@ -85,38 +97,41 @@ async def get_user_reply_stats(user_id: int) -> dict:
         async with aiosqlite.connect(DB_PATH) as db:
             # Total replies
             cursor = await db.execute(
-                "SELECT COUNT(*) FROM replies WHERE user_id = ?",
-                (user_id,)
+                "SELECT COUNT(*) FROM replies WHERE user_id = ?", (user_id,)
             )
             total = (await cursor.fetchone())[0]
-            
+
             # Replies in last hour
             one_hour_ago = discord.utils.utcnow() - datetime.timedelta(hours=1)
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM replies WHERE user_id = ? AND timestamp >= ?",
-                (user_id, one_hour_ago.isoformat())
+                (user_id, one_hour_ago.isoformat()),
             )
             hourly = (await cursor.fetchone())[0]
-            
+
             # Replies today
-            today_start = discord.utils.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            today_start = discord.utils.utcnow().replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM replies WHERE user_id = ? AND timestamp >= ?",
-                (user_id, today_start.isoformat())
+                (user_id, today_start.isoformat()),
             )
             daily = (await cursor.fetchone())[0]
-            
+
             return {
                 "total_replies": total,
                 "hourly_replies": hourly,
-                "daily_replies": daily
+                "daily_replies": daily,
             }
     except Exception as e:
         print(f"Error getting user reply stats: {e}")
         return {"total_replies": 0, "hourly_replies": 0, "daily_replies": 0}
-    
-    
-async def get_user_join_date(guild: discord.Guild, user_id: int) -> Optional[datetime.datetime]:
+
+
+async def get_user_join_date(
+    guild: discord.Guild, user_id: int
+) -> Optional[datetime.datetime]:
     """Get the date when a user joined the guild."""
     try:
         member = guild.get_member(user_id)
@@ -127,12 +142,14 @@ async def get_user_join_date(guild: discord.Guild, user_id: int) -> Optional[dat
     return None
 
 
-async def can_user_confess(guild: discord.Guild, user_id: int, daily_limit: int = 3) -> tuple[bool, str]:
+async def can_user_confess(
+    guild: discord.Guild, user_id: int, daily_limit: int = 3
+) -> tuple[bool, str]:
     """
     Check if a user can make a confession based on:
     - Must have been in server for at least 1 day
     - Cannot exceed daily limit
-    
+
     Returns: (can_confess: bool, reason: str)
     """
     # Check join date
@@ -141,23 +158,31 @@ async def can_user_confess(guild: discord.Guild, user_id: int, daily_limit: int 
         time_in_server = discord.utils.utcnow() - join_date
         if time_in_server.total_seconds() < 86400:  # 24 hours in seconds
             hours_left = 24 - (time_in_server.total_seconds() / 3600)
-            return False, f"⏳ You need to be in the server for at least 1 day before making confessions. Please wait {hours_left:.1f} more hours."
-    
+            return (
+                False,
+                f"⏳ You need to be in the server for at least 1 day before making confessions. Please wait {hours_left:.1f} more hours.",
+            )
+
     # Check daily confession count
     try:
         async with aiosqlite.connect(DB_PATH) as db:
-            today_start = discord.utils.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            today_start = discord.utils.utcnow().replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM confessions WHERE user_id = ? AND created_at >= ?",
-                (user_id, today_start.isoformat())
+                (user_id, today_start.isoformat()),
             )
             count = (await cursor.fetchone())[0]
-            
+
             if count >= daily_limit:
-                return False, f"❌ You've reached the daily limit of {daily_limit} confessions. Please use replies to engage with existing confessions instead."
+                return (
+                    False,
+                    f"❌ You've reached the daily limit of {daily_limit} confessions. Please use replies to engage with existing confessions instead.",
+                )
     except Exception as e:
         print(f"Error checking daily confession count: {e}")
-    
+
     return True, ""
 
 
@@ -165,10 +190,12 @@ async def get_daily_confession_count(user_id: int) -> int:
     """Get the number of confessions a user has made today."""
     try:
         async with aiosqlite.connect(DB_PATH) as db:
-            today_start = discord.utils.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            today_start = discord.utils.utcnow().replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM confessions WHERE user_id = ? AND created_at >= ?",
-                (user_id, today_start.isoformat())
+                (user_id, today_start.isoformat()),
             )
             return (await cursor.fetchone())[0]
     except Exception as e:
@@ -182,34 +209,35 @@ async def get_user_stats(user_id: int) -> dict:
         async with aiosqlite.connect(DB_PATH) as db:
             # Total confessions
             cursor = await db.execute(
-                "SELECT COUNT(*) FROM confessions WHERE user_id = ?",
-                (user_id,)
+                "SELECT COUNT(*) FROM confessions WHERE user_id = ?", (user_id,)
             )
             total = (await cursor.fetchone())[0]
-            
+
             # Today's confessions
-            today_start = discord.utils.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            today_start = discord.utils.utcnow().replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM confessions WHERE user_id = ? AND created_at >= ?",
-                (user_id, today_start.isoformat())
+                (user_id, today_start.isoformat()),
             )
             today = (await cursor.fetchone())[0]
-            
+
             # Total replies
             cursor = await db.execute(
-                "SELECT COUNT(*) FROM replies WHERE user_id = ?",
-                (user_id,)
+                "SELECT COUNT(*) FROM replies WHERE user_id = ?", (user_id,)
             )
             replies = (await cursor.fetchone())[0]
-            
+
             return {
                 "total_confessions": total,
                 "today_confessions": today,
-                "total_replies": replies
+                "total_replies": replies,
             }
     except Exception as e:
         print(f"Error getting user stats: {e}")
         return {"total_confessions": 0, "today_confessions": 0, "total_replies": 0}
+
 
 def is_image_url(url: str) -> bool:
     """Check if URL points to an image (strict check for common image formats)."""

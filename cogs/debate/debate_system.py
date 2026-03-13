@@ -443,15 +443,14 @@ class DebateSystem(commands.Cog):
     @commands.has_role(MOD_ROLE_ID)
     async def force_update_analytics(self, ctx):
         """Force update the analytics embed (Mod only)"""
-        analytics_cog = self.bot.get_cog('DebateAnalytics')
+        analytics_cog = self.bot.get_cog("DebateAnalytics")
         if not analytics_cog:
             await ctx.send("❌ Analytics cog not found!")
             return
-        
+
         await ctx.send("🔄 Forcing analytics update...")
         await analytics_cog._update_analytics()
         await ctx.send("✅ Analytics update attempted. Check the dashboard thread.")
-
 
     @debate.command(name="muted")
     @commands.has_role(MOD_ROLE_ID)

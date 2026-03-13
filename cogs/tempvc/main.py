@@ -49,10 +49,18 @@ class TempVoice(commands.Cog):
                         channel = self.bot.get_channel(voice_id)
                         if channel and panel_message_id:
                             # Recreate the view for this channel
-                            view = BasicControlsView(self, voice_id, user_id, is_gaming=False, message_id=panel_message_id)
+                            view = BasicControlsView(
+                                self,
+                                voice_id,
+                                user_id,
+                                is_gaming=False,
+                                message_id=panel_message_id,
+                            )
                             # Register it with Discord with the specific message ID
                             self.bot.add_view(view, message_id=panel_message_id)
-                            print(f"[TempVoice] Registered persistent view for channel {voice_id} with message {panel_message_id}")
+                            print(
+                                f"[TempVoice] Registered persistent view for channel {voice_id} with message {panel_message_id}"
+                            )
         except Exception as e:
             print(f"[TempVoice] Error loading persistent views: {e}")
 
@@ -507,15 +515,15 @@ class TempVoice(commands.Cog):
             await channel.send(embed=embed, view=view)
             await channel.send(embed=info_embed)
             view.message_id = message.id
-            
+
             # Store the message ID in the database for persistence
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute(
                     "UPDATE voiceChannel SET panel_message_id = ? WHERE voiceID = ?",
-                    (message.id, channel.id)
+                    (message.id, channel.id),
                 )
                 await db.commit()
-                
+
             # Important: Re-add the view with the specific message ID
             self.bot.add_view(view, message_id=message.id)
 

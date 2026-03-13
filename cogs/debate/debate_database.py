@@ -98,7 +98,9 @@ class DebateDatabase:
 
             # ALSO: Add last_updated to existing weekly_scores if missing
             try:
-                await db.execute("ALTER TABLE weekly_scores ADD COLUMN last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+                await db.execute(
+                    "ALTER TABLE weekly_scores ADD COLUMN last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+                )
             except:
                 pass  # Column already exists
 
@@ -114,7 +116,9 @@ class DebateDatabase:
     async def set_config(self, key: str, value: str) -> None:
         """Set a config key-value pair."""
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", (key, value))
+            await db.execute(
+                "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", (key, value)
+            )
             await db.commit()
 
     # Helper method to execute queries without connection reuse issues

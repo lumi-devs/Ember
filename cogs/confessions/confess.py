@@ -15,7 +15,11 @@ from cogs.confessions.helpers import (
     get_confession_by_id,
 )
 from cogs.confessions.reply import ReplyModal
-from cogs.confessions.helpers import can_user_confess, get_daily_confession_count, get_user_join_date
+from cogs.confessions.helpers import (
+    can_user_confess,
+    get_daily_confession_count,
+    get_user_join_date,
+)
 
 # Add this configuration near the other CONFIG constants
 DAILY_CONFESSION_LIMIT = 3
@@ -72,13 +76,11 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
 
         # NEW: Check join date and daily limit
         can_confess, reason = await can_user_confess(
-            interaction.guild, 
-            self.user_id, 
-            DAILY_CONFESSION_LIMIT
+            interaction.guild, self.user_id, DAILY_CONFESSION_LIMIT
         )
         if not can_confess:
             return await interaction.followup.send(reason, ephemeral=True)
-        
+
         channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
         if not channel:
             return await interaction.followup.send(
@@ -936,9 +938,7 @@ class PersistentConfessButton(ui.Button):
 
         # NEW: Check join date and daily limit
         can_confess, reason = await can_user_confess(
-            interaction.guild, 
-            interaction.user.id, 
-            DAILY_CONFESSION_LIMIT
+            interaction.guild, interaction.user.id, DAILY_CONFESSION_LIMIT
         )
         if not can_confess:
             return await interaction.response.send_message(reason, ephemeral=True)
@@ -947,6 +947,7 @@ class PersistentConfessButton(ui.Button):
         bot = interaction.client
         modal = ConfessionModal(bot)
         await interaction.response.send_modal(modal)
+
 
 # ==============================
 # MAIN COG
@@ -1028,9 +1029,7 @@ class Confessions(commands.Cog):
 
         # NEW: Check join date and daily limit
         can_confess, reason = await can_user_confess(
-            interaction.guild, 
-            interaction.user.id, 
-            DAILY_CONFESSION_LIMIT
+            interaction.guild, interaction.user.id, DAILY_CONFESSION_LIMIT
         )
         if not can_confess:
             return await interaction.response.send_message(reason, ephemeral=True)
@@ -1039,51 +1038,394 @@ class Confessions(commands.Cog):
         await interaction.response.send_modal(modal)
 
     @app_commands.command(
-        name="confess_stats", description="Show confession statistics"
+        name="confess_delete",
+        description="Delete a confession by ID and renumber all subsequent confessions",
+    )
+    @app_commands.describe(
+        confession_id="The ID of the confession to delete",
+        reason="Reason for deletion (optional)",
     )
     @app_commands.default_permissions(manage_messages=True)
-    async def confess_stats(self, interaction: discord.Interaction):
-        """Show statistics about confessions"""
+    async def confess_delete(
+        self, interaction: discord.Interaction, confession_id: int, reason: str = None
+    ):
+        """Delete a confession by ID and renumber all subsequent confessions"""
+        # Check if user has manage_server permission
+        if not interaction.user.guild_permissions.manage_guild:
+            return await interaction.response.send_message(
+                "❌ You need `Manage Server` permission to use this command.",
+                ephemeral=True,
+            )
+
+        await interaction.response.defer(ephemeral=True)
+
         try:
             async with aiosqlite.connect(DB_PATH) as db:
-                # Total confessions
-                cursor = await db.execute("SELECT COUNT(*) FROM confessions")
-                total_confessions = (await cursor.fetchone())[0]
-
-                # Today's confessions
+                # First, check if confession exists and get its details
                 cursor = await db.execute(
-                    "SELECT COUNT(*) FROM confessions WHERE DATE(created_at) = DATE('now')"
+                    "SELECT message_id, user_id, title, description FROM confessions WHERE id = ?",
+                    (confession_id,),
                 )
-                today_confessions = (await cursor.fetchone())[0]
+                confession = await cursor.fetchone()
 
-                # Total bans
-                cursor = await db.execute("SELECT COUNT(*) FROM confessban")
-                total_bans = (await cursor.fetchone())[0]
+                if not confession:
+                    return await interaction.followup.send(
+                        f"❌ Confession #{confession_id} not found in database.",
+                        ephemeral=True,
+                    )
 
-                # Total reports
-                cursor = await db.execute("SELECT COUNT(*) FROM reports")
-                total_reports = (await cursor.fetchone())[0]
+                message_id, author_id, title, description = confession
 
-            embed = discord.Embed(
-                title="📊 Confession Statistics",
-                color=discord.Color.blue(),
-                timestamp=datetime.utcnow(),
-            )
-            embed.add_field(
-                name="Total Confessions", value=total_confessions, inline=True
-            )
-            embed.add_field(
-                name="Today's Confessions", value=today_confessions, inline=True
-            )
-            embed.add_field(name="Total Bans", value=total_bans, inline=True)
-            embed.add_field(name="Total Reports", value=total_reports, inline=True)
+                # Get the author to DM them
+                try:
+                    author = await self.bot.fetch_user(author_id)
+                except:
+                    author = None
 
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+                # Get max confession ID to know range
+                cursor = await db.execute("SELECT MAX(id) FROM confessions")
+                max_id = (await cursor.fetchone())[0]
+
+                # Get all confessions that will be affected (IDs > deleted ID)
+                cursor = await db.execute(
+                    "SELECT id, message_id FROM confessions WHERE id > ? ORDER BY id",
+                    (confession_id,),
+                )
+                confessions_to_update = await cursor.fetchall()
+
+                # Get count of replies to be deleted
+                cursor = await db.execute(
+                    "SELECT COUNT(*) FROM replies WHERE confession_id = ?",
+                    (confession_id,),
+                )
+                reply_count = (await cursor.fetchone())[0]
+
+                # Begin transaction
+                await db.execute("BEGIN TRANSACTION")
+
+                try:
+                    # Delete the confession message and its thread from Discord
+                    channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
+                    message_deleted = False
+                    thread_deleted = False
+
+                    if channel and message_id:
+                        try:
+                            # Try to fetch the message
+                            msg = await channel.fetch_message(message_id)
+
+                            # Delete the thread first if it exists (this deletes all replies in it)
+                            if msg.thread:
+                                try:
+                                    await msg.thread.delete()
+                                    thread_deleted = True
+                                    print(
+                                        f"[Confession Delete] Deleted thread for confession #{confession_id}"
+                                    )
+                                except discord.NotFound:
+                                    print(
+                                        f"[Confession Delete] Thread for confession #{confession_id} already deleted"
+                                    )
+                                except discord.Forbidden:
+                                    print(
+                                        f"[Confession Delete] No permission to delete thread for confession #{confession_id}"
+                                    )
+                                except Exception as e:
+                                    print(
+                                        f"[Confession Delete] Error deleting thread: {e}"
+                                    )
+
+                            # Delete the message
+                            await msg.delete()
+                            message_deleted = True
+                            print(
+                                f"[Confession Delete] Deleted message for confession #{confession_id}"
+                            )
+                        except discord.NotFound:
+                            print(
+                                f"[Confession Delete] Message for confession #{confession_id} not found"
+                            )
+                        except discord.Forbidden:
+                            print(
+                                f"[Confession Delete] No permission to delete message for confession #{confession_id}"
+                            )
+                        except Exception as e:
+                            print(f"[Confession Delete] Error deleting message: {e}")
+
+                    # Delete all replies for this confession from database
+                    await db.execute(
+                        "DELETE FROM replies WHERE confession_id = ?", (confession_id,)
+                    )
+
+                    # Delete reports for this confession
+                    await db.execute(
+                        "DELETE FROM reports WHERE target_type = 'confession' AND target_id = ?",
+                        (confession_id,),
+                    )
+
+                    # Delete the confession itself
+                    await db.execute(
+                        "DELETE FROM confessions WHERE id = ?", (confession_id,)
+                    )
+
+                    # Now renumber all confessions that come after the deleted one
+                    update_count = 0
+                    for old_id, old_message_id in confessions_to_update:
+                        new_id = old_id - 1
+
+                        # Update the confession ID
+                        await db.execute(
+                            "UPDATE confessions SET id = ? WHERE id = ?",
+                            (new_id, old_id),
+                        )
+
+                        # Update replies to point to new confession ID
+                        await db.execute(
+                            "UPDATE replies SET confession_id = ? WHERE confession_id = ?",
+                            (new_id, old_id),
+                        )
+
+                        # Update reports to point to new confession ID
+                        await db.execute(
+                            "UPDATE reports SET target_id = ? WHERE target_type = 'confession' AND target_id = ?",
+                            (new_id, old_id),
+                        )
+
+                        # Update the Discord message if we have the message ID
+                        if channel and old_message_id:
+                            try:
+                                msg = await channel.fetch_message(old_message_id)
+                                if msg and msg.embeds:
+                                    # Update the embed title and footer to show new confession number
+                                    embed = msg.embeds[0]
+
+                                    # Update title if it contains the confession number
+                                    if embed.title and f"#{old_id}" in embed.title:
+                                        embed.title = embed.title.replace(
+                                            f"#{old_id}", f"#{new_id}"
+                                        )
+                                    elif (
+                                        embed.title
+                                        and f"Confession #{old_id}" in embed.title
+                                    ):
+                                        embed.title = embed.title.replace(
+                                            f"Confession #{old_id}",
+                                            f"Confession #{new_id}",
+                                        )
+
+                                    # Update footer if it contains the confession number
+                                    if (
+                                        embed.footer
+                                        and embed.footer.text
+                                        and f"#{old_id}" in embed.footer.text
+                                    ):
+                                        embed.footer.text = embed.footer.text.replace(
+                                            f"#{old_id}", f"#{new_id}"
+                                        )
+
+                                    # Get the current view and update its custom IDs
+                                    view = None
+                                    if msg.components:
+                                        # Create a new view with updated confession ID
+                                        is_latest = (
+                                            new_id == max_id - 1
+                                        )  # Check if this is now the latest
+                                        view = PersistentConfessionView(
+                                            new_id, show_confess_button=is_latest
+                                        )
+
+                                    await msg.edit(embed=embed, view=view)
+                                    print(
+                                        f"[Confession Delete] Updated message for confession #{old_id} to #{new_id}"
+                                    )
+                            except (discord.NotFound, discord.HTTPException) as e:
+                                print(
+                                    f"[Confession Delete] Could not update message for confession #{old_id}: {e}"
+                                )
+
+                        update_count += 1
+
+                    # Fix the auto-increment sequence
+                    await db.execute(
+                        "UPDATE sqlite_sequence SET seq = ? WHERE name = 'confessions'",
+                        (max_id - 1,),
+                    )
+
+                    await db.commit()
+
+                    # DM the author about the deletion
+                    dm_sent = False
+                    if author:
+                        try:
+                            dm_embed = discord.Embed(
+                                title="🗑️ Your Confession Was Deleted",
+                                description=f"Your confession (ID: #{confession_id}) has been removed by a moderator.",
+                                color=discord.Color.red(),
+                                timestamp=datetime.utcnow(),
+                            )
+
+                            if title:
+                                dm_embed.add_field(
+                                    name="Title", value=title, inline=False
+                                )
+                            if description:
+                                # Truncate description for DM
+                                short_desc = (
+                                    description[:200] + "..."
+                                    if len(description) > 200
+                                    else description
+                                )
+                                dm_embed.add_field(
+                                    name="Content", value=short_desc, inline=False
+                                )
+
+                            if reason:
+                                dm_embed.add_field(
+                                    name="Reason", value=reason, inline=False
+                                )
+                            else:
+                                dm_embed.add_field(
+                                    name="Reason",
+                                    value="No specific reason provided.",
+                                    inline=False,
+                                )
+
+                            dm_embed.add_field(
+                                name="Deleted by",
+                                value=f"{interaction.user.name} (Moderator)",
+                                inline=False,
+                            )
+
+                            dm_embed.set_footer(text=f"Confession #{confession_id}")
+
+                            await author.send(embed=dm_embed)
+                            dm_sent = True
+                        except discord.Forbidden:
+                            print(
+                                f"[Confession Delete] Cannot DM user {author_id} - DMs disabled"
+                            )
+                        except Exception as e:
+                            print(f"[Confession Delete] Error DMing user: {e}")
+
+                    # Create response embed
+                    embed = discord.Embed(
+                        title="✅ Confession Deleted & Renumbered",
+                        color=discord.Color.red(),
+                        timestamp=datetime.utcnow(),
+                    )
+                    embed.add_field(
+                        name="Deleted ID", value=str(confession_id), inline=True
+                    )
+                    embed.add_field(
+                        name="Replies Deleted", value=str(reply_count), inline=True
+                    )
+                    embed.add_field(
+                        name="Renumbered",
+                        value=f"✅ {update_count} confession{'s' if update_count != 1 else ''} renumbered",
+                        inline=True,
+                    )
+
+                    status = []
+                    status.append("✅ Database entry removed and renumbered")
+                    if message_deleted:
+                        status.append("✅ Message deleted")
+                    else:
+                        status.append("❌ Message not found or couldn't be deleted")
+                    if thread_deleted:
+                        status.append("✅ Thread deleted")
+                    if dm_sent:
+                        status.append("✅ Author notified via DM")
+                    elif author:
+                        status.append("❌ Could not DM author (DMs disabled)")
+                    else:
+                        status.append("❌ Could not fetch author")
+
+                    embed.add_field(
+                        name="Status", value="\n".join(status), inline=False
+                    )
+
+                    if title:
+                        embed.add_field(name="Title", value=title, inline=False)
+                    if description:
+                        short_desc = (
+                            description[:200] + "..."
+                            if len(description) > 200
+                            else description
+                        )
+                        embed.add_field(name="Content", value=short_desc, inline=False)
+                    if reason:
+                        embed.add_field(name="Reason", value=reason, inline=False)
+
+                    embed.set_footer(text=f"Deleted by {interaction.user.display_name}")
+
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+
+                    # Log the deletion
+                    await self.log_confession_deletion(
+                        interaction,
+                        confession_id,
+                        author_id,
+                        reply_count,
+                        update_count,
+                        dm_sent,
+                        reason,
+                    )
+
+                except Exception as e:
+                    await db.execute("ROLLBACK")
+                    raise e
 
         except Exception as e:
-            await interaction.response.send_message(
-                f"❌ Error fetching statistics: {e}", ephemeral=True
+            print(f"[Confession Delete] Error: {e}")
+            import traceback
+
+            traceback.print_exc()
+            await interaction.followup.send(
+                f"❌ An error occurred while deleting confession #{confession_id}: {str(e)}",
+                ephemeral=True,
             )
+
+    async def log_confession_deletion(
+        self,
+        interaction,
+        confession_id,
+        author_id,
+        reply_count,
+        renumber_count,
+        dm_sent,
+        reason,
+    ):
+        """Log confession deletion to log channel"""
+        log_channel = self.bot.get_channel(LOG_CHANNEL_ID)
+        if not log_channel:
+            return
+
+        try:
+            embed = discord.Embed(
+                title="🗑️ Confession Deleted & Renumbered",
+                color=discord.Color.orange(),
+                timestamp=datetime.utcnow(),
+            )
+            embed.add_field(name="Deleted ID", value=str(confession_id), inline=True)
+            embed.add_field(name="Author", value=f"<@{author_id}>", inline=True)
+            embed.add_field(name="Replies Deleted", value=str(reply_count), inline=True)
+            embed.add_field(name="Renumbered", value=str(renumber_count), inline=True)
+            embed.add_field(
+                name="Author Notified",
+                value="✅ Yes" if dm_sent else "❌ No",
+                inline=True,
+            )
+            embed.add_field(
+                name="Deleted by",
+                value=f"{interaction.user.mention} ({interaction.user.id})",
+                inline=False,
+            )
+            if reason:
+                embed.add_field(name="Reason", value=reason, inline=False)
+
+            await log_channel.send(embed=embed)
+        except Exception as e:
+            print(f"Error logging confession deletion: {e}")
 
 
 async def setup(bot):

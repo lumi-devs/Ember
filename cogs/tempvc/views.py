@@ -65,7 +65,14 @@ class ControlPanel(View):
 
 
 class BasicControlsView(ControlPanel):
-    def __init__(self, cog, channel_id: int, owner_id: int, is_gaming: bool = False, message_id: int = None):
+    def __init__(
+        self,
+        cog,
+        channel_id: int,
+        owner_id: int,
+        is_gaming: bool = False,
+        message_id: int = None,
+    ):
         super().__init__(cog, channel_id, owner_id, message_id)
         self.is_gaming = is_gaming
         self.db_path = GAMING_DB_PATH if is_gaming else DB_PATH
@@ -141,7 +148,6 @@ class BasicControlsView(ControlPanel):
 
         self.add_item(transfer_btn)
         self.add_item(claim_btn)
-
 
 
 # --------------------- BUTTON CLASSES ---------------------

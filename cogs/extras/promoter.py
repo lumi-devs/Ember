@@ -19,9 +19,11 @@ class PromoterRole(commands.Cog):
         ]
         self.server_tag = "qtπ"
         self.log_channel_id = 1443119503285293098
-        
+
         # Get target guild ID from environment variable
-        self.target_guild_id = int(os.environ.get("GUILD_ID", "0"))  # Default to 0 if not set
+        self.target_guild_id = int(
+            os.environ.get("GUILD_ID", "0")
+        )  # Default to 0 if not set
 
         self.init_db()
         self.status_cache = {}  # Cache to track status changes
@@ -46,32 +48,39 @@ class PromoterRole(commands.Cog):
 
             conn.commit()
 
-
     @commands.Cog.listener()
     async def on_guild_update(self, before, after):
         """Detect when guild properties change (including tag)"""
         # Check if the tag changed
         if before.tag != after.tag:
             print(f"🏷️ Server tag changed from '{before.tag}' to '{after.tag}'")
-            
+
             # If the new tag matches our target tag, we need to check all members
             if after.tag == self.server_tag:
-                print(f"✅ New tag matches target '{self.server_tag}', checking all members...")
-                
+                print(
+                    f"✅ New tag matches target '{self.server_tag}', checking all members..."
+                )
+
                 # Check all members in this guild
                 for member in after.members:
                     if not member.bot:
-                        await self.instant_member_check(member, f"Server tag changed to {after.tag}")
-            
+                        await self.instant_member_check(
+                            member, f"Server tag changed to {after.tag}"
+                        )
+
             # If the old tag was our target tag and now it's different
             elif before.tag == self.server_tag and after.tag != self.server_tag:
-                print(f"❌ Tag changed from target '{self.server_tag}' to '{after.tag}', checking all members...")
-                
+                print(
+                    f"❌ Tag changed from target '{self.server_tag}' to '{after.tag}', checking all members..."
+                )
+
                 # Check all members who might lose promoter status
                 for member in after.members:
                     if not member.bot:
-                        await self.instant_member_check(member, f"Server tag changed from {before.tag} to {after.tag}")
-
+                        await self.instant_member_check(
+                            member,
+                            f"Server tag changed from {before.tag} to {after.tag}",
+                        )
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -146,17 +155,17 @@ class PromoterRole(commands.Cog):
                 return False
 
             primary_guild = member.primary_guild
-            
+
             # Check if primary guild ID matches target guild ID
             if primary_guild.id != self.target_guild_id:
                 return False
-                
+
             # Check if the tag matches our target tag
             if not hasattr(primary_guild, "tag") or primary_guild.tag is None:
                 return False
 
             return str(primary_guild.tag) == str(self.server_tag)
-            
+
         except Exception as e:
             print(f"Error checking primary guild tag: {e}")
             return False
@@ -281,7 +290,7 @@ class PromoterRole(commands.Cog):
 
             if action_type == "assigned":
                 embed = discord.Embed(
-                description=f"**:fish_cake: THANK YOU!!!!**\n\n**{member.mention}** is promoting our server! <:ehm:1390067566503788625>\n\n**__YOU JUST RECEIVED THE SOME PERKS!!!__**",
+                    description=f"**:fish_cake: THANK YOU!!!!**\n\n**{member.mention}** is promoting our server! <:ehm:1390067566503788625>\n\n**__YOU JUST RECEIVED THE SOME PERKS!!!__**",
                     color=0x00FF00,
                     timestamp=datetime.now(),
                 )
@@ -319,7 +328,7 @@ class PromoterRole(commands.Cog):
                 return await ctx.reply(
                     "⚠️ This user has a primary guild but no tag set."
                 )
-            
+
             guild_id = primary_guild.id
             would_promote = tag == self.server_tag and guild_id == self.target_guild_id
 
@@ -328,9 +337,7 @@ class PromoterRole(commands.Cog):
             embed.add_field(name="Primary Guild Tag", value=f"**{tag}**", inline=True)
             embed.add_field(name="Guild ID", value=f"**{guild_id}**", inline=True)
             embed.add_field(
-                name="Target Guild ID", 
-                value=f"**{self.target_guild_id}**", 
-                inline=True
+                name="Target Guild ID", value=f"**{self.target_guild_id}**", inline=True
             )
             embed.add_field(
                 name="Promoter Status",
@@ -363,7 +370,9 @@ class PromoterRole(commands.Cog):
         embed.add_field(name="👥 Promoters", value=total_promoters, inline=True)
         embed.add_field(name="🏷️ Primary Tags", value=members_with_tag, inline=True)
         embed.add_field(name="🔄 Check Interval", value="30 seconds", inline=True)
-        embed.add_field(name="🎯 Target Guild ID", value=self.target_guild_id, inline=True)
+        embed.add_field(
+            name="🎯 Target Guild ID", value=self.target_guild_id, inline=True
+        )
 
         await ctx.send(embed=embed)
 
@@ -406,7 +415,9 @@ class PromoterRole(commands.Cog):
         )
         embed.add_field(name="🏷️ Tag Value", value=tag_value, inline=True)
         embed.add_field(name="🏛️ Guild ID", value=guild_id, inline=True)
-        embed.add_field(name="🎯 Target Guild ID", value=self.target_guild_id, inline=True)
+        embed.add_field(
+            name="🎯 Target Guild ID", value=self.target_guild_id, inline=True
+        )
 
         has_promotion = await self.has_promotion_content(target)
         role = ctx.guild.get_role(self.promoter_role_id)
