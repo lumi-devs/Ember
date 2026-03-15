@@ -9,3 +9,4 @@ __pycache__/
 cogs/channels/__pycache__/
 data/
 venv/*
+.ruff_cache

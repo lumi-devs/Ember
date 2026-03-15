@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands, tasks
 import random
 
-DURATION = 10
+DURATION = 120
 
 
 class CustomStatusRotator(commands.Cog):
@@ -12,28 +12,27 @@ class CustomStatusRotator(commands.Cog):
             "Living the femboy life",
             "Rebiz is a femboy",
             "Garamchai: 99% chai 1% hooman",
-            "Muse: Playing roblox like its doomsday.",
-            "Aster makes everyday feel like a festival",
             "Dabi is suffering from main character syndrome",
-            "Rae is pretty as the first drop of rain",
             "Chilling at The Aakhri Station",
-            "Watching cat videos",
             "Meow Meow Cuddles?",
             "Mango and her aam zindagi :p ",
             "Sophicticasted monkey, definetely not human!",
-            "honey bunny honey bunny",
             "avii is a professional yapper",
             "Hannan the fiddler",
             "LEMME CATCH THE CATS!!",
-            "Mother HONEY??",
             "avi yappity yappity yap yap",
             "DAMIEN ITS ROBLOX TIME",
             "Chai Pe Charcha with Garamchai",
             "Let's play ROBLOX!!",
             "Meow meow???",
-            "Kims IS A 13YO!",
             "Aster and chai in gulugulu mood 24/7",
             "aagmeinghee swaha!",
+            "THEKUA ARE WE A THING YET!!",
+            "Wanna join GILLI GANG SO BAD :<",
+            "Damien is my Sugar Daddy (Fr)",
+            "Vanilla, in my DMS RIGHT NOWWWWW",
+            "I hate when harsh bullies me :(",
+
         ]
         self.queue = []  # Random order list
         self.last_status = None  # To avoid accidental repeat
