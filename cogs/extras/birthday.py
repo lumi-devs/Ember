@@ -103,10 +103,10 @@ class TimezoneSelect(discord.ui.Select):
         month, day = view.birth_date.split("-")
         if view.birth_year:
             birth_display = f"{day}-{month}-{view.birth_year}"  # DD-MM-YYYY
-        else:
-            birth_display = f"{day}-{month}"  # DD-MM
             age = datetime.now().year - view.birth_year
             embed.add_field(name="Age", value=f"{age} years old", inline=True)
+        else:
+            birth_display = f"{day}-{month}"  # DD-MM
 
         embed.add_field(name="Birthday", value=birth_display, inline=True)
         embed.add_field(name="Timezone", value=view.selected_timezone, inline=True)
@@ -285,7 +285,7 @@ class PreviousButton(discord.ui.Button):
 
     def __init__(self, enabled: bool):
         super().__init__(
-            style=discord.ButtonStyle.primary,
+            style=discord.ButtonStyle.secondary,
             label="◀ Previous",
             disabled=not enabled,
             row=0,
@@ -307,7 +307,7 @@ class NextButton(discord.ui.Button):
 
     def __init__(self, enabled: bool):
         super().__init__(
-            style=discord.ButtonStyle.primary,
+            style=discord.ButtonStyle.secondary,
             label="Next ▶",
             disabled=not enabled,
             row=0,
@@ -451,7 +451,7 @@ class Birthday(commands.Cog):
                 local_time = now.astimezone(tz)
 
                 # Is it midnight? (0:00 - 0:01 window)
-                if local_time.hour == 0 and local_time.minute == 0:
+                if local_time.hour == 0 and local_time.minute <= 1:
                     today = local_time.strftime("%m-%d")
 
                     if birth_date == today:
@@ -459,6 +459,11 @@ class Birthday(commands.Cog):
 
             except Exception as e:
                 print(f"Birthday check error for user {user_id}: {e}")
+
+    @birthday_check.before_loop
+    async def before_birthday_check(self):
+        """Wait until the bot is ready before starting the birthday check loop."""
+        await self.bot.wait_until_ready()
 
     async def send_birthday_wishes(self, user_id: int, year: int):
         """Send birthday wishes to all guilds the user is in."""
@@ -703,7 +708,6 @@ class Birthday(commands.Cog):
             return
 
         # Calculate days until next birthday for each user
-        datetime.now()
         upcoming = []
 
         for user_id, birth_date, birth_year, tz_name in all_users:
