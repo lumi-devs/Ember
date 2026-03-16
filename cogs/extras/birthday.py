@@ -674,7 +674,7 @@ class Birthday(commands.Cog):
                 description="No birthdays have been set in this server yet!",
                 color=discord.Color.orange(),
             )
-            await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
         # Calculate days until next birthday for each user
@@ -712,12 +712,12 @@ class Birthday(commands.Cog):
                 description="No upcoming birthdays found in this server.",
                 color=discord.Color.orange(),
             )
-            await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
         # Create paginated view
         view = UpcomingBirthdaysView(upcoming, interaction.guild.name, self.bot)
-        await interaction.followup.send(embed=view.get_page_embed(), view=view)
+        await interaction.followup.send(embed=view.get_page_embed(), view=view, ephemeral=True)
 
     @birthday_group.command(
         name="remove", description="Remove your birthday from the system"
