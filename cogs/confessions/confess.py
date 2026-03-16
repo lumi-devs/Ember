@@ -1204,10 +1204,7 @@ class Confessions(commands.Cog):
                                         embed.title = embed.title.replace(
                                             f"#{old_id}", f"#{new_id}"
                                         )
-                                    elif (
-                                        embed.title
-                                        and f"Confession #{old_id}" in embed.title
-                                    ):
+                                    elif embed.title and f"Confession #{old_id}" in embed.title:
                                         embed.title = embed.title.replace(
                                             f"Confession #{old_id}",
                                             f"Confession #{new_id}",
@@ -1223,20 +1220,19 @@ class Confessions(commands.Cog):
                                             f"#{old_id}", f"#{new_id}"
                                         )
 
-                                    # Get the current view and update its custom IDs
-                                    view = None
-                                    if msg.components:
-                                        # Create a new view with updated confession ID
-                                        is_latest = (
-                                            new_id == max_id - 1
-                                        )  # Check if this is now the latest
-                                        view = PersistentConfessionView(
-                                            new_id, show_confess_button=is_latest
-                                        )
+                                    # Determine if this is the new latest confession
+                                    # After renumbering, the highest ID will be max_id - 1
+                                    new_max_id = max_id - 1
+                                    is_latest = (new_id == new_max_id)
+                                    
+                                    # Create view with updated confession ID
+                                    view = PersistentConfessionView(
+                                        new_id, show_confess_button=is_latest
+                                    )
 
                                     await msg.edit(embed=embed, view=view)
                                     print(
-                                        f"[Confession Delete] Updated message for confession #{old_id} to #{new_id}"
+                                        f"[Confession Delete] Updated message for confession #{old_id} to #{new_id} (Latest: {is_latest})"
                                     )
                             except (discord.NotFound, discord.HTTPException) as e:
                                 print(
