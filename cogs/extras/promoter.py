@@ -307,7 +307,7 @@ class PromoterRole(commands.Cog):
                 )
             embed.set_thumbnail(url=member.display_avatar.url)
 
-            await channel.send(content=member.mention, embed=embed)
+            await channel.send(embed=embed)
 
         except Exception:
             pass
