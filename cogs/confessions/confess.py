@@ -1216,28 +1216,39 @@ class Confessions(commands.Cog):
                                         and embed.footer.text
                                         and f"#{old_id}" in embed.footer.text
                                     ):
-                                        embed.footer.text = embed.footer.text.replace(
+                                        # Create a new footer text with updated ID
+                                        new_footer_text = embed.footer.text.replace(
                                             f"#{old_id}", f"#{new_id}"
                                         )
+                                        embed.set_footer(text=new_footer_text)
 
                                     # Determine if this is the new latest confession
                                     # After renumbering, the highest ID will be max_id - 1
                                     new_max_id = max_id - 1
                                     is_latest = (new_id == new_max_id)
                                     
-                                    # Create view with updated confession ID
+                                    print(f"[Confession Delete] Updating confession #{old_id} -> #{new_id}, is_latest: {is_latest}, new_max_id: {new_max_id}")
+                                    
+                                    # Create new view with updated confession ID
+                                    # IMPORTANT: We need to create a completely new view
                                     view = PersistentConfessionView(
                                         new_id, show_confess_button=is_latest
                                     )
-
+                                    
+                                    # Edit the message with both updated embed and new view
                                     await msg.edit(embed=embed, view=view)
+                                    
                                     print(
-                                        f"[Confession Delete] Updated message for confession #{old_id} to #{new_id} (Latest: {is_latest})"
+                                        f"[Confession Delete] ✅ Updated message for confession #{old_id} to #{new_id} (Latest: {is_latest})"
                                     )
-                            except (discord.NotFound, discord.HTTPException) as e:
-                                print(
-                                    f"[Confession Delete] Could not update message for confession #{old_id}: {e}"
-                                )
+                            except discord.NotFound:
+                                print(f"[Confession Delete] Message for confession #{old_id} not found")
+                            except discord.HTTPException as e:
+                                print(f"[Confession Delete] HTTP error updating message for confession #{old_id}: {e}")
+                            except Exception as e:
+                                print(f"[Confession Delete] Unexpected error updating message for confession #{old_id}: {e}")
+                                import traceback
+                                traceback.print_exc()
 
                         update_count += 1
 
