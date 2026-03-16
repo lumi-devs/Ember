@@ -17,7 +17,7 @@ class PromoterRole(commands.Cog):
             "discord.gg/aakhristation",
             "aakhristation",
         ]
-        self.server_tag = "qtπ"
+        self.server_tag = "Raही"
         self.log_channel_id = 1443119503285293098
 
         # Get target guild ID from environment variable
