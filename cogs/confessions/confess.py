@@ -1230,7 +1230,6 @@ class Confessions(commands.Cog):
                                     print(f"[Confession Delete] Updating confession #{old_id} -> #{new_id}, is_latest: {is_latest}, new_max_id: {new_max_id}")
                                     
                                     # Create new view with updated confession ID
-                                    # IMPORTANT: We need to create a completely new view
                                     view = PersistentConfessionView(
                                         new_id, show_confess_button=is_latest
                                     )
@@ -1251,6 +1250,48 @@ class Confessions(commands.Cog):
                                 traceback.print_exc()
 
                         update_count += 1
+
+                    # SPECIAL CASE: If we're deleting the latest confession, we need to update the previous one
+                    # to add the confess button
+                    if confession_id == max_id:
+                        print(f"[Confession Delete] Deleting latest confession #{confession_id}, updating previous confession")
+                        
+                        # Get the previous confession (which will become the new latest)
+                        cursor = await db.execute(
+                            "SELECT id, message_id FROM confessions WHERE id = ?",
+                            (confession_id - 1,),
+                        )
+                        prev_confession = await cursor.fetchone()
+                        
+                        if prev_confession:
+                            prev_id, prev_message_id = prev_confession
+                            print(f"[Confession Delete] Previous confession found: #{prev_id}")
+                            
+                            if channel and prev_message_id:
+                                try:
+                                    msg = await channel.fetch_message(prev_message_id)
+                                    if msg and msg.embeds:
+                                        embed = msg.embeds[0]
+                                        
+                                        # Create new view WITH confess button since this is now the latest
+                                        view = PersistentConfessionView(
+                                            prev_id, show_confess_button=True
+                                        )
+                                        
+                                        # Edit the message with new view
+                                        await msg.edit(view=view)
+                                        
+                                        print(f"[Confession Delete] ✅ Added confess button to previous confession #{prev_id}")
+                                except discord.NotFound:
+                                    print(f"[Confession Delete] Message for previous confession #{prev_id} not found")
+                                except discord.HTTPException as e:
+                                    print(f"[Confession Delete] HTTP error updating previous confession: {e}")
+                                except Exception as e:
+                                    print(f"[Confession Delete] Error updating previous confession: {e}")
+                                    import traceback
+                                    traceback.print_exc()
+                        else:
+                            print(f"[Confession Delete] No previous confession found (this was the only confession)")
 
                     # Fix the auto-increment sequence
                     await db.execute(
