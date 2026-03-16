@@ -481,8 +481,33 @@ class Birthday(commands.Cog):
 
         birth_date, birth_year, tz_name = user_data
 
-        # Calculate age
-        age = f" turning {year - birth_year}" if birth_year else ""
+        age_text = f" turning {year - birth_year}" if birth_year else ""
+        age_num = year - birth_year if birth_year else None
+
+        # Send DM to user (ONCE, outside the guild loop)
+        try:
+            dm_embed = discord.Embed(
+                title="🎂 Happy Birthday! 🎂",
+                description=f"**Happy Birthday to you!** 🎉\n\nToday is your special day and we have announced it in the server!",
+                color=discord.Color.gold(),
+            )
+            
+            if age_num:
+                dm_embed.add_field(name="You're", value=f"{age_num} years old today!", inline=True)
+            
+            dm_embed.add_field(
+                name="What happens now?", 
+                value="• You've been wished in the server\n• You will get a special birthday role\n• Everyone can celebrate with you!\n\nHave an amazing day! 🎈",
+                inline=False
+            )
+            dm_embed.set_footer(text="With <3 from The Aakhri Team ❤️")
+            
+            await user.send(embed=dm_embed)
+            
+        except discord.Forbidden:
+            print(f"Could not send birthday DM to {user_id} - DMs disabled")
+        except Exception as e:
+            print(f"Error sending birthday DM to {user_id}: {e}")
 
         # Send to each guild the user is in
         for guild in self.bot.guilds:
@@ -512,7 +537,7 @@ class Birthday(commands.Cog):
             if announced:
                 continue
 
-            # Create birthday embed
+
             embed = discord.Embed(
                 title="🎂 Happy Birthday! 🎂",
                 description=f"# **{member.display_name}** is celebrating their birthday today!",
@@ -526,8 +551,8 @@ class Birthday(commands.Cog):
                 )
             )
 
-            if age:
-                embed.add_field(name="Age", value=age, inline=True)
+            if age_text:
+                embed.add_field(name="Age", value=age_text, inline=True)
 
             embed.set_thumbnail(url=user.display_avatar.url)
 
@@ -660,7 +685,7 @@ class Birthday(commands.Cog):
     @birthday_group.command(name="upcoming", description="Show upcoming birthdays")
     async def birthday_upcoming(self, interaction: discord.Interaction):
         """Show paginated list of upcoming birthdays."""
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         async with self.db_lock:
             cursor = await self.db.execute("""
                 SELECT user_id, birth_date, birth_year, timezone 
