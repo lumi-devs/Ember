@@ -33,9 +33,14 @@ class BirthdayView(discord.ui.View):
         """Delete message on timeout."""
         for item in self.children:
             item.disabled = True
-        await self.message.edit(view=self)
-        await asyncio.sleep(5)
-        await self.message.delete()
+        if not hasattr(self, "message") or self.message is None:
+            return
+        try:
+            await self.message.edit(view=self)
+            await asyncio.sleep(5)
+            await self.message.delete()
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
 
 class TimezoneSelect(discord.ui.Select):
@@ -103,7 +108,10 @@ class TimezoneSelect(discord.ui.Select):
         month, day = view.birth_date.split("-")
         if view.birth_year:
             birth_display = f"{day}-{month}-{view.birth_year}"  # DD-MM-YYYY
-            age = datetime.now().year - view.birth_year
+            # Only count the year if the birthday has already passed this year
+            today = datetime.now(ZoneInfo(view.selected_timezone))
+            had_birthday_this_year = (today.month, today.day) >= (int(month), int(day))
+            age = today.year - view.birth_year - (0 if had_birthday_this_year else 1)
             embed.add_field(name="Age", value=f"{age} years old", inline=True)
         else:
             birth_display = f"{day}-{month}"  # DD-MM
@@ -192,7 +200,10 @@ class CancelButton(discord.ui.Button):
         )
         await interaction.response.edit_message(embed=embed, view=None)
         await asyncio.sleep(5)
-        await interaction.message.delete()
+        try:
+            await interaction.message.delete()
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
 
 class UpcomingBirthdaysView(discord.ui.View):
@@ -265,12 +276,21 @@ class UpcomingBirthdaysView(discord.ui.View):
             else:
                 name = f"Unknown ({user_id})"
 
+            # Reformat MM-DD → DD-MM for display
+            display_date = f"{day:02d}-{month:02d}"
+
             # Build display string
-            age = f" turning {next_bday.year - birth_year}" if birth_year else ""
+            age = f" (turning {next_bday.year - birth_year})" if birth_year else ""
+            if days_until == 0:
+                days_str = "🎂 **Today!**"
+            elif days_until == 1:
+                days_str = "⏰ **Tomorrow!**"
+            else:
+                days_str = f"⏰ {days_until} days away"
 
             embed.add_field(
                 name=f"{start + idx}. {name}",
-                value=f"📅 {birth_date}{age}\n⏰ {days_until} days away",
+                value=f"📅 {display_date}{age}\n{days_str}",
                 inline=False,
             )
 
@@ -362,6 +382,10 @@ class ConfirmRemoveButton(discord.ui.Button):
                 await cog.db.execute(
                     "DELETE FROM users WHERE user_id = ?", (interaction.user.id,)
                 )
+                # Also clear announcements so the guard doesn't block re-registration
+                await cog.db.execute(
+                    "DELETE FROM announcements WHERE user_id = ?", (interaction.user.id,)
+                )
                 await cog.db.commit()
 
         embed = discord.Embed(
@@ -450,8 +474,8 @@ class Birthday(commands.Cog):
                 tz = ZoneInfo(tz_name)
                 local_time = now.astimezone(tz)
 
-                # Is it midnight? (0:00 - 0:01 window)
-                if local_time.hour == 0 and local_time.minute <= 1:
+                # Only fire at exactly minute 0 to prevent double-triggering at 00:01
+                if local_time.hour == 0 and local_time.minute == 0:
                     today = local_time.strftime("%m-%d")
 
                     if birth_date == today:
@@ -489,31 +513,6 @@ class Birthday(commands.Cog):
         age_text = f" turning {year - birth_year}" if birth_year else ""
         age_num = year - birth_year if birth_year else None
 
-        # Send DM to user (ONCE, outside the guild loop)
-        try:
-            dm_embed = discord.Embed(
-                title="🎂 Happy Birthday! 🎂",
-                description=f"**Happy Birthday to you!** 🎉\n\nToday is your special day and we have announced it in the server!",
-                color=discord.Color.gold(),
-            )
-            
-            if age_num:
-                dm_embed.add_field(name="You're", value=f"{age_num} years old today!", inline=True)
-            
-            dm_embed.add_field(
-                name="What happens now?", 
-                value="• You've been wished in the server\n• You will get a special birthday role\n• Everyone can celebrate with you!\n\nHave an amazing day! 🎈",
-                inline=False
-            )
-            dm_embed.set_footer(text="With <3 from The Aakhri Team ❤️")
-            
-            await user.send(embed=dm_embed)
-            
-        except discord.Forbidden:
-            print(f"Could not send birthday DM to {user_id} - DMs disabled")
-        except Exception as e:
-            print(f"Error sending birthday DM to {user_id}: {e}")
-
         # Send to each guild the user is in
         for guild in self.bot.guilds:
             member = guild.get_member(user_id)
@@ -528,7 +527,7 @@ class Birthday(commands.Cog):
             if not channel:
                 continue
 
-            # Check if already announced today
+            # Check if already announced today (guards both guild post and DM)
             async with self.db_lock:
                 cursor = await self.db.execute(
                     """
@@ -541,6 +540,37 @@ class Birthday(commands.Cog):
 
             if announced:
                 continue
+
+            # Send DM to user — only on the first guild pass to avoid duplicate DMs
+            dm_sent_key = f"dm_{user_id}_{year}"
+            if not getattr(self, "_dm_sent_cache", None):
+                self._dm_sent_cache = set()
+
+            if dm_sent_key not in self._dm_sent_cache:
+                self._dm_sent_cache.add(dm_sent_key)
+                try:
+                    dm_embed = discord.Embed(
+                        title="🎂 Happy Birthday! 🎂",
+                        description="**Happy Birthday to you!** 🎉\n\nToday is your special day and we have announced it in the server!",
+                        color=discord.Color.gold(),
+                    )
+                    if age_num:
+                        dm_embed.add_field(
+                            name="You're",
+                            value=f"{age_num} years old today!",
+                            inline=True,
+                        )
+                    dm_embed.add_field(
+                        name="What happens now?",
+                        value="• You've been wished in the server\n• You will get a special birthday role\n• Everyone can celebrate with you!\n\nHave an amazing day! 🎈",
+                        inline=False,
+                    )
+                    dm_embed.set_footer(text="With \<3 from The Aakhri Team ❤️")
+                    await user.send(embed=dm_embed)
+                except discord.Forbidden:
+                    print(f"Could not send birthday DM to {user_id} - DMs disabled")
+                except Exception as e:
+                    print(f"Error sending birthday DM to {user_id}: {e}")
 
 
             embed = discord.Embed(
@@ -660,6 +690,26 @@ class Birthday(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
+        # Validate birth year is sensible
+        current_year = datetime.now().year
+        if birth_year:
+            if birth_year < 1900:
+                embed = discord.Embed(
+                    title="❌ Invalid Year",
+                    description="Birth year cannot be before 1900.",
+                    color=discord.Color.red(),
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            if birth_year >= current_year:
+                embed = discord.Embed(
+                    title="❌ Invalid Year",
+                    description="Birth year must be in the past.",
+                    color=discord.Color.red(),
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+
         # Create timezone selection view
         view = BirthdayView(interaction.user.id, birth_date, birth_year)
 
@@ -767,6 +817,297 @@ class Birthday(commands.Cog):
 
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
+    @birthday_group.command(name="check", description="Check a user's birthday")
+    @app_commands.describe(user="The user to look up (leave blank for yourself)")
+    async def birthday_check(
+        self,
+        interaction: discord.Interaction,
+        user: Optional[discord.Member] = None,
+    ):
+        """Look up any member's birthday."""
+        await interaction.response.defer(ephemeral=True)
+
+        target = user or interaction.user
+        async with self.db_lock:
+            cursor = await self.db.execute(
+                "SELECT birth_date, birth_year, timezone FROM users WHERE user_id = ?",
+                (target.id,),
+            )
+            row = await cursor.fetchone()
+
+        if not row:
+            who = "You haven't" if target == interaction.user else f"{target.display_name} hasn't"
+            embed = discord.Embed(
+                title="❓ No Birthday Set",
+                description=f"{who} set a birthday yet.",
+                color=discord.Color.orange(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        birth_date, birth_year, tz_name = row
+        month, day = map(int, birth_date.split("-"))
+        tz = ZoneInfo(tz_name)
+        now_local = datetime.now(tz)
+
+        next_bday = datetime(now_local.year, month, day, tzinfo=tz)
+        if next_bday < now_local:
+            next_bday = datetime(now_local.year + 1, month, day, tzinfo=tz)
+        days_until = (next_bday - now_local).days
+
+        display_date = f"{day:02d}-{month:02d}" + (f"-{birth_year}" if birth_year else "")
+
+        if days_until == 0:
+            days_str = "🎂 **Today is their birthday!**"
+        elif days_until == 1:
+            days_str = "⏰ **Tomorrow!**"
+        else:
+            days_str = f"⏰ {days_until} days away"
+
+        embed = discord.Embed(
+            title=f"🎂 {target.display_name}'s Birthday",
+            color=discord.Color.gold(),
+        )
+        embed.set_thumbnail(url=target.display_avatar.url)
+        embed.add_field(name="📅 Date", value=display_date, inline=True)
+        embed.add_field(name="🌍 Timezone", value=tz_name, inline=True)
+
+        if birth_year:
+            had_birthday = (now_local.month, now_local.day) >= (month, day)
+            current_age = now_local.year - birth_year - (0 if had_birthday else 1)
+            next_age = next_bday.year - birth_year
+            embed.add_field(
+                name="🎈 Age",
+                value=f"{current_age} (turning {next_age})",
+                inline=True,
+            )
+
+        embed.add_field(name="Next Birthday", value=days_str, inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @birthday_group.command(name="today", description="See who has a birthday today")
+    async def birthday_today(self, interaction: discord.Interaction):
+        """Show all members celebrating a birthday right now."""
+        await interaction.response.defer(ephemeral=True)
+
+        async with self.db_lock:
+            cursor = await self.db.execute(
+                "SELECT user_id, birth_date, birth_year, timezone FROM users"
+            )
+            all_users = await cursor.fetchall()
+
+        today_birthdays = []
+        for user_id, birth_date, birth_year, tz_name in all_users:
+            member = interaction.guild.get_member(user_id)
+            if not member:
+                continue
+            try:
+                tz = ZoneInfo(tz_name)
+                local_now = datetime.now(tz)
+                if local_now.strftime("%m-%d") == birth_date:
+                    today_birthdays.append((member, birth_year, local_now.year))
+            except Exception:
+                continue
+
+        if not today_birthdays:
+            embed = discord.Embed(
+                title="🎂 No Birthdays Today",
+                description="Nobody in this server has a birthday today (in their local timezone).",
+                color=discord.Color.orange(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title=f"🎉 Today's Birthdays — {interaction.guild.name}",
+            description=f"**{len(today_birthdays)}** member(s) are celebrating today!",
+            color=discord.Color.gold(),
+        )
+        for member, birth_year, current_year in today_birthdays:
+            age_str = ""
+            if birth_year:
+                age = current_year - birth_year
+                age_str = f" — turning **{age}** 🎈"
+            embed.add_field(
+                name=f"🎂 {member.display_name}{age_str}",
+                value=member.mention,
+                inline=False,
+            )
+
+        await interaction.followup.send(embed=embed, ephemeral=False)
+
+    # ─── ADMIN SUBGROUP ───────────────────────────────────────────
+
+    birthday_admin = app_commands.Group(
+        name="birthday_admin",
+        description="Admin birthday management",
+        default_permissions=discord.Permissions(administrator=True),
+    )
+
+    @birthday_admin.command(name="set", description="Set a birthday for any user")
+    @app_commands.describe(
+        user="The member to set birthday for",
+        date="Birthday in DD-MM-YYYY or DD-MM format",
+        timezone="Timezone (e.g. Asia/Kolkata)",
+    )
+    async def admin_set(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member,
+        date: str,
+        timezone: str = "UTC",
+    ):
+        """Admin: set or overwrite a member's birthday."""
+        await interaction.response.defer(ephemeral=True)
+
+        date_pattern = r"^(\d{2}-\d{2}(-\d{4})?)$"
+        if not re.match(date_pattern, date):
+            await interaction.followup.send(
+                "❌ Use format `DD-MM-YYYY` or `DD-MM`.", ephemeral=True
+            )
+            return
+
+        parts = date.split("-")
+        if len(parts) == 3:
+            day, month, year = map(int, parts)
+            birth_year = year
+        else:
+            day, month = map(int, parts)
+            birth_year = None
+
+        try:
+            date_class(birth_year or 2000, month, day)
+        except ValueError:
+            await interaction.followup.send("❌ That date doesn't exist.", ephemeral=True)
+            return
+
+        current_year = datetime.now().year
+        if birth_year and (birth_year < 1900 or birth_year >= current_year):
+            await interaction.followup.send(
+                "❌ Birth year must be between 1900 and last year.", ephemeral=True
+            )
+            return
+
+        # Validate timezone
+        try:
+            ZoneInfo(timezone)
+        except Exception:
+            await interaction.followup.send(
+                f"❌ Unknown timezone `{timezone}`. Use a valid IANA name like `Asia/Kolkata`.",
+                ephemeral=True,
+            )
+            return
+
+        birth_date = f"{month:02d}-{day:02d}"
+        await self.set_birthday(user.id, birth_date, birth_year, timezone)
+
+        display = f"{day:02d}-{month:02d}" + (f"-{birth_year}" if birth_year else "")
+        embed = discord.Embed(
+            title="✅ Birthday Set",
+            description=f"Set birthday for {user.mention}",
+            color=discord.Color.green(),
+        )
+        embed.add_field(name="Date", value=display, inline=True)
+        embed.add_field(name="Timezone", value=timezone, inline=True)
+        embed.set_footer(text=f"Set by {interaction.user}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @birthday_admin.command(
+        name="remove", description="Remove a birthday for any user"
+    )
+    @app_commands.describe(user="The member whose birthday to remove")
+    async def admin_remove(
+        self, interaction: discord.Interaction, user: discord.Member
+    ):
+        """Admin: forcibly remove a member's birthday data."""
+        await interaction.response.defer(ephemeral=True)
+
+        async with self.db_lock:
+            cursor = await self.db.execute(
+                "SELECT user_id FROM users WHERE user_id = ?", (user.id,)
+            )
+            exists = await cursor.fetchone()
+
+        if not exists:
+            await interaction.followup.send(
+                f"❌ {user.mention} has no birthday set.", ephemeral=True
+            )
+            return
+
+        async with self.db_lock:
+            await self.db.execute("DELETE FROM users WHERE user_id = ?", (user.id,))
+            await self.db.execute(
+                "DELETE FROM announcements WHERE user_id = ?", (user.id,)
+            )
+            await self.db.commit()
+
+        embed = discord.Embed(
+            title="✅ Birthday Removed",
+            description=f"Removed birthday data for {user.mention}.",
+            color=discord.Color.green(),
+        )
+        embed.set_footer(text=f"Removed by {interaction.user}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @birthday_admin.command(name="stats", description="Show birthday system statistics")
+    async def admin_stats(self, interaction: discord.Interaction):
+        """Admin: show DB stats."""
+        await interaction.response.defer(ephemeral=True)
+
+        async with self.db_lock:
+            cursor = await self.db.execute("SELECT COUNT(*) FROM users")
+            total_users = (await cursor.fetchone())[0]
+
+            cursor = await self.db.execute(
+                "SELECT COUNT(*) FROM users WHERE birth_year IS NOT NULL"
+            )
+            with_year = (await cursor.fetchone())[0]
+
+            cursor = await self.db.execute("SELECT COUNT(*) FROM announcements")
+            total_announcements = (await cursor.fetchone())[0]
+
+            cursor = await self.db.execute(
+                "SELECT COUNT(*) FROM announcements WHERE year = ?",
+                (datetime.now().year,),
+            )
+            this_year = (await cursor.fetchone())[0]
+
+        embed = discord.Embed(
+            title="📊 Birthday System Stats",
+            color=discord.Color.blurple(),
+            timestamp=datetime.now(),
+        )
+        embed.add_field(name="👥 Total Registered", value=f"`{total_users}`", inline=True)
+        embed.add_field(
+            name="🎂 With Birth Year", value=f"`{with_year}`", inline=True
+        )
+        embed.add_field(
+            name="📢 All-time Announcements", value=f"`{total_announcements}`", inline=True
+        )
+        embed.add_field(
+            name=f"📅 Announcements {datetime.now().year}",
+            value=f"`{this_year}`",
+            inline=True,
+        )
+        guild_members_registered = sum(
+            1
+            for uid in [r[0] for r in []]  # placeholder filled below
+        )
+        # Count how many current guild members have birthdays set
+        async with self.db_lock:
+            cursor = await self.db.execute("SELECT user_id FROM users")
+            all_ids = {row[0] for row in await cursor.fetchall()}
+        guild_count = sum(
+            1 for m in interaction.guild.members if m.id in all_ids
+        )
+        embed.add_field(
+            name="🏠 Registered in This Server",
+            value=f"`{guild_count}` / `{interaction.guild.member_count}`",
+            inline=True,
+        )
+        embed.set_footer(text=f"Requested by {interaction.user}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
     # ─── CLEANUP ─────────────────────────────────────────────────
 
     def cog_unload(self):
@@ -786,4 +1127,6 @@ class Birthday(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(Birthday(bot))
+    cog = Birthday(bot)
+    await bot.add_cog(cog)
+    bot.tree.add_command(cog.birthday_admin)
