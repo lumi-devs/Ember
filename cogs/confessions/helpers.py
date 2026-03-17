@@ -587,17 +587,16 @@ async def get_hourly_report_count(user_id: int) -> int:
 
 
 async def can_user_report(user_id: int, hourly_limit: int = 5) -> tuple[bool, str, int]:
-    """
-    Check if a user can submit a report based on hourly limit.
-    
-    Returns: (can_report: bool, reason: str, current_count: int)
-    """
     try:
         current_count = await get_hourly_report_count(user_id)
+        
+        # DEBUG - remove after testing
+        print(f"[REPORT LIMIT] User {user_id}: {current_count}/{hourly_limit} reports in last hour")
         
         if current_count >= hourly_limit:
             try:
                 async with aiosqlite.connect(DB_PATH) as db:
+                    # Make sure we're using proper UTC time
                     one_hour_ago = discord.utils.utcnow() - datetime.timedelta(hours=1)
                     cursor = await db.execute(
                         "SELECT timestamp FROM reports WHERE reporter_id = ? AND timestamp >= ? "
@@ -606,19 +605,18 @@ async def can_user_report(user_id: int, hourly_limit: int = 5) -> tuple[bool, st
                     )
                     result = await cursor.fetchone()
                     if result:
-                        oldest_time = datetime.datetime.fromisoformat(result[0])
-                        reset_in = (
-                            3600
-                            - (discord.utils.utcnow() - oldest_time).total_seconds()
-                        )
-                        minutes = int(reset_in // 60)
-                        seconds = int(reset_in % 60)
-                        return (
-                            False,
-                            f"❌ You've reached the hourly report limit of {hourly_limit}. "
-                            f"You can report again in {minutes}m {seconds}s.",
-                            current_count,
-                        )
+                        # Ensure proper datetime parsing
+                        oldest_time = datetime.datetime.fromisoformat(result[0].replace('Z', '+00:00'))
+                        reset_in = 3600 - (discord.utils.utcnow() - oldest_time).total_seconds()
+                        if reset_in > 0:
+                            minutes = int(reset_in // 60)
+                            seconds = int(reset_in % 60)
+                            return (
+                                False,
+                                f"❌ You've reached the hourly report limit of {hourly_limit}. "
+                                f"You can report again in {minutes}m {seconds}s.",
+                                current_count,
+                            )
             except Exception as e:
                 print(f"Error calculating report reset time: {e}")
             
