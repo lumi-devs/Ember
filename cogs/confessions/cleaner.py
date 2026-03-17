@@ -2,16 +2,16 @@
 import discord
 from discord.ext import commands
 import asyncio
-import time
+import os
 
-CONFESSION_CHANNEL_ID = 1424080881265541241
+CONFESSION_CHANNEL_ID = int(os.getenv("CONFESSION_CHANNEL_ID"))
 
 
 class ConfessionCleaner(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.allowed_users = set()
-        self.pending_deletions = {}  # Track pending deletions
+        self.allowed_users: set[int] = set()
+        self.pending_deletions: dict = {}  # user_key → asyncio.Task
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -20,43 +20,40 @@ class ConfessionCleaner(commands.Cog):
         if message.channel.id != CONFESSION_CHANNEL_ID:
             return
 
-        # Allow messages in threads
+        # Never delete messages inside threads (replies live there)
         if isinstance(message.channel, discord.Thread):
             return
 
         user_key = (message.author.id, message.channel.id)
 
-        # Messages from allowed users
         if message.author.id in self.allowed_users:
-            # Remove user immediately (only 1 message allowed)
+            # Remove immediately so only 1 message is allowed through
             self.allowed_users.discard(message.author.id)
 
-            # Delete after 8 seconds with better error handling
+            # Delete after 8 seconds
             async def delete_later():
                 await asyncio.sleep(8)
                 try:
                     await message.delete()
                 except discord.NotFound:
-                    pass  # Message already deleted
+                    pass
                 except discord.HTTPException as e:
                     print(f"Failed to delete allowed user message: {e}")
                 finally:
-                    if user_key in self.pending_deletions:
-                        del self.pending_deletions[user_key]
+                    self.pending_deletions.pop(user_key, None)
 
             self.pending_deletions[user_key] = asyncio.create_task(delete_later())
 
         else:
-            # Delete immediately with retry logic
             async def delete_immediately():
-                await asyncio.sleep(2)  # Small delay to let users see feedback
+                await asyncio.sleep(2)
                 try:
                     await message.delete()
                 except discord.NotFound:
                     pass
                 except discord.HTTPException as e:
                     print(f"Failed to delete unauthorized message: {e}")
-                    # Try once more after short delay
+                    # One retry
                     await asyncio.sleep(1)
                     try:
                         await message.delete()
@@ -66,21 +63,18 @@ class ConfessionCleaner(commands.Cog):
             asyncio.create_task(delete_immediately())
 
     async def allow_user_once(self, user_id: int):
-        """Allow a user to send a single message with cleanup."""
-        # Clean up expired allowances
-        time.time()
+        """Allow a user to send a single message to the confession channel."""
         self.allowed_users.add(user_id)
 
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message):
-        """Clean up pending deletions if message is deleted manually"""
+        """Cancel pending auto-deletion if a message was already deleted manually."""
         if message.author.bot:
             return
-
         user_key = (message.author.id, message.channel.id)
-        if user_key in self.pending_deletions:
-            self.pending_deletions[user_key].cancel()
-            del self.pending_deletions[user_key]
+        task = self.pending_deletions.pop(user_key, None)
+        if task:
+            task.cancel()
 
 
 async def setup(bot):

@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import re
 import aiosqlite
 import discord
@@ -10,16 +11,58 @@ from urllib.parse import urlparse
 from pathlib import Path
 
 TENOR_REGEX = r"(https?:\/\/(www\.)?tenor\.com\/\S+)"
-DB_PATH = "data/database.db"
-DB_BACKUP_PATH = "data/database_backup.db"
-CONFESSION_CHANNEL_ID = 1399658407178272798
-REPORT_CHANNEL_ID = 1393171149038293023
-MEDIA_CHANNEL_ID = 1424139009931743382
+DB_PATH = "data/confession.db"
+DB_BACKUP_PATH = "data/confession_backup.db"
+CONFESSION_CHANNEL_ID = int(os.getenv("CONFESSION_CHANNEL_ID"))  # Set this in your .env file
+REPORT_CHANNEL_ID = int(os.getenv("REPORT_CHANNEL_ID"))
+MEDIA_CHANNEL_ID = int(os.getenv("MEDIA_CHANNEL_ID"))
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))       # Admin-only log — full user info (unanonymized)
+MOD_LOG_CHANNEL_ID = int(os.getenv("MOD_LOG_CHANNEL_ID"))                     # ⚠️ TODO: Set to your anonymized mod-log channel ID
 URL_REGEX = re.compile(r"https?://\S+")
 
 
+# ==============================
+# SHA-256 ANONYMIZATION UTILS
+# ==============================
+
+def sha256_user_id(user_id: int) -> str:
+    """Generate a stable SHA-256 hex digest for a Discord user ID."""
+    return hashlib.sha256(str(user_id).encode()).hexdigest()
+
+
+async def lookup_user_id_from_hash(hash_str: str) -> Optional[int]:
+    """
+    Reverse-lookup a user_id from its SHA-256 hash by iterating all known
+    user IDs in the database.  Fine for typical server sizes.
+    Returns None if no match is found.
+    """
+    hash_str = hash_str.lower().strip()
+    if len(hash_str) != 64:
+        return None
+    try:
+        user_ids: set[int] = set()
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT DISTINCT user_id FROM confessions") as cur:
+                async for (uid,) in cur:
+                    user_ids.add(uid)
+            async with db.execute("SELECT DISTINCT user_id FROM replies") as cur:
+                async for (uid,) in cur:
+                    user_ids.add(uid)
+        for uid in user_ids:
+            if sha256_user_id(uid) == hash_str:
+                return uid
+        return None
+    except Exception as e:
+        print(f"[hash_lookup] Error: {e}")
+        return None
+
+
+# ==============================
+# GENERAL HELPERS
+# ==============================
+
 def extract_url(text: str) -> Optional[str]:
-    """Extract URL from text if present."""
+    """Extract the first URL from text if present."""
     match = URL_REGEX.search(text)
     return match.group(0) if match else None
 
@@ -48,19 +91,19 @@ async def can_user_reply(user_id: int, hourly_limit: int = 5) -> tuple[bool, str
     try:
         current_count = await get_hourly_reply_count(user_id)
 
-        # Check if user has reached the limit
         if current_count >= hourly_limit:
-            # Find when the oldest reply in the hour was made to estimate reset time
             try:
                 async with aiosqlite.connect(DB_PATH) as db:
                     one_hour_ago = discord.utils.utcnow() - datetime.timedelta(hours=1)
                     cursor = await db.execute(
-                        "SELECT timestamp FROM replies WHERE user_id = ? AND timestamp >= ? ORDER BY timestamp ASC LIMIT 1",
+                        "SELECT timestamp FROM replies WHERE user_id = ? AND timestamp >= ? "
+                        "ORDER BY timestamp ASC LIMIT 1",
                         (user_id, one_hour_ago.isoformat()),
                     )
                     result = await cursor.fetchone()
                     if result:
-                        oldest_time = datetime.fromisoformat(result[0])
+                        # BUG FIX: was `datetime.fromisoformat` — module imported, not class
+                        oldest_time = datetime.datetime.fromisoformat(result[0])
                         reset_in = (
                             3600
                             - (discord.utils.utcnow() - oldest_time).total_seconds()
@@ -69,39 +112,36 @@ async def can_user_reply(user_id: int, hourly_limit: int = 5) -> tuple[bool, str
                         seconds = int(reset_in % 60)
                         return (
                             False,
-                            f"❌ You've reached the hourly limit of {hourly_limit} replies. You can reply again in {minutes}m {seconds}s.",
+                            f"❌ You've reached the hourly limit of {hourly_limit} replies. "
+                            f"You can reply again in {minutes}m {seconds}s.",
                             current_count,
                         )
             except Exception as e:
                 print(f"Error calculating reset time: {e}")
-                # Fall back to generic message if calculation fails
-                pass
 
             return (
                 False,
-                f"❌ You've reached the hourly limit of {hourly_limit} replies. Please wait an hour before replying again.",
+                f"❌ You've reached the hourly limit of {hourly_limit} replies. "
+                "Please wait an hour before replying again.",
                 current_count,
             )
 
-        # User hasn't reached the limit
         return True, "", current_count
 
     except Exception as e:
         print(f"Error checking reply limit: {e}")
-        return True, "", 0  # Allow on error to prevent blocking legitimate users
+        return True, "", 0
 
 
 async def get_user_reply_stats(user_id: int) -> dict:
     """Get detailed reply statistics for a user."""
     try:
         async with aiosqlite.connect(DB_PATH) as db:
-            # Total replies
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM replies WHERE user_id = ?", (user_id,)
             )
             total = (await cursor.fetchone())[0]
 
-            # Replies in last hour
             one_hour_ago = discord.utils.utcnow() - datetime.timedelta(hours=1)
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM replies WHERE user_id = ? AND timestamp >= ?",
@@ -109,7 +149,6 @@ async def get_user_reply_stats(user_id: int) -> dict:
             )
             hourly = (await cursor.fetchone())[0]
 
-            # Replies today
             today_start = discord.utils.utcnow().replace(
                 hour=0, minute=0, second=0, microsecond=0
             )
@@ -152,18 +191,17 @@ async def can_user_confess(
 
     Returns: (can_confess: bool, reason: str)
     """
-    # Check join date
     join_date = await get_user_join_date(guild, user_id)
     if join_date:
         time_in_server = discord.utils.utcnow() - join_date
-        if time_in_server.total_seconds() < 86400:  # 24 hours in seconds
+        if time_in_server.total_seconds() < 86400:
             hours_left = 24 - (time_in_server.total_seconds() / 3600)
             return (
                 False,
-                f"⏳ You need to be in the server for at least 1 day before making confessions. Please wait {hours_left:.1f} more hours.",
+                f"⏳ You need to be in the server for at least 1 day before making confessions. "
+                f"Please wait {hours_left:.1f} more hours.",
             )
 
-    # Check daily confession count
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             today_start = discord.utils.utcnow().replace(
@@ -178,7 +216,8 @@ async def can_user_confess(
             if count >= daily_limit:
                 return (
                     False,
-                    f"❌ You've reached the daily limit of {daily_limit} confessions. Please use replies to engage with existing confessions instead.",
+                    f"❌ You've reached the daily limit of {daily_limit} confessions. "
+                    "Please use replies to engage with existing confessions instead.",
                 )
     except Exception as e:
         print(f"Error checking daily confession count: {e}")
@@ -207,13 +246,11 @@ async def get_user_stats(user_id: int) -> dict:
     """Get comprehensive user statistics for confessions."""
     try:
         async with aiosqlite.connect(DB_PATH) as db:
-            # Total confessions
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM confessions WHERE user_id = ?", (user_id,)
             )
             total = (await cursor.fetchone())[0]
 
-            # Today's confessions
             today_start = discord.utils.utcnow().replace(
                 hour=0, minute=0, second=0, microsecond=0
             )
@@ -223,7 +260,6 @@ async def get_user_stats(user_id: int) -> dict:
             )
             today = (await cursor.fetchone())[0]
 
-            # Total replies
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM replies WHERE user_id = ?", (user_id,)
             )
@@ -244,64 +280,32 @@ def is_image_url(url: str) -> bool:
     if not url:
         return False
 
-    # Parse URL to get path
     parsed = urlparse(url)
     path = parsed.path.lower()
 
-    # Only accept common image extensions
     image_extensions = [
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".gif",
-        ".webp",
-        ".bmp",
-        ".tiff",
-        ".svg",
-        ".jfif",
-        ".pjpeg",
-        ".pjp",
+        ".png", ".jpg", ".jpeg", ".gif", ".webp",
+        ".bmp", ".tiff", ".svg", ".jfif", ".pjpeg", ".pjp",
     ]
 
-    # Check if path ends with image extension
     for ext in image_extensions:
         if path.endswith(ext):
             return True
 
-    # Check for Discord CDN URLs (cdn.discordapp.com/attachments/...)
     if "cdn.discordapp.com" in parsed.netloc and "/attachments/" in path:
-        # Discord attachment URLs - check if it looks like an image
         last_segment = path.split("/")[-1]
-
-        # Check common Discord image patterns
-        image_patterns = [
-            "png",
-            "jpg",
-            "jpeg",
-            "gif",
-            "webp",
-            "PNG",
-            "JPG",
-            "JPEG",
-            "GIF",
-            "WEBP",
-        ]
-
+        image_patterns = ["png", "jpg", "jpeg", "gif", "webp",
+                          "PNG", "JPG", "JPEG", "GIF", "WEBP"]
         for pattern in image_patterns:
             if pattern in last_segment:
                 return True
 
-    # Also check query parameters for image indicators
     query = parsed.query.lower()
     if "format=" in query or "type=" in query:
-        query_parts = query.split("&")
-        for part in query_parts:
+        for part in query.split("&"):
             if "format=" in part or "type=" in part:
                 value = part.split("=")[1] if "=" in part else ""
-                if any(
-                    img_type in value
-                    for img_type in ["jpg", "jpeg", "png", "gif", "webp"]
-                ):
+                if any(t in value for t in ["jpg", "jpeg", "png", "gif", "webp"]):
                     return True
 
     return False
@@ -312,8 +316,6 @@ async def backup_database():
     try:
         if os.path.exists(DB_PATH):
             import shutil
-
-            # Ensure backup directory exists
             backup_dir = Path(DB_BACKUP_PATH).parent
             backup_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(DB_PATH, DB_BACKUP_PATH)
@@ -326,12 +328,10 @@ async def init_db():
     try:
         await backup_database()
 
-        # Ensure data directory exists
         data_dir = Path("data")
         data_dir.mkdir(parents=True, exist_ok=True)
 
         async with aiosqlite.connect(DB_PATH) as db:
-            # Enable foreign keys and WAL mode for better performance
             await db.execute("PRAGMA foreign_keys = ON")
             await db.execute("PRAGMA journal_mode = WAL")
 
@@ -354,9 +354,11 @@ async def init_db():
                 CREATE TABLE IF NOT EXISTS replies (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     confession_id INTEGER NOT NULL,
+                    parent_reply_id INTEGER,
                     user_id INTEGER NOT NULL,
                     description TEXT NOT NULL,
                     image_url TEXT,
+                    message_id INTEGER,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (confession_id) REFERENCES confessions (id) ON DELETE CASCADE
                 )
@@ -383,7 +385,25 @@ async def init_db():
                 )
             """)
 
-            # Create indexes for better performance
+            # ── Migrations for existing databases ──────────────────────────
+            cursor = await db.execute("PRAGMA table_info(replies)")
+            reply_cols = {row[1] for row in await cursor.fetchall()}
+
+            if "message_id" not in reply_cols:
+                await db.execute("ALTER TABLE replies ADD COLUMN message_id INTEGER")
+                print("✅ Migration: added 'message_id' to replies table")
+
+            if "parent_reply_id" not in reply_cols:
+                await db.execute("ALTER TABLE replies ADD COLUMN parent_reply_id INTEGER")
+                print("✅ Migration: added 'parent_reply_id' to replies table")
+
+            cursor = await db.execute("PRAGMA table_info(confessban)")
+            ban_cols = {row[1] for row in await cursor.fetchall()}
+            if "reason" not in ban_cols:
+                await db.execute("ALTER TABLE confessban ADD COLUMN reason TEXT")
+                print("✅ Migration: added 'reason' to confessban table")
+
+            # Indexes
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_confessions_user_id ON confessions(user_id)"
             )
@@ -407,7 +427,7 @@ async def init_db():
 async def process_media(
     bot, content: str, attachments: List[discord.Attachment], media_channel_id: int
 ) -> Optional[str]:
-    """Process and upload media to the media channel. Downloads URLs and re-uploads as files."""
+    """Process and upload media to the media channel."""
     try:
         media_channel = bot.get_channel(media_channel_id)
         if not media_channel:
@@ -416,87 +436,47 @@ async def process_media(
 
         image_url = None
 
-        # Check attachments first (highest priority) - Discord uploads
         if attachments:
             for attachment in attachments:
-                if attachment.content_type and attachment.content_type.startswith(
-                    "image/"
-                ):
+                if attachment.content_type and attachment.content_type.startswith("image/"):
                     try:
-                        # Download and re-upload to media channel
                         file_bytes = await attachment.read()
-                        file = discord.File(
-                            io.BytesIO(file_bytes), filename=attachment.filename
-                        )
-
-                        # Upload as file to media channel
+                        file = discord.File(io.BytesIO(file_bytes), filename=attachment.filename)
                         msg = await media_channel.send(file=file)
                         image_url = msg.attachments[0].url
-                        print(
-                            f"Uploaded attachment: {attachment.filename} -> {image_url}"
-                        )
+                        print(f"Uploaded attachment: {attachment.filename} -> {image_url}")
                         break
                     except Exception as e:
                         print(f"Error uploading attachment {attachment.filename}: {e}")
                         continue
 
-        # If no attachments, check for direct image URL in content
         if not image_url and content:
             url = extract_url(content)
             if url and is_image_url(url):
-                print(f"Downloading image from URL: {url}")
-
                 try:
-                    # Download the image from URL
                     async with aiohttp.ClientSession() as session:
                         async with session.get(url) as response:
                             if response.status == 200:
-                                # Get content type and file extension
                                 content_type = response.headers.get("Content-Type", "")
                                 if not content_type.startswith("image/"):
-                                    print(
-                                        f"URL doesn't point to an image: {content_type}"
-                                    )
                                     return None
-
-                                # Read the image data
                                 image_data = await response.read()
-
-                                # Determine filename
                                 parsed_url = urlparse(url)
                                 filename = os.path.basename(parsed_url.path)
                                 if not filename or "." not in filename:
-                                    # Generate a filename based on content type
                                     ext_map = {
-                                        "image/jpeg": ".jpg",
-                                        "image/jpg": ".jpg",
-                                        "image/png": ".png",
-                                        "image/gif": ".gif",
-                                        "image/webp": ".webp",
-                                        "image/bmp": ".bmp",
+                                        "image/jpeg": ".jpg", "image/jpg": ".jpg",
+                                        "image/png": ".png", "image/gif": ".gif",
+                                        "image/webp": ".webp", "image/bmp": ".bmp",
                                     }
                                     ext = ext_map.get(content_type, ".jpg")
                                     filename = f"downloaded_image{ext}"
-
-                                # Create Discord file and upload
-                                file = discord.File(
-                                    io.BytesIO(image_data), filename=filename
-                                )
+                                file = discord.File(io.BytesIO(image_data), filename=filename)
                                 msg = await media_channel.send(file=file)
                                 image_url = msg.attachments[0].url
-                                print(
-                                    f"Downloaded and uploaded URL image: {url} -> {image_url}"
-                                )
-                            else:
-                                print(
-                                    f"Failed to download image: HTTP {response.status}"
-                                )
-                                return None
-
                 except Exception as e:
                     print(f"Error downloading/uploading image from URL: {e}")
                     import traceback
-
                     traceback.print_exc()
 
         return image_url
@@ -504,7 +484,6 @@ async def process_media(
     except Exception as e:
         print(f"Error in process_media: {e}")
         import traceback
-
         traceback.print_exc()
         return None
 
@@ -516,8 +495,7 @@ async def get_confession_by_id(confession_id: int):
             cursor = await db.execute(
                 "SELECT * FROM confessions WHERE id = ?", (confession_id,)
             )
-            row = await cursor.fetchone()
-            return row
+            return await cursor.fetchone()
     except Exception as e:
         print(f"Error getting confession {confession_id}: {e}")
         return None
@@ -536,7 +514,6 @@ async def is_user_banned(user_id: int) -> bool:
         return False
 
 
-# Additional helper functions you might need
 async def get_user_confessions(user_id: int):
     """Get all confessions by a user."""
     try:
@@ -545,8 +522,7 @@ async def get_user_confessions(user_id: int):
                 "SELECT * FROM confessions WHERE user_id = ? ORDER BY created_at DESC",
                 (user_id,),
             )
-            rows = await cursor.fetchall()
-            return rows
+            return await cursor.fetchall()
     except Exception as e:
         print(f"Error getting user confessions: {e}")
         return []
@@ -560,8 +536,7 @@ async def get_confession_replies(confession_id: int):
                 "SELECT * FROM replies WHERE confession_id = ? ORDER BY timestamp ASC",
                 (confession_id,),
             )
-            rows = await cursor.fetchall()
-            return rows
+            return await cursor.fetchall()
     except Exception as e:
         print(f"Error getting confession replies: {e}")
         return []
@@ -592,3 +567,70 @@ async def unban_user(user_id: int):
     except Exception as e:
         print(f"Error unbanning user {user_id}: {e}")
         return False
+
+
+# Add after other limit functions (around line 134)
+
+async def get_hourly_report_count(user_id: int) -> int:
+    """Get the number of reports a user has made in the last hour."""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            one_hour_ago = discord.utils.utcnow() - datetime.timedelta(hours=1)
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM reports WHERE reporter_id = ? AND timestamp >= ?",
+                (user_id, one_hour_ago.isoformat()),
+            )
+            return (await cursor.fetchone())[0]
+    except Exception as e:
+        print(f"Error getting hourly report count: {e}")
+        return 0
+
+
+async def can_user_report(user_id: int, hourly_limit: int = 5) -> tuple[bool, str, int]:
+    """
+    Check if a user can submit a report based on hourly limit.
+    
+    Returns: (can_report: bool, reason: str, current_count: int)
+    """
+    try:
+        current_count = await get_hourly_report_count(user_id)
+        
+        if current_count >= hourly_limit:
+            try:
+                async with aiosqlite.connect(DB_PATH) as db:
+                    one_hour_ago = discord.utils.utcnow() - datetime.timedelta(hours=1)
+                    cursor = await db.execute(
+                        "SELECT timestamp FROM reports WHERE reporter_id = ? AND timestamp >= ? "
+                        "ORDER BY timestamp ASC LIMIT 1",
+                        (user_id, one_hour_ago.isoformat()),
+                    )
+                    result = await cursor.fetchone()
+                    if result:
+                        oldest_time = datetime.datetime.fromisoformat(result[0])
+                        reset_in = (
+                            3600
+                            - (discord.utils.utcnow() - oldest_time).total_seconds()
+                        )
+                        minutes = int(reset_in // 60)
+                        seconds = int(reset_in % 60)
+                        return (
+                            False,
+                            f"❌ You've reached the hourly report limit of {hourly_limit}. "
+                            f"You can report again in {minutes}m {seconds}s.",
+                            current_count,
+                        )
+            except Exception as e:
+                print(f"Error calculating report reset time: {e}")
+            
+            return (
+                False,
+                f"❌ You've reached the hourly report limit of {hourly_limit}. "
+                "Please wait an hour before reporting again.",
+                current_count,
+            )
+        
+        return True, "", current_count
+        
+    except Exception as e:
+        print(f"Error checking report limit: {e}")
+        return True, "", 0
