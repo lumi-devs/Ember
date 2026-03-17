@@ -248,16 +248,6 @@ async def create_help_embed() -> Embed:
         inline=False,
     )
 
-    embed.add_field(
-        name="Traditional Commands",
-        value=(
-            "**`/tascreate <name>`** - Create a custom role\n"
-            "**`/tasdelete [@user] [reason]`** - Delete your role (mods can delete others)\n"
-            "**`/tasblacklist <action> [user] [reason]`** - Manage blacklist (mods only)\n"
-            "*Note: Color and name commands are now in `/boosterroles`*"
-        ),
-        inline=False,
-    )
 
     embed.add_field(
         name="Features",
@@ -274,7 +264,7 @@ async def create_help_embed() -> Embed:
 
     embed.add_field(
         name="Requirements",
-        value="• Must be a server booster\n• Must not be blacklisted\n• Use designated channel (if configured)",
+        value="• Must be a server booster\n• Must not be blacklisted",
         inline=False,
     )
 

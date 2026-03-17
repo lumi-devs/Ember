@@ -251,7 +251,7 @@ class PromoterRole(commands.Cog):
 
     # BUG 9 FIX: 5-minute interval instead of 30 seconds to avoid hammering
     # Discord's rate limits on large servers.
-    @tasks.loop(minutes=5)
+    @tasks.loop(minutes=1)
     async def fallback_check(self):
         """Periodic sanity check — repairs any members whose role is out of sync."""
         for guild in self.bot.guilds:

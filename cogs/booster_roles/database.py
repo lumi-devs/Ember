@@ -69,7 +69,37 @@ class Database:
             )
         """)
 
+        # Audit log table (new feature: per-user change history)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                details TEXT NOT NULL DEFAULT '{}',
+                performed_at TEXT NOT NULL
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_user_id ON audit_log(user_id)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_performed_at ON audit_log(performed_at)"
+        )
+
+        # Cooldowns table (new feature: rate-limit role edits)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS cooldowns (
+                user_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                used_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, action, used_at)
+            )
+        """)
+
         # Indexes for performance
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cooldowns_user_action ON cooldowns(user_id, action)"
+        )
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_roles_role_id ON roles(role_id)"
         )
@@ -153,9 +183,6 @@ class Database:
         conn = await self.get_connection()
 
         try:
-            # Start transaction
-            await conn.execute("BEGIN TRANSACTION")
-
             # Delete role
             await conn.execute("DELETE FROM roles WHERE user_id = ?", (user_id,))
 
@@ -331,6 +358,104 @@ class Database:
         async with conn.execute("SELECT user_id FROM blacklist") as cursor:
             rows = await cursor.fetchall()
             return [row["user_id"] for row in rows]
+
+    async def get_user_bestowed_roles(self, user_id: int) -> List[Dict[str, Any]]:
+        """Get all bestowed roles a user currently has (accepted only)"""
+        conn = await self.get_connection()
+
+        async with conn.execute(
+            """
+            SELECT r.*, b.owner_id, b.accepted, b.accepted_at
+            FROM roles r
+            JOIN bestowed b ON r.role_id = b.role_id
+            WHERE b.user_id = ? AND b.accepted = 1
+        """,
+            (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    # Cooldown operations
+    async def check_cooldown(self, user_id: int, action: str, limit: int, window_seconds: int) -> tuple[bool, int]:
+        """
+        Check if user is within their rate limit for an action.
+        Returns (is_allowed, seconds_until_reset).
+        limit = max uses in window, window_seconds = rolling window size.
+        """
+        conn = await self.get_connection()
+        from datetime import datetime, timezone, timedelta
+
+        now = datetime.now(timezone.utc)
+        window_start = (now - timedelta(seconds=window_seconds)).isoformat()
+
+        async with conn.execute(
+            "SELECT used_at FROM cooldowns WHERE user_id = ? AND action = ? AND used_at > ? ORDER BY used_at ASC",
+            (user_id, action, window_start),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        if len(rows) < limit:
+            # Record this use
+            await conn.execute(
+                "INSERT INTO cooldowns (user_id, action, used_at) VALUES (?, ?, ?)",
+                (user_id, action, now.isoformat()),
+            )
+            # Prune old entries (keep last 2*limit entries per user+action to avoid table bloat)
+            await conn.execute(
+                """DELETE FROM cooldowns WHERE user_id = ? AND action = ? AND used_at NOT IN (
+                    SELECT used_at FROM cooldowns WHERE user_id = ? AND action = ? ORDER BY used_at DESC LIMIT ?
+                )""",
+                (user_id, action, user_id, action, limit * 2),
+            )
+            await conn.commit()
+            return True, 0
+        else:
+            # Cooldown active: tell them when the oldest entry expires
+            oldest = rows[0]["used_at"]
+            oldest_dt = datetime.fromisoformat(oldest)
+            if oldest_dt.tzinfo is None:
+                oldest_dt = oldest_dt.replace(tzinfo=timezone.utc)
+            reset_at = oldest_dt + timedelta(seconds=window_seconds)
+            seconds_left = max(0, int((reset_at - now).total_seconds()))
+            return False, seconds_left
+
+    # Audit log operations
+    async def log_action(self, user_id: int, action: str, details: Dict[str, Any]) -> bool:
+        """Record an audit log entry for a user action"""
+        conn = await self.get_connection()
+        try:
+            await conn.execute(
+                "INSERT INTO audit_log (user_id, action, details, performed_at) VALUES (?, ?, ?, ?)",
+                (
+                    user_id,
+                    action,
+                    json.dumps(details),
+                    datetime.now(timezone(timedelta(hours=5, minutes=30))).isoformat(),
+                ),
+            )
+            await conn.commit()
+            return True
+        except Exception as e:
+            print(f"[ERROR] Failed to log action: {e}")
+            return False
+
+    async def get_audit_log(self, user_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get audit log entries for a user, newest first"""
+        conn = await self.get_connection()
+        async with conn.execute(
+            "SELECT * FROM audit_log WHERE user_id = ? ORDER BY performed_at DESC LIMIT ?",
+            (user_id, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            entries = []
+            for row in rows:
+                entry = dict(row)
+                try:
+                    entry["details"] = json.loads(entry["details"])
+                except Exception:
+                    entry["details"] = {}
+                entries.append(entry)
+            return entries
 
     # Statistics
     async def get_stats(self) -> Dict[str, Any]:
@@ -547,20 +672,3 @@ async def is_user_banned(user_id: str) -> bool:
     """Check if user is banned (for backward compatibility)"""
     db = await get_db()
     return await db.is_user_banned(int(user_id))
-
-
-async def get_user_bestowed_roles(self, user_id: int) -> List[Dict[str, Any]]:
-    """Get all bestowed roles a user currently has"""
-    conn = await self.get_connection()
-
-    async with conn.execute(
-        """
-        SELECT r.*, b.owner_id, b.accepted, b.accepted_at
-        FROM roles r
-        JOIN bestowed b ON r.role_id = b.role_id
-        WHERE b.user_id = ? AND b.accepted = 1
-    """,
-        (user_id,),
-    ) as cursor:
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]

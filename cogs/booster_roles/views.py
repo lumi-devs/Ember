@@ -431,6 +431,15 @@ class DeleteConfirmationView(ui.View):
                 # Delete role from database
                 await db.delete_role(role_owner_id)
 
+                # Audit log
+                await db.log_action(role_owner_id, "delete", {
+                    "role_name": role_name,
+                    "role_id": self.role.id,
+                    "deleted_by": inter.user.id,
+                    "is_mod_action": self.is_mod_action,
+                    "reason": self.reason,
+                })
+
                 # Also remove all bestowed entries for this role
                 conn = await db.get_connection()
                 await conn.execute(
@@ -610,6 +619,11 @@ class RemoveIconView(ui.View):
                 ).isoformat()
 
                 await db.save_role(inter.user.id, role_data)
+
+            # Audit log
+            await db.log_action(inter.user.id, "icon_remove", {
+                "role_id": self.parent_view.role.id,
+            })
 
             await inter.followup.send("✅ Icon removed from your role!", ephemeral=True)
 
@@ -915,6 +929,15 @@ class ManageRoleView(ui.View):
 
             # Set the role icon
             await self.parent_view.role.edit(display_icon=emoji_data)
+
+            # Audit log
+            db_log = await get_db()
+            await db_log.log_action(interaction.user.id, "icon_set", {
+                "icon_type": "custom_emoji",
+                "emoji": emoji_content,
+                "role_id": self.parent_view.role.id,
+            })
+
             await interaction.followup.send(
                 f"✅ Successfully set role icon to {emoji_content}!", ephemeral=True
             )
@@ -1084,8 +1107,7 @@ class ShareRoleView(ui.View):
             if bestowed_entries
             else 0
         )
-        total - accepted
-
+        pending = total - accepted
         # Max 10 total invitations
         can_send = total < 10
         remaining = 10 - total
@@ -1985,9 +2007,9 @@ class BoosterRoleView(ui.View):
 
                 if entry.get("accepted_at"):
                     accepted_at = datetime.fromisoformat(entry["accepted_at"])
-                    f"Accepted: <t:{int(accepted_at.timestamp())}:R>"
+                    accepted_str = f"Accepted: <t:{int(accepted_at.timestamp())}:R>"
                 else:
-                    pass
+                    accepted_str = None
 
                 users_list.append(
                     {
@@ -1995,6 +2017,7 @@ class BoosterRoleView(ui.View):
                         "status": status,
                         "invited_at": invited_at,
                         "accepted_at": entry.get("accepted_at"),
+                        "accepted_str": accepted_str,
                     }
                 )
 

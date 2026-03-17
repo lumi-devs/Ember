@@ -27,11 +27,13 @@ class BoosterRoleCleaner(commands.Cog):
         # Start cleanup tasks
         self.quick_cleanup.start()
         self.full_cleanup.start()
+        self.monitor_booster_status.start()
 
     def cog_unload(self):
         """Cancel tasks when cog is unloaded"""
         self.quick_cleanup.cancel()
         self.full_cleanup.cancel()
+        self.monitor_booster_status.cancel()
 
     async def log_cleanup(
         self, title: str, description: str, color: Color, fields: Optional[List] = None
@@ -319,7 +321,6 @@ class BoosterRoleCleaner(commands.Cog):
             inline=False,
         )
 
-        await self.log_cleanup("", "", Color.blue(), [])
         log_channel = self.bot.get_channel(self.log_channel_id)
         if log_channel:
             await log_channel.send(embed=embed)

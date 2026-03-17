@@ -308,6 +308,43 @@ class BoosterRolesCog(commands.Cog):
 
             await save_role_to_db(interaction.user.id, role_data)
 
+            # Audit log
+            db = await get_db()
+            await db.log_action(interaction.user.id, "create", {
+                "name": name,
+                "role_id": role.id,
+                "color": str(role.color),
+            })
+
+            # Role showcase: post to configured showcase channel
+            showcase_channel_id = int(os.environ.get("SHOWCASE_CHANNEL_ID", 0))
+            if showcase_channel_id:
+                showcase_channel = interaction.guild.get_channel(showcase_channel_id)
+                if showcase_channel:
+                    try:
+                        showcase_embed = Embed(
+                            title="✨ New Custom Role Created!",
+                            color=role.color,
+                        )
+                        showcase_embed.set_author(
+                            name=interaction.user.display_name,
+                            icon_url=interaction.user.display_avatar.url,
+                        )
+                        showcase_embed.add_field(name="Role", value=role.mention, inline=True)
+                        showcase_embed.add_field(
+                            name="Color", value=f"`{str(role.color)}`", inline=True
+                        )
+                        showcase_embed.add_field(
+                            name="Created By", value=interaction.user.mention, inline=True
+                        )
+                        showcase_embed.set_footer(
+                            text=f"Boost the server to get your own custom role! • {interaction.guild.name}",
+                            icon_url=interaction.guild.icon.url if interaction.guild.icon else None,
+                        )
+                        await showcase_channel.send(embed=showcase_embed)
+                    except Exception as e:
+                        print(f"[WARN] Failed to post role showcase: {e}")
+
             # Step 6: Final celebration!
             if progress_msg:
                 embed = progress_msg.embeds[0]
@@ -717,7 +754,13 @@ class BoosterRolesCog(commands.Cog):
         # Create confirmation view (you'll need to update this view too)
         from .views import DeleteConfirmationView
 
-        confirm_view = DeleteConfirmationView(self, role, is_mod_action, reason)
+        # Create a lightweight proxy so DeleteConfirmationView can access .user
+        # (tasdelete has no BoosterRoleView parent — it's a slash command, not a button)
+        class _DeleteProxy:
+            def __init__(self, user):
+                self.user = user
+
+        confirm_view = DeleteConfirmationView(_DeleteProxy(target_user), role, is_mod_action, reason)
 
         embed = Embed(title="⚠️ Confirm Role Deletion", color=Color.red())
 
@@ -900,7 +943,6 @@ class BoosterRolesCog(commands.Cog):
         """Help command for booster role system"""
         embed = await create_help_embed()
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
 
 async def setup(bot):
     await bot.add_cog(BoosterRolesCog(bot))

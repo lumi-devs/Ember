@@ -53,6 +53,21 @@ class RoleNameModal(ui.Modal, title="Update Role Name"):
 
         new_name = str(self.name_input)
 
+        # Cooldown check: max 3 name changes per hour
+        db = await get_db()
+        allowed, retry_after = await db.check_cooldown(
+            interaction.user.id, "rename", limit=3, window_seconds=3600
+        )
+        if not allowed:
+            minutes = retry_after // 60
+            seconds = retry_after % 60
+            await interaction.followup.send(
+                f"⏳ **Slow down!** You can only rename your role 3 times per hour.\n"
+                f"Try again in **{minutes}m {seconds}s**.",
+                ephemeral=True,
+            )
+            return
+
         # Validate name
         is_valid, validation_msg = await validate_role_name(
             new_name, interaction.guild, interaction.user.id
@@ -69,6 +84,7 @@ class RoleNameModal(ui.Modal, title="Update Role Name"):
             role_data = await db.get_role(interaction.user.id)
 
             if role_data:
+                old_name = role_data.get("name", "")
                 # Update existing role data
                 role_data["name"] = new_name
                 role_data["updated_at"] = datetime.now(
@@ -77,6 +93,13 @@ class RoleNameModal(ui.Modal, title="Update Role Name"):
 
                 # Save updated data
                 await db.save_role(interaction.user.id, role_data)
+
+                # Audit log
+                await db.log_action(interaction.user.id, "rename", {
+                    "old_name": old_name,
+                    "new_name": new_name,
+                    "role_id": self.role.id,
+                })
 
             embed = discord.Embed(
                 title="✅ Role Name Updated",
@@ -206,6 +229,21 @@ class RoleColorsModal(ui.Modal, title="Update Role Colors"):
             str(self.secondary_color).strip() if self.secondary_color.value else None
         )
 
+        # Cooldown check: max 5 color changes per hour
+        db_check = await get_db()
+        allowed, retry_after = await db_check.check_cooldown(
+            interaction.user.id, "recolor", limit=5, window_seconds=3600
+        )
+        if not allowed:
+            minutes = retry_after // 60
+            seconds = retry_after % 60
+            await interaction.followup.send(
+                f"⏳ **Slow down!** You can only change colors 5 times per hour.\n"
+                f"Try again in **{minutes}m {seconds}s**.",
+                ephemeral=True,
+            )
+            return
+
         # Validate colors
         if primary_hex in ["#000000", "000000"]:
             primary_hex = "#000001"
@@ -263,6 +301,8 @@ class RoleColorsModal(ui.Modal, title="Update Role Colors"):
             role_data = await db.get_role(interaction.user.id)
 
             if role_data:
+                old_color = role_data.get("color", "")
+                old_secondary = role_data.get("secondary_colour")
                 # Update color data
                 role_data["color"] = primary_hex
                 if secondary_hex:
@@ -279,6 +319,16 @@ class RoleColorsModal(ui.Modal, title="Update Role Colors"):
 
                 # Save updated data
                 await db.save_role(interaction.user.id, role_data)
+
+                # Audit log
+                await db.log_action(interaction.user.id, "recolor", {
+                    "old_color": old_color,
+                    "new_color": primary_hex,
+                    "old_secondary": old_secondary,
+                    "new_secondary": secondary_hex,
+                    "color_type": color_type,
+                    "role_id": self.role.id,
+                })
 
             # Create embed
             embed = discord.Embed(

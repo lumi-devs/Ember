@@ -475,19 +475,20 @@ class BoosterRolesManage(commands.Cog):
             await interaction.followup.send("Invalid user ID format.")
             return
 
+        # Check if actually blacklisted BEFORE trying to remove
+        was_blacklisted = await self.db.is_user_banned(user_id_int)
+        if not was_blacklisted:
+            await interaction.followup.send(
+                f"⚠️ User `{user_id}` is not in the blacklist.", ephemeral=False
+            )
+            return
+
         success = await self.db.remove_from_blacklist(user_id_int)
 
         if success:
-            # Check if user was actually blacklisted
-            was_blacklisted = await self.db.is_user_banned(user_id_int)
-            if not was_blacklisted:
-                await interaction.followup.send(
-                    f"✅ User `{user_id}` has been removed from the blacklist."
-                )
-            else:
-                await interaction.followup.send(
-                    f"✅ User `{user_id}` has been removed from the blacklist."
-                )
+            await interaction.followup.send(
+                f"✅ User `{user_id}` has been removed from the blacklist."
+            )
         else:
             await interaction.followup.send("❌ Failed to remove user from blacklist.")
 
@@ -816,22 +817,11 @@ class BoosterRolesManage(commands.Cog):
             )
 
             if str(reaction.emoji) == "✅":
-                # Perform cleanup
+                # Perform cleanup - only remove expired unaccepted invitations
                 await conn.execute(
                     "DELETE FROM bestowed WHERE accepted = 0 AND invited_at < ?",
                     (cutoff_iso,),
                 )
-                await conn.commit()
-
-                # Also clean up roles with no bestowed entries
-                await conn.execute("""
-                    DELETE FROM roles 
-                    WHERE user_id NOT IN (
-                        SELECT DISTINCT owner_id FROM bestowed
-                        UNION
-                        SELECT DISTINCT user_id FROM bestowed WHERE accepted = 1
-                    )
-                """)
                 await conn.commit()
 
                 await msg.edit(content="✅ Cleanup completed successfully!", embed=None)
@@ -999,6 +989,112 @@ class BoosterRolesManage(commands.Cog):
                     name="Active Roles", value="\n".join(role_names), inline=False
                 )
 
+        await interaction.followup.send(embed=embed)
+
+
+    # ===== HISTORY COMMAND =====
+    @broles.command(
+        name="history",
+        description="View a user's role change audit log",
+    )
+    async def role_history(
+        self,
+        interaction: discord.Interaction,
+        user_id: str,
+        limit: Optional[int] = 15,
+    ):
+        """Show per-user audit trail of role actions"""
+        await interaction.response.defer(thinking=True)
+
+        try:
+            user_id_int = int(user_id)
+        except ValueError:
+            await interaction.followup.send("Invalid user ID format.")
+            return
+
+        entries = await self.db.get_audit_log(user_id_int, limit=min(limit, 25))
+
+        if not entries:
+            await interaction.followup.send(
+                f"No audit log entries found for user `{user_id}`."
+            )
+            return
+
+        user = interaction.guild.get_member(user_id_int)
+        display = user.display_name if user else f"ID: {user_id}"
+
+        embed = discord.Embed(
+            title=f"📋 Role History: {display}",
+            description=f"Showing last **{len(entries)}** action(s)",
+            color=discord.Color.blurple(),
+            timestamp=datetime.now(),
+        )
+
+        if user:
+            embed.set_thumbnail(url=user.display_avatar.url)
+
+        action_icons = {
+            "create": "✨",
+            "rename": "✏️",
+            "recolor": "🎨",
+            "delete": "🗑️",
+            "icon_set": "🖼️",
+            "icon_remove": "🚫",
+        }
+
+        for entry in entries:
+            action = entry["action"]
+            details = entry["details"]
+            icon = action_icons.get(action, "🔹")
+            performed_at = datetime.fromisoformat(entry["performed_at"])
+            ts = f"<t:{int(performed_at.timestamp())}:R>"
+
+            if action == "create":
+                value = (
+                    f"**Role:** `{details.get('name', '?')}`\n"
+                    f"**Color:** `{details.get('color', '?')}`\n"
+                    f"**When:** {ts}"
+                )
+            elif action == "rename":
+                value = (
+                    f"**From:** `{details.get('old_name', '?')}`\n"
+                    f"**To:** `{details.get('new_name', '?')}`\n"
+                    f"**When:** {ts}"
+                )
+            elif action == "recolor":
+                old_c = details.get("old_color", "?")
+                new_c = details.get("new_color", "?")
+                old_s = details.get("old_secondary")
+                new_s = details.get("new_secondary")
+                color_line = f"`{old_c}` → `{new_c}`"
+                if old_s or new_s:
+                    color_line += f"\nSecondary: `{old_s or 'none'}` → `{new_s or 'none'}`"
+                value = f"**Colors:** {color_line}\n**Type:** {details.get('color_type', '?').title()}\n**When:** {ts}"
+            elif action == "delete":
+                deleted_by = details.get("deleted_by")
+                by_str = f"<@{deleted_by}>" if deleted_by else "unknown"
+                mod = " (mod action)" if details.get("is_mod_action") else ""
+                reason = details.get("reason") or "No reason given"
+                value = (
+                    f"**Role:** `{details.get('role_name', '?')}`\n"
+                    f"**Deleted by:** {by_str}{mod}\n"
+                    f"**Reason:** {reason}\n"
+                    f"**When:** {ts}"
+                )
+            elif action == "icon_set":
+                value = f"**Type:** {details.get('icon_type', '?')}\n**When:** {ts}"
+            elif action == "icon_remove":
+                value = f"**When:** {ts}"
+            else:
+                value = f"**Details:** {str(details)[:200]}\n**When:** {ts}"
+
+            embed.add_field(
+                name=f"{icon} {action.replace('_', ' ').title()}",
+                value=value,
+                inline=False,
+            )
+
+        embed.set_footer(text=f"Requested by {interaction.user} • Showing newest first")
         await interaction.followup.send(embed=embed)
 
 
