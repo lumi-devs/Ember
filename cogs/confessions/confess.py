@@ -1126,9 +1126,8 @@ class Confessions(commands.Cog):
                     name="Author Notified", value="✅ Yes" if dm_sent else "❌ No", inline=True
                 )
                 # Anonymize the deleter too for the mod log
-                deleter_hash = sha256_user_id(interaction.user.id)
                 mod_embed.add_field(
-                    name="Deleted by (hash)", value=f"`{deleter_hash}`", inline=False
+                    name="Deleted by (hash)", value=f"`{interaction.user.mention}`", inline=False
                 )
                 if reason:
                     mod_embed.add_field(name="Reason", value=reason, inline=False)
