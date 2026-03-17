@@ -1127,7 +1127,7 @@ class Confessions(commands.Cog):
                 )
                 # Anonymize the deleter too for the mod log
                 mod_embed.add_field(
-                    name="Deleted by (hash)", value=f"`{interaction.user.mention}`", inline=False
+                    name="Deleted by", value=f"`{interaction.user.mention}`", inline=False
                 )
                 if reason:
                     mod_embed.add_field(name="Reason", value=reason, inline=False)
