@@ -723,7 +723,7 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
 
     @app_commands.command(name="staffreview", description="AI review of a staff member — includes full history.")
     @app_commands.describe(member="Who to review", days="Days of data to analyse (default 30)")
-    @app_commands.checks.has_permissions(manage_roles=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def staffreview(self, interaction: discord.Interaction, member: discord.Member, days: int = 30):
         await interaction.response.defer(ephemeral=True)
         out = await self._do_review(interaction, member, days)
@@ -733,7 +733,7 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
 
     @app_commands.command(name="staffreviewall", description="AI reviews entire staff roster, sorted by urgency.")
     @app_commands.describe(days="Days of data to analyse (default 30)")
-    @app_commands.checks.has_permissions(manage_roles=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def staffreviewall(self, interaction: discord.Interaction, days: int = 30):
         await interaction.response.defer(ephemeral=True)
 
@@ -888,6 +888,7 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
         await msg.edit(embed=summary)
 
     @app_commands.command(name="staffhistory", description="Full promotion/demotion and review history for a member.")
+    @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(member="Who to look up")
     @app_commands.checks.has_permissions(manage_roles=True)
     async def staffhistory(self, interaction: discord.Interaction, member: discord.Member):
@@ -927,15 +928,6 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="staffpromote", description="Manually promote a staff member (confirm required).")
-    @app_commands.checks.has_permissions(manage_roles=True)
-    async def staffpromote(self, interaction: discord.Interaction, member: discord.Member):
-        await self._manual_shift(interaction, member, +1)
-
-    @app_commands.command(name="staffdemote", description="Manually demote a staff member (confirm required).")
-    @app_commands.checks.has_permissions(manage_roles=True)
-    async def staffdemote(self, interaction: discord.Interaction, member: discord.Member):
-        await self._manual_shift(interaction, member, -1)
 
     async def _manual_shift(self, interaction: discord.Interaction, member: discord.Member, direction: int):
         await interaction.response.defer(ephemeral=True)
@@ -993,6 +985,7 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     @app_commands.command(name="staffhierarchy", description="Show the configured staff role ladder.")
+    @app_commands.checks.has_permissions(administrator=True)
     async def staffhierarchy(self, interaction: discord.Interaction):
         ids, names = _load_hierarchy()
         if not ids:
