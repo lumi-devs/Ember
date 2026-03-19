@@ -503,7 +503,7 @@ class StaffStats:
             "threads_created":      self.threads_created,
             "reactions_given":      self.reactions_given,
             "current_streak":       streak,
-            "off_peak_messages":    self.off_peak_messages,
+            "off_peak_messages": self.consistency.off_peak_activity if self.consistency else 0,
             "conversation_starters":self.conversation_starters,
             "new_member_greetings": self.new_member_greetings,
             "dead_chat_revivals":   self.dead_chat_revivals,

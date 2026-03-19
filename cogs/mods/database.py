@@ -594,9 +594,8 @@ class DatabaseManager:
             last_active_date=datetime.fromisoformat(row["last_active_date"]) if row["last_active_date"] else None,
         )
         from collections import defaultdict as _dd
-        stats.active_hours        = _dd(int, json.loads(row["active_hours"] or "{}"))
-        stats.active_days_of_week = _dd(int, json.loads(row["active_days_of_week"] or "{}"))
-
+        stats.active_hours        = _dd(int, {int(k): v for k, v in json.loads(row["active_hours"] or "{}").items()})
+        stats.active_days_of_week = _dd(int, {int(k): v for k, v in json.loads(row["active_days_of_week"] or "{}").items()})
         if stats.last_active_date:
             diff = (message_time.date() - stats.last_active_date.date()).days
             if diff == 1:
@@ -1119,9 +1118,9 @@ class DatabaseManager:
         
         # This is a regular method now, not nested
         async def _count_unique_members(self, staff_id: int, cutoff_start: str, cutoff_end: str) -> int:
-            """Count unique members helped."""
+            """Helper to count unique members helped."""
             row = await (await self.pool.execute(
-                "SELECT COUNT(DISTINCT helped_id) as c "
+                "SELECT COUNT(DISTINCT helped_id) as c "  # <-- Changed user_id to helped_id
                 "FROM help_events WHERE helper_id=? AND timestamp>? AND timestamp<=?",
                 (staff_id, cutoff_start, cutoff_end),
             )).fetchone()

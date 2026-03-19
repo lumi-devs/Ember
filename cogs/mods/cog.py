@@ -274,13 +274,12 @@ class StaffAnalytics(commands.Cog):
 
         now = datetime.now()
 
-        joined  = before.channel is None and _is_countable_channel(after.channel)
-        left    = _is_countable_channel(before.channel) and after.channel is None
-        moved   = (
-            _is_countable_channel(before.channel)
-            and _is_countable_channel(after.channel)
-            and before.channel != after.channel
-        )
+        was_countable = _is_countable_channel(before.channel)
+        is_countable = _is_countable_channel(after.channel)
+
+        joined = not was_countable and is_countable
+        left   = was_countable and not is_countable
+        moved  = was_countable and is_countable and before.channel != after.channel
         # Staff moved into AFK — treat as a leave
         moved_to_afk = (
             _is_countable_channel(before.channel)
