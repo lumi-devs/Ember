@@ -1107,24 +1107,6 @@ class DatabaseManager:
             )).fetchone()
             return row["c"] or 0
         
-        async def _get_mod_severity_sum(self, staff_id: int, cutoff_start: str, cutoff_end: str) -> float:
-            """Helper to get weighted moderation severity sum."""
-            row = await (await self.pool.execute(
-                "SELECT COALESCE(SUM(severity), 0) as sev "
-                "FROM moderation_actions WHERE moderator_id=? AND timestamp>? AND timestamp<=?",
-                (staff_id, cutoff_start, cutoff_end),
-            )).fetchone()
-            return round(row["sev"] or 0.0, 2)
-        
-        # This is a regular method now, not nested
-        async def _count_unique_members(self, staff_id: int, cutoff_start: str, cutoff_end: str) -> int:
-            """Helper to count unique members helped."""
-            row = await (await self.pool.execute(
-                "SELECT COUNT(DISTINCT helped_id) as c "  # <-- Changed user_id to helped_id
-                "FROM help_events WHERE helper_id=? AND timestamp>? AND timestamp<=?",
-                (staff_id, cutoff_start, cutoff_end),
-            )).fetchone()
-            return row["c"] or 0
         
         return {
             # Messages
@@ -1251,7 +1233,7 @@ class DatabaseManager:
     async def _count_unique_members(self, staff_id: int, cutoff_start: str, cutoff_end: str) -> int:
         """Helper to count unique members helped."""
         row = await (await self.pool.execute(
-            "SELECT COUNT(DISTINCT user_id) as c "
+            "SELECT COUNT(DISTINCT helped_id) as c "
             "FROM help_events WHERE helper_id=? AND timestamp>? AND timestamp<=?",
             (staff_id, cutoff_start, cutoff_end),
         )).fetchone()
