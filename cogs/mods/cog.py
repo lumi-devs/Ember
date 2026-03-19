@@ -808,6 +808,7 @@ class StaffAnalytics(commands.Cog):
 
     @app_commands.command(name="staffleaderboard", description="Staff performance leaderboards")
     @app_commands.describe(metric="Metric to rank by", days="Analysis window (default 30)")
+    @app_commands.default_permissions(manage_guild=True)
     @app_commands.choices(metric=[
         app_commands.Choice(name="⭐ Engagement Score",      value="score"),
         app_commands.Choice(name="🎙️ VC Hours",              value="vc_hours"),
@@ -911,6 +912,7 @@ class StaffAnalytics(commands.Cog):
     # ─── /staffcompare ───────────────────────────────────────────────────────
 
     @app_commands.command(name="staffcompare", description="Compare two staff members side-by-side")
+    @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(member1="First staff member", member2="Second staff member", days="Days (default 30)")
     async def staffcompare(
         self, interaction: discord.Interaction,
@@ -982,6 +984,7 @@ class StaffAnalytics(commands.Cog):
     # ─── /staffranks ─────────────────────────────────────────────────────────
 
     @app_commands.command(name="staffranks", description="Staff rank tier distribution")
+    @app_commands.default_permissions(manage_messages=True)
     @app_commands.describe(days="Analysis window (default 30)")
     async def staffranks(self, interaction: discord.Interaction, days: int = 30):
         await interaction.response.defer(ephemeral=True)
@@ -1030,6 +1033,7 @@ class StaffAnalytics(commands.Cog):
     # ─── /staffactivity ──────────────────────────────────────────────────────
 
     @app_commands.command(name="staffactivity", description="Recent staff activity feed")
+    @app_commands.default_permissions(manage_messages=True)
     @app_commands.describe(hours="Hours to look back (default 24)")
     async def staffactivity(self, interaction: discord.Interaction, hours: int = 24):
         await interaction.response.defer(ephemeral=True)
@@ -1088,6 +1092,7 @@ class StaffAnalytics(commands.Cog):
     # ─── /staffinactive ──────────────────────────────────────────────────────
 
     @app_commands.command(name="staffinactive", description="Show inactive staff members")
+    @app_commands.default_permissions(ban_members=True)
     @app_commands.describe(days="Days of inactivity threshold (default 7)")
     async def staffinactive(self, interaction: discord.Interaction, days: int = 7):
         await interaction.response.defer(ephemeral=True)
@@ -1116,6 +1121,7 @@ class StaffAnalytics(commands.Cog):
     # ─── /staffconsistency ───────────────────────────────────────────────────
 
     @app_commands.command(name="staffconsistency", description="Consistency & streak leaderboard")
+    @app_commands.default_permissions(manage_guild=True)
     async def staffconsistency(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         staff = await self._fetch_all_staff(interaction.guild)
@@ -1506,7 +1512,7 @@ class StaffAnalytics(commands.Cog):
     # ─── /staffexport ─────────────────────────────────────────────────────────
 
     @app_commands.command(name="staffexport", description="Export staff data as JSON (Admin only)")
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(member="Staff member to export", days="Days to include (default 30)")
     async def staffexport(
         self, interaction: discord.Interaction, member: discord.Member, days: int = 30
