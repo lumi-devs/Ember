@@ -60,7 +60,7 @@ class NicknameChanger(commands.Cog):
         executor_level = self.get_hierarchy_level(executor)
         target_level = self.get_hierarchy_level(target)
 
-        # If executor has administrator permission, allow (bypass all other checks)
+        # If executor has administrator permission, allow (bypass most other checks)
         if self.has_admin_permissions(executor):
             # Still check if target has admin perms
             if self.has_admin_permissions(target):
@@ -68,6 +68,11 @@ class NicknameChanger(commands.Cog):
                     False,
                     "❌ You can't change the nickname of another **administrator**.",
                 )
+            # Even admins cannot change someone at same level? (optional - remove if you want admins to bypass all)
+            # Uncomment below if admins should also follow hierarchy rules
+            # if target_level > 0 and target_level == executor_level:
+            #     level_names = {3: "Moderator", 2: "Helper", 1: "Chat Manager"}
+            #     return False, f"❌ Admins cannot change another **{level_names[target_level]}'s** nickname."
             return True, ""
 
         # If executor doesn't have any of the 3 special roles AND not admin, deny
@@ -76,13 +81,18 @@ class NicknameChanger(commands.Cog):
 
         # SPECIAL RULE: Check hierarchy between the 3 roles
         if target_level > 0:  # Target has one of the 3 special roles
-            if target_level >= executor_level:
-                # Can't change someone equal or higher in our custom hierarchy
-                if target_level == 3 and executor_level < 3:
+            # BLOCK SAME LEVEL
+            if target_level == executor_level:
+                level_names = {3: "Moderator", 2: "Helper", 1: "Chat Manager"}
+                return False, f"❌ You can't change another **{level_names[target_level]}'s** nickname (same hierarchy level)."
+            
+            # BLOCK HIGHER LEVEL
+            elif target_level > executor_level:
+                if target_level == 3:
                     return False, "❌ You can't change a **Moderator's** nickname."
-                elif target_level == 2 and executor_level < 2:
+                elif target_level == 2:
                     return False, "❌ You can't change a **Helper's** nickname."
-                elif target_level == 1 and executor_level < 1:
+                elif target_level == 1:
                     return False, "❌ You can't change a **Chat Manager's** nickname."
 
         # SECONDARY RULE: Check if target has dangerous permissions

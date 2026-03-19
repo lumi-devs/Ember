@@ -107,7 +107,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
 
             msg = await channel.send(embed=embed)
 
-            thread_name = f"Confession #{confession_id}"
+            thread_name = f"Confession Thread"
             try:
                 thread = await msg.create_thread(name=thread_name, auto_archive_duration=60)
             except discord.HTTPException as e:
