@@ -1353,7 +1353,6 @@ class StaffAnalytics(commands.Cog):
         )
 
     @notes_group.command(name="view", description="View notes for a staff member")
-    @app_commands.default_permissions(manage_guild=True)
     async def staffnote_view(self, interaction: discord.Interaction, member: discord.Member):
         notes = await self.db.get_staff_notes(member.id, limit=10)
         if not notes:

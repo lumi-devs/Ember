@@ -1034,29 +1034,31 @@ class DatabaseManager:
         prev_end = cur_start
         
         async def _count(table: str, col: str, cutoff_start: str, cutoff_end: str, 
-                        extra_condition: str = "") -> int:
-            """Base count helper with optional extra condition."""
+                        timestamp_col: str = "timestamp", extra_condition: str = "") -> int:
+            """Base count helper with configurable timestamp column."""
             condition = f" AND {extra_condition}" if extra_condition else ""
             row = await (await self.pool.execute(
-                f"SELECT COUNT(*) as c FROM {table} WHERE {col}=? AND timestamp>? AND timestamp<=?{condition}",
+                f"SELECT COUNT(*) as c FROM {table} WHERE {col}=? AND {timestamp_col}>? AND {timestamp_col}<=?{condition}",
                 (staff_id, cutoff_start, cutoff_end),
             )).fetchone()
             return row["c"] or 0
         
         async def _count_with_event_type(table: str, col: str, event_type: str, 
-                                        cutoff_start: str, cutoff_end: str) -> int:
+                                        cutoff_start: str, cutoff_end: str,
+                                        timestamp_col: str = "timestamp") -> int:
             """Count records with specific event_type."""
             row = await (await self.pool.execute(
-                f"SELECT COUNT(*) as c FROM {table} WHERE {col}=? AND event_type=? AND timestamp>? AND timestamp<=?",
+                f"SELECT COUNT(*) as c FROM {table} WHERE {col}=? AND event_type=? AND {timestamp_col}>? AND {timestamp_col}<=?",
                 (staff_id, event_type, cutoff_start, cutoff_end),
             )).fetchone()
             return row["c"] or 0
         
         async def _count_with_flag(table: str, col: str, flag_col: str, flag_value: int,
-                                    cutoff_start: str, cutoff_end: str) -> int:
+                                    cutoff_start: str, cutoff_end: str,
+                                    timestamp_col: str = "timestamp") -> int:
             """Count records with a boolean flag."""
             row = await (await self.pool.execute(
-                f"SELECT COUNT(*) as c FROM {table} WHERE {col}=? AND {flag_col}=? AND timestamp>? AND timestamp<=?",
+                f"SELECT COUNT(*) as c FROM {table} WHERE {col}=? AND {flag_col}=? AND {timestamp_col}>? AND {timestamp_col}<=?",
                 (staff_id, flag_value, cutoff_start, cutoff_end),
             )).fetchone()
             return row["c"] or 0
@@ -1162,10 +1164,10 @@ class DatabaseManager:
                 "current": await _sum_duration("vc_sessions", "staff_id", cur_start, now.isoformat()),
                 "previous": await _sum_duration("vc_sessions", "staff_id", prev_start, prev_end),
             },
-            # Conversation sessions
+            # Conversation sessions - FIXED: using start_time as timestamp column
             "conversations": {
-                "current": await _count("conversation_sessions", "staff_id", cur_start, now.isoformat()),
-                "previous": await _count("conversation_sessions", "staff_id", prev_start, prev_end),
+                "current": await _count("conversation_sessions", "staff_id", cur_start, now.isoformat(), timestamp_col="start_time"),
+                "previous": await _count("conversation_sessions", "staff_id", prev_start, prev_end, timestamp_col="start_time"),
             },
             # Reactions
             "reactions": {
