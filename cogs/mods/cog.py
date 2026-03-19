@@ -815,7 +815,6 @@ class StaffAnalytics(commands.Cog):
 
     @app_commands.command(name="staffleaderboard", description="Staff performance leaderboards")
     @app_commands.describe(metric="Metric to rank by", days="Analysis window (default 30)")
-    @app_commands.default_permissions(manage_guild=True)
     @app_commands.choices(metric=[
         app_commands.Choice(name="⭐ Engagement Score",      value="score"),
         app_commands.Choice(name="🎙️ VC Hours",              value="vc_hours"),
