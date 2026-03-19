@@ -253,7 +253,9 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             self.user_id, HOURLY_REPLY_LIMIT
         )
         if not can_reply:
-            return await interaction.followup.send(reason, ephemeral=True)
+            error_msg = await interaction.followup.send(reason, ephemeral=True, wait=True)
+            asyncio.create_task(self.delete_after_delay(error_msg, 8))
+            return
 
         remaining = HOURLY_REPLY_LIMIT - current_count
         usage_msg = (
@@ -261,7 +263,8 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             f"{remaining} remaining."
         )
 
-        await interaction.followup.send(
+        # Send media prompt and schedule deletion
+        media_prompt = await interaction.followup.send(
             f"✅ Reply submitted! {usage_msg}\n\n"
             f"You have **60 seconds** to reply with an image URL or attachment.\n"
             f"Send `skip` to continue without media.\n\n"
@@ -269,7 +272,9 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             f"• Discord image upload (drag & drop)\n"
             f"• Direct image URL (.png/.jpg/.gif/.webp)",
             ephemeral=True,
+            wait=True
         )
+        asyncio.create_task(self.delete_after_delay(media_prompt, 60))
 
         cleaner_cog = self.bot.get_cog("ConfessionCleaner")
         if cleaner_cog:
@@ -277,6 +282,16 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
 
         image_url = await self.wait_for_media(interaction)
         await self.finalize_reply_directly(image_url, interaction)
+
+    async def delete_after_delay(self, message, delay: int):
+        """Helper method to delete a message after a delay."""
+        await asyncio.sleep(delay)
+        try:
+            await message.delete()
+        except discord.NotFound:
+            pass
+        except discord.HTTPException as e:
+            print(f"Failed to delete message: {e}")
 
     async def wait_for_media(self, interaction):
         """Wait for an optional media message from the user."""
@@ -296,7 +311,8 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                     await msg_received.delete()
                 except Exception:
                     pass
-                await interaction.followup.send("✅ Skipped media upload.", ephemeral=True)
+                skip_msg = await interaction.followup.send("✅ Skipped media upload.", ephemeral=True, wait=True)
+                asyncio.create_task(self.delete_after_delay(skip_msg, 5))
                 return None
 
             has_attachments = len(msg_received.attachments) > 0
@@ -328,7 +344,8 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                         "• Type `skip` to continue without media\n\n"
                     )
                 error_msg += "Continuing without media."
-                await interaction.followup.send(error_msg, ephemeral=True)
+                error_response = await interaction.followup.send(error_msg, ephemeral=True, wait=True)
+                asyncio.create_task(self.delete_after_delay(error_response, 10))
                 return None
 
             success, result = await self.download_and_reupload_media(
@@ -343,9 +360,10 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                     warning = ""
                     if remaining <= 2:
                         warning = f"\n⚠️ **Warning:** You only have {remaining} repl{'y' if remaining == 1 else 'ies'} left this hour!"
-                    await interaction.followup.send(
-                        f"✅ Media added to reply!{warning}", ephemeral=True
+                    success_msg = await interaction.followup.send(
+                        f"✅ Media added to reply!{warning}", ephemeral=True, wait=True
                     )
+                    asyncio.create_task(self.delete_after_delay(success_msg, 5))
                     return result
             except discord.Forbidden:
                 print(f"No permission to delete message from {msg_received.author}")
@@ -355,32 +373,36 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                 print(f"Error deleting message: {e}")
 
             if success:
-                await interaction.followup.send("✅ Media added to reply!", ephemeral=True)
+                success_msg = await interaction.followup.send("✅ Media added to reply!", ephemeral=True, wait=True)
+                asyncio.create_task(self.delete_after_delay(success_msg, 5))
                 return result
             else:
                 error_msg = result if isinstance(result, str) else "Unknown error"
-                await interaction.followup.send(
+                error_response = await interaction.followup.send(
                     f"❌ Failed to process media: {error_msg}\nContinuing without media.",
-                    ephemeral=True,
+                    ephemeral=True, wait=True
                 )
+                asyncio.create_task(self.delete_after_delay(error_response, 10))
                 return None
 
         except asyncio.TimeoutError:
             current_count = await get_hourly_reply_count(self.user_id)
             remaining = HOURLY_REPLY_LIMIT - current_count
-            await interaction.followup.send(
+            timeout_msg = await interaction.followup.send(
                 f"⏰ Media upload timed out. Continuing without media.\n"
                 f"📊 {remaining} replies remaining this hour.",
-                ephemeral=True,
+                ephemeral=True, wait=True
             )
+            asyncio.create_task(self.delete_after_delay(timeout_msg, 5))
             return None
         except Exception as e:
             print(f"Error in wait_for_media: {e}")
             import traceback
             traceback.print_exc()
-            await interaction.followup.send(
-                "❌ An error occurred while processing media.", ephemeral=True
+            error_msg = await interaction.followup.send(
+                "❌ An error occurred while processing media.", ephemeral=True, wait=True
             )
+            asyncio.create_task(self.delete_after_delay(error_msg, 8))
             return None
 
     async def download_and_reupload_media(self, content, attachments):
@@ -477,9 +499,11 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
         try:
             channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
             if not channel:
-                return await interaction.followup.send(
-                    "❌ Confession channel not found.", ephemeral=True
+                error_msg = await interaction.followup.send(
+                    "❌ Confession channel not found.", ephemeral=True, wait=True
                 )
+                asyncio.create_task(self.delete_after_delay(error_msg, 8))
+                return
 
             is_owner_reply = self.user_id == self.confession_author_id
             color = discord.Color.gold() if is_owner_reply else discord.Color.green()
@@ -487,13 +511,17 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             try:
                 confession_msg = await channel.fetch_message(self.confession_message_id)
             except discord.NotFound:
-                return await interaction.followup.send(
-                    "❌ Original confession not found.", ephemeral=True
+                error_msg = await interaction.followup.send(
+                    "❌ Original confession not found.", ephemeral=True, wait=True
                 )
+                asyncio.create_task(self.delete_after_delay(error_msg, 8))
+                return
             except discord.Forbidden:
-                return await interaction.followup.send(
-                    "❌ No permission to access confession.", ephemeral=True
+                error_msg = await interaction.followup.send(
+                    "❌ No permission to access confession.", ephemeral=True, wait=True
                 )
+                asyncio.create_task(self.delete_after_delay(error_msg, 8))
+                return
 
             thread = confession_msg.thread
             if not thread:
@@ -509,9 +537,11 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
                             auto_archive_duration=60,
                         )
                     except Exception as e2:
-                        return await interaction.followup.send(
-                            "❌ Could not create discussion thread.", ephemeral=True
+                        error_msg = await interaction.followup.send(
+                            "❌ Could not create discussion thread.", ephemeral=True, wait=True
                         )
+                        asyncio.create_task(self.delete_after_delay(error_msg, 8))
+                        return
 
             # Insert into DB first so we have the reply_db_id for the view custom_id
             async with aiosqlite.connect(DB_PATH) as db:
@@ -560,18 +590,22 @@ class ReplyModal(ui.Modal, title="Anonymous Reply"):
             if not is_owner_reply:
                 await self.notify_author(confession_msg)
 
-            await interaction.followup.send(
+            # Send success message with jump URL and delete after 30 seconds
+            success_msg = await interaction.followup.send(
                 f"✅ Your reply has been posted!\n📝 View it here: {sent_msg.jump_url}",
                 ephemeral=True,
+                wait=True
             )
+            asyncio.create_task(self.delete_after_delay(success_msg, 30))
 
         except Exception as e:
             print(f"[DEBUG] Error finalizing reply: {e}")
             import traceback
             traceback.print_exc()
-            await interaction.followup.send(
-                f"❌ An error occurred while posting your reply: {str(e)}", ephemeral=True
+            error_msg = await interaction.followup.send(
+                f"❌ An error occurred while posting your reply: {str(e)}", ephemeral=True, wait=True
             )
+            asyncio.create_task(self.delete_after_delay(error_msg, 8))
 
     async def log_reply(self, reply_db_id: int, image_url, color):
         """Log reply to admin log (full IDs) and mod log (anonymized)."""
@@ -712,7 +746,9 @@ class ReplyToReplyModal(ui.Modal, title="Anonymous Reply"):
             self.user_id, HOURLY_REPLY_LIMIT
         )
         if not can_reply:
-            return await interaction.followup.send(reason, ephemeral=True)
+            error_msg = await interaction.followup.send(reason, ephemeral=True, wait=True)
+            asyncio.create_task(self.delete_after_delay(error_msg, 8))
+            return
 
         remaining = HOURLY_REPLY_LIMIT - current_count
         usage_msg = (
@@ -720,7 +756,8 @@ class ReplyToReplyModal(ui.Modal, title="Anonymous Reply"):
             f"{remaining} remaining."
         )
 
-        await interaction.followup.send(
+        # Send media prompt and schedule deletion
+        media_prompt = await interaction.followup.send(
             f"✅ Reply submitted! {usage_msg}\n\n"
             f"You have **60 seconds** to add an image (optional).\n"
             f"Send `skip` to continue without media.\n\n"
@@ -728,7 +765,9 @@ class ReplyToReplyModal(ui.Modal, title="Anonymous Reply"):
             f"• Discord image upload (drag & drop)\n"
             f"• Direct image URL (.png/.jpg/.gif/.webp)",
             ephemeral=True,
+            wait=True
         )
+        asyncio.create_task(self.delete_after_delay(media_prompt, 60))
 
         cleaner_cog = self.bot.get_cog("ConfessionCleaner")
         if cleaner_cog:
@@ -736,6 +775,16 @@ class ReplyToReplyModal(ui.Modal, title="Anonymous Reply"):
 
         image_url = await self._wait_for_media(interaction)
         await self._finalize_reply(image_url, interaction)
+
+    async def delete_after_delay(self, message, delay: int):
+        """Helper method to delete a message after a delay."""
+        await asyncio.sleep(delay)
+        try:
+            await message.delete()
+        except discord.NotFound:
+            pass
+        except discord.HTTPException as e:
+            print(f"Failed to delete message: {e}")
 
     # ── Media wait (same logic as ReplyModal) ─────────────────────────────
 
@@ -754,7 +803,8 @@ class ReplyToReplyModal(ui.Modal, title="Anonymous Reply"):
                     await msg_received.delete()
                 except Exception:
                     pass
-                await interaction.followup.send("✅ Skipped media upload.", ephemeral=True)
+                skip_msg = await interaction.followup.send("✅ Skipped media upload.", ephemeral=True, wait=True)
+                asyncio.create_task(self.delete_after_delay(skip_msg, 5))
                 return None
 
             has_attachments = len(msg_received.attachments) > 0
@@ -773,9 +823,10 @@ class ReplyToReplyModal(ui.Modal, title="Anonymous Reply"):
                     await msg_received.delete()
                 except Exception:
                     pass
-                await interaction.followup.send(
-                    "❌ No valid media found. Continuing without media.", ephemeral=True
+                error_msg = await interaction.followup.send(
+                    "❌ No valid media found. Continuing without media.", ephemeral=True, wait=True
                 )
+                asyncio.create_task(self.delete_after_delay(error_msg, 10))
                 return None
 
             success, result = await self._download_and_reupload(
@@ -787,19 +838,22 @@ class ReplyToReplyModal(ui.Modal, title="Anonymous Reply"):
                 pass
 
             if success:
-                await interaction.followup.send("✅ Media added to reply!", ephemeral=True)
+                success_msg = await interaction.followup.send("✅ Media added to reply!", ephemeral=True, wait=True)
+                asyncio.create_task(self.delete_after_delay(success_msg, 5))
                 return result
             else:
-                await interaction.followup.send(
+                error_msg = await interaction.followup.send(
                     f"❌ Failed to process media: {result}\nContinuing without media.",
-                    ephemeral=True,
+                    ephemeral=True, wait=True
                 )
+                asyncio.create_task(self.delete_after_delay(error_msg, 10))
                 return None
 
         except asyncio.TimeoutError:
-            await interaction.followup.send(
-                "⏰ Media upload timed out. Continuing without media.", ephemeral=True
+            timeout_msg = await interaction.followup.send(
+                "⏰ Media upload timed out. Continuing without media.", ephemeral=True, wait=True
             )
+            asyncio.create_task(self.delete_after_delay(timeout_msg, 5))
             return None
         except Exception as e:
             print(f"[ReplyToReplyModal] wait_for_media error: {e}")
@@ -862,24 +916,30 @@ class ReplyToReplyModal(ui.Modal, title="Anonymous Reply"):
         try:
             confession_channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
             if not confession_channel:
-                return await interaction.followup.send(
-                    "❌ Confession channel not found.", ephemeral=True
+                error_msg = await interaction.followup.send(
+                    "❌ Confession channel not found.", ephemeral=True, wait=True
                 )
+                asyncio.create_task(self.delete_after_delay(error_msg, 8))
+                return
 
             try:
                 confession_msg = await confession_channel.fetch_message(
                     self.confession_message_id
                 )
             except discord.NotFound:
-                return await interaction.followup.send(
-                    "❌ Original confession not found.", ephemeral=True
+                error_msg = await interaction.followup.send(
+                    "❌ Original confession not found.", ephemeral=True, wait=True
                 )
+                asyncio.create_task(self.delete_after_delay(error_msg, 8))
+                return
 
             thread = confession_msg.thread
             if not thread:
-                return await interaction.followup.send(
-                    "❌ Discussion thread not found.", ephemeral=True
+                error_msg = await interaction.followup.send(
+                    "❌ Discussion thread not found.", ephemeral=True, wait=True
                 )
+                asyncio.create_task(self.delete_after_delay(error_msg, 8))
+                return
 
             # Try to fetch parent reply message for Discord native reply reference
             parent_msg = None
@@ -954,18 +1014,22 @@ class ReplyToReplyModal(ui.Modal, title="Anonymous Reply"):
             # DM the person whose reply was replied to
             await self._notify_replier(sent_msg, is_owner_reply)
 
-            await interaction.followup.send(
+            # Send success message with jump URL and delete after 30 seconds
+            success_msg = await interaction.followup.send(
                 f"✅ Reply posted!\n📝 View it here: {sent_msg.jump_url}",
                 ephemeral=True,
+                wait=True
             )
+            asyncio.create_task(self.delete_after_delay(success_msg, 30))
 
         except Exception as e:
             print(f"[ReplyToReplyModal] finalize error: {e}")
             import traceback
             traceback.print_exc()
-            await interaction.followup.send(
-                "❌ An error occurred while posting your reply.", ephemeral=True
+            error_msg = await interaction.followup.send(
+                "❌ An error occurred while posting your reply.", ephemeral=True, wait=True
             )
+            asyncio.create_task(self.delete_after_delay(error_msg, 8))
 
     async def _log_reply(self, reply_db_id: int, image_url, color):
         # Calculate hierarchical path for this reply

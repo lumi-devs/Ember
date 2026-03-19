@@ -67,21 +67,41 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         if await is_user_banned(self.user_id):
-            return await interaction.followup.send(
-                "❌ You are banned from submitting confessions.", ephemeral=True
+            # Get the message to delete
+            msg = await interaction.followup.send(
+                "❌ You are banned from submitting confessions.", ephemeral=True, wait=True
             )
+            # Delete after 8 seconds
+            await asyncio.sleep(8)
+            try:
+                await msg.delete()
+            except discord.NotFound:
+                pass
+            return
 
         can_confess, reason = await can_user_confess(
             interaction.guild, self.user_id, DAILY_CONFESSION_LIMIT
         )
         if not can_confess:
-            return await interaction.followup.send(reason, ephemeral=True)
+            msg = await interaction.followup.send(reason, ephemeral=True, wait=True)
+            await asyncio.sleep(8)
+            try:
+                await msg.delete()
+            except discord.NotFound:
+                pass
+            return
 
         channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
         if not channel:
-            return await interaction.followup.send(
-                "❌ Confession channel not found.", ephemeral=True
+            msg = await interaction.followup.send(
+                "❌ Confession channel not found.", ephemeral=True, wait=True
             )
+            await asyncio.sleep(8)
+            try:
+                await msg.delete()
+            except discord.NotFound:
+                pass
+            return
 
         try:
             async with aiosqlite.connect(DB_PATH) as db:
@@ -107,7 +127,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
 
             msg = await channel.send(embed=embed)
 
-            thread_name = f"Confession Thread"
+            thread_name = f"Confession #{confession_id}"
             try:
                 thread = await msg.create_thread(name=thread_name, auto_archive_duration=60)
             except discord.HTTPException as e:
@@ -121,12 +141,17 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 )
                 await db.commit()
 
-            await interaction.followup.send(
+            # Send media prompt and track for deletion
+            media_prompt = await interaction.followup.send(
                 "✅ Confession submitted! You have **1 minute** to reply with an image URL or "
                 "attachment. Send `skip` to continue without media.\n\n"
                 f"📝 Your confession ID: #{confession_id}",
                 ephemeral=True,
+                wait=True
             )
+            
+            # Schedule deletion after 60 seconds
+            asyncio.create_task(self.delete_after_delay(media_prompt, 60))
 
             image_url = await self.wait_for_media(interaction, confession_id, msg)
 
@@ -152,18 +177,32 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             else:
                 thread_msg = "Note: Could not create discussion thread."
 
-            await interaction.followup.send(
+            # Send final success message and delete after 30 seconds
+            final_msg = await interaction.followup.send(
                 f"✅ Confession #{confession_id} is now public! {thread_msg}",
                 ephemeral=True,
+                wait=True
             )
+            asyncio.create_task(self.delete_after_delay(final_msg, 30))
 
         except Exception as e:
             print(f"Error submitting confession: {e}")
             import traceback
             traceback.print_exc()
-            await interaction.followup.send(
-                "❌ An error occurred while submitting your confession.", ephemeral=True
+            error_msg = await interaction.followup.send(
+                "❌ An error occurred while submitting your confession.", ephemeral=True, wait=True
             )
+            asyncio.create_task(self.delete_after_delay(error_msg, 8))
+
+    async def delete_after_delay(self, message, delay: int):
+        """Helper method to delete a message after a delay."""
+        await asyncio.sleep(delay)
+        try:
+            await message.delete()
+        except discord.NotFound:
+            pass
+        except discord.HTTPException as e:
+            print(f"Failed to delete message: {e}")
 
     async def remove_prev_confess_button(self, confession_id):
         """Remove confess button from previous confession."""
@@ -199,9 +238,11 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             )
 
         try:
-            await interaction.followup.send(
-                "⏳ Waiting for media... You have 60 seconds.", ephemeral=True
+            # Send waiting message and schedule deletion
+            waiting_msg = await interaction.followup.send(
+                "⏳ Waiting for media... You have 60 seconds.", ephemeral=True, wait=True
             )
+            asyncio.create_task(self.delete_after_delay(waiting_msg, 5))
 
             msg_received = await self.bot.wait_for("message", timeout=60.0, check=check)
 
@@ -211,7 +252,9 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                     await msg_received.delete()
                 except Exception:
                     pass
-                await interaction.followup.send("✅ Skipped media upload.", ephemeral=True)
+                skip_msg = await interaction.followup.send("✅ Skipped media upload.", ephemeral=True, wait=True)
+                asyncio.create_task(self.delete_after_delay(skip_msg, 5))
+                
                 final_view = PersistentConfessionView(confession_id, show_confess_button=True)
                 await confession_msg.edit(view=final_view)
                 thread = confession_msg.thread
@@ -219,9 +262,10 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                     f"A discussion thread has been created: {thread.mention}"
                     if thread else "Note: Could not create discussion thread."
                 )
-                await interaction.followup.send(
-                    f"✅ Confession #{confession_id} is now public! {thread_msg}", ephemeral=True
+                final_msg = await interaction.followup.send(
+                    f"✅ Confession #{confession_id} is now public! {thread_msg}", ephemeral=True, wait=True
                 )
+                asyncio.create_task(self.delete_after_delay(final_msg, 30))
                 return None
 
             has_attachments = len(msg_received.attachments) > 0
@@ -256,7 +300,9 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                         "• Type `skip` to continue without media\n\n"
                     )
                 error_msg += "Continuing without media."
-                await interaction.followup.send(error_msg, ephemeral=True)
+                
+                error_response = await interaction.followup.send(error_msg, ephemeral=True, wait=True)
+                asyncio.create_task(self.delete_after_delay(error_response, 10))
 
                 final_view = PersistentConfessionView(confession_id, show_confess_button=True)
                 await confession_msg.edit(view=final_view)
@@ -265,9 +311,10 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                     f"A discussion thread has been created: {thread.mention}"
                     if thread else "Note: Could not create discussion thread."
                 )
-                await interaction.followup.send(
-                    f"✅ Confession #{confession_id} is now public! {thread_msg}", ephemeral=True
+                final_msg = await interaction.followup.send(
+                    f"✅ Confession #{confession_id} is now public! {thread_msg}", ephemeral=True, wait=True
                 )
+                asyncio.create_task(self.delete_after_delay(final_msg, 30))
                 return None
 
             success, result = await self.download_and_reupload_media(
@@ -294,7 +341,8 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                         )
                         await db.commit()
 
-                await interaction.followup.send("✅ Media added to confession!", ephemeral=True)
+                media_msg = await interaction.followup.send("✅ Media added to confession!", ephemeral=True, wait=True)
+                asyncio.create_task(self.delete_after_delay(media_msg, 5))
 
                 final_view = PersistentConfessionView(confession_id, show_confess_button=True)
                 await confession_msg.edit(embed=embed, view=final_view)
@@ -304,31 +352,37 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                     f"A discussion thread has been created: {thread.mention}"
                     if thread else "Note: Could not create discussion thread."
                 )
-                await interaction.followup.send(
-                    f"✅ Confession #{confession_id} is now public! {thread_msg}", ephemeral=True
+                final_msg = await interaction.followup.send(
+                    f"✅ Confession #{confession_id} is now public! {thread_msg}", ephemeral=True, wait=True
                 )
+                asyncio.create_task(self.delete_after_delay(final_msg, 30))
                 return result
             else:
                 error_msg = result if isinstance(result, str) else "Unknown error occurred"
-                await interaction.followup.send(
+                error_response = await interaction.followup.send(
                     f"❌ Failed to process media: {error_msg}\nContinuing without media.",
-                    ephemeral=True,
+                    ephemeral=True, wait=True
                 )
+                asyncio.create_task(self.delete_after_delay(error_response, 10))
+                
                 await self.add_fallback_buttons(confession_msg, confession_id, error_msg)
                 thread = confession_msg.thread
                 thread_msg = (
                     f"A discussion thread has been created: {thread.mention}"
                     if thread else "Note: Could not create discussion thread."
                 )
-                await interaction.followup.send(
-                    f"✅ Confession #{confession_id} is now public! {thread_msg}", ephemeral=True
+                final_msg = await interaction.followup.send(
+                    f"✅ Confession #{confession_id} is now public! {thread_msg}", ephemeral=True, wait=True
                 )
+                asyncio.create_task(self.delete_after_delay(final_msg, 30))
                 return None
 
         except asyncio.TimeoutError:
-            await interaction.followup.send(
-                "⏰ Media upload timed out. Continuing without media.", ephemeral=True
+            timeout_msg = await interaction.followup.send(
+                "⏰ Media upload timed out. Continuing without media.", ephemeral=True, wait=True
             )
+            asyncio.create_task(self.delete_after_delay(timeout_msg, 5))
+            
             final_view = PersistentConfessionView(confession_id, show_confess_button=True)
             await confession_msg.edit(view=final_view)
             thread = confession_msg.thread
@@ -336,17 +390,20 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 f"A discussion thread has been created: {thread.mention}"
                 if thread else "Note: Could not create discussion thread."
             )
-            await interaction.followup.send(
-                f"✅ Confession #{confession_id} is now public! {thread_msg}", ephemeral=True
+            final_msg = await interaction.followup.send(
+                f"✅ Confession #{confession_id} is now public! {thread_msg}", ephemeral=True, wait=True
             )
+            asyncio.create_task(self.delete_after_delay(final_msg, 30))
             return None
         except Exception as e:
             print(f"Error in wait_for_media: {e}")
             import traceback
             traceback.print_exc()
-            await interaction.followup.send(
-                "❌ An error occurred while processing media.", ephemeral=True
+            error_msg = await interaction.followup.send(
+                "❌ An error occurred while processing media.", ephemeral=True, wait=True
             )
+            asyncio.create_task(self.delete_after_delay(error_msg, 8))
+            
             final_view = PersistentConfessionView(confession_id, show_confess_button=True)
             await confession_msg.edit(view=final_view)
             thread = confession_msg.thread
@@ -354,9 +411,10 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 f"A discussion thread has been created: {thread.mention}"
                 if thread else "Note: Could not create discussion thread."
             )
-            await interaction.followup.send(
-                f"✅ Confession #{confession_id} is now public! {thread_msg}", ephemeral=True
+            final_msg = await interaction.followup.send(
+                f"✅ Confession #{confession_id} is now public! {thread_msg}", ephemeral=True, wait=True
             )
+            asyncio.create_task(self.delete_after_delay(final_msg, 30))
             return None
 
     async def download_and_reupload_media(self, content, attachments, confession_id):

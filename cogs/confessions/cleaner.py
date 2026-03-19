@@ -45,6 +45,8 @@ class ConfessionCleaner(commands.Cog):
             self.pending_deletions[user_key] = asyncio.create_task(delete_later())
 
         else:
+            # Unauthorized message — delete after a short grace period so the
+            # user sees any ephemeral feedback before it disappears.
             async def delete_immediately():
                 await asyncio.sleep(2)
                 try:
@@ -65,6 +67,21 @@ class ConfessionCleaner(commands.Cog):
     async def allow_user_once(self, user_id: int):
         """Allow a user to send a single message to the confession channel."""
         self.allowed_users.add(user_id)
+
+    async def delete_ephemeral_after_delay(self, interaction: discord.Interaction, content: str, delay: int):
+        """
+        Helper method to send an ephemeral message and delete it after a delay.
+        Similar to test.py pattern.
+        """
+        await interaction.response.send_message(content, ephemeral=True)
+        message = await interaction.original_response()
+        await asyncio.sleep(delay)
+        try:
+            await message.delete()
+        except discord.NotFound:
+            pass
+        except discord.HTTPException as e:
+            print(f"Failed to delete ephemeral message: {e}")
 
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message):
