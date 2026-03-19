@@ -756,7 +756,15 @@ class StaffAnalytics(commands.Cog):
         # ── Consistency field
         if consistency:
             active_h_count = consistency.active_hours_count
-            most_active    = f"{consistency.most_active_hour:02d}:00" if consistency.most_active_hour is not None else "N/A"
+            # Convert most_active_hour to int if it's a string, and handle None
+            most_active_hour = consistency.most_active_hour
+            if most_active_hour is not None:
+                # Ensure it's an integer for formatting
+                most_active_hour = int(most_active_hour)
+                most_active = f"{most_active_hour:02d}:00"
+            else:
+                most_active = "N/A"
+            
             busiest_day    = consistency.busiest_day_name or "N/A"
             cons_lines = (
                 f"`Current streak   ` **{consistency.current_streak}d** 🔥\n"
