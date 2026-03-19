@@ -1885,6 +1885,7 @@ class StaffAnalytics(commands.Cog):
             channel = guild.get_channel(channel_id)
             if not channel:
                 continue
+                
             embed = await self._build_dashboard_embed(guild)
             if not embed:
                 continue
@@ -1892,19 +1893,46 @@ class StaffAnalytics(commands.Cog):
             msg_id = self._dashboard_message_ids.get(guild.id)
             if msg_id:
                 try:
+                    # Try to fetch the exact message by ID
                     msg = await channel.fetch_message(msg_id)
                     await msg.edit(embed=embed)
+                    logger.info(f"Dashboard updated for guild {guild.id}")
                     continue
-                except (discord.NotFound, discord.HTTPException):
-                    pass   # message was deleted — fall through to post a new one
+                except discord.NotFound:
+                    # Message was deleted - remove from cache and create new one
+                    logger.info(f"Dashboard message {msg_id} not found in guild {guild.id}, creating new one")
+                    self._dashboard_message_ids.pop(guild.id, None)
+                except discord.Forbidden:
+                    logger.warning(f"No permission to fetch/edit dashboard in guild {guild.id}")
+                    continue
+                except discord.HTTPException as e:
+                    logger.warning(f"HTTP error updating dashboard in guild {guild.id}: {e}")
+                    continue
+
+            # If we get here, either no cached ID or message was deleted
+            # Check if there's already a pinned dashboard message we can use
+            try:
+                async for message in channel.history(limit=20):
+                    if message.author == self.bot.user and message.pinned and message.embeds:
+                        # Found an existing pinned dashboard message
+                        if "Staff Dashboard" in (message.embeds[0].title or ""):
+                            await message.edit(embed=embed)
+                            self._dashboard_message_ids[guild.id] = message.id
+                            logger.info(f"Found and updated existing dashboard message in guild {guild.id}")
+                            return
+            except Exception as e:
+                logger.warning(f"Error searching for existing dashboard: {e}")
 
             # Post fresh
             try:
                 msg = await channel.send(embed=embed)
                 await msg.pin()
                 self._dashboard_message_ids[guild.id] = msg.id
-            except (discord.Forbidden, discord.HTTPException) as e:
-                logger.warning("Dashboard post failed in guild %d: %s", guild.id, e)
+                logger.info(f"Created new dashboard message in guild {guild.id}")
+            except discord.Forbidden:
+                logger.warning(f"Cannot send/pin message in dashboard channel for guild {guild.id}")
+            except discord.HTTPException as e:
+                logger.warning(f"HTTP error posting dashboard in guild {guild.id}: {e}")
 
     async def _build_dashboard_embed(self, guild: discord.Guild) -> Optional[discord.Embed]:
         staff = [m for m in guild.members if self.is_staff(m)]

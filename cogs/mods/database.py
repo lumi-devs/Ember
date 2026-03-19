@@ -1117,8 +1117,9 @@ class DatabaseManager:
             )).fetchone()
             return round(row["sev"] or 0.0, 2)
         
-        async def _count_unique_members_helped(self, staff_id: int, cutoff_start: str, cutoff_end: str) -> int:
-            """Helper to count unique members helped."""
+        # This is a regular method now, not nested
+        async def _count_unique_members(self, staff_id: int, cutoff_start: str, cutoff_end: str) -> int:
+            """Count unique members helped."""
             row = await (await self.pool.execute(
                 "SELECT COUNT(DISTINCT helped_id) as c "
                 "FROM help_events WHERE helper_id=? AND timestamp>? AND timestamp<=?",
@@ -1212,10 +1213,10 @@ class DatabaseManager:
                 "current": await _avg_response("response_times", "staff_id", cur_start, now.isoformat()),
                 "previous": await _avg_response("response_times", "staff_id", prev_start, prev_end),
             },
-            # Unique members helped - FIXED: using helped_id column
+            # Unique members helped - FIXED: using the regular method
             "unique_members": {
-                "current": await self._count_unique_members_helped(staff_id, cur_start, now.isoformat()),
-                "previous": await self._count_unique_members_helped(staff_id, prev_start, prev_end),
+                "current": await self._count_unique_members(staff_id, cur_start, now.isoformat()),
+                "previous": await self._count_unique_members(staff_id, prev_start, prev_end),
             },
             # Dead chat revivals
             "dead_chat_revivals": {
