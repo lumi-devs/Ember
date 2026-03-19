@@ -1037,8 +1037,9 @@ class DatabaseManager:
                         timestamp_col: str = "timestamp", extra_condition: str = "") -> int:
             """Base count helper with configurable timestamp column."""
             condition = f" AND {extra_condition}" if extra_condition else ""
+            query = f"SELECT COUNT(*) as c FROM {table} WHERE {col}=? AND {timestamp_col}>? AND {timestamp_col}<=?{condition}"
             row = await (await self.pool.execute(
-                f"SELECT COUNT(*) as c FROM {table} WHERE {col}=? AND {timestamp_col}>? AND {timestamp_col}<=?{condition}",
+                query,
                 (staff_id, cutoff_start, cutoff_end),
             )).fetchone()
             return row["c"] or 0
@@ -1047,8 +1048,9 @@ class DatabaseManager:
                                         cutoff_start: str, cutoff_end: str,
                                         timestamp_col: str = "timestamp") -> int:
             """Count records with specific event_type."""
+            query = f"SELECT COUNT(*) as c FROM {table} WHERE {col}=? AND event_type=? AND {timestamp_col}>? AND {timestamp_col}<=?"
             row = await (await self.pool.execute(
-                f"SELECT COUNT(*) as c FROM {table} WHERE {col}=? AND event_type=? AND {timestamp_col}>? AND {timestamp_col}<=?",
+                query,
                 (staff_id, event_type, cutoff_start, cutoff_end),
             )).fetchone()
             return row["c"] or 0
@@ -1057,45 +1059,51 @@ class DatabaseManager:
                                     cutoff_start: str, cutoff_end: str,
                                     timestamp_col: str = "timestamp") -> int:
             """Count records with a boolean flag."""
+            query = f"SELECT COUNT(*) as c FROM {table} WHERE {col}=? AND {flag_col}=? AND {timestamp_col}>? AND {timestamp_col}<=?"
             row = await (await self.pool.execute(
-                f"SELECT COUNT(*) as c FROM {table} WHERE {col}=? AND {flag_col}=? AND {timestamp_col}>? AND {timestamp_col}<=?",
+                query,
                 (staff_id, flag_value, cutoff_start, cutoff_end),
             )).fetchone()
             return row["c"] or 0
         
         async def _sum_duration(table: str, col: str, cutoff_start: str, cutoff_end: str) -> float:
+            query = f"SELECT COALESCE(SUM(duration_minutes),0)/60.0 as hrs FROM {table} WHERE {col}=? AND join_time>? AND join_time<=?"
             row = await (await self.pool.execute(
-                f"SELECT COALESCE(SUM(duration_minutes),0)/60.0 as hrs FROM {table} WHERE {col}=? AND join_time>? AND join_time<=?",
+                query,
                 (staff_id, cutoff_start, cutoff_end),
             )).fetchone()
             return round(row["hrs"] or 0.0, 2)
         
         async def _avg_response(table: str, col: str, cutoff_start: str, cutoff_end: str) -> float:
+            query = f"SELECT COALESCE(AVG(response_seconds),0) as avg FROM {table} WHERE {col}=? AND timestamp>? AND timestamp<=?"
             row = await (await self.pool.execute(
-                f"SELECT COALESCE(AVG(response_seconds),0) as avg FROM {table} WHERE {col}=? AND timestamp>? AND timestamp<=?",
+                query,
                 (staff_id, cutoff_start, cutoff_end),
             )).fetchone()
             return round(row["avg"] or 0.0, 1)
         
         async def _avg_quality(table: str, col: str, cutoff_start: str, cutoff_end: str) -> float:
+            query = f"SELECT COALESCE(AVG(quality_score),0) as avg FROM {table} WHERE {col}=? AND timestamp>? AND timestamp<=?"
             row = await (await self.pool.execute(
-                f"SELECT COALESCE(AVG(quality_score),0) as avg FROM {table} WHERE {col}=? AND timestamp>? AND timestamp<=?",
+                query,
                 (staff_id, cutoff_start, cutoff_end),
             )).fetchone()
             return round(row["avg"] or 0.0, 2)
         
         async def _count_fast_responses(table: str, col: str, cutoff_start: str, cutoff_end: str) -> int:
             """Count responses ≤5 minutes."""
+            query = f"SELECT COUNT(*) as c FROM {table} WHERE {col}=? AND response_seconds<=300 AND timestamp>? AND timestamp<=?"
             row = await (await self.pool.execute(
-                f"SELECT COUNT(*) as c FROM {table} WHERE {col}=? AND response_seconds<=300 AND timestamp>? AND timestamp<=?",
+                query,
                 (staff_id, cutoff_start, cutoff_end),
             )).fetchone()
             return row["c"] or 0
         
         async def _count_threads_created(table: str, col: str, cutoff_start: str, cutoff_end: str) -> int:
             """Count threads created (event_type='created')."""
+            query = f"SELECT COUNT(*) as c FROM {table} WHERE {col}=? AND event_type='created' AND timestamp>? AND timestamp<=?"
             row = await (await self.pool.execute(
-                f"SELECT COUNT(*) as c FROM {table} WHERE {col}=? AND event_type='created' AND timestamp>? AND timestamp<=?",
+                query,
                 (staff_id, cutoff_start, cutoff_end),
             )).fetchone()
             return row["c"] or 0
@@ -1109,7 +1117,7 @@ class DatabaseManager:
             )).fetchone()
             return round(row["sev"] or 0.0, 2)
         
-        async def _count_unique_members(self, staff_id: int, cutoff_start: str, cutoff_end: str) -> int:
+        async def _count_unique_members_helped(self, staff_id: int, cutoff_start: str, cutoff_end: str) -> int:
             """Helper to count unique members helped."""
             row = await (await self.pool.execute(
                 "SELECT COUNT(DISTINCT helped_id) as c "
@@ -1164,7 +1172,7 @@ class DatabaseManager:
                 "current": await _sum_duration("vc_sessions", "staff_id", cur_start, now.isoformat()),
                 "previous": await _sum_duration("vc_sessions", "staff_id", prev_start, prev_end),
             },
-            # Conversation sessions - FIXED: using start_time as timestamp column
+            # Conversation sessions
             "conversations": {
                 "current": await _count("conversation_sessions", "staff_id", cur_start, now.isoformat(), timestamp_col="start_time"),
                 "previous": await _count("conversation_sessions", "staff_id", prev_start, prev_end, timestamp_col="start_time"),
@@ -1204,10 +1212,10 @@ class DatabaseManager:
                 "current": await _avg_response("response_times", "staff_id", cur_start, now.isoformat()),
                 "previous": await _avg_response("response_times", "staff_id", prev_start, prev_end),
             },
-            # Unique members helped
+            # Unique members helped - FIXED: using helped_id column
             "unique_members": {
-                "current": await self._count_unique_members(staff_id, cur_start, now.isoformat()),
-                "previous": await self._count_unique_members(staff_id, prev_start, prev_end),
+                "current": await self._count_unique_members_helped(staff_id, cur_start, now.isoformat()),
+                "previous": await self._count_unique_members_helped(staff_id, prev_start, prev_end),
             },
             # Dead chat revivals
             "dead_chat_revivals": {
