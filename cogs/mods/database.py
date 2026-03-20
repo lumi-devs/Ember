@@ -1496,3 +1496,13 @@ class DatabaseManager:
             (staff_id, key, datetime.now().isoformat())
         )
         await self.pool.commit()
+
+    async def get_first_staff_message(self, staff_id: int) -> Optional[datetime]:
+        """Get the timestamp of a staff member's first message."""
+        row = await (await self.pool.execute(
+            "SELECT MIN(timestamp) as first_msg FROM staff_messages WHERE staff_id = ?",
+            (staff_id,)
+        )).fetchone()
+        if row and row["first_msg"]:
+            return datetime.fromisoformat(row["first_msg"])
+        return None

@@ -77,6 +77,13 @@ VERDICT_EMOJIS = {PROMOTE: "📈", DEMOTE: "📉", WATCH: "👁️", KEEP: "✅"
 
 REVIEW_DB_PATH = os.getenv("STAFF_REVIEW_DB", "data/staff_analytics.db")
 
+# Map new decision categories to old verdicts
+DECISION_TO_VERDICT = {
+    "excellent": KEEP,
+    "good": KEEP,
+    "watch": WATCH,
+    "concern": DEMOTE
+}
 
 # ─── Role hierarchy helpers ───────────────────────────────────────────────────
 
@@ -316,89 +323,106 @@ class GroqReviewer:
             for n in notes
         ) or "  (none)"
 
-        return f"""=== STAFF PERFORMANCE REVIEW — {member_name} ===
+        return f"""=== STAFF PERFORMANCE REVIEW DATA ===
 
-IDENTITY
-  Current role:       {current_role}
-  Days at this role:  {days_at_role} days
-  Role ladder (low→high): {' → '.join(hierarchy)}
-  Review window:      last {days} days
+STAFF MEMBER: {member_name}
+CURRENT ROLE: {current_role}
+DAYS IN ROLE: {days_at_role} days
+ROLE LADDER (low→high): {' → '.join(hierarchy)}
+REVIEW WINDOW: last {days} days
 
-CURRENT PERIOD METRICS
-  Engagement score:        {stats.get('engagement_score', 0):.1f}   [{stats.get('rank_tier','?')} tier]
-  ── Help ──────────────────────────────────────────────
-  Help events:             {stats.get('help_events', 0)}
-    Proactive help:        {stats.get('proactive_help', 0)}
-    New members helped:    {stats.get('new_members_helped', 0)}
-    Unique members helped: {stats.get('unique_members_helped', 0)}
-  First responses:         {stats.get('first_responses', 0)}
-  Fast responses (≤5min):  {stats.get('fast_responses', 0)}
-  Avg response time:       {stats.get('avg_response_seconds', 0):.0f}s
-  ── Quality ────────────────────────────────────────────
-  Quality events:          {stats.get('quality_events', 0)}
-  Avg quality score:       {stats.get('avg_quality_score', 0):.2f}
-  Avg message words:       {stats.get('avg_message_words', 0):.1f}
-  ── Moderation ─────────────────────────────────────────
-  Moderation actions:      {stats.get('moderation_actions', 0)}
-  Mod weighted severity:   {stats.get('moderation_severity_sum', 0):.1f}
-  Reports filed:           {stats.get('reports_filed', 0)}
-  ── Presence ───────────────────────────────────────────
-  VC hours:                {stats.get('vc_hours', 0):.1f}h
-  Total messages:          {stats.get('total_messages', 0)}
-  Active days (/{days}):   {stats.get('active_days', 0)}
-  Channels participated:   {stats.get('channels_participated', 0)}
-  Reactions given:         {stats.get('reactions_given', 0)}
-  Threads created:         {stats.get('threads_created', 0)}
-  Server bumps:            {stats.get('bumps_performed', 0)}
+--- CURRENT METRICS (last {days} days) ---
+Engagement score: {stats.get('engagement_score', 0):.1f} / 2000
+Rank tier: {stats.get('rank_tier', 'Bronze')}
 
-CONSISTENCY
-  Current streak:          {consistency.get('current_streak', 0)} days
-  Longest streak ever:     {consistency.get('longest_streak', 0)} days
-  Peak-hours activity:     {consistency.get('peak_hours_activity', 0)}
-  Off-peak activity:       {consistency.get('off_peak_activity', 0)}
-  Consistency score:       {consistency.get('consistency_score', 0):.1f}
+Help & Support:
+- Help events: {stats.get('help_events', 0)} (target: 50)
+- Proactive help: {stats.get('proactive_help', 0)}
+- New members helped: {stats.get('new_members_helped', 0)} (target: 10)
+- Unique members helped: {stats.get('unique_members_helped', 0)} (target: 40)
+- First responses: {stats.get('first_responses', 0)} (target: 15)
+- Fast responses (≤5min): {stats.get('fast_responses', 0)} (target: 25)
+- Avg response time: {stats.get('avg_response_seconds', 0):.0f}s
 
-TREND  (this 30d vs previous 30d)
-  Help events: {trend.get('help_current', 0):>5}  →  {trend.get('help_previous', 0):<5}  {'⬆' if trend.get('help_current',0) > trend.get('help_previous',0) else '⬇' if trend.get('help_current',0) < trend.get('help_previous',0) else '='}
-  Mod actions: {trend.get('mod_current', 0):>5}  →  {trend.get('mod_previous', 0):<5}  {'⬆' if trend.get('mod_current',0) > trend.get('mod_previous',0) else '⬇' if trend.get('mod_current',0) < trend.get('mod_previous',0) else '='}
+Moderation & Reports:
+- Moderation actions: {stats.get('moderation_actions', 0)} (target: 20)
+- Weighted severity sum: {stats.get('moderation_severity_sum', 0):.1f}
+- Reports filed: {stats.get('reports_filed', 0)}
 
-ALL-TIME ACCEPTED PROMOTIONS / DEMOTIONS
+Quality & Communication:
+- Quality events: {stats.get('quality_events', 0)}
+- Avg quality score: {stats.get('avg_quality_score', 0):.2f}
+- Avg message length: {stats.get('avg_message_words', 0):.1f} words
+- Total messages: {stats.get('total_messages', 0)}
+
+Presence & Engagement:
+- Active days: {stats.get('active_days', 0)} / {days}
+- VC hours: {stats.get('vc_hours', 0):.1f}h (target: 10h)
+- Conversation starters: {stats.get('conversation_starters', 0)} (target: 10)
+- New member greetings: {stats.get('new_member_greetings', 0)} (target: 15)
+- Dead chat revivals: {stats.get('dead_chat_revivals', 0)} (target: 5)
+- Reactions given: {stats.get('reactions_given', 0)}
+- Reactions received: {stats.get('reactions_received', 0)} (target: 30)
+
+--- CONSISTENCY ---
+Current streak: {consistency.get('current_streak', 0)} days
+Longest streak: {consistency.get('longest_streak', 0)} days
+Peak hours activity: {consistency.get('peak_hours_activity', 0)}
+Off-peak activity: {consistency.get('off_peak_activity', 0)}
+Consistency score: {consistency.get('consistency_score', 0):.1f}
+
+--- TREND (current 30d vs previous 30d) ---
+Help events: {trend.get('help_current', 0)} → {trend.get('help_previous', 0)} ({'↑' if trend.get('help_current',0) > trend.get('help_previous',0) else '↓' if trend.get('help_current',0) < trend.get('help_previous',0) else '→'})
+Mod actions: {trend.get('mod_current', 0)} → {trend.get('mod_previous', 0)} ({'↑' if trend.get('mod_current',0) > trend.get('mod_previous',0) else '↓' if trend.get('mod_current',0) < trend.get('mod_previous',0) else '→'})
+Quality events: {trend.get('quality', {}).get('current', 0)} → {trend.get('quality', {}).get('previous', 0)}
+Messages: {trend.get('messages', {}).get('current', 0)} → {trend.get('messages', {}).get('previous', 0)}
+
+--- ROLE CHANGE HISTORY ---
 {self._fmt_promo_history(promo_history)}
 
-AI REVIEW TRAJECTORY  (last {len(review_trajectory)} reviews, oldest → newest)
+--- PREVIOUS AI REVIEWS (oldest → newest) ---
 {self._fmt_trajectory(review_trajectory)}
 
-ADMIN NOTES
+--- ADMIN NOTES ---
 {notes_text}
 
-=== OUTPUT INSTRUCTIONS ===
-Respond with ONLY this raw JSON object — no markdown, no backticks, nothing else:
+You are a senior Discord community manager responsible for structured staff performance reviews.
 
+Evaluate this staff member using the data above. Think like an experienced human manager:
+- Consistency matters more than short bursts of activity
+- Historical trends matter more than isolated good or bad periods
+- A single strong month does not erase long-term inactivity
+- A single weak month does not outweigh long-term reliability
+- Admin notes describing concrete incidents override raw metrics
+
+Evaluation priorities:
+1. Admin notes and documented incidents
+2. Multi-cycle historical consistency
+3. Moderation usefulness and quality of actions
+4. Staff communication behavior
+5. Raw message volume
+
+Important interpretation:
+- High message count alone does NOT mean strong performance
+- Meaningful moderation, helping users, and handling issues matter more than casual chatting
+- Repetitive low-value messages = low contribution
+- Long inactivity periods = serious unless admin notes justify
+- Recent improvement acknowledged but not overweighted unless sustained
+- Recent decline flagged if it continues a pattern
+
+Output ALWAYS as raw JSON only - no markdown, no backticks, no explanation outside JSON.
+
+Required schema:
 {{
-  "verdict":            "PROMOTE" | "DEMOTE" | "WATCH" | "KEEP",
-  "target_role":        "<exact role name from the ladder, current role if KEEP/WATCH>",
-  "confidence":         "HIGH" | "MEDIUM" | "LOW",
-  "reasons": [
-    "<reason 1 — cite specific numbers or historical pattern>",
-    "<reason 2>",
-    "<reason 3>",
-    "<optional reason 4>",
-    "<optional reason 5>"
-  ],
-  "watchlist_note":      "<if WATCH: what to check at next review, else empty string>",
-  "trajectory_summary":  "<1 sentence describing overall performance arc across all history>"
-}}
-
-VERDICT RULES (enforce strictly)
-  PROMOTE  — sustained high output across MULTIPLE review cycles (not just one good month).
-             Score AND trend AND consistency must point up. Days at role must be meaningful.
-             If this is the member's first review with no history, default to KEEP unless metrics are exceptional.
-  DEMOTE   — measurable decline across ≥2 metrics, OR chronic inactivity (<7 active days),
-             OR a WATCH verdict in the previous review that was accepted but not improved.
-  WATCH    — early warning: 1–2 declining metrics, or first-time inactivity.
-             If the member was already on WATCH last review and metrics haven't improved, that is DEMOTE.
-  KEEP     — performing adequately. The safe default when data is mixed or history is thin.
-"""
+  "decision": "excellent | good | watch | concern",
+  "score": 0-100,
+  "summary": "short management-style review",
+  "strengths": ["item1", "item2"],
+  "weaknesses": ["item1", "item2"],
+  "trend": "improving | stable | declining | inconsistent",
+  "confidence": 0-100,
+  "recommended_action": "retain | monitor | warn | discuss"
+}}"""
 
     async def review(
         self,
@@ -554,14 +578,54 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
                 return guild.get_role(rid)
         return None
 
-    def _days_at_role(self, promo_history: List[Dict]) -> int:
-        if not promo_history:
+    def _role_name_by_id(self, role_id: int, ids: List[int], names: List[str]) -> str:
+        """Get role name from hierarchy by ID."""
+        for rid, name in zip(ids, names):
+            if rid == role_id:
+                return name
+        return ""
+
+    async def _days_at_role(self, member: discord.Member, promo_history: List[Dict]) -> int:
+        """Calculate how many days the member has held their current highest staff role."""
+        ids, names = _load_hierarchy()
+        if not ids:
             return 0
-        date_str = (promo_history[-1].get("decided_at") or promo_history[-1].get("created_at") or "")[:19]
-        try:
-            return (datetime.now() - datetime.fromisoformat(date_str)).days
-        except (ValueError, TypeError):
-            return 0
+
+        # Get member's current highest staff role
+        member_role_ids = {r.id for r in member.roles}
+        current_role_id = None
+        current_role_idx = -1
+
+        for idx, rid in enumerate(ids):
+            if rid in member_role_ids:
+                current_role_idx = idx
+                current_role_id = rid
+                break
+
+        if current_role_id is None:
+            return 0  # No staff role found
+
+        current_role_name = names[current_role_idx] if current_role_idx >= 0 else ""
+
+        # Find when they last got this role
+        for record in reversed(promo_history):
+            if record.get("to_role_name") == current_role_name:
+                date_str = (record.get("decided_at") or record.get("created_at") or "")[:19]
+                try:
+                    return (datetime.now() - datetime.fromisoformat(date_str)).days
+                except (ValueError, TypeError):
+                    break
+
+        # No promotion record found - check first staff message
+        first_msg = await self.db.get_first_staff_message(member.id)
+        if first_msg:
+            return (datetime.now() - first_msg).days
+
+        # Fallback to join date
+        if member.joined_at:
+            return (datetime.now() - member.joined_at).days
+
+        return 0
 
     async def _gather(self, member: discord.Member, days: int):
         weights   = await self.db.get_score_weights(member.guild.id)
@@ -603,20 +667,28 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
             )
             return None
 
-        idx               = _role_index(member, ids)
+        idx = _role_index(member, ids)
         current_role_name = names[idx] if idx >= 0 else "No hierarchy role"
         stats, consistency, trend, notes, promo_history, review_trajectory = \
             await self._gather(member, days)
-        days_at_role = self._days_at_role(promo_history)
+
+        # Calculate days in role properly
+        days_at_role = await self._days_at_role(member, promo_history)
 
         try:
             result, raw_prompt = await asyncio.wait_for(
                 self.llm.review(
-                    member_name=member.display_name, current_role=current_role_name,
-                    days_at_role=days_at_role, hierarchy=names,
-                    stats=stats, consistency=consistency, trend=trend,
-                    notes=notes, days=days,
-                    promo_history=promo_history, review_trajectory=review_trajectory,
+                    member_name=member.display_name,
+                    current_role=current_role_name,
+                    days_at_role=days_at_role,
+                    hierarchy=names,
+                    stats=stats,
+                    consistency=consistency,
+                    trend=trend,
+                    notes=notes,
+                    days=days,
+                    promo_history=promo_history,
+                    review_trajectory=review_trajectory,
                 ),
                 timeout=30,
             )
@@ -632,26 +704,55 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
             )
             return None
 
-        verdict     = result.get("verdict",    KEEP)
-        target_name = result.get("target_role", current_role_name)
-        confidence  = result.get("confidence", "MEDIUM")
-        reasons     = result.get("reasons",    [])
-        watch_note  = result.get("watchlist_note", "")
-        trajectory  = result.get("trajectory_summary", "")
+        # Parse the new response format
+        decision = result.get("decision", "watch")
+        score = result.get("score", 50)
+        summary = result.get("summary", "")
+        strengths = result.get("strengths", [])
+        weaknesses = result.get("weaknesses", [])
+        trend_text = result.get("trend", "stable")
+        confidence = result.get("confidence", 50)
+        recommended_action = result.get("recommended_action", "retain")
+
+        # Map to old format for compatibility
+        verdict = DECISION_TO_VERDICT.get(decision, KEEP)
+
+        # Map confidence number to text
+        if confidence >= 80:
+            confidence_text = "HIGH"
+        elif confidence >= 60:
+            confidence_text = "MEDIUM"
+        else:
+            confidence_text = "LOW"
+
+        # Build reasons list from strengths and weaknesses
+        reasons = []
+        if strengths:
+            reasons.append(f"Strengths: {', '.join(strengths[:3])}")
+        if weaknesses:
+            reasons.append(f"Areas to improve: {', '.join(weaknesses[:3])}")
+        if summary:
+            reasons.insert(0, summary[:150])
+
+        # Determine target role based on decision
+        target_name = current_role_name
+        if verdict == PROMOTE and idx + 1 < len(names):
+            target_name = names[idx + 1]
+        elif verdict == DEMOTE and idx - 1 >= 0:
+            target_name = names[idx - 1]
 
         from_role = interaction.guild.get_role(ids[idx]) if idx >= 0 else None
-        to_role   = self._role_by_name(interaction.guild, target_name, ids, names) \
+        to_role = self._role_by_name(interaction.guild, target_name, ids, names) \
                     if verdict in (PROMOTE, DEMOTE) else None
-        to_name   = target_name if verdict in (PROMOTE, DEMOTE) else current_role_name
 
         review_id = await self.review_db.insert(
             staff_id=member.id, reviewer_id=interaction.user.id,
-            verdict=verdict, confidence=confidence,
+            verdict=verdict, confidence=confidence_text,
             from_role_id=from_role.id if from_role else None,
             from_role_name=current_role_name,
             to_role_id=to_role.id if to_role else None,
-            to_role_name=to_name,
-            reasons=reasons, watchlist_note=watch_note,
+            to_role_name=target_name,
+            reasons=reasons, watchlist_note=recommended_action,
             days_window=days, stats=stats, consistency=consistency,
         )
 
@@ -661,13 +762,17 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
             color=color, timestamp=datetime.now(),
         )
         embed.set_thumbnail(url=member.display_avatar.url)
-        embed.add_field(name="Verdict",      value=f"**{verdict}**",     inline=True)
-        embed.add_field(name="Confidence",   value=confidence,           inline=True)
-        embed.add_field(name="Current role", value=current_role_name,    inline=True)
-        embed.add_field(name="Days at role", value=f"{days_at_role}d",   inline=True)
+        embed.add_field(name="Decision",      value=f"**{decision.upper()}**", inline=True)
+        embed.add_field(name="Score",         value=f"{score}/100", inline=True)
+        embed.add_field(name="Confidence",    value=f"{confidence}%", inline=True)
+        embed.add_field(name="Current role",  value=current_role_name, inline=True)
+        embed.add_field(name="Days in role",  value=f"{days_at_role}d", inline=True)
+        embed.add_field(name="Trend",         value=trend_text, inline=True)
 
         if verdict in (PROMOTE, DEMOTE):
             embed.add_field(name="→ Suggested", value=f"**{target_name}**", inline=True)
+
+        embed.add_field(name="Recommended action", value=recommended_action, inline=False)
 
         if promo_history:
             ph_lines = []
@@ -697,12 +802,13 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
                 value="\n".join(traj_lines), inline=False,
             )
 
-        reasons_text = "\n".join(f"• {r}" for r in reasons) or "—"
-        embed.add_field(name="Reasoning", value=reasons_text, inline=False)
-        if watch_note:
-            embed.add_field(name="👁️ Watch note",    value=watch_note,  inline=False)
-        if trajectory:
-            embed.add_field(name="📈 Performance arc", value=trajectory, inline=False)
+        strengths_text = "\n".join(f"✅ {s}" for s in strengths[:5]) or "—"
+        weaknesses_text = "\n".join(f"⚠️ {w}" for w in weaknesses[:5]) or "—"
+        embed.add_field(name="Strengths", value=strengths_text, inline=True)
+        embed.add_field(name="Areas for improvement", value=weaknesses_text, inline=True)
+
+        if summary:
+            embed.add_field(name="Summary", value=summary[:500], inline=False)
 
         embed.set_footer(text=f"Review #{review_id} • {days}d window • Groq / {GROQ_MODEL} • Final call is yours")
 
@@ -753,7 +859,7 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
         # Estimate time
         est_minutes = (len(staff) * 60) // MAX_REVIEWS_PER_MINUTE
         est_minutes = max(1, est_minutes)
-        
+
         progress = discord.Embed(
             title="🔄 Running AI reviews…",
             description=f"Reviewing **{len(staff)}** staff members via Groq.\n"
@@ -765,30 +871,30 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
         msg = await interaction.followup.send(embed=progress, ephemeral=True, wait=True)
 
         results: List[Tuple[discord.Member, str, Dict, int]] = []
-        
+
         # Process with rate limiting
         delay_between = 65 / MAX_REVIEWS_PER_MINUTE  # seconds between requests (a bit conservative)
         total = len(staff)
         completed = 0
-        
+
         for member in staff:
             completed += 1
             idx = _role_index(member, ids)
             crn = names[idx] if idx >= 0 else "No hierarchy role"
-            
+
             # Update progress every few members
             if completed % 3 == 0 or completed == total:
-                progress.set_field_at(0, name="Progress", 
+                progress.set_field_at(0, name="Progress",
                     value=f"⏳ Processed {completed}/{total} members...", inline=False)
                 await msg.edit(embed=progress)
-            
+
             try:
                 stats, consistency, trend, notes, ph, rt = await self._gather(member, days)
-                dar = self._days_at_role(ph)
-                
+                dar = await self._days_at_role(member, ph)
+
                 # Add small jitter to avoid synchronized requests
                 await asyncio.sleep(delay_between + (hash(str(member.id)) % 10) / 10)
-                
+
                 res, _ = await asyncio.wait_for(
                     self.llm.review(
                         member_name=member.display_name, current_role=crn,
@@ -798,17 +904,17 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
                     ),
                     timeout=35,
                 )
-                
+
             except asyncio.TimeoutError:
                 logger.error(f"Timeout for {member.id}")
-                res = {"verdict": KEEP, "target_role": crn, "confidence": "LOW",
-                       "reasons": ["Review timed out (Groq slow)"],
-                       "watchlist_note": "", "trajectory_summary": ""}
+                res = {"decision": "watch", "score": 40, "summary": "Review timed out (Groq slow)",
+                       "strengths": [], "weaknesses": [], "trend": "unknown", "confidence": 30,
+                       "recommended_action": "monitor"}
                 stats, consistency = {}, {}
-                
+
             except Exception as exc:
                 logger.error("reviewall %s: %s", member.id, exc)
-                
+
                 # Rate limit handling
                 if "429" in str(exc):
                     logger.warning(f"Rate limit hit for {member.id}, waiting 10 seconds...")
@@ -826,39 +932,58 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
                         )
                     except Exception as retry_exc:
                         logger.error(f"Retry failed for {member.id}: {retry_exc}")
-                        res = {"verdict": KEEP, "target_role": crn, "confidence": "LOW",
-                               "reasons": [f"Review failed after rate limit: {str(retry_exc)[:80]}"],
-                               "watchlist_note": "", "trajectory_summary": ""}
+                        res = {"decision": "watch", "score": 40, "summary": f"Review failed: {str(retry_exc)[:80]}",
+                               "strengths": [], "weaknesses": [], "trend": "unknown", "confidence": 30,
+                               "recommended_action": "monitor"}
                 else:
-                    res = {"verdict": KEEP, "target_role": crn, "confidence": "LOW",
-                           "reasons": [f"Review failed: {str(exc)[:80]}"],
-                           "watchlist_note": "", "trajectory_summary": ""}
+                    res = {"decision": "watch", "score": 40, "summary": f"Review failed: {str(exc)[:80]}",
+                           "strengths": [], "weaknesses": [], "trend": "unknown", "confidence": 30,
+                           "recommended_action": "monitor"}
                 stats, consistency = {}, {}
 
-            verdict   = res.get("verdict", KEEP)
+            decision = res.get("decision", "watch")
+            verdict = DECISION_TO_VERDICT.get(decision, KEEP)
+            confidence_num = res.get("confidence", 50)
+            confidence_text = "HIGH" if confidence_num >= 80 else "MEDIUM" if confidence_num >= 60 else "LOW"
+
             from_role = interaction.guild.get_role(ids[idx]) if idx >= 0 else None
-            to_role   = self._role_by_name(interaction.guild, res.get("target_role",""), ids, names) \
-                        if verdict in (PROMOTE, DEMOTE) else None
+            to_role = None
+            target_name = crn
+            if verdict == PROMOTE and idx + 1 < len(names):
+                target_name = names[idx + 1]
+                to_role = interaction.guild.get_role(ids[idx + 1])
+            elif verdict == DEMOTE and idx - 1 >= 0:
+                target_name = names[idx - 1]
+                to_role = interaction.guild.get_role(ids[idx - 1])
+
+            # Build reasons from response
+            reasons = []
+            if res.get("summary"):
+                reasons.append(res["summary"][:150])
+            if res.get("strengths"):
+                reasons.append(f"Strengths: {', '.join(res['strengths'][:2])}")
+            if res.get("weaknesses"):
+                reasons.append(f"Needs work: {', '.join(res['weaknesses'][:2])}")
 
             rid = await self.review_db.insert(
                 staff_id=member.id, reviewer_id=interaction.user.id,
-                verdict=verdict, confidence=res.get("confidence","LOW"),
+                verdict=verdict, confidence=confidence_text,
                 from_role_id=from_role.id if from_role else None,
                 from_role_name=crn,
                 to_role_id=to_role.id if to_role else None,
-                to_role_name=res.get("target_role", crn),
-                reasons=res.get("reasons",[]), watchlist_note=res.get("watchlist_note",""),
+                to_role_name=target_name,
+                reasons=reasons, watchlist_note=res.get("recommended_action", "monitor"),
                 days_window=days, stats=stats, consistency=consistency,
             )
-            
+
             results.append((member, crn, res, rid))
-            
+
             # Enforce rate limit: wait enough to stay under limit
             await asyncio.sleep(delay_between)
-        
-        # Sort results by verdict priority
-        order = {DEMOTE: 0, WATCH: 1, PROMOTE: 2, KEEP: 3}
-        results.sort(key=lambda x: order.get(x[2].get("verdict", KEEP), 3))
+
+        # Sort results by priority (concern > watch > excellent > good)
+        order = {"concern": 0, "watch": 1, "excellent": 2, "good": 3}
+        results.sort(key=lambda x: order.get(x[2].get("decision", "good"), 4))
 
         summary = discord.Embed(
             title=f"📋 Staff Review Summary — {len(results)} members",
@@ -866,23 +991,23 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
         )
         summary.set_footer(text=f"{days}d window | /staffreview @member to act on individual cases")
 
-        for vlabel in (DEMOTE, WATCH, PROMOTE, KEEP):
-            group = [(m,cr,r,rid) for m,cr,r,rid in results if r.get("verdict") == vlabel]
+        for dec_label in ("concern", "watch", "excellent", "good"):
+            group = [(m, cr, r, rid) for m, cr, r, rid in results if r.get("decision") == dec_label]
             if not group: continue
             lines = []
             for m, cr, r, rid in group:
-                top  = (r.get("reasons") or [""])[0][:75]
-                conf = r.get("confidence","?")[0]
-                if vlabel in (PROMOTE, DEMOTE):
-                    lines.append(f"`#{rid}` [{conf}] **{m.display_name}** ({cr} → **{r.get('target_role',cr)}**)\n↳ {top}")
-                elif vlabel == WATCH:
-                    lines.append(f"`#{rid}` [{conf}] **{m.display_name}** ({cr})\n↳ {top}")
+                score = r.get("score", 50)
+                action = r.get("recommended_action", "monitor")
+                top = (r.get("summary") or "")[:60]
+                if dec_label in ("concern", "watch"):
+                    lines.append(f"`#{rid}` [{score}] **{m.display_name}** ({cr}) - {action}\n↳ {top}")
                 else:
-                    lines.append(f"**{m.display_name}** ({cr})")
-            body = ("\n\n" if vlabel != KEEP else ", ").join(lines)
+                    lines.append(f"`#{rid}` [{score}] **{m.display_name}** ({cr}) - {action}")
+            body = "\n\n".join(lines[:10])
             if len(body) > 1020: body = body[:1020] + "…"
+            emoji = {"concern": "⚠️", "watch": "👁️", "excellent": "🏆", "good": "✅"}.get(dec_label, "📌")
             summary.add_field(
-                name=f"{VERDICT_EMOJIS.get(vlabel,'')} {vlabel} ({len(group)})",
+                name=f"{emoji} {dec_label.upper()} ({len(group)})",
                 value=body or "—", inline=False,
             )
         await msg.edit(embed=summary)
@@ -928,6 +1053,15 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    @app_commands.command(name="staffpromote", description="Manually promote a staff member")
+    @app_commands.default_permissions(manage_roles=True)
+    async def staffpromote(self, interaction: discord.Interaction, member: discord.Member):
+        await self._manual_shift(interaction, member, 1)
+
+    @app_commands.command(name="staffdemote", description="Manually demote a staff member")
+    @app_commands.default_permissions(manage_roles=True)
+    async def staffdemote(self, interaction: discord.Interaction, member: discord.Member):
+        await self._manual_shift(interaction, member, -1)
 
     async def _manual_shift(self, interaction: discord.Interaction, member: discord.Member, direction: int):
         await interaction.response.defer(ephemeral=True)
