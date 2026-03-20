@@ -612,17 +612,26 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
             if record.get("to_role_name") == current_role_name:
                 date_str = (record.get("decided_at") or record.get("created_at") or "")[:19]
                 try:
-                    return (discord.utils.utcnow() - datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)).days
+                    # Parse with timezone awareness - make it offset-aware
+                    db_date = datetime.fromisoformat(date_str)
+                    # If the parsed datetime is naive (no timezone), assume UTC
+                    if db_date.tzinfo is None:
+                        db_date = db_date.replace(tzinfo=timezone.utc)
+                    return (discord.utils.utcnow() - db_date).days
                 except (ValueError, TypeError):
                     break
 
         # No promotion record found - check first staff message
         first_msg = await self.db.get_first_staff_message(member.id)
         if first_msg:
+            # Ensure first_msg is offset-aware
+            if first_msg.tzinfo is None:
+                first_msg = first_msg.replace(tzinfo=timezone.utc)
             return (discord.utils.utcnow() - first_msg).days
 
         # Fallback to join date
         if member.joined_at:
+            # member.joined_at is already offset-aware (datetime with timezone)
             return (discord.utils.utcnow() - member.joined_at).days
 
         return 0
