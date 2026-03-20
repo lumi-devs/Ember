@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Tuple, Set
 import logging
 import re
 from collections import defaultdict
-
+import discord
 from .models import (
     StaffMessage, Interaction, ConversationSession, HelpEvent,
     ModerationAction, VCSession, Report, Bump, RolePing,
@@ -132,7 +132,7 @@ class MetricsTracker:
         mentions: Optional[List[int]] = None,
     ) -> List[Interaction]:
         interactions = []
-        now = datetime.now()
+        now = discord.utils.utcnow()
         seen_users: Set[int] = set()
 
         def _try_add(author_id: int, itype: str):
@@ -191,7 +191,7 @@ class MetricsTracker:
     def check_response_time(
         self, message: StaffMessage, channel_id: int
     ) -> Optional[ResponseTime]:
-        now = datetime.now()
+        now = discord.utils.utcnow()
         self._expire_pending_questions(channel_id, now)
         pending = self.pending_questions.get(channel_id, {})
 
@@ -231,7 +231,7 @@ class MetricsTracker:
         if not has_pending_question:
             return None
 
-        now = datetime.now()
+        now = discord.utils.utcnow()
         last_staff = self.channel_last_staff_msg.get(channel_id)
 
         # A "first response" = pending question AND no OTHER staff member
@@ -292,7 +292,7 @@ class MetricsTracker:
             self.off_peak_counts[key] += 1
 
     def get_off_peak_count(self, staff_id: int) -> int:
-        today = datetime.now().date().isoformat()
+        today = discord.utils.utcnow().date().isoformat()
         return self.off_peak_counts.get((staff_id, today), 0)
 
     # ─── Message quality scoring ──────────────────────────────────────────────
@@ -307,7 +307,7 @@ class MetricsTracker:
         Returns a QualityEvent if the message scores above threshold.
         """
         key = (message.staff_id, message.message_id)
-        now = datetime.now()
+        now = discord.utils.utcnow()
 
         # BUG FIX: was a set that got cleared entirely at 10k entries, causing a
         # burst of duplicate quality events.  Now uses a TTL dict so old entries
@@ -380,7 +380,7 @@ class MetricsTracker:
         self, message: StaffMessage, mentioned_users: List[int]
     ) -> Optional[ConversationSession]:
         staff_id = message.staff_id
-        now = datetime.now()
+        now = discord.utils.utcnow()
 
         if staff_id in self.active_conversations:
             session = self.active_conversations[staff_id]
@@ -420,7 +420,7 @@ class MetricsTracker:
     def end_conversation(self, staff_id: int) -> Optional[ConversationSession]:
         if staff_id in self.active_conversations:
             session = self.active_conversations.pop(staff_id)
-            session.end_time = datetime.now()
+            session.end_time = discord.utils.utcnow()
             return session
         return None
 
@@ -453,7 +453,7 @@ class MetricsTracker:
         to prevent a staff member from inflating their score by repeatedly
         replying to the same person.
         """
-        now = datetime.now()
+        now = discord.utils.utcnow()
         content = message.content or ""
         content_lower = content.lower()
 
@@ -523,7 +523,7 @@ class MetricsTracker:
     def check_report(
         self, message: StaffMessage, channel_id: Optional[int], is_command: bool = False
     ) -> Optional[Report]:
-        now = datetime.now()
+        now = discord.utils.utcnow()
 
         # Per-channel cooldown (unchanged)
         last = self.report_cooldowns[message.staff_id].get(channel_id)
@@ -569,7 +569,7 @@ class MetricsTracker:
         role_mentions: List[Dict],
         role_member_counts: Dict[int, int],
     ) -> List[RolePing]:
-        now = datetime.now()
+        now = discord.utils.utcnow()
         return [
             RolePing(
                 staff_id=message.staff_id, role_id=r["id"],
@@ -613,7 +613,7 @@ class MetricsTracker:
         (e.g. both slash-command completion AND mod-bot embed fired).
         """
         dedup_key = (moderator_id, target_id, command.lower())
-        now_ts = datetime.now()
+        now_ts = discord.utils.utcnow()
 
         if dedup_key in self.recent_mod_actions:
             age = (now_ts - self.recent_mod_actions[dedup_key]).total_seconds()
@@ -833,7 +833,7 @@ class MetricsTracker:
 
     def cleanup_old_data(self):
         """Periodic cleanup of old in-memory data structures"""
-        now = datetime.now()
+        now = discord.utils.utcnow()
         today = now.date()
         today_str = today.isoformat()
         hour_ago = now - timedelta(hours=1)

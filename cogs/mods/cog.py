@@ -98,7 +98,7 @@ class StaffAnalytics(commands.Cog):
     def is_staff(self, member: discord.Member) -> bool:
         if member.bot:
             return False
-        now = datetime.now()
+        now = discord.utils.utcnow()
         cached = self._staff_cache.get(member.id)
         if cached:
             result, cached_at = cached
@@ -111,7 +111,7 @@ class StaffAnalytics(commands.Cog):
     
     def _get_cached_staff_ids(self) -> Set[int]:
         """Return a snapshot of all currently-cached staff IDs."""
-        now = datetime.now()
+        now = discord.utils.utcnow()
         return {
             uid for uid, (is_s, ts) in self._staff_cache.items()
             if is_s and (now - ts).total_seconds() < _STAFF_CACHE_TTL
@@ -120,7 +120,7 @@ class StaffAnalytics(commands.Cog):
     def _member_age_days(self, member: discord.Member) -> float:
         if not member.joined_at:
             return 999.0
-        return (datetime.now(member.joined_at.tzinfo) - member.joined_at).total_seconds() / 86400
+        return (discord.utils.utcnow(member.joined_at.tzinfo) - member.joined_at).total_seconds() / 86400
 
     # ─── Event listeners ──────────────────────────────────────────────────────
 
@@ -142,7 +142,7 @@ class StaffAnalytics(commands.Cog):
             return
 
         is_staff_member = self.is_staff(message.author)
-        now = datetime.now()
+        now = discord.utils.utcnow()
 
         # ── Non-staff messages: record pending questions ──────────────────────
         if not is_staff_member:
@@ -272,7 +272,7 @@ class StaffAnalytics(commands.Cog):
                 return False
             return True
 
-        now = datetime.now()
+        now = discord.utils.utcnow()
 
         was_countable = _is_countable_channel(before.channel)
         is_countable = _is_countable_channel(after.channel)
@@ -325,7 +325,7 @@ class StaffAnalytics(commands.Cog):
                 # track_moderation now returns None on a dedup hit
                 action = self.metrics.track_moderation(
                     moderator_id=interaction.user.id, target_id=target_id,
-                    command=cmd, timestamp=datetime.now(), reason=reason,
+                    command=cmd, timestamp=discord.utils.utcnow(), reason=reason,
                 )
                 if action:
                     await self.db.insert_moderation_action(action)
@@ -466,7 +466,7 @@ class StaffAnalytics(commands.Cog):
             channel_id         = reaction.message.channel.id,
             message_id         = reaction.message.id,
             emoji              = str(reaction.emoji),
-            timestamp          = datetime.now(),
+            timestamp          = discord.utils.utcnow(),
         )
         if event:
             await self.db.insert_reaction(event)
@@ -486,7 +486,7 @@ class StaffAnalytics(commands.Cog):
         # Only credit if the message author is a staff member
         if msg.author.bot or not self.is_staff(msg.author):
             return
-        now = datetime.now()
+        now = discord.utils.utcnow()
         rr = self.metrics.track_reaction_received(
             staff_message_id = payload.message_id,
             staff_id         = msg.author.id,
@@ -510,7 +510,7 @@ class StaffAnalytics(commands.Cog):
             thread_id  = thread.id,
             channel_id = thread.parent_id or 0,
             event_type = "created",
-            timestamp  = datetime.now(),
+            timestamp  = discord.utils.utcnow(),
         )
         if event:
             await self.db.insert_thread_event(event)
@@ -538,7 +538,7 @@ class StaffAnalytics(commands.Cog):
                 ev = EngagementEvent(
                     staff_id=staff_msg.staff_id, channel_id=staff_msg.channel_id,
                     message_id=staff_msg.message_id, event_type="new_member_chat",
-                    user_id=interaction.user_id, timestamp=datetime.now(),
+                    user_id=interaction.user_id, timestamp=discord.utils.utcnow(),
                 )
                 await self.db.insert_engagement_event(ev)
 
@@ -597,7 +597,7 @@ class StaffAnalytics(commands.Cog):
             staff_id   = interaction.user.id,
             channel_id = interaction.channel.id if interaction.channel else 0,
             message_id = interaction.id,
-            timestamp  = datetime.now(),
+            timestamp  = discord.utils.utcnow(),
         )
         report = self.metrics.check_report(
             staff_msg,
@@ -666,7 +666,7 @@ class StaffAnalytics(commands.Cog):
                 f"> {rank_line}"
             ),
             color=tier_info["colour"],
-            timestamp=datetime.now(),
+            timestamp=discord.utils.utcnow(),
         )
         embed.set_thumbnail(url=member.display_avatar.url)
 
@@ -879,7 +879,7 @@ class StaffAnalytics(commands.Cog):
         embed = discord.Embed(
             title=f"🏆 Leaderboard — {metric_labels.get(metric.value, metric.value)}",
             color=EMBED_COLORS["primary"],
-            timestamp=datetime.now(),
+            timestamp=discord.utils.utcnow(),
         )
         embed.set_footer(text=f"Last {days} days")
 
@@ -970,7 +970,7 @@ class StaffAnalytics(commands.Cog):
                 f"**{member2.display_name}** wins **{wins2}** categories"
             ),
             color=EMBED_COLORS["info"],
-            timestamp=datetime.now(),
+            timestamp=discord.utils.utcnow(),
         )
         embed.set_footer(text=f"Last {days} days")
 
@@ -1014,7 +1014,7 @@ class StaffAnalytics(commands.Cog):
         embed = discord.Embed(
             title="🏅 Staff Rank Distribution",
             color=EMBED_COLORS["primary"],
-            timestamp=datetime.now(),
+            timestamp=discord.utils.utcnow(),
         )
         embed.set_footer(text=f"Last {days} days  ·  {total} staff total")
 
@@ -1053,7 +1053,7 @@ class StaffAnalytics(commands.Cog):
         embed = discord.Embed(
             title=f"📋 Staff Activity — Last {hours}h",
             color=EMBED_COLORS["info"],
-            timestamp=datetime.now(),
+            timestamp=discord.utils.utcnow(),
         )
 
         type_icons = {
@@ -1145,7 +1145,7 @@ class StaffAnalytics(commands.Cog):
         embed = discord.Embed(
             title="🔄 Consistency Leaderboard",
             color=EMBED_COLORS["primary"],
-            timestamp=datetime.now(),
+            timestamp=discord.utils.utcnow(),
         )
         embed.set_footer(text="Rewards daily activity, time-spread, off-peak coverage, and streaks")
 
@@ -1215,7 +1215,7 @@ class StaffAnalytics(commands.Cog):
             title=f"🏅 {target.display_name}'s Achievements",
             description=f"**{stats.rank_tier.display}** · {len(earned_lines)} / {len(ACHIEVEMENT_THRESHOLDS)} unlocked",
             color=tier_info["colour"],
-            timestamp=datetime.now(),
+            timestamp=discord.utils.utcnow(),
         )
         embed.set_thumbnail(url=target.display_avatar.url)
 
@@ -1257,7 +1257,7 @@ class StaffAnalytics(commands.Cog):
             title=f"📊 Staff Health Dashboard — {interaction.guild.name}",
             description=f"**Last {days} days** · {health['total_staff']} total staff",
             color=EMBED_COLORS["primary"],
-            timestamp=datetime.now(),
+            timestamp=discord.utils.utcnow(),
         )
 
         # Coverage
@@ -1346,7 +1346,7 @@ class StaffAnalytics(commands.Cog):
             return
         sn = StaffNote(
             id=None, staff_id=member.id, author_id=interaction.user.id,
-            note=note, created_at=datetime.now(), is_positive=positive,
+            note=note, created_at=discord.utils.utcnow(), is_positive=positive,
         )
         note_id = await self.db.add_staff_note(sn)
         emoji = "✅" if positive else "📌"
@@ -1370,7 +1370,7 @@ class StaffAnalytics(commands.Cog):
         embed = discord.Embed(
             title=f"📝 Notes — {member.display_name}",
             color=EMBED_COLORS["info"],
-            timestamp=datetime.now(),
+            timestamp=discord.utils.utcnow(),
         )
         embed.set_thumbnail(url=member.display_avatar.url)
         for n in notes:
@@ -1530,7 +1530,7 @@ class StaffAnalytics(commands.Cog):
             return
 
         data = await self.db.export_staff_data(member.id, days)
-        filename = f"staff_export_{member.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        filename = f"staff_export_{member.id}_{discord.utils.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
 
         # BUG FIX: original wrote to a local file path without cleanup, leaking
         # temp files on disk and using an unsafe filename derived from user input.
@@ -1546,7 +1546,7 @@ class StaffAnalytics(commands.Cog):
     async def _weekly_report_loop(self):
         await self.bot.wait_until_ready()
         while not self.bot.is_closed():
-            now = datetime.now()
+            now = discord.utils.utcnow()
             is_monday_9am = now.weekday() == 0 and now.hour == 9
 
             if is_monday_9am:
@@ -1591,9 +1591,9 @@ class StaffAnalytics(commands.Cog):
 
         embed = discord.Embed(
             title       = "📊 Weekly Staff Report",
-            description = f"Week ending **{datetime.now().strftime('%B %d, %Y')}**",
+            description = f"Week ending **{discord.utils.utcnow().strftime('%B %d, %Y')}**",
             color       = EMBED_COLORS["primary"],
-            timestamp   = datetime.now(),
+            timestamp   = discord.utils.utcnow(),
         )
 
         stats_list = []
@@ -1680,7 +1680,7 @@ class StaffAnalytics(commands.Cog):
         while not self.bot.is_closed():
             self.metrics.cleanup_old_data()
             # Also prune stale staff-cache entries
-            now = datetime.now()
+            now = discord.utils.utcnow()
             self._staff_cache = {
                 uid: (res, ts)
                 for uid, (res, ts) in self._staff_cache.items()
@@ -1725,7 +1725,7 @@ class StaffAnalytics(commands.Cog):
         if cons:
             stats.consistency = cons
 
-        now      = datetime.now()
+        now      = discord.utils.utcnow()
         today    = now.date().isoformat()
         tier     = stats.rank_tier.value
         streak   = cons.current_streak if cons else 0
@@ -1776,7 +1776,7 @@ class StaffAnalytics(commands.Cog):
                 f"**Score:** `{stats.engagement_score:.0f} pts`"
             ),
             color     = to_info["colour"],
-            timestamp = datetime.now(),
+            timestamp = discord.utils.utcnow(),
         )
         embed.add_field(
             name  = "📊 This month",
@@ -1813,7 +1813,7 @@ class StaffAnalytics(commands.Cog):
                 f"Even a single message keeps it alive. 🔥"
             ),
             color     = EMBED_COLORS["warning"],
-            timestamp = datetime.now(),
+            timestamp = discord.utils.utcnow(),
         )
         embed.set_footer(text="This reminder only fires after 8 PM when you haven't been active.")
         try:
@@ -1855,7 +1855,7 @@ class StaffAnalytics(commands.Cog):
             title       = f"{info['emoji']} Achievement Unlocked!",
             description = f"**{info['desc']}**",
             color       = EMBED_COLORS["success"],
-            timestamp   = datetime.now(),
+            timestamp   = discord.utils.utcnow(),
         )
         embed.set_footer(text="Use /staffachievements to see all your badges.")
         try:
@@ -1959,7 +1959,7 @@ class StaffAnalytics(commands.Cog):
             stats_list.append((member, s))
         stats_list.sort(key=lambda x: x[1].engagement_score, reverse=True)
 
-        now        = datetime.now()
+        now        = discord.utils.utcnow()
         active_pct = (health["active_staff"] / health["total_staff"] * 100) if health["total_staff"] else 0
 
         embed = discord.Embed(

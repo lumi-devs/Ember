@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 from collections import defaultdict
 import logging
+import discord
 
 from .models import (
     ConsistencyStats, StaffMessage, Interaction, ConversationSession,
@@ -709,7 +710,7 @@ class DatabaseManager:
                VALUES (?,?,?,?,?)
                ON CONFLICT(guild_id, weight_key) DO UPDATE SET weight_value=excluded.weight_value,
                updated_by=excluded.updated_by, updated_at=excluded.updated_at""",
-            (guild_id, key, value, updated_by, datetime.now().isoformat()),
+            (guild_id, key, value, updated_by, discord.utils.utcnow().isoformat()),
         )
         await self.pool.commit()
 
@@ -725,7 +726,7 @@ class DatabaseManager:
         days: int = 30,
         weights: Optional[Dict[str, float]] = None,
     ) -> StaffStats:
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        cutoff = (discord.utils.utcnow() - timedelta(days=days)).isoformat()
         stats = StaffStats(staff_id=staff_id, _weights=weights)
 
         row = await (await self.pool.execute(
@@ -915,7 +916,7 @@ class DatabaseManager:
           dead_chat_revivals, conversation_starters, new_member_greetings,
           reactions_received
         """
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        cutoff = (discord.utils.utcnow() - timedelta(days=days)).isoformat()
 
         _Q: Dict[str, Tuple[str, tuple]] = {
             "help": (
@@ -1016,7 +1017,7 @@ class DatabaseManager:
     async def get_inactive_staff(self, staff_ids: List[int], days: int) -> List[int]:
         if not staff_ids:
             return []
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        cutoff = (discord.utils.utcnow() - timedelta(days=days)).isoformat()
         ph = ",".join("?" * len(staff_ids))
         rows = await (await self.pool.execute(
             f"SELECT DISTINCT staff_id FROM staff_messages WHERE staff_id IN ({ph}) AND timestamp>?",
@@ -1027,7 +1028,7 @@ class DatabaseManager:
 
     async def get_trend_comparison(self, staff_id: int) -> Dict[str, Any]:
         """Get trend comparison between current 30d and previous 30d for all metrics."""
-        now = datetime.now()
+        now = discord.utils.utcnow()
         cur_start = (now - timedelta(days=30)).isoformat()
         prev_start = (now - timedelta(days=60)).isoformat()
         prev_end = cur_start
@@ -1246,7 +1247,7 @@ class DatabaseManager:
                 "total_help": 0, "total_moderation": 0, "new_members_helped": 0,
                 "avg_response_secs": 0.0, "first_responses": 0, "vc_hours": 0.0,
             }
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        cutoff = (discord.utils.utcnow() - timedelta(days=days)).isoformat()
         ph = ",".join("?" * len(staff_ids))
 
         total_msg  = await (await self.pool.execute(
@@ -1297,10 +1298,10 @@ class DatabaseManager:
     # ─── Export ───────────────────────────────────────────────────────────────
 
     async def export_staff_data(self, staff_id: int, days: int) -> Dict[str, Any]:
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        cutoff = (discord.utils.utcnow() - timedelta(days=days)).isoformat()
         data: Dict[str, Any] = {
             "staff_id": staff_id,
-            "exported_at": datetime.now().isoformat(),
+            "exported_at": discord.utils.utcnow().isoformat(),
             "days": days,
         }
 
@@ -1335,7 +1336,7 @@ class DatabaseManager:
     async def _cleanup_old_data(self):
         while self._running:
             await asyncio.sleep(86400)
-            cutoff = (datetime.now() - timedelta(days=DB_RETENTION_DAYS)).isoformat()
+            cutoff = (discord.utils.utcnow() - timedelta(days=DB_RETENTION_DAYS)).isoformat()
             tables = [
                 ("staff_messages",       "timestamp"),
                 ("interactions",         "timestamp"),
@@ -1380,7 +1381,7 @@ class DatabaseManager:
         if not staff_ids:
             return {}
         
-        cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+        cutoff = (discord.utils.utcnow() - timedelta(hours=hours)).isoformat()
         placeholders = ",".join("?" * len(staff_ids))
         
         activity: Dict[int, List[Dict]] = {}
@@ -1493,7 +1494,7 @@ class DatabaseManager:
     async def mark_achievement_notified(self, staff_id: int, key: str):
         await self.pool.execute(
             "INSERT OR IGNORE INTO notified_achievements (staff_id, achievement, notified_at) VALUES (?,?,?)",
-            (staff_id, key, datetime.now().isoformat())
+            (staff_id, key, discord.utils.utcnow().isoformat())
         )
         await self.pool.commit()
 

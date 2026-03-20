@@ -37,7 +37,7 @@ import logging
 import aiosqlite
 import aiohttp
 import io
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Tuple, Any
 
 import discord
@@ -190,7 +190,7 @@ class ReviewHistoryDB:
                 staff_id, reviewer_id, verdict, confidence,
                 from_role_id, from_role_name, to_role_id, to_role_name,
                 json.dumps(reasons), watchlist_note, "PENDING", days_window,
-                datetime.now().isoformat(),
+                discord.utils.utcnow().isoformat(),
                 stats.get("engagement_score"),    stats.get("help_events"),
                 stats.get("moderation_actions"),  stats.get("vc_hours"),
                 stats.get("active_days"),         stats.get("first_responses"),
@@ -208,7 +208,7 @@ class ReviewHistoryDB:
     async def resolve(self, review_id: int, decision: str, decided_by: int):
         await self._conn.execute(
             "UPDATE review_log SET decision=?, decided_by=?, decided_at=? WHERE id=?",
-            (decision, decided_by, datetime.now().isoformat(), review_id),
+            (decision, decided_by, discord.utils.utcnow().isoformat(), review_id),
         )
         await self._conn.commit()
 
@@ -522,14 +522,14 @@ class ReviewConfirmView(discord.ui.View):
         embed = discord.Embed(
             title=f"{'✅ Accepted' if accepted else '❌ Rejected'} — {VERDICT_EMOJIS.get(self.verdict,'')} {self.verdict}",
             description=f"{action_text}\nDecided by {interaction.user.mention}",
-            color=color, timestamp=datetime.now(),
+            color=color, timestamp=discord.utils.utcnow(),
         )
         await interaction.response.edit_message(embed=embed, view=self)
 
         if self.log_channel:
             log = discord.Embed(
                 title=f"Staff Review — {self.target.display_name}",
-                color=color, timestamp=datetime.now(),
+                color=color, timestamp=discord.utils.utcnow(),
             )
             log.add_field(name="Verdict",    value=f"{VERDICT_EMOJIS.get(self.verdict,'')} {self.verdict}", inline=True)
             log.add_field(name="Decision",   value=decision, inline=True)
@@ -612,18 +612,18 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
             if record.get("to_role_name") == current_role_name:
                 date_str = (record.get("decided_at") or record.get("created_at") or "")[:19]
                 try:
-                    return (datetime.now() - datetime.fromisoformat(date_str)).days
+                    return (discord.utils.utcnow() - datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)).days
                 except (ValueError, TypeError):
                     break
 
         # No promotion record found - check first staff message
         first_msg = await self.db.get_first_staff_message(member.id)
         if first_msg:
-            return (datetime.now() - first_msg).days
+            return (discord.utils.utcnow() - first_msg).days
 
         # Fallback to join date
         if member.joined_at:
-            return (datetime.now() - member.joined_at).days
+            return (discord.utils.utcnow() - member.joined_at).days
 
         return 0
 
@@ -759,7 +759,7 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
         color = VERDICT_COLORS.get(verdict, discord.Color.blurple())
         embed = discord.Embed(
             title=f"{VERDICT_EMOJIS.get(verdict,'')} AI Review — {member.display_name}",
-            color=color, timestamp=datetime.now(),
+            color=color, timestamp=discord.utils.utcnow(),
         )
         embed.set_thumbnail(url=member.display_avatar.url)
         embed.add_field(name="Decision",      value=f"**{decision.upper()}**", inline=True)
@@ -815,7 +815,7 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
         # Create a text file with the prompt
         prompt_file = discord.File(
             io.BytesIO(raw_prompt.encode('utf-8')),
-            filename=f"review_{member.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_prompt.txt"
+            filename=f"review_{member.id}_{discord.utils.utcnow().strftime('%Y%m%d_%H%M%S')}_prompt.txt"
         )
 
         view = ReviewConfirmView(
@@ -987,7 +987,7 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
 
         summary = discord.Embed(
             title=f"📋 Staff Review Summary — {len(results)} members",
-            color=discord.Color.blurple(), timestamp=datetime.now(),
+            color=discord.Color.blurple(), timestamp=discord.utils.utcnow(),
         )
         summary.set_footer(text=f"{days}d window | /staffreview @member to act on individual cases")
 
@@ -1023,7 +1023,7 @@ class StaffReviewCog(commands.Cog, name="StaffReview"):
 
         embed = discord.Embed(
             title=f"📜 Staff History — {member.display_name}",
-            color=discord.Color.blurple(), timestamp=datetime.now(),
+            color=discord.Color.blurple(), timestamp=discord.utils.utcnow(),
         )
         embed.set_thumbnail(url=member.display_avatar.url)
 
