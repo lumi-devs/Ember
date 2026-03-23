@@ -1340,12 +1340,12 @@ class DatabaseManager:
             f"SELECT COUNT(*) as c FROM staff_messages WHERE staff_id IN ({ph}) AND timestamp>?",
             (*staff_ids, cutoff),
         )).fetchone()
-        total_help = type('R', (), {'c': 0})()  # help_events no longer produced
+        total_help_c = 0  # help_events no longer produced
         total_mod  = await (await self.pool.execute(
             f"SELECT COUNT(*) as c FROM moderation_actions WHERE moderator_id IN ({ph}) AND timestamp>?",
             (*staff_ids, cutoff),
         )).fetchone()
-        total_new  = type('R', (), {'c': 0})()  # help_events no longer produced
+        total_new_c  = 0  # help_events no longer produced
         avg_rt     = await (await self.pool.execute(
             f"SELECT COALESCE(AVG(response_seconds),0) as avg FROM response_times WHERE staff_id IN ({ph}) AND timestamp>?",
             (*staff_ids, cutoff),
@@ -1380,9 +1380,9 @@ class DatabaseManager:
             "total_staff":        len(staff_ids),
             "active_staff":       active_rows[0]["c"] if active_rows else 0,
             "total_messages":     total_msg["c"]   or 0,
-            "total_help":         total_help["c"]  or 0,
+            "total_help":         total_help_c,
             "total_moderation":   total_mod["c"]   or 0,
-            "new_members_helped": total_new["c"]   or 0,
+            "new_members_helped": total_new_c,
             "avg_response_secs":  round(avg_rt["avg"] or 0.0, 1),
             "first_responses":    total_fr["c"]    or 0,
             "vc_hours":           round(total_vc["hrs"] or 0.0, 1),
