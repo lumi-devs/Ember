@@ -663,19 +663,19 @@ class DatabaseManager:
         )
         stats.active_hours        = _dd(int, json.loads(row["active_hours"] or "{}"))
         stats.active_days_of_week = _dd(int, json.loads(row["active_days_of_week"] or "{}"))
-        # Calculate 28-day activity pattern for weekly consistency
-        now_dt = discord.utils.utcnow()
+        # Calculate 28-day activity pattern for weekly consistency — single bulk query
+        now_dt  = discord.utils.utcnow()
+        cutoff_28 = (now_dt - timedelta(days=28)).isoformat()
+        active_days_rows = await (await self.pool.execute(
+            "SELECT DATE(timestamp) as day FROM staff_messages "
+            "WHERE staff_id=? AND timestamp>? GROUP BY DATE(timestamp)",
+            (staff_id, cutoff_28)
+        )).fetchall()
+        active_day_set = {r["day"] for r in active_days_rows}
         weekly_data = []
         for day_offset in range(27, -1, -1):
-            day_dt = now_dt - timedelta(days=day_offset)
-            day_str = day_dt.strftime("%Y-%m-%d")
-            cutoff_day_start = day_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-            cutoff_day_end   = cutoff_day_start + timedelta(days=1)
-            row2 = await (await self.pool.execute(
-                "SELECT COUNT(*) as c FROM staff_messages WHERE staff_id=? AND timestamp>=? AND timestamp<?",
-                (staff_id, cutoff_day_start.isoformat(), cutoff_day_end.isoformat())
-            )).fetchone()
-            weekly_data.append(1 if (row2 and row2["c"] > 0) else 0)
+            day_str = (now_dt - timedelta(days=day_offset)).strftime("%Y-%m-%d")
+            weekly_data.append(1 if day_str in active_day_set else 0)
         stats.weekly_active_days = weekly_data
         return stats
 
@@ -1667,6 +1667,16 @@ class DatabaseManager:
         if row and row["notified_at"]:
             return datetime.fromisoformat(row["notified_at"])
         return None
+
+    async def was_active_today(self, staff_id: int) -> bool:
+        """Return True if the staff member has sent at least one message today (UTC)."""
+        now     = discord.utils.utcnow()
+        cutoff  = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        row = await (await self.pool.execute(
+            "SELECT COUNT(*) as c FROM staff_messages WHERE staff_id=? AND timestamp>?",
+            (staff_id, cutoff),
+        )).fetchone()
+        return (row["c"] or 0) > 0
 
     async def get_first_staff_message(self, staff_id: int) -> Optional[datetime]:
         """Get the timestamp of a staff member's first message."""

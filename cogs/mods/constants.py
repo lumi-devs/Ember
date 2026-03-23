@@ -34,6 +34,11 @@ NEWBIE_CHAT_SCORE_BONUS = 3.0        # extra points per unique new member talked
 # Achievements older than this many days lose their "shine" (shown faded in UI)
 ACHIEVEMENT_DECAY_DAYS = 60          # achievements earned > 60 days ago are "faded"
 
+# ─── Bot IDs ─────────────────────────────────────────────────────────────────
+import os as _os
+DISBOARD_BOT_ID = 302050872383242240   # Official Disboard bump bot
+STAFF_DB_PATH   = _os.getenv("STAFF_DB_PATH", "data/staff_analytics.db")
+
 # ─── Keyword sets ─────────────────────────────────────────────────────────────
 HELP_KEYWORDS_STRONG: frozenset = frozenset({
     "here's how", "try this", "have you tried", "step by step",

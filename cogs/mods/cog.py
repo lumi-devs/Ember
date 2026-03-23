@@ -35,6 +35,7 @@ from .constants import (
     LEADERBOARD_LIMIT, MEDAL_EMOJIS,
     QUESTION_RE, QUESTION_KEYWORDS, ACHIEVEMENT_DECAY_DAYS,
     PING_RESPONSE_WINDOW, STAFF_ROLE_PING_KEYWORDS,
+    DISBOARD_BOT_ID, STAFF_DB_PATH,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,7 @@ class StaffAnalytics(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot    = bot
-        self.db     = DatabaseManager()
+        self.db     = DatabaseManager(db_path=STAFF_DB_PATH)
         self.config = StaffAnalyticsConfig()
 
         self._staff_cache: Dict[int, tuple] = {}
@@ -88,13 +89,16 @@ class StaffAnalytics(commands.Cog):
             staff = [m for m in guild.members if self.is_staff(m)]
             if not staff:
                 continue
-            weights = await self.db.get_score_weights(guild.id)
-            for member in staff:
+            weights     = await self.db.get_score_weights(guild.id)
+            cached_rows = await self.db.get_cached_staff_stats(
+                guild.id, [m.id for m in staff], 30, weights
+            )
+            for sid, s in cached_rows:
                 try:
-                    s = await self.db.get_staff_stats(member.id, 30, weights)
-                    self._last_known_rank[member.id]   = s.rank_tier.value
-                    c = await self.db.get_consistency_stats(member.id)
-                    self._last_known_streak[member.id] = c.current_streak if c else 0
+                    self._last_known_rank[sid]   = s.rank_tier.value
+                    self._last_known_streak[sid] = (
+                        s.consistency.current_streak if s.consistency else 0
+                    )
                 except Exception:
                     pass
         logger.info("Rank cache seeded for %d staff members", len(self._last_known_rank))
@@ -610,8 +614,7 @@ class StaffAnalytics(commands.Cog):
 
     async def _try_track_disboard_bump(self, message: discord.Message) -> None:
         """Credit the staff member who triggered a successful Disboard bump and announce it."""
-        DISBOARD_ID = 302050872383242240
-        if message.author.id != DISBOARD_ID:
+        if message.author.id != DISBOARD_BOT_ID:
             return
 
         is_bump = False
@@ -914,30 +917,20 @@ class StaffAnalytics(commands.Cog):
     ):
         await interaction.response.defer(ephemeral=True)
 
-        if metric.value == "score":
-            staff = await self._fetch_all_staff(interaction.guild)
-            weights = await self.db.get_score_weights(interaction.guild.id)
-            rows = []
-            for m in staff[:30]:
-                s = await self.db.get_staff_stats(m.id, days, weights)
-                c = await self.db.get_consistency_stats(m.id)
-                if c:
-                    s.consistency = c
-                rows.append((m.id, s.engagement_score))
-            rows.sort(key=lambda x: x[1], reverse=True)
-        elif metric.value == "streak":
-            staff = await self._fetch_all_staff(interaction.guild)
-            rows = []
-            for m in staff:
-                c = await self.db.get_consistency_stats(m.id)
-                rows.append((m.id, c.current_streak if c else 0))
-            rows.sort(key=lambda x: x[1], reverse=True)
-        elif metric.value == "weekly_consistency":
-            staff = await self._fetch_all_staff(interaction.guild)
-            rows = []
-            for m in staff:
-                c = await self.db.get_consistency_stats(m.id)
-                rows.append((m.id, c.weekly_consistency_score if c else 0.0))
+        if metric.value in ("score", "streak", "weekly_consistency"):
+            staff       = await self._fetch_all_staff(interaction.guild)
+            weights     = await self.db.get_score_weights(interaction.guild.id)
+            cached_rows = await self.db.get_cached_staff_stats(
+                interaction.guild.id, [m.id for m in staff], days, weights
+            )
+            if metric.value == "score":
+                rows = [(sid, s.engagement_score) for sid, s in cached_rows]
+            elif metric.value == "streak":
+                rows = [(sid, s.consistency.current_streak if s.consistency else 0)
+                        for sid, s in cached_rows]
+            else:  # weekly_consistency
+                rows = [(sid, s.consistency.weekly_consistency_score if s.consistency else 0.0)
+                        for sid, s in cached_rows]
             rows.sort(key=lambda x: x[1], reverse=True)
         elif metric.value == "bumps":
             rows = await self.db.get_leaderboard("bumps", days, limit=LEADERBOARD_LIMIT)
@@ -1023,13 +1016,13 @@ class StaffAnalytics(commands.Cog):
                 )
                 return
 
-        weights = await self.db.get_score_weights(interaction.guild.id)
-        s1 = await self.db.get_staff_stats(member1.id, days, weights)
-        s2 = await self.db.get_staff_stats(member2.id, days, weights)
-        for s, m in ((s1, member1), (s2, member2)):
-            c = await self.db.get_consistency_stats(m.id)
-            if c:
-                s.consistency = c
+        weights     = await self.db.get_score_weights(interaction.guild.id)
+        cached_rows = await self.db.get_cached_staff_stats(
+            interaction.guild.id, [member1.id, member2.id], days, weights
+        )
+        stats_map = {sid: s for sid, s in cached_rows}
+        s1 = stats_map.get(member1.id) or await self.db.get_staff_stats(member1.id, days, weights)
+        s2 = stats_map.get(member2.id) or await self.db.get_staff_stats(member2.id, days, weights)
 
         streak1 = s1.consistency.current_streak if s1.consistency else 0
         streak2 = s2.consistency.current_streak if s2.consistency else 0
@@ -1093,37 +1086,49 @@ class StaffAnalytics(commands.Cog):
             await interaction.followup.send(embed=create_info_embed("No Staff", "No staff members found."))
             return
 
-        weights = await self.db.get_score_weights(interaction.guild.id)
-        buckets: Dict[str, List[str]] = {name: [] for name in RANK_TIERS}
-        scores_map: Dict[str, float] = {}
-        for member in staff:
-            s = await self.db.get_staff_stats(member.id, days, weights)
-            c = await self.db.get_consistency_stats(member.id)
-            if c:
-                s.consistency = c
-            buckets[s.rank_tier.value].append(member.display_name)
-            scores_map[member.display_name] = s.engagement_score
-
-        total = len(staff)
-        embed = discord.Embed(title="🏅 Staff Rank Distribution", color=EMBED_COLORS["primary"], timestamp=discord.utils.utcnow())
-        embed.set_footer(text=f"Last {days} days  ·  {total} staff total")
-
-        for tier_name in ("Diamond", "Platinum", "Gold", "Silver", "Bronze"):
-            info  = RANK_TIERS[tier_name]
-            names = buckets[tier_name]
-            if not names:
-                continue
-            count      = len(names)
-            bar_filled = max(1, int((count / total) * 12)) if total else 0
-            bar        = "█" * bar_filled + "░" * (12 - bar_filled)
-            sorted_names = sorted(names, key=lambda n: scores_map.get(n, 0), reverse=True)
-            name_list    = ", ".join(sorted_names[:12]) + (f" +{count - 12}" if count > 12 else "")
-            embed.add_field(
-                name=f"{info['emoji']} {tier_name}  ·  {count} staff  `{bar}`",
-                value=f"≥ **{info['min']} pts** · {name_list}",
-                inline=False,
+        try:
+            weights     = await self.db.get_score_weights(interaction.guild.id)
+            cached_rows = await self.db.get_cached_staff_stats(
+                interaction.guild.id, [m.id for m in staff], days, weights
             )
-        await interaction.followup.send(embed=embed)
+            stats_map = {sid: s for sid, s in cached_rows}
+            buckets: Dict[str, List[str]] = {name: [] for name in RANK_TIERS}
+            scores_map: Dict[str, float] = {}
+            for member in staff:
+                s = stats_map.get(member.id)
+                if not s:
+                    continue
+                buckets[s.rank_tier.value].append(member.display_name)
+                scores_map[member.display_name] = s.engagement_score
+
+            total = len(staff)
+            embed = discord.Embed(title="🏅 Staff Rank Distribution", color=EMBED_COLORS["primary"], timestamp=discord.utils.utcnow())
+            embed.set_footer(text=f"Last {days} days  ·  {total} staff total")
+
+            for tier_name in ("Diamond", "Platinum", "Gold", "Silver", "Bronze"):
+                info  = RANK_TIERS[tier_name]
+                names = buckets[tier_name]
+                if not names:
+                    continue
+                count      = len(names)
+                bar_filled = max(1, int((count / total) * 12)) if total else 0
+                bar        = "█" * bar_filled + "░" * (12 - bar_filled)
+                sorted_names = sorted(names, key=lambda n: scores_map.get(n, 0), reverse=True)
+                name_list    = ", ".join(sorted_names[:12]) + (f" +{count - 12}" if count > 12 else "")
+                embed.add_field(
+                    name=f"{info['emoji']} {tier_name}  ·  {count} staff  `{bar}`",
+                    value=f"≥ **{info['min']} pts** · {name_list}",
+                    inline=False,
+                )
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            logger.exception("staffranks command failed: %s", e)
+            try:
+                await interaction.followup.send(embed=create_error_embed(
+                    "Command Failed", "An unexpected error occurred. Please try again."
+                ), ephemeral=True)
+            except Exception:
+                pass
 
     # ─── /staffactivity ──────────────────────────────────────────────────────
 
@@ -1198,22 +1203,31 @@ class StaffAnalytics(commands.Cog):
             await interaction.followup.send(embed=create_info_embed("No Staff", "No staff members found."))
             return
 
-        inactive_ids = await self.db.get_inactive_staff([m.id for m in staff], days)
-        if not inactive_ids:
-            await interaction.followup.send(embed=create_success_embed(
-                "All Staff Active", f"All staff have been active within the last **{days}** days. ✅"
-            ))
-            return
+        try:
+            inactive_ids = await self.db.get_inactive_staff([m.id for m in staff], days)
+            if not inactive_ids:
+                await interaction.followup.send(embed=create_success_embed(
+                    "All Staff Active", f"All staff have been active within the last **{days}** days. ✅"
+                ))
+                return
 
-        inactive = [m for m in staff if m.id in inactive_ids]
-        embed = create_warning_embed(
-            f"Inactive Staff — {len(inactive)} member{'s' if len(inactive) != 1 else ''}",
-            f"No activity recorded in the last **{days}** days:\n"
-            + "\n".join(f"• {m.mention}" for m in inactive[:20]),
-        )
-        if len(inactive) > 20:
-            embed.set_footer(text=f"And {len(inactive) - 20} more not shown")
-        await interaction.followup.send(embed=embed)
+            inactive = [m for m in staff if m.id in inactive_ids]
+            embed = create_warning_embed(
+                f"Inactive Staff — {len(inactive)} member{'s' if len(inactive) != 1 else ''}",
+                f"No activity recorded in the last **{days}** days:\n"
+                + "\n".join(f"• {m.mention}" for m in inactive[:20]),
+            )
+            if len(inactive) > 20:
+                embed.set_footer(text=f"And {len(inactive) - 20} more not shown")
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            logger.exception("staffinactive command failed: %s", e)
+            try:
+                await interaction.followup.send(embed=create_error_embed(
+                    "Command Failed", "An unexpected error occurred. Please try again."
+                ), ephemeral=True)
+            except Exception:
+                pass
 
     # ─── /staffconsistency ───────────────────────────────────────────────────
 
@@ -1226,32 +1240,49 @@ class StaffAnalytics(commands.Cog):
             await interaction.followup.send(embed=create_info_embed("No Staff", "No staff members found."))
             return
 
-        scores = []
-        for member in staff:
-            c = await self.db.get_consistency_stats(member.id)
-            if c:
-                scores.append((member, c.consistency_score, c.current_streak, c.longest_streak,
-                                c.off_peak_activity, c.weekly_consistency_score))
-        scores.sort(key=lambda x: x[1], reverse=True)
-
-        embed = discord.Embed(
-            title="🔄 Consistency Leaderboard",
-            color=EMBED_COLORS["primary"],
-            timestamp=discord.utils.utcnow(),
-        )
-        embed.set_footer(text="🔥=streak  📅=weekly%  🦉=off-peak msgs")
-
-        lines = []
-        for idx, (member, score, streak, longest, off_peak, weekly_pct) in enumerate(scores[:12], 1):
-            prefix = MEDAL_EMOJIS[idx - 1] if idx <= 3 else f"`{idx:>2}.`"
-            streak_badge = f"🔥{streak}d" if streak >= 3 else f"{streak}d"
-            off_peak_badge = f"🦉{off_peak}" if off_peak > 0 else ""
-            lines.append(
-                f"{prefix} **{member.display_name}** — `{score:.0f} pts`  "
-                f"{streak_badge}  📅{weekly_pct:.0f}%  best:{longest}d  {off_peak_badge}"
+        try:
+            weights     = await self.db.get_score_weights(interaction.guild.id)
+            cached_rows = await self.db.get_cached_staff_stats(
+                interaction.guild.id, [m.id for m in staff], 30, weights
             )
-        embed.description = "\n".join(lines) or "No consistency data yet."
-        await interaction.followup.send(embed=embed)
+            scores = []
+            for sid, s in cached_rows:
+                c = s.consistency
+                if not c:
+                    continue
+                member = interaction.guild.get_member(sid)
+                if not member:
+                    continue
+                scores.append((member, c.consistency_score, c.current_streak,
+                               c.longest_streak, c.off_peak_activity, c.weekly_consistency_score))
+            scores.sort(key=lambda x: x[1], reverse=True)
+
+            embed = discord.Embed(
+                title="🔄 Consistency Leaderboard",
+                color=EMBED_COLORS["primary"],
+                timestamp=discord.utils.utcnow(),
+            )
+            embed.set_footer(text="🔥=streak  📅=weekly%  🦉=off-peak msgs")
+
+            lines = []
+            for idx, (member, score, streak, longest, off_peak, weekly_pct) in enumerate(scores[:12], 1):
+                prefix = MEDAL_EMOJIS[idx - 1] if idx <= 3 else f"`{idx:>2}.`"
+                streak_badge = f"🔥{streak}d" if streak >= 3 else f"{streak}d"
+                off_peak_badge = f"🦉{off_peak}" if off_peak > 0 else ""
+                lines.append(
+                    f"{prefix} **{member.display_name}** — `{score:.0f} pts`  "
+                    f"{streak_badge}  📅{weekly_pct:.0f}%  best:{longest}d  {off_peak_badge}"
+                )
+            embed.description = "\n".join(lines) or "No consistency data yet."
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            logger.exception("staffconsistency command failed: %s", e)
+            try:
+                await interaction.followup.send(embed=create_error_embed(
+                    "Command Failed", "An unexpected error occurred. Please try again."
+                ), ephemeral=True)
+            except Exception:
+                pass
 
     # ─── /staffachievements ──────────────────────────────────────────────────
 
@@ -1351,87 +1382,91 @@ class StaffAnalytics(commands.Cog):
             await interaction.followup.send(embed=create_info_embed("No Staff", "No staff members found."))
             return
 
-        health       = await self.db.get_server_health([m.id for m in staff], days)
-        inactive_ids = await self.db.get_inactive_staff([m.id for m in staff], days)
-        active_pct   = (health["active_staff"] / health["total_staff"] * 100) if health["total_staff"] else 0
-        avg_rt_str   = format_seconds(health["avg_response_secs"]) if health["avg_response_secs"] else "N/A"
+        try:
+            health       = await self.db.get_server_health([m.id for m in staff], days)
+            inactive_ids = await self.db.get_inactive_staff([m.id for m in staff], days)
+            active_pct   = (health["active_staff"] / health["total_staff"] * 100) if health["total_staff"] else 0
+            avg_rt_str   = format_seconds(health["avg_response_secs"]) if health["avg_response_secs"] else "N/A"
 
-        embed = discord.Embed(
-            title=f"📊 Staff Health Dashboard — {interaction.guild.name}",
-            description=f"**Last {days} days** · {health['total_staff']} total staff",
-            color=EMBED_COLORS["primary"],
-            timestamp=discord.utils.utcnow(),
-        )
-
-        coverage_bar = create_progress_bar(health["active_staff"], health["total_staff"], length=12)
-        embed.add_field(
-            name="👥 Staff Coverage",
-            value=(
-                f"`{coverage_bar}` **{health['active_staff']}/{health['total_staff']}** active  "
-                f"({active_pct:.0f}%)\n"
-                f"Inactive: **{len(inactive_ids)}** members flagged"
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="📈 Community KPIs",
-            value=(
-                f"`Total messages      ` **{format_number(health['total_messages'])}**\n"
-                f"`Unique talked to    ` **{health.get('unique_talked_with', 0)}** 🫂\n"
-                f"`Ping responses      ` **{health.get('ping_responses', 0)}** 📟\n"
-                f"`First responses     ` **{health['first_responses']}** 🚀"
-            ),
-            inline=True,
-        )
-
-        embed.add_field(
-            name="🛡️ Operations",
-            value=(
-                f"`Mod actions         ` **{health['total_moderation']}**\n"
-                f"`Avg response time   ` **{avg_rt_str}**\n"
-                f"`Total VC hours      ` **{health['vc_hours']:.1f}h**\n"
-                f"`Server bumps        ` **{health.get('total_bumps', 0)}**"
-            ),
-            inline=True,
-        )
-
-        # Top performers — use cache for recent data, fall back to fresh query
-        weights     = await self.db.get_score_weights(interaction.guild.id)
-        staff_ids   = [m.id for m in staff]
-        cached_rows = await self.db.get_cached_staff_stats(interaction.guild.id, staff_ids, days, weights)
-        stats_map   = {sid: s for sid, s in cached_rows}
-        for m in staff:
-            if m.id in stats_map:
-                c = await self.db.get_consistency_stats(m.id)
-                if c:
-                    stats_map[m.id].consistency = c
-        stats_list = [(m, stats_map[m.id]) for m in staff if m.id in stats_map]
-        stats_list.sort(key=lambda x: x[1].engagement_score, reverse=True)
-
-        top_lines = []
-        for idx, (m, s) in enumerate(stats_list[:5], 1):
-            streak = s.consistency.current_streak if s.consistency else 0
-            wcons  = s.consistency.weekly_consistency_score if s.consistency else 0.0
-            top_lines.append(
-                f"`{idx}.` **{m.display_name}** {s.rank_tier.display.split()[0]} "
-                f"· **{s.engagement_score:.0f}** pts  "
-                f"💬{s.total_messages} 🛡️{s.moderation_actions} 🔥{streak}d 📅{wcons:.0f}%"
+            embed = discord.Embed(
+                title=f"📊 Staff Health Dashboard — {interaction.guild.name}",
+                description=f"**Last {days} days** · {health['total_staff']} total staff",
+                color=EMBED_COLORS["primary"],
+                timestamp=discord.utils.utcnow(),
             )
-        if top_lines:
-            embed.add_field(name=f"🏆 Top Performers ({days}d)", value="\n".join(top_lines), inline=False)
 
-        if inactive_ids:
-            inactive_members = [m for m in staff if m.id in inactive_ids]
+            coverage_bar = create_progress_bar(health["active_staff"], health["total_staff"], length=12)
             embed.add_field(
-                name=f"⚠️ Inactive {days}+ Days ({len(inactive_ids)})",
-                value="\n".join(f"• {m.mention}" for m in inactive_members[:8])
-                + (f"\n… and {len(inactive_ids) - 8} more" if len(inactive_ids) > 8 else ""),
+                name="👥 Staff Coverage",
+                value=(
+                    f"`{coverage_bar}` **{health['active_staff']}/{health['total_staff']}** active  "
+                    f"({active_pct:.0f}%)\n"
+                    f"Inactive: **{len(inactive_ids)}** members flagged"
+                ),
                 inline=False,
             )
 
-        embed.set_footer(text="Admin only · Use /staffstats for individual member details")
-        await interaction.followup.send(embed=embed)
+            embed.add_field(
+                name="📈 Community KPIs",
+                value=(
+                    f"`Total messages      ` **{format_number(health['total_messages'])}**\n"
+                    f"`Unique talked to    ` **{health.get('unique_talked_with', 0)}** 🫂\n"
+                    f"`Ping responses      ` **{health.get('ping_responses', 0)}** 📟\n"
+                    f"`First responses     ` **{health['first_responses']}** 🚀"
+                ),
+                inline=True,
+            )
+
+            embed.add_field(
+                name="🛡️ Operations",
+                value=(
+                    f"`Mod actions         ` **{health['total_moderation']}**\n"
+                    f"`Avg response time   ` **{avg_rt_str}**\n"
+                    f"`Total VC hours      ` **{health['vc_hours']:.1f}h**\n"
+                    f"`Server bumps        ` **{health.get('total_bumps', 0)}**"
+                ),
+                inline=True,
+            )
+
+            # Cache already includes consistency — no secondary fetch needed
+            weights     = await self.db.get_score_weights(interaction.guild.id)
+            staff_ids   = [m.id for m in staff]
+            cached_rows = await self.db.get_cached_staff_stats(interaction.guild.id, staff_ids, days, weights)
+            stats_map   = {sid: s for sid, s in cached_rows}
+            stats_list  = [(m, stats_map[m.id]) for m in staff if m.id in stats_map]
+            stats_list.sort(key=lambda x: x[1].engagement_score, reverse=True)
+
+            top_lines = []
+            for idx, (m, s) in enumerate(stats_list[:5], 1):
+                streak = s.consistency.current_streak if s.consistency else 0
+                wcons  = s.consistency.weekly_consistency_score if s.consistency else 0.0
+                top_lines.append(
+                    f"`{idx}.` **{m.display_name}** {s.rank_tier.display.split()[0]} "
+                    f"· **{s.engagement_score:.0f}** pts  "
+                    f"💬{s.total_messages} 🛡️{s.moderation_actions} 🔥{streak}d 📅{wcons:.0f}%"
+                )
+            if top_lines:
+                embed.add_field(name=f"🏆 Top Performers ({days}d)", value="\n".join(top_lines), inline=False)
+
+            if inactive_ids:
+                inactive_members = [m for m in staff if m.id in inactive_ids]
+                embed.add_field(
+                    name=f"⚠️ Inactive {days}+ Days ({len(inactive_ids)})",
+                    value="\n".join(f"• {m.mention}" for m in inactive_members[:8])
+                    + (f"\n… and {len(inactive_ids) - 8} more" if len(inactive_ids) > 8 else ""),
+                    inline=False,
+                )
+
+            embed.set_footer(text="Admin only · Use /staffstats for individual member details")
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            logger.exception("staffoverview command failed: %s", e)
+            try:
+                await interaction.followup.send(embed=create_error_embed(
+                    "Command Failed", "An unexpected error occurred. Please try again."
+                ), ephemeral=True)
+            except Exception:
+                pass
 
     # ─── Notes, weights, config, export, dashboard ─────────────────────────────
 
@@ -1497,12 +1532,14 @@ class StaffAnalytics(commands.Cog):
             await interaction.response.send_message(embed=create_error_embed("Invalid Value", "Weight value must be ≥ 0."), ephemeral=True)
             return
         await self.db.set_score_weight(interaction.guild.id, key, value, interaction.user.id)
+        self.db.invalidate_dashboard_cache(interaction.guild.id)
         await interaction.response.send_message(embed=create_success_embed("Weight Updated", f"`{key}` → **{value}**"), ephemeral=True)
 
     @weights_group.command(name="reset", description="Reset all weights to defaults")
     @app_commands.default_permissions(administrator=True)
     async def staffweights_reset(self, interaction: discord.Interaction):
         await self.db.reset_score_weights(interaction.guild.id)
+        self.db.invalidate_dashboard_cache(interaction.guild.id)
         await interaction.response.send_message(embed=create_success_embed("Weights Reset", "All scoring weights have been reset to defaults."), ephemeral=True)
 
     @app_commands.command(name="staffconfig", description="View staff analytics configuration")
@@ -1560,11 +1597,20 @@ class StaffAnalytics(commands.Cog):
         if not self.is_staff(member):
             await interaction.followup.send(embed=create_error_embed("Not Staff", f"{member.mention} is not a staff member."))
             return
-        data = await self.db.export_staff_data(member.id, days)
-        filename = f"staff_export_{member.id}_{discord.utils.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
-        buf = io.BytesIO(json.dumps(data, indent=2, default=str).encode("utf-8"))
-        buf.seek(0)
-        await interaction.followup.send(file=discord.File(buf, filename=filename), content=f"📊 Export for **{member.display_name}** (last {days} days)")
+        try:
+            data = await self.db.export_staff_data(member.id, days)
+            filename = f"staff_export_{member.id}_{discord.utils.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+            buf = io.BytesIO(json.dumps(data, indent=2, default=str).encode("utf-8"))
+            buf.seek(0)
+            await interaction.followup.send(file=discord.File(buf, filename=filename), content=f"📊 Export for **{member.display_name}** (last {days} days)")
+        except Exception as e:
+            logger.exception("staffexport command failed: %s", e)
+            try:
+                await interaction.followup.send(embed=create_error_embed(
+                    "Command Failed", "An unexpected error occurred. Please try again."
+                ), ephemeral=True)
+            except Exception:
+                pass
 
     # ─── /stafftimeline ──────────────────────────────────────────────────────
 
@@ -1595,12 +1641,12 @@ class StaffAnalytics(commands.Cog):
 
         # Build ASCII bar chart
         from datetime import date, timedelta as td
-        today   = datetime.utcnow().date()
+        today   = discord.utils.utcnow().date()
         dates   = [today - td(days=i) for i in range(days - 1, -1, -1)]
         msg_vals = [daily_counts.get(str(d), 0) for d in dates]
         mod_vals = [mod_counts.get(str(d), 0) for d in dates]
 
-        max_val  = max(msg_vals) if msg_vals else 1
+        max_val  = max(msg_vals) if msg_vals and max(msg_vals) > 0 else 1
         bar_height = 8   # rows in the chart
 
         # Build rows top-down
@@ -1739,13 +1785,11 @@ class StaffAnalytics(commands.Cog):
             timestamp=discord.utils.utcnow(),
         )
 
-        stats_list = []
-        for member in all_staff[:25]:
-            s = await self.db.get_staff_stats(member.id, 7, weights)
-            c = await self.db.get_consistency_stats(member.id)
-            if c:
-                s.consistency = c
-            stats_list.append((member, s))
+        member_map  = {m.id: m for m in all_staff[:25]}
+        cached_rows = await self.db.get_cached_staff_stats(
+            guild.id, list(member_map.keys()), 7, weights
+        )
+        stats_list = [(member_map[sid], s) for sid, s in cached_rows if sid in member_map]
         stats_list.sort(key=lambda x: x[1].engagement_score, reverse=True)
 
         top_lines = []
@@ -1872,10 +1916,23 @@ class StaffAnalytics(commands.Cog):
                     logger.debug("Notification check failed for %d", member.id, exc_info=True)
 
     async def _check_member_notifications(self, member: discord.Member, weights: Dict):
-        stats = await self.db.get_staff_stats(member.id, 30, weights)
-        cons  = await self.db.get_consistency_stats(member.id)
-        if cons:
-            stats.consistency = cons
+        # Use the 30-day dashboard cache when available — avoids 2 fresh DB
+        # queries per member per notification tick (saves ~1600 queries/day at 17 staff)
+        cached = self.db._dashboard_cache.get((member.guild.id, 30))
+        if cached:
+            _, rows = cached
+            stats_found = next((s for sid, s in rows if sid == member.id), None)
+        else:
+            stats_found = None
+
+        if stats_found is not None:
+            stats = stats_found
+            cons  = stats.consistency
+        else:
+            stats = await self.db.get_staff_stats(member.id, 30, weights)
+            cons  = await self.db.get_consistency_stats(member.id)
+            if cons:
+                stats.consistency = cons
 
         now   = discord.utils.utcnow()
         today = now.date().isoformat()
@@ -1890,12 +1947,7 @@ class StaffAnalytics(commands.Cog):
         self._last_known_rank[member.id] = tier
 
         if streak >= 3 and member.id not in self._streak_warned_today.get(today, set()):
-            cutoff_today = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-            row = await (await self.db.pool.execute(
-                "SELECT COUNT(*) as c FROM staff_messages WHERE staff_id=? AND timestamp>?",
-                (member.id, cutoff_today),
-            )).fetchone()
-            active_today = (row["c"] or 0) > 0
+            active_today = await self.db.was_active_today(member.id)
             if not active_today and now.hour >= 20:
                 self._streak_warned_today.setdefault(today, set()).add(member.id)
                 await self._dm_streak_warning(member, streak)
@@ -2056,17 +2108,11 @@ class StaffAnalytics(commands.Cog):
         health   = await self.db.get_server_health([m.id for m in staff], 7)
         inactive_ids = await self.db.get_inactive_staff([m.id for m in staff], 7)
 
-        # Use cached stats to avoid querying every member on each hourly refresh
+        # Cache already includes consistency — no secondary fetch needed
         staff_ids   = [m.id for m in staff]
         cached_rows = await self.db.get_cached_staff_stats(guild.id, staff_ids, 30, weights)
         stats_map   = {sid: s for sid, s in cached_rows}
-        for member in staff:
-            if member.id in stats_map:
-                c = await self.db.get_consistency_stats(member.id)
-                if c:
-                    stats_map[member.id].consistency = c
-
-        stats_list = [(m, stats_map[m.id]) for m in staff if m.id in stats_map]
+        stats_list  = [(m, stats_map[m.id]) for m in staff if m.id in stats_map]
         stats_list.sort(key=lambda x: x[1].engagement_score, reverse=True)
 
         now        = discord.utils.utcnow()
