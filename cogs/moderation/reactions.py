@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import discord
 from discord.ext import commands, tasks
 import time
@@ -75,7 +77,7 @@ class ReactionHeat(commands.Cog):
         duration = HEAT_CONFIG["mute_duration"]
         self.muted[guild.id][member.id] = time.time() + duration
         try:
-            until = discord.utils.utcnow() + discord.timedelta(seconds=duration)
+            until = discord.utils.utcnow() + datetime.timedelta(seconds=duration)
             await member.timeout(until, reason="Reaction spam")
         except (discord.Forbidden, discord.HTTPException):
             muted_role = discord.utils.get(guild.roles, name="Muted")
