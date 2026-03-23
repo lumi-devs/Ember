@@ -22,6 +22,7 @@ from .constants import (
     QUALITY_SIGNALS, MODERATION_SEVERITY, MODERATION_SESSION_WINDOW, FIRST_RESPONSE_WINDOW,
     OFF_PEAK_HOURS, PEAK_HOURS,
     MAX_HELP_EVENTS_PER_USER_PER_DAY, MAX_REACTIONS_PER_DAY, MAX_REPORTS_PER_HOUR,
+    MAX_INTERACTIONS_PER_MESSAGE,
     QUESTION_RE, QUESTION_KEYWORDS,
     GREETING_RE, CONVERSATION_STARTER_RE,
     MAX_GREETINGS_PER_USER_PER_DAY, MAX_STARTERS_PER_DAY,
@@ -138,12 +139,15 @@ class MetricsTracker:
         def _try_add(author_id: int, itype: str):
             if author_id == message.staff_id:
                 return
-            # BUG FIX: don't credit staff-to-staff interactions — a moderator
-            # @mentioning a colleague for handoff shouldn't count as a community
-            # interaction.
             if self._is_staff(author_id):
                 return
             if author_id in seen_users:
+                return
+            # Cap: max MAX_INTERACTIONS_PER_MESSAGE unique credits per message.
+            # Prevents "hey @a @b @c @d @e" inflating unique-user counts.
+            # Replies always count (they're intentional); mentions beyond the
+            # cap are still stored but don't earn additional unique-user credit.
+            if itype == "mention" and len(seen_users) >= MAX_INTERACTIONS_PER_MESSAGE:
                 return
             seen_users.add(author_id)
             i = Interaction(

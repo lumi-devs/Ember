@@ -41,6 +41,11 @@ class DatabaseManager:
         # Adding a flag so close() can drain cleanly.
         self._running = True
 
+        # Dashboard stats cache: guild_id -> (timestamp, List[(member_id, StaffStats)])
+        # Avoids re-querying all staff on every dashboard refresh tick
+        self._dashboard_cache: Dict[int, tuple] = {}
+        self._DASHBOARD_CACHE_TTL = 600   # seconds — refresh at most every 10 min
+
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 
     async def initialize(self):
@@ -257,6 +262,7 @@ class DatabaseManager:
         migrations = [
             ("moderation_actions", "severity REAL DEFAULT 1.0"),
             ("consistency_stats",  "off_peak_activity INTEGER NOT NULL DEFAULT 0"),
+            ("vc_sessions",        "peak_occupancy INTEGER DEFAULT 1"),
         ]
         for table, col_def in migrations:
             try:
@@ -471,7 +477,7 @@ class DatabaseManager:
         await self.pool.commit()
         return cursor.lastrowid
 
-    async def end_vc_session(self, session_id: int, leave_time: datetime):
+    async def end_vc_session(self, session_id: int, leave_time: datetime, peak_occupancy: int = 1):
         join_row = await (await self.pool.execute(
             "SELECT join_time FROM vc_sessions WHERE id = ?", (session_id,)
         )).fetchone()
@@ -479,8 +485,8 @@ class DatabaseManager:
             join_dt = datetime.fromisoformat(join_row["join_time"])
             dur = (leave_time - join_dt).total_seconds() / 60
             await self.pool.execute(
-                "UPDATE vc_sessions SET leave_time = ?, duration_minutes = ? WHERE id = ?",
-                (leave_time.isoformat(), dur, session_id),
+                "UPDATE vc_sessions SET leave_time = ?, duration_minutes = ?, peak_occupancy = ? WHERE id = ?",
+                (leave_time.isoformat(), dur, max(1, peak_occupancy), session_id),
             )
             await self.pool.commit()
 
@@ -657,6 +663,20 @@ class DatabaseManager:
         )
         stats.active_hours        = _dd(int, json.loads(row["active_hours"] or "{}"))
         stats.active_days_of_week = _dd(int, json.loads(row["active_days_of_week"] or "{}"))
+        # Calculate 28-day activity pattern for weekly consistency
+        now_dt = discord.utils.utcnow()
+        weekly_data = []
+        for day_offset in range(27, -1, -1):
+            day_dt = now_dt - timedelta(days=day_offset)
+            day_str = day_dt.strftime("%Y-%m-%d")
+            cutoff_day_start = day_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            cutoff_day_end   = cutoff_day_start + timedelta(days=1)
+            row2 = await (await self.pool.execute(
+                "SELECT COUNT(*) as c FROM staff_messages WHERE staff_id=? AND timestamp>=? AND timestamp<?",
+                (staff_id, cutoff_day_start.isoformat(), cutoff_day_end.isoformat())
+            )).fetchone()
+            weekly_data.append(1 if (row2 and row2["c"] > 0) else 0)
+        stats.weekly_active_days = weekly_data
         return stats
 
     # ─── Staff notes ──────────────────────────────────────────────────────────
@@ -737,29 +757,8 @@ class DatabaseManager:
         stats.total_messages   = row["cnt"] or 0
         stats.avg_message_words = round(row["avg_wc"] or 0.0, 1)
 
-        row = await (await self.pool.execute(
-            "SELECT COUNT(DISTINCT user_id) as c FROM interactions WHERE staff_id=? AND timestamp>?",
-            (staff_id, cutoff),
-        )).fetchone()
-        stats.unique_members_helped = row["c"] or 0
-
-        row = await (await self.pool.execute(
-            "SELECT COUNT(*) as c FROM help_events WHERE helper_id=? AND timestamp>?",
-            (staff_id, cutoff),
-        )).fetchone()
-        stats.help_events = row["c"] or 0
-
-        row = await (await self.pool.execute(
-            "SELECT COUNT(*) as c FROM help_events WHERE helper_id=? AND event_type='proactive' AND timestamp>?",
-            (staff_id, cutoff),
-        )).fetchone()
-        stats.proactive_help = row["c"] or 0
-
-        row = await (await self.pool.execute(
-            "SELECT COUNT(*) as c FROM help_events WHERE helper_id=? AND is_new_member=1 AND timestamp>?",
-            (staff_id, cutoff),
-        )).fetchone()
-        stats.new_members_helped = row["c"] or 0
+        # help_events / unique_members_helped no longer produced; kept as 0
+        # for backward-compat with old DB rows and export
 
         row = await (await self.pool.execute(
             "SELECT COUNT(*) as c, COALESCE(SUM(severity),0) as sev "
@@ -768,6 +767,14 @@ class DatabaseManager:
         )).fetchone()
         stats.moderation_actions      = row["c"] or 0
         stats.moderation_severity_sum = round(row["sev"] or 0.0, 2)
+
+        # Mod action breakdown by type
+        breakdown_rows = await (await self.pool.execute(
+            "SELECT action_type, COUNT(*) as c FROM moderation_actions "
+            "WHERE moderator_id=? AND timestamp>? GROUP BY action_type",
+            (staff_id, cutoff),
+        )).fetchall()
+        stats.mod_action_breakdown = {row["action_type"]: row["c"] for row in breakdown_rows}
 
         row = await (await self.pool.execute(
             "SELECT COALESCE(SUM(duration_minutes),0)/60.0 as hrs "
@@ -788,11 +795,7 @@ class DatabaseManager:
         )).fetchone()
         stats.bumps_performed = row["c"] or 0
 
-        row = await (await self.pool.execute(
-            "SELECT COUNT(*) as c FROM conversation_sessions WHERE staff_id=? AND start_time>?",
-            (staff_id, cutoff),
-        )).fetchone()
-        stats.conversation_sessions = row["c"] or 0
+        # conversation_sessions removed from scoring (surfaces as 0; old data preserved)
 
         row = await (await self.pool.execute(
             "SELECT COUNT(*) as c FROM reactions WHERE staff_id=? AND timestamp>?",
@@ -881,9 +884,77 @@ class DatabaseManager:
         )).fetchone()
         stats.new_member_chats = row["c"] or 0
 
+        # Unique people talked with (interactions, non-staff)
+        row = await (await self.pool.execute(
+            "SELECT COUNT(DISTINCT user_id) as c FROM interactions WHERE staff_id=? AND timestamp>?",
+            (staff_id, cutoff),
+        )).fetchone()
+        stats.unique_talked_with = row["c"] or 0
+
+        # Ping responses
+        row = await (await self.pool.execute(
+            "SELECT COUNT(*) as c FROM engagement_events "
+            "WHERE staff_id=? AND event_type='ping_response' AND timestamp>?",
+            (staff_id, cutoff),
+        )).fetchone()
+        stats.ping_responses = row["c"] or 0
+
+        # VC people bonus: sum of (peak_occupancy - 1) across sessions with others present
+        row = await (await self.pool.execute(
+            "SELECT COALESCE(SUM(CASE WHEN peak_occupancy > 1 THEN peak_occupancy - 1 ELSE 0 END), 0) as bonus, "
+            "COUNT(CASE WHEN peak_occupancy > 1 THEN 1 END) as sessions_with_others "
+            "FROM vc_sessions WHERE staff_id=? AND join_time>?",
+            (staff_id, cutoff),
+        )).fetchone()
+        stats.vc_people_bonus    = round((row["bonus"] or 0) * 0.5, 2)
+        stats.vc_people_sessions = row["sessions_with_others"] or 0
+
+        # Unique new members talked to
+        row = await (await self.pool.execute(
+            "SELECT COUNT(DISTINCT user_id) as c FROM engagement_events "
+            "WHERE staff_id=? AND event_type='new_member_chat' AND timestamp>?",
+            (staff_id, cutoff),
+        )).fetchone()
+        stats.unique_newbies_chatted = row["c"] or 0
+
         return stats
 
     # ─── Leaderboard / rank helpers ───────────────────────────────────────────
+
+    async def get_cached_staff_stats(
+        self,
+        guild_id: int,
+        staff_ids: List[int],
+        days: int,
+        weights: Dict,
+    ) -> List[tuple]:
+        """
+        Return [(staff_id, StaffStats), ...] using an in-process cache.
+        Dashboard and weekly report call this instead of querying every member
+        individually on each refresh — drops ~20 DB queries to 1 cache hit.
+        Cache TTL is _DASHBOARD_CACHE_TTL seconds.
+        """
+        cache_key = (guild_id, days)
+        cached = self._dashboard_cache.get(cache_key)
+        if cached:
+            ts, data = cached
+            age = (discord.utils.utcnow() - ts).total_seconds()
+            if age < self._DASHBOARD_CACHE_TTL:
+                return data
+
+        result = []
+        for sid in staff_ids:
+            s = await self.get_staff_stats(sid, days, weights)
+            result.append((sid, s))
+        self._dashboard_cache[cache_key] = (discord.utils.utcnow(), result)
+        return result
+
+    def invalidate_dashboard_cache(self, guild_id: int = None):
+        """Call after any write that should immediately reflect on the dashboard."""
+        if guild_id:
+            self._dashboard_cache = {k: v for k, v in self._dashboard_cache.items() if k[0] != guild_id}
+        else:
+            self._dashboard_cache.clear()
 
     async def get_staff_rank_position(
         self, staff_id: int, all_staff_ids: List[int], days: int = 30
@@ -1003,6 +1074,24 @@ class DatabaseManager:
                 "GROUP BY staff_id ORDER BY val DESC LIMIT ?",
                 (cutoff, limit),
             ),
+            "bumps": (
+                "SELECT staff_id, COUNT(*) AS val "
+                "FROM bumps WHERE timestamp>? "
+                "GROUP BY staff_id ORDER BY val DESC LIMIT ?",
+                (cutoff, limit),
+            ),
+            "unique_talked_with": (
+                "SELECT staff_id, COUNT(DISTINCT user_id) AS val "
+                "FROM interactions WHERE timestamp>? "
+                "GROUP BY staff_id ORDER BY val DESC LIMIT ?",
+                (cutoff, limit),
+            ),
+            "ping_responses": (
+                "SELECT staff_id, COUNT(*) AS val "
+                "FROM engagement_events WHERE event_type='ping_response' AND timestamp>? "
+                "GROUP BY staff_id ORDER BY val DESC LIMIT ?",
+                (cutoff, limit),
+            ),
         }
 
         entry = _Q.get(metric)
@@ -1115,21 +1204,7 @@ class DatabaseManager:
                 "current": await _count("staff_messages", "staff_id", cur_start, now.isoformat()),
                 "previous": await _count("staff_messages", "staff_id", prev_start, prev_end),
             },
-            # Help events
-            "help": {
-                "current": await _count("help_events", "helper_id", cur_start, now.isoformat()),
-                "previous": await _count("help_events", "helper_id", prev_start, prev_end),
-            },
-            # Proactive help
-            "proactive": {
-                "current": await _count_with_event_type("help_events", "helper_id", "proactive", cur_start, now.isoformat()),
-                "previous": await _count_with_event_type("help_events", "helper_id", "proactive", prev_start, prev_end),
-            },
-            # New members helped
-            "new_members": {
-                "current": await _count_with_flag("help_events", "helper_id", "is_new_member", 1, cur_start, now.isoformat()),
-                "previous": await _count_with_flag("help_events", "helper_id", "is_new_member", 1, prev_start, prev_end),
-            },
+            # help_events removed — no longer produced; kept as zeroes
             # Moderation actions (count)
             "moderation": {
                 "current": await _count("moderation_actions", "moderator_id", cur_start, now.isoformat()),
@@ -1155,11 +1230,7 @@ class DatabaseManager:
                 "current": await _sum_duration("vc_sessions", "staff_id", cur_start, now.isoformat()),
                 "previous": await _sum_duration("vc_sessions", "staff_id", prev_start, prev_end),
             },
-            # Conversation sessions
-            "conversations": {
-                "current": await _count("conversation_sessions", "staff_id", cur_start, now.isoformat(), timestamp_col="start_time"),
-                "previous": await _count("conversation_sessions", "staff_id", prev_start, prev_end, timestamp_col="start_time"),
-            },
+            # conversation_sessions removed — no longer produced; kept as zeroes
             # Reactions
             "reactions": {
                 "current": await _count("reactions", "staff_id", cur_start, now.isoformat()),
@@ -1220,6 +1291,21 @@ class DatabaseManager:
                 "current": await _count("reactions_received", "staff_id", cur_start, now.isoformat()),
                 "previous": await _count("reactions_received", "staff_id", prev_start, prev_end),
             },
+            # Ping responses
+            "ping_responses": {
+                "current": await _count_with_event_type("engagement_events", "staff_id", "ping_response", cur_start, now.isoformat()),
+                "previous": await _count_with_event_type("engagement_events", "staff_id", "ping_response", prev_start, prev_end),
+            },
+            # Unique talked with
+            "unique_talked_with": {
+                "current": await self._count_unique_members(staff_id, cur_start, now.isoformat()),
+                "previous": await self._count_unique_members(staff_id, prev_start, prev_end),
+            },
+            # VC hours trend
+            "vc_hours": {
+                "current": await _sum_duration("vc_sessions", "staff_id", cur_start, now.isoformat()),
+                "previous": await _sum_duration("vc_sessions", "staff_id", prev_start, prev_end),
+            },
         }
 
     async def _get_mod_severity_sum(self, staff_id: int, cutoff_start: str, cutoff_end: str) -> float:
@@ -1254,18 +1340,12 @@ class DatabaseManager:
             f"SELECT COUNT(*) as c FROM staff_messages WHERE staff_id IN ({ph}) AND timestamp>?",
             (*staff_ids, cutoff),
         )).fetchone()
-        total_help = await (await self.pool.execute(
-            f"SELECT COUNT(*) as c FROM help_events WHERE helper_id IN ({ph}) AND timestamp>?",
-            (*staff_ids, cutoff),
-        )).fetchone()
+        total_help = type('R', (), {'c': 0})()  # help_events no longer produced
         total_mod  = await (await self.pool.execute(
             f"SELECT COUNT(*) as c FROM moderation_actions WHERE moderator_id IN ({ph}) AND timestamp>?",
             (*staff_ids, cutoff),
         )).fetchone()
-        total_new  = await (await self.pool.execute(
-            f"SELECT COUNT(*) as c FROM help_events WHERE helper_id IN ({ph}) AND is_new_member=1 AND timestamp>?",
-            (*staff_ids, cutoff),
-        )).fetchone()
+        total_new  = type('R', (), {'c': 0})()  # help_events no longer produced
         avg_rt     = await (await self.pool.execute(
             f"SELECT COALESCE(AVG(response_seconds),0) as avg FROM response_times WHERE staff_id IN ({ph}) AND timestamp>?",
             (*staff_ids, cutoff),
@@ -1283,17 +1363,97 @@ class DatabaseManager:
             (*staff_ids, cutoff),
         )).fetchall()
 
+        total_bumps = await (await self.pool.execute(
+            f"SELECT COUNT(*) as c FROM bumps WHERE staff_id IN ({ph}) AND timestamp>?",
+            (*staff_ids, cutoff),
+        )).fetchone()
+        ping_resp = await (await self.pool.execute(
+            f"SELECT COUNT(*) as c FROM engagement_events WHERE staff_id IN ({ph}) AND event_type='ping_response' AND timestamp>?",
+            (*staff_ids, cutoff),
+        )).fetchone()
+        unique_talked = await (await self.pool.execute(
+            f"SELECT COUNT(DISTINCT user_id) as c FROM interactions WHERE staff_id IN ({ph}) AND timestamp>?",
+            (*staff_ids, cutoff),
+        )).fetchone()
+
         return {
-            "total_staff":       len(staff_ids),
-            "active_staff":      active_rows[0]["c"] if active_rows else 0,
-            "total_messages":    total_msg["c"]  or 0,
-            "total_help":        total_help["c"] or 0,
-            "total_moderation":  total_mod["c"]  or 0,
-            "new_members_helped":total_new["c"]  or 0,
-            "avg_response_secs": round(avg_rt["avg"] or 0.0, 1),
-            "first_responses":   total_fr["c"]   or 0,
-            "vc_hours":          round(total_vc["hrs"] or 0.0, 1),
+            "total_staff":        len(staff_ids),
+            "active_staff":       active_rows[0]["c"] if active_rows else 0,
+            "total_messages":     total_msg["c"]   or 0,
+            "total_help":         total_help["c"]  or 0,
+            "total_moderation":   total_mod["c"]   or 0,
+            "new_members_helped": total_new["c"]   or 0,
+            "avg_response_secs":  round(avg_rt["avg"] or 0.0, 1),
+            "first_responses":    total_fr["c"]    or 0,
+            "vc_hours":           round(total_vc["hrs"] or 0.0, 1),
+            "total_bumps":        total_bumps["c"] or 0,
+            "ping_responses":     ping_resp["c"]   or 0,
+            "unique_talked_with": unique_talked["c"] or 0,
         }
+
+    # ─── Drop-off detection ──────────────────────────────────────────────────────
+
+    async def get_dropoff_staff(
+        self, staff_ids: List[int], lookback_weeks: int = 4
+    ) -> List[Dict]:
+        """
+        Return staff whose message count this week is <50% of their N-week
+        rolling average, only flagging when the prior baseline is meaningful (>5).
+        Uses lightweight message-count queries — does NOT call get_staff_stats.
+        """
+        if not staff_ids:
+            return []
+        now    = discord.utils.utcnow()
+        result = []
+        ph     = ",".join("?" * len(staff_ids))
+
+        # Fetch all week slices in one query per week instead of per-staff
+        week_data: Dict[int, List[int]] = {sid: [] for sid in staff_ids}
+        for w in range(lookback_weeks):
+            w_end   = now - timedelta(weeks=w)
+            w_start = w_end - timedelta(weeks=1)
+            rows = await (await self.pool.execute(
+                f"SELECT staff_id, COUNT(*) as c FROM staff_messages "
+                f"WHERE staff_id IN ({ph}) AND timestamp>? AND timestamp<=? "
+                f"GROUP BY staff_id",
+                (*staff_ids, w_start.isoformat(), w_end.isoformat())
+            )).fetchall()
+            counts = {row["staff_id"]: row["c"] for row in rows}
+            for sid in staff_ids:
+                week_data[sid].append(counts.get(sid, 0))
+
+        for sid, weeks in week_data.items():
+            if not weeks:
+                continue
+            this_week = weeks[0]
+            prior     = weeks[1:]
+            avg_prior = sum(prior) / max(len(prior), 1)
+            # Only flag if: had meaningful activity before AND dropped significantly
+            if avg_prior > 5 and this_week < avg_prior * 0.5:
+                result.append({
+                    "staff_id": sid,
+                    "this_week": this_week,
+                    "avg_prev":  round(avg_prior, 1),
+                    "drop_pct":  round((1 - this_week / avg_prior) * 100),
+                })
+
+        result.sort(key=lambda x: x["drop_pct"], reverse=True)
+        return result
+
+    async def get_mod_action_breakdown_server(
+        self, staff_ids: List[int], days: int
+    ) -> Dict[str, int]:
+        """Server-wide mod action breakdown by type for the overview embed."""
+        if not staff_ids:
+            return {}
+        cutoff = (discord.utils.utcnow() - timedelta(days=days)).isoformat()
+        ph = ",".join("?" * len(staff_ids))
+        rows = await (await self.pool.execute(
+            f"SELECT action_type, COUNT(*) as c FROM moderation_actions "
+            f"WHERE moderator_id IN ({ph}) AND timestamp>? GROUP BY action_type",
+            (*staff_ids, cutoff)
+        )).fetchall()
+        return {row["action_type"]: row["c"] for row in rows}
 
     # ─── Export ───────────────────────────────────────────────────────────────
 
@@ -1498,6 +1658,16 @@ class DatabaseManager:
         )
         await self.pool.commit()
 
+    async def get_achievement_notified_at(self, staff_id: int, key: str) -> Optional[datetime]:
+        """Return when a staff member was first notified of an achievement, or None."""
+        row = await (await self.pool.execute(
+            "SELECT notified_at FROM notified_achievements WHERE staff_id=? AND achievement=?",
+            (staff_id, key)
+        )).fetchone()
+        if row and row["notified_at"]:
+            return datetime.fromisoformat(row["notified_at"])
+        return None
+
     async def get_first_staff_message(self, staff_id: int) -> Optional[datetime]:
         """Get the timestamp of a staff member's first message."""
         row = await (await self.pool.execute(
@@ -1507,3 +1677,51 @@ class DatabaseManager:
         if row and row["first_msg"]:
             return datetime.fromisoformat(row["first_msg"])
         return None
+
+    async def get_daily_message_counts(self, staff_id: int, days: int) -> Dict[str, int]:
+        """Return {'YYYY-MM-DD': count} of staff messages for the last N days."""
+        cutoff = (discord.utils.utcnow() - timedelta(days=days)).isoformat()
+        rows = await (await self.pool.execute(
+            "SELECT DATE(timestamp) as day, COUNT(*) as c "
+            "FROM staff_messages WHERE staff_id=? AND timestamp>? "
+            "GROUP BY DATE(timestamp)",
+            (staff_id, cutoff),
+        )).fetchall()
+        return {row["day"]: row["c"] for row in rows}
+
+    async def get_daily_mod_counts(self, staff_id: int, days: int) -> Dict[str, int]:
+        """Return {'YYYY-MM-DD': count} of moderation actions for the last N days."""
+        cutoff = (discord.utils.utcnow() - timedelta(days=days)).isoformat()
+        rows = await (await self.pool.execute(
+            "SELECT DATE(timestamp) as day, COUNT(*) as c "
+            "FROM moderation_actions WHERE moderator_id=? AND timestamp>? "
+            "GROUP BY DATE(timestamp)",
+            (staff_id, cutoff),
+        )).fetchall()
+        return {row["day"]: row["c"] for row in rows}
+
+    async def get_weekly_score_history(
+        self, staff_id: int, weeks: int = 4, weights: Optional[Dict] = None
+    ) -> List[Dict]:
+        """Return per-week message + mod counts for trend analysis."""
+        now    = discord.utils.utcnow()
+        result = []
+        for w in range(weeks - 1, -1, -1):
+            w_end   = now - timedelta(weeks=w)
+            w_start = w_end - timedelta(weeks=1)
+            msg_row = await (await self.pool.execute(
+                "SELECT COUNT(*) as c FROM staff_messages "
+                "WHERE staff_id=? AND timestamp>? AND timestamp<=?",
+                (staff_id, w_start.isoformat(), w_end.isoformat())
+            )).fetchone()
+            mod_row = await (await self.pool.execute(
+                "SELECT COUNT(*) as c FROM moderation_actions "
+                "WHERE moderator_id=? AND timestamp>? AND timestamp<=?",
+                (staff_id, w_start.isoformat(), w_end.isoformat())
+            )).fetchone()
+            result.append({
+                "week_start": w_start.strftime("%b %d"),
+                "messages":   msg_row["c"] or 0,
+                "mod_actions": mod_row["c"] or 0,
+            })
+        return result

@@ -1,21 +1,24 @@
-"""Main Staff Analytics cog — industry-grade metrics, rich ephemeral UI, full tracking."""
+"""Main Staff Analytics cog — no help-event nonsense, clean tracking, Wick-aware mod parsing."""
 
 from collections import defaultdict
 import io
 import json
 import re
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 from typing import Optional, List, Dict, Set
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .database import DatabaseManager
 from .metrics import MetricsTracker
 from .config import StaffAnalyticsConfig
-from .models import StaffMessage, Bump, StaffNote, RankTier, EngagementEvent, ReactionReceived
+from .models import (
+    StaffMessage, Bump, StaffNote, RankTier, EngagementEvent, ReactionReceived,
+    PingResponseEvent,
+)
 from .utils import (
     format_number, format_seconds, format_relative_time,
     create_progress_bar, create_activity_heatmap_compact,
@@ -26,19 +29,15 @@ from .utils import (
     build_comparison_table,
 )
 from .constants import (
-    EMBED_COLORS, MODERATION_COMMANDS, MODERATION_COMMAND_RE,
+    EMBED_COLORS, MODERATION_COMMANDS, MODERATION_COMMAND_RE, WICK_RESULT_RE,
     RANK_TIERS, SCORE_WEIGHTS,
     NEW_MEMBER_THRESHOLD_DAYS, KPI_TARGETS, ACHIEVEMENT_THRESHOLDS,
     LEADERBOARD_LIMIT, MEDAL_EMOJIS,
-    QUESTION_RE, QUESTION_KEYWORDS,
+    QUESTION_RE, QUESTION_KEYWORDS, ACHIEVEMENT_DECAY_DAYS,
+    PING_RESPONSE_WINDOW, STAFF_ROLE_PING_KEYWORDS,
 )
 
-
 logger = logging.getLogger(__name__)
-
-# TTL for the staff-role cache (seconds).
-# BUG FIX: previously cached forever; a role-config change without a Discord
-# role-update event (e.g. env var reload) would leave the cache stale.
 _STAFF_CACHE_TTL = 300
 
 
@@ -46,41 +45,31 @@ class StaffAnalytics(commands.Cog):
     """Tracks staff engagement, moderation, community interaction, and more."""
 
     def __init__(self, bot: commands.Bot):
-        self.bot  = bot
-        self.db   = DatabaseManager()
+        self.bot    = bot
+        self.db     = DatabaseManager()
         self.config = StaffAnalyticsConfig()
 
-        # staff_id -> (is_staff: bool, cached_at: datetime)
         self._staff_cache: Dict[int, tuple] = {}
-
-        # Inject a live staff-ID getter into MetricsTracker so it can filter
-        # staff-to-staff interactions without a circular import.
         self.metrics = MetricsTracker(staff_id_set_getter=self._get_cached_staff_ids)
-
         self.last_message_cache: Dict[int, Dict[int, datetime]] = defaultdict(dict)
         self.active_vc_session_ids: Dict[tuple, int] = {}
+
+        # Track VC occupancy per channel for people-bonus
+        self.vc_channel_members: Dict[int, Set[int]] = defaultdict(set)
+
         self.initialized = False
-
-        # BUG FIX: track last weekly-report date so restarts at 09:00 Monday
-        # don't fire the report a second time.
         self._last_weekly_report: Optional[datetime] = None
-
-        # ── Notification state ────────────────────────────────────────────────
-        # staff_id -> RankTier.value last time we checked — detect rank-ups
         self._last_known_rank: Dict[int, str] = {}
-        # staff_id -> streak last time we checked — detect streak-break warnings
         self._last_known_streak: Dict[int, int] = {}
-        # dashboard: message ID of the pinned dashboard embed (per guild)
-        self._dashboard_message_ids: Dict[int, int] = {}   # guild_id -> message_id
-        # gate: date -> set of staff_ids already warned about streak today
+        self._dashboard_message_ids: Dict[int, int] = {}
         self._streak_warned_today: Dict[str, Set[int]] = defaultdict(set)
 
+        # Ping-to-action tracking: channel_id -> {role_id: (pinger_id, timestamp)}
+        self._pending_staff_pings: Dict[int, Dict[int, tuple]] = defaultdict(dict)
 
     async def cog_load(self):
         await self.db.initialize()
         self.initialized = True
-        # Expose the initialised DatabaseManager so sibling cogs
-        # (e.g. StaffReviewCog) can access it via bot.analytics_db.
         self.bot.analytics_db = self.db
         logger.info("StaffAnalytics cog loaded")
         asyncio.create_task(self._weekly_report_loop())
@@ -88,6 +77,27 @@ class StaffAnalytics(commands.Cog):
         asyncio.create_task(self._metrics_cleanup_loop())
         asyncio.create_task(self._notification_loop())
         asyncio.create_task(self._dashboard_loop())
+        # Pre-seed rank cache from DB so we don't DM everyone on first loop
+        asyncio.create_task(self._seed_rank_cache())
+
+    async def _seed_rank_cache(self):
+        """Load current ranks from DB at startup so the notification loop
+        doesn't treat every staff member as a rank-up on first tick."""
+        await asyncio.sleep(30)  # let everything settle
+        for guild in self.bot.guilds:
+            staff = [m for m in guild.members if self.is_staff(m)]
+            if not staff:
+                continue
+            weights = await self.db.get_score_weights(guild.id)
+            for member in staff:
+                try:
+                    s = await self.db.get_staff_stats(member.id, 30, weights)
+                    self._last_known_rank[member.id]   = s.rank_tier.value
+                    c = await self.db.get_consistency_stats(member.id)
+                    self._last_known_streak[member.id] = c.current_streak if c else 0
+                except Exception:
+                    pass
+        logger.info("Rank cache seeded for %d staff members", len(self._last_known_rank))
 
     async def cog_unload(self):
         await self.db.close()
@@ -108,9 +118,8 @@ class StaffAnalytics(commands.Cog):
         result = any(r.id in staff_roles for r in member.roles)
         self._staff_cache[member.id] = (result, now)
         return result
-    
+
     def _get_cached_staff_ids(self) -> Set[int]:
-        """Return a snapshot of all currently-cached staff IDs."""
         now = discord.utils.utcnow()
         return {
             uid for uid, (is_s, ts) in self._staff_cache.items()
@@ -120,22 +129,20 @@ class StaffAnalytics(commands.Cog):
     def _member_age_days(self, member: discord.Member) -> float:
         if not member.joined_at:
             return 999.0
-        return (discord.utils.utcnow(member.joined_at.tzinfo) - member.joined_at).total_seconds() / 86400
+        return (discord.utils.utcnow() - member.joined_at).total_seconds() / 86400
 
     # ─── Event listeners ──────────────────────────────────────────────────────
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
         if before.roles != after.roles:
-            # Invalidate cache entry; it will be rebuilt on next is_staff() call
             self._staff_cache.pop(after.id, None)
-
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if not message.guild:
             return
-        # Let bot messages through only for mod-bot embed detection
+
         if message.author.bot:
             await self._try_parse_mod_bot_embed(message)
             await self._try_track_disboard_bump(message)
@@ -144,19 +151,30 @@ class StaffAnalytics(commands.Cog):
         is_staff_member = self.is_staff(message.author)
         now = discord.utils.utcnow()
 
-        # ── Non-staff messages: record pending questions ──────────────────────
+        # ── Non-staff messages ─────────────────────────────────────────────
         if not is_staff_member:
             content = message.content or ""
             if self._is_question_message(content):
                 self.metrics.record_question(message.channel.id, message.author.id, now)
-            # Confirm a pending dead-chat revival if one is registered for this channel
+
+            # Confirm a pending dead-chat revival
             revival = self.metrics.confirm_revival(message.channel.id, message.author.id, now)
             if revival:
                 await self.db.insert_engagement_event(revival)
-            # Always update the any-message timestamp (used for dead-chat detection)
+
+            # Track role pings for ping-to-action latency
+            if message.role_mentions:
+                for role in message.role_mentions:
+                    role_lower = role.name.lower()
+                    if any(kw in role_lower for kw in STAFF_ROLE_PING_KEYWORDS):
+                        self._pending_staff_pings[message.channel.id][role.id] = (
+                            message.author.id, now
+                        )
+
             self.metrics.record_any_message(message.channel.id, now)
             return
 
+        # ── Staff messages ─────────────────────────────────────────────────
         word_count = self.metrics.count_words(message.content)
         staff_msg  = StaffMessage(
             staff_id   = message.author.id,
@@ -183,44 +201,19 @@ class StaffAnalytics(commands.Cog):
         if fr:
             await self.db.insert_first_response(fr)
 
+        # Ping-to-action latency: check if staff is responding to a @staff ping
+        await self._check_ping_response(message, staff_msg, now)
+
         # Message quality scoring
         has_attachment = bool(message.attachments)
         quality_event = self.metrics.score_message_quality(staff_msg, has_attachment)
         if quality_event:
             await self.db.insert_quality_event(quality_event)
 
-        # Interactions
+        # Interactions (reply/mention to non-staff)
         await self._process_interactions(message, staff_msg)
 
-        # Conversation session
-        session = self.metrics.update_conversation(staff_msg, [u.id for u in message.mentions])
-        if session:
-            await self.db.insert_conversation_session(session)
-
-        # Help event — detect new-member status
-        is_new = False
-        if message.reference and message.reference.resolved:
-            resolved = message.reference.resolved
-            if isinstance(resolved, discord.Message) and not resolved.author.bot:
-                try:
-                    target_member = message.guild.get_member(resolved.author.id)
-                    if target_member:
-                        is_new = self._member_age_days(target_member) <= NEW_MEMBER_THRESHOLD_DAYS
-                except Exception:
-                    pass
-
-        # BUG FIX: only fetch channel history when the message passes a keyword
-        # pre-filter.  Original fetched history on EVERY staff message — at 24k
-        # msg/day with ~20% being staff that's ~4 800 Discord API calls/day just
-        # for this check alone.
-        await self._process_help_event(message, staff_msg, is_new)
-
-        # Reports in trial-chat
-        trial_chat_id = self.config.get_channel_id("trial_chat")
-        if trial_chat_id and message.channel.id == trial_chat_id:
-            await self._process_report(message, staff_msg)
-
-        # Role pings
+        # Role pings (staff pinging a role)
         if message.role_mentions:
             counts = {role.id: len(role.members) for role in message.role_mentions}
             for ping in self.metrics.check_role_ping(
@@ -228,21 +221,17 @@ class StaffAnalytics(commands.Cog):
             ):
                 await self.db.insert_role_ping(ping)
 
-        # ── Engagement tracking ───────────────────────────────────────────────
-
-        # Always record timestamp for dead-chat detection, THEN check for revival.
-        # Order matters: record_any_message must run AFTER check_dead_chat_revival
-        # so the silence gap is measured against the previous message, not this one.
+        # Dead-chat revival detection
         self.metrics.check_dead_chat_revival(staff_msg, now)
         self.metrics.record_any_message(message.channel.id, now)
 
-        # Conversation starter — non-reply messages in general channels only
+        # Conversation starter in general channels
         if not message.reference and self.config.is_general_channel(message.channel.id):
             starter = self.metrics.check_conversation_starter(staff_msg, now)
             if starter:
                 await self.db.insert_engagement_event(starter)
 
-        # New member greeting — reply to a new member that didn't produce a help event
+        # New member greeting (reply to new member)
         if message.reference and message.reference.resolved:
             resolved = message.reference.resolved
             if isinstance(resolved, discord.Message) and not resolved.author.bot:
@@ -254,54 +243,108 @@ class StaffAnalytics(commands.Cog):
                     if greeting:
                         await self.db.insert_engagement_event(greeting)
 
+    async def _check_ping_response(
+        self, message: discord.Message, staff_msg: StaffMessage, now: datetime
+    ):
+        """Credit staff who quickly responds to a pending @staff/@mod ping in the channel."""
+        pending = self._pending_staff_pings.get(message.channel.id, {})
+        if not pending:
+            return
+        answered = []
+        for role_id, (pinger_id, ping_time) in list(pending.items()):
+            elapsed = (now - ping_time).total_seconds()
+            if elapsed <= PING_RESPONSE_WINDOW:
+                event = EngagementEvent(
+                    staff_id=staff_msg.staff_id,
+                    channel_id=staff_msg.channel_id,
+                    message_id=staff_msg.message_id,
+                    event_type="ping_response",
+                    user_id=pinger_id,
+                    timestamp=now,
+                )
+                await self.db.insert_engagement_event(event)
+                answered.append(role_id)
+            else:
+                answered.append(role_id)  # expired
+        for role_id in answered:
+            pending.pop(role_id, None)
 
     @commands.Cog.listener()
     async def on_voice_state_update(
         self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
     ):
-        if member.bot or not self.is_staff(member):
+        if member.bot:
             return
 
-        # BUG FIX: exclude AFK channel — staff parking in AFK shouldn't earn VC hours.
         afk_channel_id = member.guild.afk_channel.id if member.guild.afk_channel else None
 
-        def _is_countable_channel(channel: Optional[discord.VoiceChannel]) -> bool:
-            if channel is None:
-                return False
-            if afk_channel_id and channel.id == afk_channel_id:
-                return False
+        def _is_countable(channel) -> bool:
+            if channel is None: return False
+            if afk_channel_id and channel.id == afk_channel_id: return False
             return True
 
         now = discord.utils.utcnow()
+        was_countable = _is_countable(before.channel)
+        is_countable  = _is_countable(after.channel)
 
-        was_countable = _is_countable_channel(before.channel)
-        is_countable = _is_countable_channel(after.channel)
+        joined        = not was_countable and is_countable
+        left          = was_countable and not is_countable
+        moved         = was_countable and is_countable and before.channel != after.channel
+        moved_to_afk  = (_is_countable(before.channel) and not _is_countable(after.channel)
+                         and after.channel is not None)
 
-        joined = not was_countable and is_countable
-        left   = was_countable and not is_countable
-        moved  = was_countable and is_countable and before.channel != after.channel
-        # Staff moved into AFK — treat as a leave
-        moved_to_afk = (
-            _is_countable_channel(before.channel)
-            and not _is_countable_channel(after.channel)
-            and after.channel is not None
-        )
+        # Maintain occupancy tracking
+        if before.channel and _is_countable(before.channel):
+            self.vc_channel_members[before.channel.id].discard(member.id)
+        if after.channel and _is_countable(after.channel):
+            self.vc_channel_members[after.channel.id].add(member.id)
+
+        if not self.is_staff(member):
+            return
+
+        # Count non-bot people currently in the channel (for people-bonus)
+        def _occupancy(channel) -> int:
+            if channel is None: return 0
+            return max(0, len([m for m in channel.members if not m.bot]) - 1)
 
         if joined:
+            occupancy = _occupancy(after.channel)
             session = self.metrics.start_vc_session(member.id, after.channel.id, now)
+            session.peak_occupancy = max(1, occupancy)
             session_id = await self.db.start_vc_session(session)
             self.active_vc_session_ids[(member.id, after.channel.id)] = session_id
 
         elif left or moved_to_afk:
             key = (member.id, before.channel.id)
             if key in self.active_vc_session_ids:
-                await self.db.end_vc_session(self.active_vc_session_ids.pop(key), now)
+                # People-bonus only credited if session was long enough
+                join_time = self.metrics.active_vc_sessions.get(
+                    (member.id, before.channel.id), None
+                )
+                duration_mins = (now - join_time.join_time).total_seconds() / 60 if join_time else 0
+                from .constants import VC_MIN_DURATION_FOR_PEOPLE_BONUS
+                occ = _occupancy(before.channel) if duration_mins >= VC_MIN_DURATION_FOR_PEOPLE_BONUS else 0
+                await self.db.end_vc_session(
+                    self.active_vc_session_ids.pop(key), now,
+                    peak_occupancy=max(1, occ + 1)
+                )
 
         elif moved:
             prev_key = (member.id, before.channel.id)
             if prev_key in self.active_vc_session_ids:
-                await self.db.end_vc_session(self.active_vc_session_ids.pop(prev_key), now)
+                join_time = self.metrics.active_vc_sessions.get(
+                    (member.id, before.channel.id), None
+                )
+                duration_mins = (now - join_time.join_time).total_seconds() / 60 if join_time else 0
+                from .constants import VC_MIN_DURATION_FOR_PEOPLE_BONUS
+                occ = _occupancy(before.channel) if duration_mins >= VC_MIN_DURATION_FOR_PEOPLE_BONUS else 0
+                await self.db.end_vc_session(
+                    self.active_vc_session_ids.pop(prev_key), now,
+                    peak_occupancy=max(1, occ + 1)
+                )
+            occupancy = _occupancy(after.channel)
             session = self.metrics.start_vc_session(member.id, after.channel.id, now)
+            session.peak_occupancy = max(1, occupancy)
             session_id = await self.db.start_vc_session(session)
             self.active_vc_session_ids[(member.id, after.channel.id)] = session_id
 
@@ -322,7 +365,6 @@ class StaffAnalytics(commands.Cog):
                 if option.get("name") == "reason":
                     reason = option.get("value")
             if target_id:
-                # track_moderation now returns None on a dedup hit
                 action = self.metrics.track_moderation(
                     moderator_id=interaction.user.id, target_id=target_id,
                     command=cmd, timestamp=discord.utils.utcnow(), reason=reason,
@@ -330,115 +372,136 @@ class StaffAnalytics(commands.Cog):
                 if action:
                     await self.db.insert_moderation_action(action)
 
-        elif cmd == "report":
-            await self._process_report_command(interaction)
-
-
-
     async def _try_parse_mod_bot_embed(self, message: discord.Message) -> None:
         """
-        Parses success embeds sent by external mod bots (Wick, Carl-bot, etc.)
-        and records the underlying moderation action.
+        Parse moderation embeds from Wick and similar bots.
 
-        Changes vs original:
-          • Uses MODERATION_COMMAND_RE (word-boundary regex) instead of plain
-            substring matching, which previously matched "ban" in "abandon",
-            "lock" in "blocking", "warn" in "I warned you" etc.
-          • track_moderation() now has a dedup guard — if on_app_command_completion
-            already recorded this action within _MOD_DEDUP_TTL seconds, it returns
-            None and we skip the DB write.
+        Wick sends embeds like:
+          Title: "Warn result:" or "Ban result:" etc.
+          Fields: ":activity: Reason: meow"
+                  ":trustedAdmin: Moderator: @Rebiz..."
+                  ":whitelistUser: Warned: happy4356 [893147439484272650]"
+
+        We also handle generic success embeds from other mod bots.
         """
         if not message.embeds:
             return
 
+        ACTION_MAP = {
+            "banned": "ban", "ban": "ban", "kicked": "kick", "kick": "kick",
+            "warned": "warn", "warn": "warn", "warning": "warn",
+            "muted": "mute", "mute": "mute", "timed out": "timeout", "timeout": "timeout",
+            "unmuted": "unmute", "unmute": "unmute", "unbanned": "unban", "unban": "unban",
+            "strike": "strike", "softban": "softban", "purged": "purge", "purge": "purge",
+            "cleared": "purge", "locked": "lock", "lock": "lock",
+            "unlocked": "unlock", "unlock": "unlock", "slowmode": "slowmode",
+        }
+
         SUCCESS_KEYWORDS = {
             "successfully", "success", "has been", "was banned",
             "was kicked", "was warned", "was muted", "action taken",
-        }
-
-        ACTION_MAP = {
-            "banned": "ban", "ban": "ban",
-            "kicked": "kick", "kick": "kick",
-            "warned": "warn", "warn": "warn", "warning": "warn",
-            "muted": "mute", "mute": "mute",
-            "timed out": "timeout", "timeout": "timeout",
-            "unmuted": "unmute", "unmute": "unmute",
-            "unbanned": "unban", "unban": "unban",
-            "strike": "strike", "softban": "softban",
-            "purged": "purge", "purge": "purge", "cleared": "purge",
-            "locked": "lock", "lock": "lock",
-            "unlocked": "unlock", "unlock": "unlock",
-            "slowmode": "slowmode",
+            "result:",  # Wick-style "Warn result:"
         }
 
         for embed in message.embeds:
-            embed_text = " ".join(filter(None, [
+            raw_text = " ".join(filter(None, [
                 embed.title or "",
                 embed.description or "",
                 *(f.value for f in embed.fields),
                 embed.footer.text if embed.footer else "",
-            ])).lower()
+            ]))
+            embed_lower = raw_text.lower()
 
-            if not any(kw in embed_text for kw in SUCCESS_KEYWORDS):
+            if not any(kw in embed_lower for kw in SUCCESS_KEYWORDS):
                 continue
 
-            # BUG FIX: use word-boundary regex so "warn" doesn't match "I warned",
-            # "ban" doesn't match "abandon", "lock" doesn't match "blocking" etc.
-            cmd_match = MODERATION_COMMAND_RE.search(embed_text)
+            # Detect action type
+            cmd_match = MODERATION_COMMAND_RE.search(embed_lower)
             if not cmd_match:
-                continue
-            raw_cmd = cmd_match.group(0).lower().rstrip("dings").rstrip("e")  # rough stem
-            cmd = ACTION_MAP.get(cmd_match.group(0).lower()) or ACTION_MAP.get(raw_cmd)
+                # Also check for Wick-style "Warn result:" in title
+                if embed.title:
+                    wick_match = WICK_RESULT_RE.search(embed.title.lower())
+                    if not wick_match:
+                        continue
+                    raw_action = wick_match.group(0).split()[0].lower()
+                    cmd = ACTION_MAP.get(raw_action + "ed") or ACTION_MAP.get(raw_action)
+                else:
+                    continue
+            else:
+                matched_word = cmd_match.group(0).lower()
+                cmd = ACTION_MAP.get(matched_word)
+                if not cmd:
+                    # Try stripping conjugation suffixes
+                    for suffix in ("ned", "ked", "ned", "ed", "ing", "d"):
+                        stem = matched_word.rstrip(suffix) if matched_word.endswith(suffix) else matched_word
+                        cmd = ACTION_MAP.get(stem)
+                        if cmd:
+                            break
             if not cmd:
                 continue
 
-            raw_text = " ".join(filter(None, [
-                embed.title or "", embed.description or "",
-                *(f.value for f in embed.fields),
-            ]))
+            # Extract target ID — Wick puts it as "Name [ID]" or plain mention
             target_id = None
-            mention_match = re.search(r"<@!?(\d{17,20})>", raw_text)
-            if mention_match:
-                target_id = int(mention_match.group(1))
+
+            # Wick format: "Warned: happy4356 [893147439484272650]" or "Banned: @User [ID]"
+            bracket_match = re.search(r"\[(\d{17,20})\]", raw_text)
+            if bracket_match:
+                target_id = int(bracket_match.group(1))
             else:
-                id_match = re.search(r"\b(\d{17,20})\b", raw_text)
-                if id_match:
-                    target_id = int(id_match.group(1))
+                mention_match = re.search(r"<@!?(\d{17,20})>", raw_text)
+                if mention_match:
+                    target_id = int(mention_match.group(1))
+                else:
+                    id_match = re.search(r"\b(\d{17,20})\b", raw_text)
+                    if id_match:
+                        target_id = int(id_match.group(1))
+
             if not target_id:
                 continue
 
+            # Extract reason — Wick puts it as "Reason: <text>"
+            reason = None
+            reason_match = re.search(r"[Rr]eason[:\s]+(.+?)(?:\n|$|[A-Z][a-z]+:)", raw_text)
+            if reason_match:
+                reason = reason_match.group(1).strip()[:200] or None
+
+            # Extract moderator from Wick's "Moderator: @Name" field
             moderator_id = None
-            reason       = None
-            try:
-                async for prev in message.channel.history(limit=8, before=message):
-                    if prev.author.bot:
-                        continue
-                    if not self.is_staff(prev.author):
-                        continue
-                    prev_lower = prev.content.lower()
-                    mentions_target = (
-                        str(target_id) in prev.content
-                        or f"<@{target_id}>" in prev.content
-                        or f"<@!{target_id}>" in prev.content
-                    )
-                    # BUG FIX: use word-boundary check via compiled regex rather
-                    # than plain `any(kw in prev_lower for kw in MODERATION_COMMANDS)`
-                    has_mod_keyword = bool(MODERATION_COMMAND_RE.search(prev_lower))
-                    if mentions_target and has_mod_keyword:
-                        moderator_id = prev.author.id
-                        reason_match = re.search(
-                            rf"(?:<@!?{target_id}>|{target_id})\s+(.+)", prev.content
+
+            # Wick puts moderator in fields with a label
+            mod_field_match = re.search(r"[Mm]oderator[:\s]+<@!?(\d{17,20})>", raw_text)
+            if mod_field_match:
+                moderator_id = int(mod_field_match.group(1))
+
+            # Fallback: scan recent channel history for the triggering command
+            if not moderator_id:
+                try:
+                    async for prev in message.channel.history(limit=8, before=message):
+                        if prev.author.bot:
+                            continue
+                        if not self.is_staff(prev.author):
+                            continue
+                        mentions_target = (
+                            str(target_id) in prev.content
+                            or f"<@{target_id}>" in prev.content
+                            or f"<@!{target_id}>" in prev.content
                         )
-                        if reason_match:
-                            reason = reason_match.group(1).strip()[:200] or None
-                        break
-            except discord.Forbidden:
-                pass
+                        has_mod_keyword = bool(MODERATION_COMMAND_RE.search(prev.content.lower()))
+                        if mentions_target and has_mod_keyword:
+                            moderator_id = prev.author.id
+                            if not reason:
+                                r_match = re.search(
+                                    rf"(?:<@!?{target_id}>|{target_id})\s+(.+)", prev.content
+                                )
+                                if r_match:
+                                    reason = r_match.group(1).strip()[:200] or None
+                            break
+                except discord.Forbidden:
+                    pass
 
             if not moderator_id:
                 continue
 
-            # track_moderation returns None if duplicate — no DB write needed
             action = self.metrics.track_moderation(
                 moderator_id=moderator_id,
                 target_id=target_id,
@@ -449,7 +512,6 @@ class StaffAnalytics(commands.Cog):
             if action:
                 await self.db.insert_moderation_action(action)
             break
-
 
     @commands.Cog.listener()
     async def on_reaction_add(self, reaction: discord.Reaction, user: discord.Member):
@@ -473,7 +535,6 @@ class StaffAnalytics(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        """Track reactions received on staff messages — credits the staff author."""
         if not payload.guild_id or payload.member is None or payload.member.bot:
             return
         channel = self.bot.get_channel(payload.channel_id)
@@ -483,7 +544,6 @@ class StaffAnalytics(commands.Cog):
             msg = await channel.fetch_message(payload.message_id)
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             return
-        # Only credit if the message author is a staff member
         if msg.author.bot or not self.is_staff(msg.author):
             return
         now = discord.utils.utcnow()
@@ -506,18 +566,12 @@ class StaffAnalytics(commands.Cog):
         if not member or not self.is_staff(member):
             return
         event = self.metrics.track_thread(
-            staff_id   = thread.owner_id,
-            thread_id  = thread.id,
-            channel_id = thread.parent_id or 0,
-            event_type = "created",
-            timestamp  = discord.utils.utcnow(),
+            staff_id=thread.owner_id, thread_id=thread.id,
+            channel_id=thread.parent_id or 0, event_type="created",
+            timestamp=discord.utils.utcnow(),
         )
         if event:
             await self.db.insert_thread_event(event)
-
-    @commands.Cog.listener()
-    async def on_message_delete(self, message: discord.Message):
-        pass  # Hook for future audit-log integration
 
     # ─── Internal helpers ─────────────────────────────────────────────────────
 
@@ -532,7 +586,7 @@ class StaffAnalytics(commands.Cog):
         mentions = [u.id for u in message.mentions if u.id != message.author.id]
         for interaction in self.metrics.check_interaction(staff_msg, referenced, mentions):
             await self.db.insert_interaction(interaction)
-            # ── New member chat boost ─────────────────────────────────────────
+            # New member chat bonus
             target = message.guild.get_member(interaction.user_id)
             if target and self._member_age_days(target) <= NEW_MEMBER_THRESHOLD_DAYS:
                 ev = EngagementEvent(
@@ -541,71 +595,6 @@ class StaffAnalytics(commands.Cog):
                     user_id=interaction.user_id, timestamp=discord.utils.utcnow(),
                 )
                 await self.db.insert_engagement_event(ev)
-
-    async def _process_help_event(
-        self, message: discord.Message, staff_msg: StaffMessage, is_new_member: bool = False
-    ):
-        from .constants import HELP_STRONG_RE, HELP_WEAK_RE
-
-        content_lower = (message.content or "").lower()
-        strong_hits = len(HELP_STRONG_RE.findall(content_lower))
-        weak_hits   = len(HELP_WEAK_RE.findall(content_lower))
-
-        # Pre-filter: skip channel-history fetch entirely if there's no keyword signal.
-        # This is the fix for the ~4 800 unnecessary Discord API calls per day.
-        has_any_signal = (
-            strong_hits >= 1
-            or weak_hits >= 2
-            or bool(message.reference)  # replies always warrant a check
-        )
-        if not has_any_signal:
-            return
-
-        replied_to = None
-        if message.reference and message.reference.resolved:
-            if isinstance(message.reference.resolved, discord.Message):
-                replied_to = {
-                    "author":  message.reference.resolved.author.id,
-                    "content": message.reference.resolved.content,
-                }
-
-        history: List[Dict] = []
-        if strong_hits >= 1:  # only proactive branch needs history
-            try:
-                async for msg in message.channel.history(limit=5, before=message):
-                    if not msg.author.bot:
-                        history.append({
-                            "author":    msg.author.id,
-                            "content":   msg.content,
-                            "timestamp": msg.created_at.replace(tzinfo=None),
-                        })
-            except Exception:
-                pass
-
-        ev = self.metrics.check_help_event(staff_msg, replied_to, history, is_new_member)
-        if ev:
-            await self.db.insert_help_event(ev)
-
-    async def _process_report(self, message: discord.Message, staff_msg: StaffMessage):
-        report = self.metrics.check_report(staff_msg, message.channel.id)
-        if report:
-            report.message_link = message.jump_url
-            await self.db.insert_report(report)
-
-    async def _process_report_command(self, interaction: discord.Interaction):
-        staff_msg = StaffMessage(
-            staff_id   = interaction.user.id,
-            channel_id = interaction.channel.id if interaction.channel else 0,
-            message_id = interaction.id,
-            timestamp  = discord.utils.utcnow(),
-        )
-        report = self.metrics.check_report(
-            staff_msg,
-            interaction.channel.id if interaction.channel else None,
-            is_command=True,
-        )
-        if report:
-            await self.db.insert_report(report)
 
     async def _fetch_all_staff(self, guild: discord.Guild) -> List[discord.Member]:
         return [m for m in guild.members if self.is_staff(m)]
@@ -618,6 +607,61 @@ class StaffAnalytics(commands.Cog):
             name = order[idx + 1]
             return name, RANK_TIERS[name]["min"]
         return None, None
+
+    async def _try_track_disboard_bump(self, message: discord.Message) -> None:
+        """Credit the staff member who triggered a successful Disboard bump and announce it."""
+        DISBOARD_ID = 302050872383242240
+        if message.author.id != DISBOARD_ID:
+            return
+
+        is_bump = False
+        for embed in message.embeds:
+            text = " ".join(filter(None, [embed.title, embed.description])).lower()
+            if "bump done" in text:
+                is_bump = True
+                break
+
+        if not is_bump:
+            return
+
+        bumper = None
+        if message.interaction_metadata:
+            bumper = message.interaction_metadata.user
+
+        if bumper is None and message.reference:
+            try:
+                ref = await message.channel.fetch_message(message.reference.message_id)
+                if ref.interaction_metadata:
+                    bumper = ref.interaction_metadata.user
+            except discord.HTTPException:
+                pass
+
+        if bumper is None:
+            logger.warning("BumpTracker: bump detected but could not identify bumper.")
+            return
+
+        await self.db.insert_bump(Bump(
+            staff_id=bumper.id,
+            timestamp=message.created_at,
+            bump_type="disboard",
+        ))
+
+        # ── Confirmation message ───────────────────────────────────────────────
+        try:
+            confirm = await message.channel.send(
+                f"✅ Bump tracked for {bumper.mention} — points added! 🚀",
+                delete_after=15,
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    def _is_question_message(self, content: str) -> bool:
+        if len(content) < 5:
+            return False
+        lower = content.lower()
+        has_kw = any(kw in lower for kw in QUESTION_KEYWORDS)
+        has_q  = bool(QUESTION_RE.search(content))
+        return has_kw or has_q
 
     # ─── /staffstats ─────────────────────────────────────────────────────────
 
@@ -642,7 +686,6 @@ class StaffAnalytics(commands.Cog):
             stats.consistency = consistency
         trends = await self.db.get_trend_comparison(member.id)
 
-        # Rank position among all staff
         all_staff = await self._fetch_all_staff(interaction.guild)
         rank_pos, total_staff = await self.db.get_staff_rank_position(
             member.id, [m.id for m in all_staff], days
@@ -653,7 +696,6 @@ class StaffAnalytics(commands.Cog):
         tier      = stats.rank_tier
         tier_info = RANK_TIERS[tier.value]
 
-        # ── Header
         rank_line = f"Rank **#{rank_pos}** of **{total_staff}** staff"
         if total_staff > 0:
             percentile = (1 - (rank_pos - 1) / total_staff) * 100
@@ -670,7 +712,7 @@ class StaffAnalytics(commands.Cog):
         )
         embed.set_thumbnail(url=member.display_avatar.url)
 
-        # ── Rank progress bar
+        # Rank progress bar
         next_tier_name, next_threshold = self._next_tier(stats.engagement_score)
         if next_tier_name:
             current_min = tier_info["min"]
@@ -684,32 +726,25 @@ class StaffAnalytics(commands.Cog):
             )
         else:
             bar = create_progress_bar(1, 1, length=16)
-            embed.add_field(
-                name="▸ Max Rank Achieved",
-                value=f"`{bar}` **{stats.engagement_score:.0f} pts** 💎",
-                inline=False,
-            )
+            embed.add_field(name="▸ Max Rank Achieved", value=f"`{bar}` **{stats.engagement_score:.0f} pts** 💎", inline=False)
 
-        # ── Community field
-        msg_trend  = format_trend_arrow(trends["messages"]["current"],  trends["messages"]["previous"])
-        help_trend = format_trend_arrow(trends["help"]["current"],      trends["help"]["previous"])
-        rev_trend  = format_trend_arrow(trends["dead_chat_revivals"]["current"],    trends["dead_chat_revivals"]["previous"])
-        greet_trend= format_trend_arrow(trends["new_member_greetings"]["current"],  trends["new_member_greetings"]["previous"])
+        # Community field
+        msg_trend   = format_trend_arrow(trends["messages"]["current"],   trends["messages"]["previous"])
+        rev_trend   = format_trend_arrow(trends["dead_chat_revivals"]["current"], trends["dead_chat_revivals"]["previous"])
+        greet_trend = format_trend_arrow(trends["new_member_greetings"]["current"], trends["new_member_greetings"]["previous"])
         comm_lines = (
             f"`Messages         ` **{format_number(stats.total_messages)}**  {msg_trend}\n"
-            f"`Unique helped    ` **{stats.unique_members_helped}**  "
-            f"  {format_kpi_status(stats.unique_members_helped, KPI_TARGETS['unique_members'])}\n"
-            f"`Help events      ` **{stats.help_events}**  {help_trend}  "
-            f"{format_kpi_status(stats.help_events, KPI_TARGETS['help_events'])}\n"
-            f"`→ Proactive      ` **{stats.proactive_help}**\n"
-            f"`→ New members 🌱 ` **{stats.new_members_helped}**  "
-            f"{format_kpi_status(stats.new_members_helped, KPI_TARGETS['new_members_helped'])}\n"
+            f"`Unique talked to ` **{stats.unique_talked_with}**  "
+            f"{format_kpi_status(stats.unique_talked_with, KPI_TARGETS['unique_talked_with'])}\n"
+            f"`Newbies chatted  ` **{stats.unique_newbies_chatted}** 🌱\n"
             f"`Reactions given  ` **{stats.reactions_given}**\n"
-            f"`Threads created  ` **{stats.threads_created}**"
+            f"`Threads created  ` **{stats.threads_created}**\n"
+            f"`Ping responses   ` **{stats.ping_responses}** 📟  "
+            f"{format_kpi_status(stats.ping_responses, KPI_TARGETS['ping_responses'])}"
         )
         embed.add_field(name="💬 Community", value=comm_lines, inline=True)
 
-        # ── Engagement field (new)
+        # Engagement field
         engage_lines = (
             f"`Chat starters 💡 ` **{stats.conversation_starters}**  "
             f"{format_kpi_status(stats.conversation_starters, KPI_TARGETS['conversation_starters'])}\n"
@@ -722,25 +757,33 @@ class StaffAnalytics(commands.Cog):
         )
         embed.add_field(name="🌐 Engagement", value=engage_lines, inline=True)
 
-        # ── Moderation field
+        # Moderation field
         mod_trend = format_trend_arrow(trends["moderation"]["current"], trends["moderation"]["previous"])
+        vc_trend  = format_trend_arrow(trends["vc_hours"]["current"], trends["vc_hours"]["previous"])
+        # Build compact breakdown: warn:5 mute:2 ban:1
+        breakdown = stats.mod_action_breakdown
+        if breakdown:
+            sev_order = ["ban", "softban", "kick", "timeout", "mute", "warn", "strike", "purge", "clear", "lock", "slowmode", "unban", "unmute", "unlock"]
+            bd_parts  = [f"{k}:`{breakdown[k]}`" for k in sev_order if k in breakdown]
+            bd_str    = "  ".join(bd_parts[:6]) or "—"
+        else:
+            bd_str = "—"
         mod_lines = (
             f"`Mod actions      ` **{stats.moderation_actions}**  {mod_trend}\n"
+            f"`Breakdown        ` {bd_str}\n"
             f"`Weighted severity` **{stats.moderation_severity_sum:.1f}**\n"
             f"`Reports filed    ` **{stats.reports_filed}**\n"
-            f"`VC hours         ` **{stats.vc_hours:.1f}h**  "
+            f"`VC hours         ` **{stats.vc_hours:.1f}h**  {vc_trend}  "
             f"{format_kpi_status(stats.vc_hours, KPI_TARGETS['vc_hours'])}\n"
-            f"`Conversations    ` **{stats.conversation_sessions}**\n"
-            f"`Channels covered ` **{stats.channels_participated}**\n"
+            f"`VC people bonus  ` **+{stats.vc_people_bonus:.1f}** pts 👥\n"
             f"`Server bumps     ` **{stats.bumps_performed}**"
         )
         embed.add_field(name="🛡️ Moderation & Presence", value=mod_lines, inline=True)
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
 
-        embed.add_field(name="\u200b", value="\u200b", inline=True)   # spacer
-
-        # ── Quality & Speed field
+        # Quality & Speed field
         fr_trend = format_trend_arrow(trends["first_response"]["current"], trends["first_response"]["previous"])
-        ql_trend = format_trend_arrow(trends["quality"]["current"],        trends["quality"]["previous"])
+        ql_trend = format_trend_arrow(trends["quality"]["current"], trends["quality"]["previous"])
         quality_lines = (
             f"`Avg response     ` **{stats.response_rate_display}**\n"
             f"`Fast responses   ` **{stats.fast_responses}**  "
@@ -753,25 +796,18 @@ class StaffAnalytics(commands.Cog):
         )
         embed.add_field(name="⚡ Quality & Speed", value=quality_lines, inline=True)
 
-        # ── Consistency field
+        # Consistency field
         if consistency:
-            active_h_count = consistency.active_hours_count
-            # Convert most_active_hour to int if it's a string, and handle None
-            most_active_hour = consistency.most_active_hour
-            if most_active_hour is not None:
-                # Ensure it's an integer for formatting
-                most_active_hour = int(most_active_hour)
-                most_active = f"{most_active_hour:02d}:00"
-            else:
-                most_active = "N/A"
-            
-            busiest_day    = consistency.busiest_day_name or "N/A"
+            most_active = f"{int(consistency.most_active_hour):02d}:00" if consistency.most_active_hour is not None else "N/A"
+            busiest_day = consistency.busiest_day_name or "N/A"
+            weekly_pct  = consistency.weekly_consistency_score
             cons_lines = (
                 f"`Current streak   ` **{consistency.current_streak}d** 🔥\n"
                 f"`Longest streak   ` **{consistency.longest_streak}d**\n"
                 f"`Active days      ` **{consistency.active_days}** / {days}  "
                 f"{format_kpi_status(stats.active_days, KPI_TARGETS['active_days'])}\n"
-                f"`Hour coverage    ` **{active_h_count}**/24 hrs\n"
+                f"`Weekly consist.  ` **{weekly_pct:.0f}%** (28d)\n"
+                f"`Hour coverage    ` **{consistency.active_hours_count}**/24 hrs\n"
                 f"`Off-peak msgs    ` **{consistency.off_peak_activity}** 🦉\n"
                 f"`Peak hour        ` **{most_active}**\n"
                 f"`Busiest day      ` **{busiest_day}**"
@@ -779,7 +815,6 @@ class StaffAnalytics(commands.Cog):
             embed.add_field(name="🔄 Consistency", value=cons_lines, inline=True)
             embed.add_field(name="\u200b", value="\u200b", inline=True)
 
-            # ── Activity heatmap
             heatmap = create_activity_heatmap_compact(dict(consistency.active_hours))
             embed.add_field(
                 name="📊 Activity Heatmap  (00–11 AM / 12–23 PM)",
@@ -787,17 +822,55 @@ class StaffAnalytics(commands.Cog):
                 inline=False,
             )
 
-        # ── Achievements
+        # Achievements with decay indicators
         achievements = stats.earned_achievements
+        now_dt = discord.utils.utcnow()
         if achievements:
+            ach_with_decay = await self._format_achievements_with_decay(
+                member.id, achievements, now_dt
+            )
             embed.add_field(
                 name=f"🏅 Achievements  ({len(achievements)})",
-                value="  ".join(achievements[:8]) + ("…" if len(achievements) > 8 else ""),
+                value=ach_with_decay[:1024],
                 inline=False,
             )
 
-        embed.set_footer(text=f"Last {days} days  ·  🟢 ≥80% KPI  🟡 ≥50%  🟠 ≥30%  🔴 <30%  ·  Trends vs prev {days//7 or 1}w")
+        embed.set_footer(text=(
+            f"Last {days} days  ·  🟢 ≥80% KPI  🟡 ≥50%  🟠 ≥30%  🔴 <30%  "
+            f"·  Trends vs prev {days//7 or 1}w  ·  ✨ = fresh achievement  💤 = decayed"
+        ))
         await interaction.followup.send(embed=embed)
+
+    async def _format_achievements_with_decay(
+        self, staff_id: int, achievements: List[str], now: datetime
+    ) -> str:
+        """Add decay indicators: ✨ for recently earned, 💤 for old ones."""
+        lines = []
+        for ach_str in achievements[:8]:
+            emoji = ach_str.split(" ")[0]
+            # Find matching achievement key
+            key = None
+            for k, info in ACHIEVEMENT_THRESHOLDS.items():
+                if info["emoji"] == emoji:
+                    key = k
+                    break
+            if key:
+                notified_at = await self.db.get_achievement_notified_at(staff_id, key)
+                decay_days  = ACHIEVEMENT_THRESHOLDS[key].get("decay_days")
+                if notified_at and decay_days:
+                    age_days = (now - notified_at).days
+                    if age_days > decay_days:
+                        lines.append(f"💤 ~~{ach_str}~~")
+                        continue
+                    elif age_days < 7:
+                        lines.append(f"✨ {ach_str}")
+                        continue
+            lines.append(ach_str)
+        extra = len(achievements) - 8
+        result = "  ".join(lines)
+        if extra > 0:
+            result += f"  (+{extra} more)"
+        return result
 
     # ─── /mystats ─────────────────────────────────────────────────────────────
 
@@ -816,21 +889,24 @@ class StaffAnalytics(commands.Cog):
     @app_commands.command(name="staffleaderboard", description="Staff performance leaderboards")
     @app_commands.describe(metric="Metric to rank by", days="Analysis window (default 30)")
     @app_commands.choices(metric=[
-        app_commands.Choice(name="⭐ Engagement Score",      value="score"),
-        app_commands.Choice(name="🎙️ VC Hours",              value="vc_hours"),
-        app_commands.Choice(name="🛡️ Moderation (weighted)", value="moderation"),
-        app_commands.Choice(name="🤝 Help Events",           value="help"),
-        app_commands.Choice(name="📋 Reports Filed",         value="reports"),
-        app_commands.Choice(name="💬 Total Messages",        value="messages"),
-        app_commands.Choice(name="😀 Reactions Given",       value="reactions"),
-        app_commands.Choice(name="🧵 Threads Created",       value="threads"),
-        app_commands.Choice(name="🚀 First Responses",       value="first_response"),
-        app_commands.Choice(name="✨ Quality Messages",      value="quality"),
-        app_commands.Choice(name="🌱 New Members Helped",    value="new_members"),
-        app_commands.Choice(name="💡 Conversation Starters", value="conversation_starters"),
-        app_commands.Choice(name="👋 New Member Greetings",  value="new_member_greetings"),
-        app_commands.Choice(name="🔋 Dead Chat Revivals",    value="dead_chat_revivals"),
-        app_commands.Choice(name="⭐ Reactions Received",    value="reactions_received"),
+        app_commands.Choice(name="⭐ Engagement Score",        value="score"),
+        app_commands.Choice(name="🎙️ VC Hours",                value="vc_hours"),
+        app_commands.Choice(name="🛡️ Moderation (weighted)",   value="moderation"),
+        app_commands.Choice(name="📋 Reports Filed",           value="reports"),
+        app_commands.Choice(name="💬 Total Messages",          value="messages"),
+        app_commands.Choice(name="😀 Reactions Given",         value="reactions"),
+        app_commands.Choice(name="🧵 Threads Created",         value="threads"),
+        app_commands.Choice(name="🚀 First Responses",         value="first_response"),
+        app_commands.Choice(name="✨ Quality Messages",        value="quality"),
+        app_commands.Choice(name="💡 Conversation Starters",   value="conversation_starters"),
+        app_commands.Choice(name="👋 New Member Greetings",    value="new_member_greetings"),
+        app_commands.Choice(name="🔋 Dead Chat Revivals",      value="dead_chat_revivals"),
+        app_commands.Choice(name="⭐ Reactions Received",      value="reactions_received"),
+        app_commands.Choice(name="🫂 Unique People Talked To", value="unique_talked_with"),
+        app_commands.Choice(name="📟 Ping Responses",          value="ping_responses"),
+        app_commands.Choice(name="🔥 Streak",                  value="streak"),
+        app_commands.Choice(name="📅 Weekly Consistency",      value="weekly_consistency"),
+        app_commands.Choice(name="🚀 Server Bumps",             value="bumps"),
     ])
     async def staffleaderboard(
         self, interaction: discord.Interaction,
@@ -849,6 +925,22 @@ class StaffAnalytics(commands.Cog):
                     s.consistency = c
                 rows.append((m.id, s.engagement_score))
             rows.sort(key=lambda x: x[1], reverse=True)
+        elif metric.value == "streak":
+            staff = await self._fetch_all_staff(interaction.guild)
+            rows = []
+            for m in staff:
+                c = await self.db.get_consistency_stats(m.id)
+                rows.append((m.id, c.current_streak if c else 0))
+            rows.sort(key=lambda x: x[1], reverse=True)
+        elif metric.value == "weekly_consistency":
+            staff = await self._fetch_all_staff(interaction.guild)
+            rows = []
+            for m in staff:
+                c = await self.db.get_consistency_stats(m.id)
+                rows.append((m.id, c.weekly_consistency_score if c else 0.0))
+            rows.sort(key=lambda x: x[1], reverse=True)
+        elif metric.value == "bumps":
+            rows = await self.db.get_leaderboard("bumps", days, limit=LEADERBOARD_LIMIT)
         else:
             rows = await self.db.get_leaderboard(metric.value, days, limit=LEADERBOARD_LIMIT)
 
@@ -862,18 +954,21 @@ class StaffAnalytics(commands.Cog):
             "score":                 "⭐ Engagement Score",
             "vc_hours":              "🎙️ VC Hours",
             "moderation":            "🛡️ Weighted Moderation",
-            "help":                  "🤝 Help Events",
             "reports":               "📋 Reports Filed",
             "messages":              "💬 Total Messages",
             "reactions":             "😀 Reactions Given",
             "threads":               "🧵 Threads Created",
             "first_response":        "🚀 First Responses",
             "quality":               "✨ Avg Quality Score",
-            "new_members":           "🌱 New Members Helped",
             "conversation_starters": "💡 Conversation Starters",
             "new_member_greetings":  "👋 New Member Greetings",
             "dead_chat_revivals":    "🔋 Dead Chat Revivals",
             "reactions_received":    "⭐ Reactions Received",
+            "unique_talked_with":    "🫂 Unique People Talked To",
+            "ping_responses":        "📟 Ping Responses",
+            "streak":                "🔥 Current Streak",
+            "weekly_consistency":    "📅 Weekly Consistency %",
+            "bumps":                 "🚀 Server Bumps",
         }
 
         embed = discord.Embed(
@@ -888,14 +983,8 @@ class StaffAnalytics(commands.Cog):
         for idx, (staff_id, value) in enumerate(rows[:LEADERBOARD_LIMIT], 1):
             member = await get_member_safe(interaction.guild, staff_id)
             name   = member.display_name if member else f"Unknown ({staff_id})"
+            prefix = MEDAL_EMOJIS[idx - 1] if idx <= 3 else f"`{idx:>2}.`"
 
-            # Medal / position prefix
-            if idx <= 3:
-                prefix = MEDAL_EMOJIS[idx - 1]
-            else:
-                prefix = f"`{idx:>2}.`"
-
-            # Value formatting
             if metric.value == "vc_hours":
                 val_str = f"**{value:.1f}h**"
             elif metric.value == "quality":
@@ -903,13 +992,15 @@ class StaffAnalytics(commands.Cog):
             elif metric.value == "score":
                 tier    = RankTier.from_score(value)
                 val_str = f"{tier.display.split()[0]} **{value:.0f}**"
+            elif metric.value == "weekly_consistency":
+                val_str = f"**{value:.0f}%**"
+            elif metric.value == "streak":
+                val_str = f"**{int(value)}d** 🔥"
             else:
                 val_str = f"**{format_number(value)}**"
 
-            # Bar showing proportion of top
             bar_len = max(1, int((value / top_val) * 8)) if top_val else 0
             bar     = "█" * bar_len + "░" * (8 - bar_len)
-
             lines.append(f"{prefix} {name}  `{bar}` {val_str}")
 
         embed.description = "\n".join(lines)
@@ -942,22 +1033,26 @@ class StaffAnalytics(commands.Cog):
 
         streak1 = s1.consistency.current_streak if s1.consistency else 0
         streak2 = s2.consistency.current_streak if s2.consistency else 0
+        wcons1  = s1.consistency.weekly_consistency_score if s1.consistency else 0.0
+        wcons2  = s2.consistency.weekly_consistency_score if s2.consistency else 0.0
 
         rows = [
-            ("⭐ Score",         s1.engagement_score,      s2.engagement_score),
-            ("💬 Messages",      s1.total_messages,         s2.total_messages),
-            ("👥 Unique helped", s1.unique_members_helped,  s2.unique_members_helped),
-            ("🤝 Help events",   s1.help_events,            s2.help_events),
-            ("🌱 New members",   s1.new_members_helped,     s2.new_members_helped),
-            ("🛡️ Mod actions",   s1.moderation_actions,     s2.moderation_actions),
-            ("⚖️ Mod severity",  s1.moderation_severity_sum,s2.moderation_severity_sum),
-            ("🎙️ VC hours",      s1.vc_hours,               s2.vc_hours),
-            ("📋 Reports",       s1.reports_filed,          s2.reports_filed),
-            ("😀 Reactions",     s1.reactions_given,        s2.reactions_given),
-            ("🧵 Threads",       s1.threads_created,        s2.threads_created),
-            ("🚀 First resp.",   s1.first_responses,        s2.first_responses),
-            ("✨ Quality msgs",  s1.quality_events,         s2.quality_events),
-            ("🔥 Streak",        streak1,                   streak2),
+            ("⭐ Score",            s1.engagement_score,       s2.engagement_score),
+            ("💬 Messages",         s1.total_messages,          s2.total_messages),
+            ("🫂 Unique talked to", s1.unique_talked_with,      s2.unique_talked_with),
+            ("🌱 Newbies chatted",  s1.unique_newbies_chatted,  s2.unique_newbies_chatted),
+            ("🛡️ Mod actions",      s1.moderation_actions,      s2.moderation_actions),
+            ("⚖️ Mod severity",     s1.moderation_severity_sum, s2.moderation_severity_sum),
+            ("🎙️ VC hours",         s1.vc_hours,                s2.vc_hours),
+            ("👥 VC people bonus",  s1.vc_people_bonus,         s2.vc_people_bonus),
+            ("📋 Reports",          s1.reports_filed,           s2.reports_filed),
+            ("😀 Reactions",        s1.reactions_given,         s2.reactions_given),
+            ("🧵 Threads",          s1.threads_created,         s2.threads_created),
+            ("🚀 First resp.",      s1.first_responses,         s2.first_responses),
+            ("📟 Ping resp.",       s1.ping_responses,          s2.ping_responses),
+            ("✨ Quality msgs",     s1.quality_events,          s2.quality_events),
+            ("🔥 Streak",           streak1,                    streak2),
+            ("📅 Weekly %",         wcons1,                     wcons2),
         ]
 
         wins1 = sum(1 for _, v1, v2 in rows if v1 > v2)
@@ -981,10 +1076,9 @@ class StaffAnalytics(commands.Cog):
             col1.append(c1)
             col2.append(c2)
 
-        embed.add_field(name="Metric",                         value="\n".join(col_label), inline=True)
-        embed.add_field(name=member1.display_name[:20],        value="\n".join(col1),      inline=True)
-        embed.add_field(name=member2.display_name[:20],        value="\n".join(col2),      inline=True)
-
+        embed.add_field(name="Metric",                  value="\n".join(col_label), inline=True)
+        embed.add_field(name=member1.display_name[:20], value="\n".join(col1),      inline=True)
+        embed.add_field(name=member2.display_name[:20], value="\n".join(col2),      inline=True)
         await interaction.followup.send(embed=embed)
 
     # ─── /staffranks ─────────────────────────────────────────────────────────
@@ -1011,11 +1105,7 @@ class StaffAnalytics(commands.Cog):
             scores_map[member.display_name] = s.engagement_score
 
         total = len(staff)
-        embed = discord.Embed(
-            title="🏅 Staff Rank Distribution",
-            color=EMBED_COLORS["primary"],
-            timestamp=discord.utils.utcnow(),
-        )
+        embed = discord.Embed(title="🏅 Staff Rank Distribution", color=EMBED_COLORS["primary"], timestamp=discord.utils.utcnow())
         embed.set_footer(text=f"Last {days} days  ·  {total} staff total")
 
         for tier_name in ("Diamond", "Platinum", "Gold", "Silver", "Bronze"):
@@ -1033,7 +1123,6 @@ class StaffAnalytics(commands.Cog):
                 value=f"≥ **{info['min']} pts** · {name_list}",
                 inline=False,
             )
-
         await interaction.followup.send(embed=embed)
 
     # ─── /staffactivity ──────────────────────────────────────────────────────
@@ -1049,7 +1138,6 @@ class StaffAnalytics(commands.Cog):
             return
 
         activity = await self.db.get_recent_activity([m.id for m in staff], hours)
-
         embed = discord.Embed(
             title=f"📋 Staff Activity — Last {hours}h",
             color=EMBED_COLORS["info"],
@@ -1061,6 +1149,8 @@ class StaffAnalytics(commands.Cog):
             "moderation":     "🛡️",
             "voice":          "🎙️",
             "first_response": "🚀",
+            "ping_response":  "📟",
+            "bump":           "🚀",
         }
 
         shown = 0
@@ -1084,6 +1174,8 @@ class StaffAnalytics(commands.Cog):
                     lines.append(f"{icon} `{ts}` <#{act['channel_id']}>")
                 elif act["type"] == "first_response":
                     lines.append(f"{icon} `{ts}` First responder")
+                elif act["type"] == "ping_response":
+                    lines.append(f"{icon} `{ts}` Answered @staff ping")
             if lines:
                 embed.add_field(name=member.display_name, value="\n".join(lines), inline=True)
                 shown += 1
@@ -1092,7 +1184,6 @@ class StaffAnalytics(commands.Cog):
 
         if shown == 0:
             embed.description = "No activity recorded in this period."
-
         await interaction.followup.send(embed=embed)
 
     # ─── /staffinactive ──────────────────────────────────────────────────────
@@ -1139,7 +1230,8 @@ class StaffAnalytics(commands.Cog):
         for member in staff:
             c = await self.db.get_consistency_stats(member.id)
             if c:
-                scores.append((member, c.consistency_score, c.current_streak, c.longest_streak, c.off_peak_activity))
+                scores.append((member, c.consistency_score, c.current_streak, c.longest_streak,
+                                c.off_peak_activity, c.weekly_consistency_score))
         scores.sort(key=lambda x: x[1], reverse=True)
 
         embed = discord.Embed(
@@ -1147,16 +1239,16 @@ class StaffAnalytics(commands.Cog):
             color=EMBED_COLORS["primary"],
             timestamp=discord.utils.utcnow(),
         )
-        embed.set_footer(text="Rewards daily activity, time-spread, off-peak coverage, and streaks")
+        embed.set_footer(text="🔥=streak  📅=weekly%  🦉=off-peak msgs")
 
         lines = []
-        for idx, (member, score, streak, longest, off_peak) in enumerate(scores[:12], 1):
+        for idx, (member, score, streak, longest, off_peak, weekly_pct) in enumerate(scores[:12], 1):
             prefix = MEDAL_EMOJIS[idx - 1] if idx <= 3 else f"`{idx:>2}.`"
             streak_badge = f"🔥{streak}d" if streak >= 3 else f"{streak}d"
             off_peak_badge = f"🦉{off_peak}" if off_peak > 0 else ""
             lines.append(
                 f"{prefix} **{member.display_name}** — `{score:.0f} pts`  "
-                f"{streak_badge}  best:{longest}d  {off_peak_badge}"
+                f"{streak_badge}  📅{weekly_pct:.0f}%  best:{longest}d  {off_peak_badge}"
             )
         embed.description = "\n".join(lines) or "No consistency data yet."
         await interaction.followup.send(embed=embed)
@@ -1177,31 +1269,51 @@ class StaffAnalytics(commands.Cog):
             return
 
         guild_weights = await self.db.get_score_weights(interaction.guild.id)
-        stats = await self.db.get_staff_stats(target.id, 9999, weights=guild_weights)  # All-time
+        stats = await self.db.get_staff_stats(target.id, 9999, weights=guild_weights)
         consistency = await self.db.get_consistency_stats(target.id)
         if consistency:
             stats.consistency = consistency
 
         streak = consistency.current_streak if consistency else 0
         metric_map = {
-            "help_events":         stats.help_events,
-            "moderation_actions":  stats.moderation_actions,
-            "vc_hours":            stats.vc_hours,
-            "new_members_helped":  stats.new_members_helped,
-            "fast_responses":      stats.fast_responses,
-            "first_responses":     stats.first_responses,
-            "threads_created":     stats.threads_created,
-            "reactions_given":     stats.reactions_given,
-            "current_streak":      streak,
-            "off_peak_messages":   consistency.off_peak_activity if consistency else 0,
+            "help_events":           stats.help_events,
+            "moderation_actions":    stats.moderation_actions,
+            "vc_hours":              stats.vc_hours,
+            "new_members_helped":    stats.new_members_helped,
+            "fast_responses":        stats.fast_responses,
+            "first_responses":       stats.first_responses,
+            "threads_created":       stats.threads_created,
+            "reactions_given":       stats.reactions_given,
+            "current_streak":        streak,
+            "off_peak_messages":     consistency.off_peak_activity if consistency else 0,
+            "conversation_starters": stats.conversation_starters,
+            "new_member_greetings":  stats.new_member_greetings,
+            "dead_chat_revivals":    stats.dead_chat_revivals,
+            "reactions_received":    stats.reactions_received,
+            "unique_talked_with":    stats.unique_talked_with,
+            "ping_responses":        stats.ping_responses,
+            "vc_people_sessions":    stats.vc_people_sessions,
+            "unique_newbies_chatted":stats.unique_newbies_chatted,
         }
 
+        now_dt = discord.utils.utcnow()
         earned_lines = []
         locked_lines = []
+
         for key, info in ACHIEVEMENT_THRESHOLDS.items():
-            val    = metric_map.get(info["metric"], 0)
+            val        = metric_map.get(info["metric"], 0)
             target_val = info["value"]
             if val >= target_val:
+                notified_at = await self.db.get_achievement_notified_at(target.id, key)
+                decay_days  = info.get("decay_days")
+                if notified_at and decay_days:
+                    age_days = (now_dt - notified_at).days
+                    if age_days > decay_days:
+                        earned_lines.append(f"💤 ~~{info['emoji']} **{info['desc']}**~~ *(faded)*")
+                        continue
+                    elif age_days < 7:
+                        earned_lines.append(f"✨ {info['emoji']} **{info['desc']}** *(new!)*")
+                        continue
                 earned_lines.append(f"{info['emoji']} **{info['desc']}**")
             else:
                 progress = min(val / target_val, 1.0) * 100
@@ -1220,19 +1332,11 @@ class StaffAnalytics(commands.Cog):
         embed.set_thumbnail(url=target.display_avatar.url)
 
         if earned_lines:
-            embed.add_field(
-                name=f"✅ Earned ({len(earned_lines)})",
-                value="\n".join(earned_lines),
-                inline=False,
-            )
+            embed.add_field(name=f"✅ Earned ({len(earned_lines)})", value="\n".join(earned_lines), inline=False)
         if locked_lines:
-            embed.add_field(
-                name=f"🔒 In Progress ({len(locked_lines)})",
-                value="\n".join(locked_lines[:10]),
-                inline=False,
-            )
+            embed.add_field(name=f"🔒 In Progress ({len(locked_lines)})", value="\n".join(locked_lines[:10]), inline=False)
 
-        embed.set_footer(text="Achievements are based on all-time statistics")
+        embed.set_footer(text="✨ = earned recently  💤 = achievement decayed (inactive)  🔒 = not yet earned")
         await interaction.followup.send(embed=embed)
 
     # ─── /staffoverview ──────────────────────────────────────────────────────
@@ -1247,11 +1351,10 @@ class StaffAnalytics(commands.Cog):
             await interaction.followup.send(embed=create_info_embed("No Staff", "No staff members found."))
             return
 
-        health = await self.db.get_server_health([m.id for m in staff], days)
+        health       = await self.db.get_server_health([m.id for m in staff], days)
         inactive_ids = await self.db.get_inactive_staff([m.id for m in staff], days)
-
-        active_pct = (health["active_staff"] / health["total_staff"] * 100) if health["total_staff"] else 0
-        avg_rt_str = format_seconds(health["avg_response_secs"]) if health["avg_response_secs"] else "N/A"
+        active_pct   = (health["active_staff"] / health["total_staff"] * 100) if health["total_staff"] else 0
+        avg_rt_str   = format_seconds(health["avg_response_secs"]) if health["avg_response_secs"] else "N/A"
 
         embed = discord.Embed(
             title=f"📊 Staff Health Dashboard — {interaction.guild.name}",
@@ -1260,7 +1363,6 @@ class StaffAnalytics(commands.Cog):
             timestamp=discord.utils.utcnow(),
         )
 
-        # Coverage
         coverage_bar = create_progress_bar(health["active_staff"], health["total_staff"], length=12)
         embed.add_field(
             name="👥 Staff Coverage",
@@ -1272,14 +1374,13 @@ class StaffAnalytics(commands.Cog):
             inline=False,
         )
 
-        # Core KPIs
         embed.add_field(
             name="📈 Community KPIs",
             value=(
-                f"`Total messages   ` **{format_number(health['total_messages'])}**\n"
-                f"`Help events      ` **{format_number(health['total_help'])}**\n"
-                f"`New members helped` **{health['new_members_helped']}** 🌱\n"
-                f"`First responses  ` **{health['first_responses']}** 🚀"
+                f"`Total messages      ` **{format_number(health['total_messages'])}**\n"
+                f"`Unique talked to    ` **{health.get('unique_talked_with', 0)}** 🫂\n"
+                f"`Ping responses      ` **{health.get('ping_responses', 0)}** 📟\n"
+                f"`First responses     ` **{health['first_responses']}** 🚀"
             ),
             inline=True,
         )
@@ -1287,31 +1388,35 @@ class StaffAnalytics(commands.Cog):
         embed.add_field(
             name="🛡️ Operations",
             value=(
-                f"`Mod actions      ` **{health['total_moderation']}**\n"
-                f"`Avg response time` **{avg_rt_str}**\n"
-                f"`Total VC hours   ` **{health['vc_hours']:.1f}h**"
+                f"`Mod actions         ` **{health['total_moderation']}**\n"
+                f"`Avg response time   ` **{avg_rt_str}**\n"
+                f"`Total VC hours      ` **{health['vc_hours']:.1f}h**\n"
+                f"`Server bumps        ` **{health.get('total_bumps', 0)}**"
             ),
             inline=True,
         )
 
-        # Top performers this period
-        weights = await self.db.get_score_weights(interaction.guild.id)
-        stats_list = []
+        # Top performers — use cache for recent data, fall back to fresh query
+        weights     = await self.db.get_score_weights(interaction.guild.id)
+        staff_ids   = [m.id for m in staff]
+        cached_rows = await self.db.get_cached_staff_stats(interaction.guild.id, staff_ids, days, weights)
+        stats_map   = {sid: s for sid, s in cached_rows}
         for m in staff:
-            s = await self.db.get_staff_stats(m.id, days, weights)
-            c = await self.db.get_consistency_stats(m.id)
-            if c:
-                s.consistency = c
-            stats_list.append((m, s))
+            if m.id in stats_map:
+                c = await self.db.get_consistency_stats(m.id)
+                if c:
+                    stats_map[m.id].consistency = c
+        stats_list = [(m, stats_map[m.id]) for m in staff if m.id in stats_map]
         stats_list.sort(key=lambda x: x[1].engagement_score, reverse=True)
 
         top_lines = []
         for idx, (m, s) in enumerate(stats_list[:5], 1):
             streak = s.consistency.current_streak if s.consistency else 0
+            wcons  = s.consistency.weekly_consistency_score if s.consistency else 0.0
             top_lines.append(
                 f"`{idx}.` **{m.display_name}** {s.rank_tier.display.split()[0]} "
                 f"· **{s.engagement_score:.0f}** pts  "
-                f"💬{s.total_messages} 🤝{s.help_events} 🔥{streak}d"
+                f"💬{s.total_messages} 🛡️{s.moderation_actions} 🔥{streak}d 📅{wcons:.0f}%"
             )
         if top_lines:
             embed.add_field(name=f"🏆 Top Performers ({days}d)", value="\n".join(top_lines), inline=False)
@@ -1328,60 +1433,34 @@ class StaffAnalytics(commands.Cog):
         embed.set_footer(text="Admin only · Use /staffstats for individual member details")
         await interaction.followup.send(embed=embed)
 
-    # ─── /staffnotes group ────────────────────────────────────────────────────
+    # ─── Notes, weights, config, export, dashboard ─────────────────────────────
 
     notes_group = app_commands.Group(name="staffnote", description="Manage staff performance notes")
 
     @notes_group.command(name="add", description="Add a note to a staff member")
     @app_commands.default_permissions(manage_guild=True)
-    @app_commands.describe(member="Staff member", note="Note content", positive="Positive note?")
-    async def staffnote_add(
-        self, interaction: discord.Interaction,
-        member: discord.Member, note: str, positive: bool = True,
-    ):
+    async def staffnote_add(self, interaction: discord.Interaction, member: discord.Member, note: str, positive: bool = True):
         if not self.is_staff(member):
-            await interaction.response.send_message(
-                embed=create_error_embed("Not Staff", f"{member.mention} is not a staff member."), ephemeral=True
-            )
+            await interaction.response.send_message(embed=create_error_embed("Not Staff", f"{member.mention} is not a staff member."), ephemeral=True)
             return
-        sn = StaffNote(
-            id=None, staff_id=member.id, author_id=interaction.user.id,
-            note=note, created_at=discord.utils.utcnow(), is_positive=positive,
-        )
+        sn = StaffNote(id=None, staff_id=member.id, author_id=interaction.user.id, note=note, created_at=discord.utils.utcnow(), is_positive=positive)
         note_id = await self.db.add_staff_note(sn)
         emoji = "✅" if positive else "📌"
-        await interaction.response.send_message(
-            embed=create_success_embed(
-                "Note Added",
-                f"{emoji} Note **#{note_id}** added for **{member.display_name}**.\n> {note}"
-            ),
-            ephemeral=True,
-        )
+        await interaction.response.send_message(embed=create_success_embed("Note Added", f"{emoji} Note **#{note_id}** added for **{member.display_name}**.\n> {note}"), ephemeral=True)
 
     @notes_group.command(name="view", description="View notes for a staff member")
     async def staffnote_view(self, interaction: discord.Interaction, member: discord.Member):
         notes = await self.db.get_staff_notes(member.id, limit=10)
         if not notes:
-            await interaction.response.send_message(
-                embed=create_info_embed("No Notes", f"No notes recorded for **{member.display_name}**."),
-                ephemeral=True,
-            )
+            await interaction.response.send_message(embed=create_info_embed("No Notes", f"No notes recorded for **{member.display_name}**."), ephemeral=True)
             return
-        embed = discord.Embed(
-            title=f"📝 Notes — {member.display_name}",
-            color=EMBED_COLORS["info"],
-            timestamp=discord.utils.utcnow(),
-        )
+        embed = discord.Embed(title=f"📝 Notes — {member.display_name}", color=EMBED_COLORS["info"], timestamp=discord.utils.utcnow())
         embed.set_thumbnail(url=member.display_avatar.url)
         for n in notes:
             author = self.bot.get_user(n.author_id)
             author_name = author.display_name if author else f"ID:{n.author_id}"
             emoji = "✅" if n.is_positive else "📌"
-            embed.add_field(
-                name=f"{emoji} Note #{n.id}  ·  {author_name}  ·  {format_relative_time(n.created_at)}",
-                value=n.note[:512],
-                inline=False,
-            )
+            embed.add_field(name=f"{emoji} Note #{n.id}  ·  {author_name}  ·  {format_relative_time(n.created_at)}", value=n.note[:512], inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @notes_group.command(name="delete", description="Delete a staff note by ID")
@@ -1389,15 +1468,9 @@ class StaffAnalytics(commands.Cog):
     async def staffnote_delete(self, interaction: discord.Interaction, note_id: int):
         deleted = await self.db.delete_staff_note(note_id, interaction.user.id)
         if deleted:
-            await interaction.response.send_message(
-                embed=create_success_embed("Note Deleted", f"Note **#{note_id}** has been removed."), ephemeral=True
-            )
+            await interaction.response.send_message(embed=create_success_embed("Note Deleted", f"Note **#{note_id}** has been removed."), ephemeral=True)
         else:
-            await interaction.response.send_message(
-                embed=create_error_embed("Not Found", f"Note **#{note_id}** does not exist."), ephemeral=True
-            )
-
-    # ─── /staffweights group ──────────────────────────────────────────────────
+            await interaction.response.send_message(embed=create_error_embed("Not Found", f"Note **#{note_id}** does not exist."), ephemeral=True)
 
     weights_group = app_commands.Group(name="staffweights", description="Manage per-guild scoring weights")
 
@@ -1408,64 +1481,40 @@ class StaffAnalytics(commands.Cog):
         for k, v in sorted(weights.items()):
             default = SCORE_WEIGHTS.get(k, v)
             custom_tag = "  *(custom)*" if v != default else ""
-            lines.append(f"`{k:<25}` **{v}**{custom_tag}")
-        embed = discord.Embed(
-            title="⚙️ Scoring Weights",
-            description="\n".join(lines),
-            color=EMBED_COLORS["primary"],
-        )
+            lines.append(f"`{k:<28}` **{v}**{custom_tag}")
+        embed = discord.Embed(title="⚙️ Scoring Weights", description="\n".join(lines), color=EMBED_COLORS["primary"])
         embed.set_footer(text="Use /staffweights set to override  ·  /staffweights reset to restore defaults")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @weights_group.command(name="set", description="Override a scoring weight")
     @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(key="Weight key (see /staffweights view)", value="New weight value (≥ 0)")
-    async def staffweights_set(
-        self, interaction: discord.Interaction, key: str, value: float
-    ):
+    async def staffweights_set(self, interaction: discord.Interaction, key: str, value: float):
         if key not in SCORE_WEIGHTS:
             valid = ", ".join(f"`{k}`" for k in sorted(SCORE_WEIGHTS))
-            await interaction.response.send_message(
-                embed=create_error_embed("Invalid Key", f"Valid keys:\n{valid}"), ephemeral=True
-            )
+            await interaction.response.send_message(embed=create_error_embed("Invalid Key", f"Valid keys:\n{valid}"), ephemeral=True)
             return
         if value < 0:
-            await interaction.response.send_message(
-                embed=create_error_embed("Invalid Value", "Weight value must be ≥ 0."), ephemeral=True
-            )
+            await interaction.response.send_message(embed=create_error_embed("Invalid Value", "Weight value must be ≥ 0."), ephemeral=True)
             return
         await self.db.set_score_weight(interaction.guild.id, key, value, interaction.user.id)
-        await interaction.response.send_message(
-            embed=create_success_embed("Weight Updated", f"`{key}` → **{value}**"), ephemeral=True
-        )
+        await interaction.response.send_message(embed=create_success_embed("Weight Updated", f"`{key}` → **{value}**"), ephemeral=True)
 
     @weights_group.command(name="reset", description="Reset all weights to defaults")
     @app_commands.default_permissions(administrator=True)
     async def staffweights_reset(self, interaction: discord.Interaction):
         await self.db.reset_score_weights(interaction.guild.id)
-        await interaction.response.send_message(
-            embed=create_success_embed("Weights Reset", "All scoring weights have been reset to defaults."),
-            ephemeral=True,
-        )
-
-    # ─── /staffconfig ─────────────────────────────────────────────────────────
+        await interaction.response.send_message(embed=create_success_embed("Weights Reset", "All scoring weights have been reset to defaults."), ephemeral=True)
 
     @app_commands.command(name="staffconfig", description="View staff analytics configuration")
     @app_commands.default_permissions(administrator=True)
     async def staffconfig(self, interaction: discord.Interaction):
         embed = discord.Embed(title="⚙️ Staff Analytics Config", color=EMBED_COLORS["primary"])
-
         role_mentions = []
         for role_id in self.config.staff_roles:
             role = interaction.guild.get_role(role_id)
             if role:
                 role_mentions.append(role.mention)
-        embed.add_field(
-            name="👥 Staff Roles",
-            value="\n".join(role_mentions) or "None configured  *(set MOD_ROLES env var)*",
-            inline=False,
-        )
-
+        embed.add_field(name="👥 Staff Roles", value="\n".join(role_mentions) or "None configured  *(set MOD_ROLES env var)*", inline=False)
         channel_names = ["trial_chat", "mod_log", "staff_chat", "alert_channel", "weekly_report_channel", "dashboard_channel"]
         ch_lines = []
         for name in channel_names:
@@ -1473,25 +1522,19 @@ class StaffAnalytics(commands.Cog):
             if ch_id:
                 ch_obj = interaction.guild.get_channel(ch_id)
                 ch_lines.append(f"• **{name}**: {ch_obj.mention if ch_obj else ch_id}")
-        embed.add_field(
-            name="📺 Tracked Channels",
-            value="\n".join(ch_lines) or "None configured",
-            inline=False,
-        )
-
+        embed.add_field(name="📺 Tracked Channels", value="\n".join(ch_lines) or "None configured", inline=False)
         settings_lines = [
             f"• Inactivity threshold: **{self.config.get_setting('inactivity_days')}d**",
             f"• Min VC session: **{self.config.get_setting('min_vc_session')}s**",
             f"• Report cooldown: **{self.config.get_setting('report_cooldown')}s**",
             f"• Data retention: **{self.config.get_setting('db_retention_days')}d**",
             f"• Response time window: **{self.config.get_setting('response_time_window')}s**",
-            f"• New member threshold: **{self.config.get_setting('new_member_threshold_days')}d**",
+            f"• Ping response window: **{PING_RESPONSE_WINDOW}s**",
+            f"• Achievement decay days: **{ACHIEVEMENT_DECAY_DAYS}d**",
         ]
         embed.add_field(name="⚙️ Settings", value="\n".join(settings_lines), inline=False)
         embed.set_footer(text="Override settings via environment variables  ·  See docs for full list")
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    # ─── /staffdashboard ──────────────────────────────────────────────────────
 
     @app_commands.command(name="staffdashboard", description="Post or refresh the live staff dashboard (Admin only)")
     @app_commands.default_permissions(manage_guild=True)
@@ -1499,65 +1542,170 @@ class StaffAnalytics(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         channel_id = self.config.get_channel_id("dashboard_channel")
         if not channel_id:
-            await interaction.followup.send(embed=create_error_embed(
-                "Not Configured",
-                "Set the `DASHBOARD_CHANNEL_ID` environment variable to enable the dashboard.",
-            ))
+            await interaction.followup.send(embed=create_error_embed("Not Configured", "Set the `DASHBOARD_CHANNEL_ID` environment variable to enable the dashboard."))
             return
         try:
             await self._update_dashboard()
             channel = interaction.guild.get_channel(channel_id)
             ch_mention = channel.mention if channel else f"<#{channel_id}>"
-            await interaction.followup.send(embed=create_success_embed(
-                "Dashboard Updated", f"Dashboard refreshed in {ch_mention}."
-            ))
+            await interaction.followup.send(embed=create_success_embed("Dashboard Updated", f"Dashboard refreshed in {ch_mention}."))
         except Exception as e:
             await interaction.followup.send(embed=create_error_embed("Update Failed", str(e)))
-
-    # ─── /staffexport ─────────────────────────────────────────────────────────
 
     @app_commands.command(name="staffexport", description="Export staff data as JSON (Admin only)")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(member="Staff member to export", days="Days to include (default 30)")
-    async def staffexport(
-        self, interaction: discord.Interaction, member: discord.Member, days: int = 30
-    ):
+    async def staffexport(self, interaction: discord.Interaction, member: discord.Member, days: int = 30):
         await interaction.response.defer(ephemeral=True)
         if not self.is_staff(member):
+            await interaction.followup.send(embed=create_error_embed("Not Staff", f"{member.mention} is not a staff member."))
+            return
+        data = await self.db.export_staff_data(member.id, days)
+        filename = f"staff_export_{member.id}_{discord.utils.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+        buf = io.BytesIO(json.dumps(data, indent=2, default=str).encode("utf-8"))
+        buf.seek(0)
+        await interaction.followup.send(file=discord.File(buf, filename=filename), content=f"📊 Export for **{member.display_name}** (last {days} days)")
+
+    # ─── /stafftimeline ──────────────────────────────────────────────────────
+
+    @app_commands.command(name="stafftimeline", description="30-day ASCII activity chart for a staff member")
+    @app_commands.describe(member="Staff member (defaults to yourself)", days="Days to chart (default 30, max 60)")
+    async def stafftimeline(
+        self, interaction: discord.Interaction,
+        member: Optional[discord.Member] = None,
+        days: int = 30,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        target = member or interaction.user
+        if not self.is_staff(target):
             await interaction.followup.send(
-                embed=create_error_embed("Not Staff", f"{member.mention} is not a staff member.")
+                embed=create_error_embed("Not Staff", f"{target.mention} is not a staff member.")
             )
             return
 
-        data = await self.db.export_staff_data(member.id, days)
-        filename = f"staff_export_{member.id}_{discord.utils.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+        days = max(7, min(days, 60))
+        daily_counts = await self.db.get_daily_message_counts(target.id, days)
+        mod_counts   = await self.db.get_daily_mod_counts(target.id, days)
 
-        # BUG FIX: original wrote to a local file path without cleanup, leaking
-        # temp files on disk and using an unsafe filename derived from user input.
-        # Now streams directly to an in-memory buffer — no disk I/O, no cleanup needed.
-        buf = io.BytesIO(json.dumps(data, indent=2, default=str).encode("utf-8"))
-        buf.seek(0)
-        await interaction.followup.send(
-            file=discord.File(buf, filename=filename),
-            content=f"📊 Export for **{member.display_name}** (last {days} days)",
+        if not any(daily_counts.values()):
+            await interaction.followup.send(
+                embed=create_info_embed("No Data", f"No messages recorded for **{target.display_name}** in the last {days} days.")
+            )
+            return
+
+        # Build ASCII bar chart
+        from datetime import date, timedelta as td
+        today   = datetime.utcnow().date()
+        dates   = [today - td(days=i) for i in range(days - 1, -1, -1)]
+        msg_vals = [daily_counts.get(str(d), 0) for d in dates]
+        mod_vals = [mod_counts.get(str(d), 0) for d in dates]
+
+        max_val  = max(msg_vals) if msg_vals else 1
+        bar_height = 8   # rows in the chart
+
+        # Build rows top-down
+        rows = []
+        for row_i in range(bar_height, 0, -1):
+            threshold = (row_i / bar_height) * max_val
+            row_chars = []
+            for v in msg_vals:
+                if v >= threshold:
+                    row_chars.append("█")
+                elif v >= threshold * 0.5:
+                    row_chars.append("▄")
+                else:
+                    row_chars.append(" ")
+            rows.append("".join(row_chars))
+
+        # Bottom axis: marks for every 7 days
+        axis = ""
+        for i, d in enumerate(dates):
+            if i % 7 == 0:
+                axis += "┬"
+            else:
+                axis += "─"
+        axis_labels = ""
+        for i, d in enumerate(dates):
+            if i % 7 == 0:
+                label = d.strftime("%d/%m")
+                axis_labels += label
+                # pad to next 7-day mark
+                remaining = 7 - len(label)
+                axis_labels += " " * max(0, remaining)
+
+        # Peak/avg stats
+        avg_val   = sum(msg_vals) / max(len([v for v in msg_vals if v > 0]), 1)
+        peak_date = dates[msg_vals.index(max(msg_vals))] if max(msg_vals) > 0 else today
+        total_mod = sum(mod_vals)
+
+        # 4-week comparison
+        mid = len(msg_vals) // 2
+        first_half  = sum(msg_vals[:mid])
+        second_half = sum(msg_vals[mid:])
+        if first_half > 0:
+            trend_pct = round((second_half - first_half) / first_half * 100)
+            trend_str = f"{'⬆️' if trend_pct >= 0 else '⬇️'} {abs(trend_pct)}% vs prior {days//2}d"
+        else:
+            trend_str = "🆕 First period"
+
+        # Drop-off detection
+        dropoff_warning = ""
+        if second_half < first_half * 0.5 and first_half > 5:
+            dropoff_warning = "\n⚠️ **Significant drop-off detected** in recent days"
+
+        chart_lines = "\n".join(rows)
+        chart = f"```\n{chart_lines}\n{axis}\n{axis_labels.rstrip()}\n```"
+
+        tier = RankTier.from_score((await self.db.get_staff_stats(target.id, days)).engagement_score)
+        tier_info = RANK_TIERS[tier.value]
+
+        embed = discord.Embed(
+            title=f"📈 Activity Timeline — {target.display_name}",
+            description=(
+                f"{tier_info['emoji']} **{tier.value}** · Last **{days}** days{dropoff_warning}"
+            ),
+            color=tier_info["colour"],
+            timestamp=discord.utils.utcnow(),
         )
+        embed.add_field(name=f"Daily Messages (peak={max(msg_vals)})", value=chart, inline=False)
+
+        # Mod activity as compact dot row
+        if total_mod > 0:
+            mod_dots = ""
+            for v in mod_vals:
+                if v == 0:   mod_dots += "·"
+                elif v < 3:  mod_dots += "▪"
+                elif v < 7:  mod_dots += "◾"
+                else:        mod_dots += "⬛"
+            embed.add_field(
+                name=f"🛡️ Mod Actions  ({total_mod} total)",
+                value=f"`{mod_dots}`\n`·=none  ▪=1-2  ◾=3-6  ⬛=7+`",
+                inline=False,
+            )
+
+        embed.add_field(
+            name="📊 Stats",
+            value=(
+                f"`Avg/active day  ` **{avg_val:.1f}** msgs\n"
+                f"`Peak day        ` **{peak_date.strftime('%d %b')}** ({max(msg_vals)} msgs)\n"
+                f"`Active days     ` **{sum(1 for v in msg_vals if v > 0)}** / {days}\n"
+                f"`Trend           ` {trend_str}"
+            ),
+            inline=False,
+        )
+        embed.set_thumbnail(url=target.display_avatar.url)
+        embed.set_footer(text="█=full  ▄=half  ·=silent  |  each column = 1 day")
+        await interaction.followup.send(embed=embed)
+
     # ─── Background tasks ─────────────────────────────────────────────────────
 
     async def _weekly_report_loop(self):
         await self.bot.wait_until_ready()
         while not self.bot.is_closed():
             now = discord.utils.utcnow()
-            is_monday_9am = now.weekday() == 0 and now.hour == 9
-
-            if is_monday_9am:
-                # BUG FIX: original used sleep(86400) after sending, but a bot
-                # restart at exactly 09:xx on Monday would re-evaluate the condition
-                # as true and send a second report.  We now gate on a date comparison.
-                already_sent_today = (
-                    self._last_weekly_report is not None
-                    and self._last_weekly_report.date() == now.date()
-                )
-                if not already_sent_today:
+            if now.weekday() == 0 and now.hour == 9:
+                already_sent = (self._last_weekly_report is not None and self._last_weekly_report.date() == now.date())
+                if not already_sent:
                     try:
                         await self._send_weekly_report()
                         self._last_weekly_report = now
@@ -1575,12 +1723,7 @@ class StaffAnalytics(commands.Cog):
         if not channel:
             return
 
-        all_staff: List[discord.Member] = []
-        for guild in self.bot.guilds:
-            for m in guild.members:
-                if self.is_staff(m):
-                    all_staff.append(m)
-
+        all_staff = [m for guild in self.bot.guilds for m in guild.members if self.is_staff(m)]
         if not all_staff:
             return
 
@@ -1590,10 +1733,10 @@ class StaffAnalytics(commands.Cog):
         inactive_ids = await self.db.get_inactive_staff([m.id for m in all_staff], 7)
 
         embed = discord.Embed(
-            title       = "📊 Weekly Staff Report",
-            description = f"Week ending **{discord.utils.utcnow().strftime('%B %d, %Y')}**",
-            color       = EMBED_COLORS["primary"],
-            timestamp   = discord.utils.utcnow(),
+            title="📊 Weekly Staff Report",
+            description=f"Week ending **{discord.utils.utcnow().strftime('%B %d, %Y')}**",
+            color=EMBED_COLORS["primary"],
+            timestamp=discord.utils.utcnow(),
         )
 
         stats_list = []
@@ -1609,25 +1752,25 @@ class StaffAnalytics(commands.Cog):
         for idx, (member, s) in enumerate(stats_list[:5], 1):
             prefix = MEDAL_EMOJIS[idx - 1] if idx <= 3 else f"{idx}."
             streak = s.consistency.current_streak if s.consistency else 0
+            wcons  = s.consistency.weekly_consistency_score if s.consistency else 0.0
             top_lines.append(
                 f"{prefix} **{member.display_name}** {s.rank_tier.display.split()[0]} "
                 f"— **{s.engagement_score:.0f}** pts  "
-                f"💬{s.total_messages} 🤝{s.help_events} 🛡️{s.moderation_actions} 🔥{streak}d"
+                f"💬{s.total_messages} 🛡️{s.moderation_actions} 🔥{streak}d 📅{wcons:.0f}%"
             )
         if top_lines:
             embed.add_field(name="🏆 Top Performers", value="\n".join(top_lines), inline=False)
 
         active_pct = (health["active_staff"] / health["total_staff"] * 100) if health["total_staff"] else 0
         embed.add_field(
-            name  = "📈 7-Day Server Summary",
-            value = (
-                f"`Staff active      ` **{health['active_staff']}/{health['total_staff']}** ({active_pct:.0f}%)\n"
-                f"`Help events       ` **{health['total_help']}**\n"
-                f"`Mod actions       ` **{health['total_moderation']}**\n"
-                f"`VC hours          ` **{health['vc_hours']:.1f}h**\n"
-                f"`New members helped` **{health['new_members_helped']}** 🌱\n"
-                f"`First responses   ` **{health['first_responses']}** 🚀\n"
-                f"`Avg response time ` **{format_seconds(health['avg_response_secs'])}**"
+            name="📈 7-Day Server Summary",
+            value=(
+                f"`Staff active         ` **{health['active_staff']}/{health['total_staff']}** ({active_pct:.0f}%)\n"
+                f"`Mod actions          ` **{health['total_moderation']}**\n"
+                f"`VC hours             ` **{health['vc_hours']:.1f}h**\n"
+                f"`First responses      ` **{health['first_responses']}** 🚀\n"
+                f"`Ping responses       ` **{health.get('ping_responses', 0)}** 📟\n"
+                f"`Avg response time    ` **{format_seconds(health['avg_response_secs'])}**"
             ),
             inline=False,
         )
@@ -1635,14 +1778,30 @@ class StaffAnalytics(commands.Cog):
         if inactive_ids:
             inactive = [m for m in all_staff if m.id in inactive_ids]
             embed.add_field(
-                name  = f"⚠️ Inactive 7+ Days ({len(inactive)})",
-                value = ", ".join(m.display_name for m in inactive[:10])
-                        + (f" +{len(inactive) - 10}" if len(inactive) > 10 else ""),
+                name=f"⚠️ Inactive 7+ Days ({len(inactive)})",
+                value=", ".join(m.display_name for m in inactive[:10]) + (f" +{len(inactive) - 10}" if len(inactive) > 10 else ""),
+                inline=False,
+            )
+
+        # Drop-off detection — flag active staff with a sudden dip
+        all_staff_ids = [m.id for m in all_staff]
+        dropoffs = await self.db.get_dropoff_staff(all_staff_ids, lookback_weeks=4)
+        if dropoffs:
+            dip_lines = []
+            for d in dropoffs[:6]:
+                m = next((x for x in all_staff if x.id == d["staff_id"]), None)
+                name = m.display_name if m else f"<@{d['staff_id']}>"
+                dip_lines.append(
+                    f"• **{name}** — ⬇️ **{d['drop_pct']}%** drop  "
+                    f"(this week: {d['this_week']} msgs · avg: {d['avg_prev']:.0f})"
+                )
+            embed.add_field(
+                name=f"📉 Sudden Drop-offs ({len(dropoffs)})",
+                value="".join(dip_lines),
                 inline=False,
             )
 
         await channel.send(embed=embed)
-
 
     async def _inactivity_check_loop(self):
         await self.bot.wait_until_ready()
@@ -1658,7 +1817,6 @@ class StaffAnalytics(commands.Cog):
         if not alert_channel:
             return
         threshold = self.config.get_setting("inactivity_threshold_days", 7)
-
         for guild in self.bot.guilds:
             staff = [m for m in guild.members if self.is_staff(m)]
             if not staff:
@@ -1679,33 +1837,27 @@ class StaffAnalytics(commands.Cog):
         await self.bot.wait_until_ready()
         while not self.bot.is_closed():
             self.metrics.cleanup_old_data()
-            # Also prune stale staff-cache entries
             now = discord.utils.utcnow()
-            self._staff_cache = {
-                uid: (res, ts)
-                for uid, (res, ts) in self._staff_cache.items()
-                if (now - ts).total_seconds() < _STAFF_CACHE_TTL * 4
-            }
+            self._staff_cache = {uid: (res, ts) for uid, (res, ts) in self._staff_cache.items() if (now - ts).total_seconds() < _STAFF_CACHE_TTL * 4}
+            # Prune expired staff pings
+            for ch_id in list(self._pending_staff_pings):
+                for role_id in list(self._pending_staff_pings[ch_id]):
+                    _, ping_time = self._pending_staff_pings[ch_id][role_id]
+                    if (now - ping_time).total_seconds() > PING_RESPONSE_WINDOW * 2:
+                        del self._pending_staff_pings[ch_id][role_id]
             await asyncio.sleep(3600)
-
-
 
     # ─── Notification loop ────────────────────────────────────────────────────
 
     async def _notification_loop(self):
-        """Runs every 30 minutes. Checks every staff member for:
-          - Rank-up since last check → DM congratulations
-          - Streak about to break (active today but not yet today AND streak > 0) → DM warning
-          - Milestone achievements newly earned → DM
-        """
         await self.bot.wait_until_ready()
-        await asyncio.sleep(120)   # give DB time to settle on startup
+        await asyncio.sleep(120)
         while not self.bot.is_closed():
             try:
                 await self._run_notifications()
             except Exception:
                 logger.exception("Notification loop error")
-            await asyncio.sleep(1800)   # 30 min
+            await asyncio.sleep(1800)
 
     async def _run_notifications(self):
         for guild in self.bot.guilds:
@@ -1717,20 +1869,19 @@ class StaffAnalytics(commands.Cog):
                 try:
                     await self._check_member_notifications(member, weights)
                 except Exception:
-                    logger.debug("Notification check failed for %d: %s", member.id, exc_info=True)
+                    logger.debug("Notification check failed for %d", member.id, exc_info=True)
 
     async def _check_member_notifications(self, member: discord.Member, weights: Dict):
-        stats  = await self.db.get_staff_stats(member.id, 30, weights)
-        cons   = await self.db.get_consistency_stats(member.id)
+        stats = await self.db.get_staff_stats(member.id, 30, weights)
+        cons  = await self.db.get_consistency_stats(member.id)
         if cons:
             stats.consistency = cons
 
-        now      = discord.utils.utcnow()
-        today    = now.date().isoformat()
-        tier     = stats.rank_tier.value
-        streak   = cons.current_streak if cons else 0
+        now   = discord.utils.utcnow()
+        today = now.date().isoformat()
+        tier  = stats.rank_tier.value
+        streak = cons.current_streak if cons else 0
 
-        # ── Rank-up notification ──────────────────────────────────────────────
         prev_tier = self._last_known_rank.get(member.id)
         if prev_tier is not None and prev_tier != tier:
             tier_order = ["Bronze", "Silver", "Gold", "Platinum", "Diamond"]
@@ -1738,29 +1889,19 @@ class StaffAnalytics(commands.Cog):
                 await self._dm_rank_up(member, prev_tier, tier, stats)
         self._last_known_rank[member.id] = tier
 
-        # ── Streak warning ────────────────────────────────────────────────────
-        warn_threshold = self.config.get_setting("streak_warn_days", 1)
-        if (
-            streak >= 3                                      # only warn if streak is worth protecting
-            and member.id not in self._streak_warned_today.get(today, set())
-        ):
-            # Check if they've sent any message today yet
+        if streak >= 3 and member.id not in self._streak_warned_today.get(today, set()):
             cutoff_today = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
             row = await (await self.db.pool.execute(
                 "SELECT COUNT(*) as c FROM staff_messages WHERE staff_id=? AND timestamp>?",
                 (member.id, cutoff_today),
             )).fetchone()
             active_today = (row["c"] or 0) > 0
-
-            # Warn if it's late in the day (after 8pm) and they haven't been active
             if not active_today and now.hour >= 20:
                 self._streak_warned_today.setdefault(today, set()).add(member.id)
                 await self._dm_streak_warning(member, streak)
 
-        # ── Achievement notifications ─────────────────────────────────────────
         prev_streak = self._last_known_streak.get(member.id, 0)
         self._last_known_streak[member.id] = streak
-        # Check for newly-crossed achievement thresholds this loop tick
         await self._check_achievement_unlocks(member, stats, prev_streak)
 
     async def _dm_rank_up(self, member: discord.Member, from_tier: str, to_tier: str, stats):
@@ -1769,51 +1910,43 @@ class StaffAnalytics(commands.Cog):
         from_info = RANK_TIERS[from_tier]
         to_info   = RANK_TIERS[to_tier]
         embed = discord.Embed(
-            title       = f"🎉 Rank Up! {to_info['emoji']} {to_tier}",
-            description = (
+            title=f"🎉 Rank Up! {to_info['emoji']} {to_tier}",
+            description=(
                 f"You've ranked up from **{from_info['emoji']} {from_tier}** "
                 f"to **{to_info['emoji']} {to_tier}** — {to_info['label']}!\n\n"
                 f"**Score:** `{stats.engagement_score:.0f} pts`"
             ),
-            color     = to_info["colour"],
-            timestamp = discord.utils.utcnow(),
+            color=to_info["colour"], timestamp=discord.utils.utcnow(),
         )
         embed.add_field(
-            name  = "📊 This month",
-            value = (
-                f"🤝 **{stats.help_events}** help events\n"
+            name="📊 This month",
+            value=(
+                f"💬 **{stats.total_messages}** messages\n"
                 f"🛡️ **{stats.moderation_actions}** mod actions\n"
                 f"🔥 **{stats.consistency.current_streak if stats.consistency else 0}d** streak"
-            ),
-            inline = True,
+            ), inline=True,
         )
         next_tier_name, next_threshold = self._next_tier(stats.engagement_score)
         if next_tier_name:
             next_info = RANK_TIERS[next_tier_name]
             needed = next_threshold - stats.engagement_score
-            embed.add_field(
-                name  = f"🎯 Next: {next_info['emoji']} {next_tier_name}",
-                value = f"`{needed:.0f} pts` to go",
-                inline = True,
-            )
+            embed.add_field(name=f"🎯 Next: {next_info['emoji']} {next_tier_name}", value=f"`{needed:.0f} pts` to go", inline=True)
         embed.set_footer(text="Keep it up! Use /mystats to track your progress.")
         try:
             await member.send(embed=embed)
         except discord.Forbidden:
-            pass   # DMs closed — silently skip
+            pass
 
     async def _dm_streak_warning(self, member: discord.Member, streak: int):
         if not self.config.dm_notifications_enabled:
             return
         embed = discord.Embed(
-            title       = f"⚠️ Streak at risk — {streak} days",
-            description = (
+            title=f"⚠️ Streak at risk — {streak} days",
+            description=(
                 f"Your **{streak}-day activity streak** will reset at midnight "
-                f"if you don't send a message in the server today.\n\n"
-                f"Even a single message keeps it alive. 🔥"
+                f"if you don't send a message in the server today.\n\nEven a single message keeps it alive. 🔥"
             ),
-            color     = EMBED_COLORS["warning"],
-            timestamp = discord.utils.utcnow(),
+            color=EMBED_COLORS["warning"], timestamp=discord.utils.utcnow(),
         )
         embed.set_footer(text="This reminder only fires after 8 PM when you haven't been active.")
         try:
@@ -1822,7 +1955,6 @@ class StaffAnalytics(commands.Cog):
             pass
 
     async def _check_achievement_unlocks(self, member: discord.Member, stats, prev_streak: int):
-        """DM staff when they cross an achievement threshold for the first time ever."""
         if not self.config.dm_notifications_enabled:
             return
         streak = stats.consistency.current_streak if stats.consistency else 0
@@ -1836,26 +1968,28 @@ class StaffAnalytics(commands.Cog):
             "threads_created":       stats.threads_created,
             "reactions_given":       stats.reactions_given,
             "current_streak":        streak,
-            "off_peak_messages":     stats.off_peak_messages,
+            "off_peak_messages":     stats.consistency.off_peak_activity if stats.consistency else 0,
             "conversation_starters": stats.conversation_starters,
             "new_member_greetings":  stats.new_member_greetings,
             "dead_chat_revivals":    stats.dead_chat_revivals,
             "reactions_received":    stats.reactions_received,
+            "unique_talked_with":    stats.unique_talked_with,
+            "ping_responses":        stats.ping_responses,
+            "vc_people_sessions":    stats.vc_people_sessions,
+            "unique_newbies_chatted":stats.unique_newbies_chatted,
         }
         for key, info in ACHIEVEMENT_THRESHOLDS.items():
             val = metric_map.get(info["metric"], 0)
             if val >= info["value"]:
-                # DB check — survives restarts
                 if not await self.db.has_notified_achievement(member.id, key):
                     await self.db.mark_achievement_notified(member.id, key)
                     await self._dm_achievement(member, info)
 
     async def _dm_achievement(self, member: discord.Member, info: dict):
         embed = discord.Embed(
-            title       = f"{info['emoji']} Achievement Unlocked!",
-            description = f"**{info['desc']}**",
-            color       = EMBED_COLORS["success"],
-            timestamp   = discord.utils.utcnow(),
+            title=f"{info['emoji']} Achievement Unlocked!",
+            description=f"**{info['desc']}**",
+            color=EMBED_COLORS["success"], timestamp=discord.utils.utcnow(),
         )
         embed.set_footer(text="Use /staffachievements to see all your badges.")
         try:
@@ -1863,17 +1997,11 @@ class StaffAnalytics(commands.Cog):
         except discord.Forbidden:
             pass
 
-    # ─── Dashboard loop ───────────────────────────────────────────────────────
+    # ─── Dashboard ────────────────────────────────────────────────────────────
 
     async def _dashboard_loop(self):
-        """Posts and continuously updates a live staff dashboard embed in
-        DASHBOARD_CHANNEL_ID.  Refreshes every DASHBOARD_UPDATE_INTERVAL seconds
-        (default 1 hour).  On first run it posts a new message and pins it;
-        on subsequent runs it edits the existing message in-place so the channel
-        stays clean.
-        """
         await self.bot.wait_until_ready()
-        await asyncio.sleep(180)   # let everything settle first
+        await asyncio.sleep(180)
         while not self.bot.is_closed():
             try:
                 await self._update_dashboard()
@@ -1886,59 +2014,38 @@ class StaffAnalytics(commands.Cog):
         channel_id = self.config.get_channel_id("dashboard_channel")
         if not channel_id:
             return
-
         for guild in self.bot.guilds:
             channel = guild.get_channel(channel_id)
             if not channel:
                 continue
-                
             embed = await self._build_dashboard_embed(guild)
             if not embed:
                 continue
-
             msg_id = self._dashboard_message_ids.get(guild.id)
             if msg_id:
                 try:
-                    # Try to fetch the exact message by ID
                     msg = await channel.fetch_message(msg_id)
                     await msg.edit(embed=embed)
-                    logger.info(f"Dashboard updated for guild {guild.id}")
                     continue
                 except discord.NotFound:
-                    # Message was deleted - remove from cache and create new one
-                    logger.info(f"Dashboard message {msg_id} not found in guild {guild.id}, creating new one")
                     self._dashboard_message_ids.pop(guild.id, None)
-                except discord.Forbidden:
-                    logger.warning(f"No permission to fetch/edit dashboard in guild {guild.id}")
+                except (discord.Forbidden, discord.HTTPException):
                     continue
-                except discord.HTTPException as e:
-                    logger.warning(f"HTTP error updating dashboard in guild {guild.id}: {e}")
-                    continue
-
-            # If we get here, either no cached ID or message was deleted
-            # Check if there's already a pinned dashboard message we can use
             try:
                 async for message in channel.history(limit=20):
                     if message.author == self.bot.user and message.pinned and message.embeds:
-                        # Found an existing pinned dashboard message
                         if "Staff Dashboard" in (message.embeds[0].title or ""):
                             await message.edit(embed=embed)
                             self._dashboard_message_ids[guild.id] = message.id
-                            logger.info(f"Found and updated existing dashboard message in guild {guild.id}")
                             return
-            except Exception as e:
-                logger.warning(f"Error searching for existing dashboard: {e}")
-
-            # Post fresh
+            except Exception:
+                pass
             try:
                 msg = await channel.send(embed=embed)
                 await msg.pin()
                 self._dashboard_message_ids[guild.id] = msg.id
-                logger.info(f"Created new dashboard message in guild {guild.id}")
-            except discord.Forbidden:
-                logger.warning(f"Cannot send/pin message in dashboard channel for guild {guild.id}")
-            except discord.HTTPException as e:
-                logger.warning(f"HTTP error posting dashboard in guild {guild.id}: {e}")
+            except (discord.Forbidden, discord.HTTPException):
+                pass
 
     async def _build_dashboard_embed(self, guild: discord.Guild) -> Optional[discord.Embed]:
         staff = [m for m in guild.members if self.is_staff(m)]
@@ -1949,66 +2056,65 @@ class StaffAnalytics(commands.Cog):
         health   = await self.db.get_server_health([m.id for m in staff], 7)
         inactive_ids = await self.db.get_inactive_staff([m.id for m in staff], 7)
 
-        # Build stats for all staff
-        stats_list = []
+        # Use cached stats to avoid querying every member on each hourly refresh
+        staff_ids   = [m.id for m in staff]
+        cached_rows = await self.db.get_cached_staff_stats(guild.id, staff_ids, 30, weights)
+        stats_map   = {sid: s for sid, s in cached_rows}
         for member in staff:
-            s = await self.db.get_staff_stats(member.id, 30, weights)
-            c = await self.db.get_consistency_stats(member.id)
-            if c:
-                s.consistency = c
-            stats_list.append((member, s))
+            if member.id in stats_map:
+                c = await self.db.get_consistency_stats(member.id)
+                if c:
+                    stats_map[member.id].consistency = c
+
+        stats_list = [(m, stats_map[m.id]) for m in staff if m.id in stats_map]
         stats_list.sort(key=lambda x: x[1].engagement_score, reverse=True)
 
         now        = discord.utils.utcnow()
         active_pct = (health["active_staff"] / health["total_staff"] * 100) if health["total_staff"] else 0
 
         embed = discord.Embed(
-            title       = f"📊 Staff Dashboard — {guild.name}",
-            description = (
+            title=f"📊 Staff Dashboard — {guild.name}",
+            description=(
                 f"**Live leaderboard** · Last updated <t:{int(now.timestamp())}:R>\n"
                 f"Scores reflect the last **30 days**  ·  Health stats reflect last **7 days**"
             ),
-            color     = EMBED_COLORS["primary"],
-            timestamp = now,
+            color=EMBED_COLORS["primary"],
+            timestamp=now,
         )
 
-        # ── Top performers ────────────────────────────────────────────────────
+        # Leaderboard
         podium_lines = []
         for idx, (member, s) in enumerate(stats_list[:10], 1):
             streak     = s.consistency.current_streak if s.consistency else 0
+            wcons      = s.consistency.weekly_consistency_score if s.consistency else 0.0
             tier_emoji = RANK_TIERS[s.rank_tier.value]["emoji"]
             prefix     = MEDAL_EMOJIS[idx - 1] if idx <= 3 else f"`{idx:>2}.`"
             streak_str = f" 🔥{streak}d" if streak >= 3 else ""
             podium_lines.append(
                 f"{prefix} {tier_emoji} **{member.display_name}**"
                 f"  `{s.engagement_score:.0f}`"
-                f"  💬{s.total_messages} 🤝{s.help_events} 🛡️{s.moderation_actions}"
-                f"{streak_str}"
+                f"  💬{s.total_messages} 🛡️{s.moderation_actions}"
+                f"  📅{wcons:.0f}%{streak_str}"
             )
-        embed.add_field(
-            name   = "🏆 Leaderboard (30d score)",
-            value  = "\n".join(podium_lines) or "No data yet.",
-            inline = False,
-        )
+        embed.add_field(name="🏆 Leaderboard (30d score)", value="\n".join(podium_lines) or "No data yet.", inline=False)
 
-        # ── 7-day server health ───────────────────────────────────────────────
+        # Health
         coverage_bar = create_progress_bar(health["active_staff"], health["total_staff"], length=10)
         avg_rt_str   = format_seconds(health["avg_response_secs"]) if health["avg_response_secs"] else "N/A"
         embed.add_field(
-            name  = "📈 7-Day Health",
-            value = (
-                f"`Coverage ` `{coverage_bar}` **{health['active_staff']}/{health['total_staff']}** ({active_pct:.0f}%)\n"
-                f"`Help     ` **{health['total_help']}** events  ·  "
-                f"`Mod      ` **{health['total_moderation']}** actions\n"
-                f"`Response ` avg **{avg_rt_str}**  ·  "
-                f"`VC       ` **{health['vc_hours']:.1f}h**\n"
-                f"`🌱 New   ` **{health['new_members_helped']}** helped  ·  "
-                f"`🚀 First ` **{health['first_responses']}** responses"
+            name="📈 7-Day Health",
+            value=(
+                f"`Coverage  ` `{coverage_bar}` **{health['active_staff']}/{health['total_staff']}** ({active_pct:.0f}%)\n"
+                f"`Mod       ` **{health['total_moderation']}** actions  ·  "
+                f"`Response  ` avg **{avg_rt_str}**\n"
+                f"`VC        ` **{health['vc_hours']:.1f}h**  ·  "
+                f"`Pings     ` **{health.get('ping_responses', 0)}** answered 📟\n"
+                f"`Bumps     ` **{health.get('total_bumps', 0)}** 🚀"
             ),
-            inline = False,
+            inline=False,
         )
 
-        # ── Rank distribution bar ─────────────────────────────────────────────
+        # Tier distribution
         tier_counts: Dict[str, int] = {t: 0 for t in RANK_TIERS}
         for _, s in stats_list:
             tier_counts[s.rank_tier.value] += 1
@@ -2018,97 +2124,29 @@ class StaffAnalytics(commands.Cog):
             if count:
                 info = RANK_TIERS[tier_name]
                 tier_parts.append(f"{info['emoji']} {count}")
-        embed.add_field(
-            name   = "🎖️ Tier Distribution",
-            value  = "  ·  ".join(tier_parts) or "No ranked staff",
-            inline = True,
-        )
+        embed.add_field(name="🎖️ Tier Distribution", value="  ·  ".join(tier_parts) or "No ranked staff", inline=True)
 
-        # ── Streak spotlight ──────────────────────────────────────────────────
+        # Streak leaders
         streak_leaders = sorted(
             [(m, s) for m, s in stats_list if s.consistency and s.consistency.current_streak >= 3],
-            key=lambda x: x[1].consistency.current_streak,
-            reverse=True,
+            key=lambda x: x[1].consistency.current_streak, reverse=True,
         )[:3]
         if streak_leaders:
-            streak_lines = [
-                f"🔥 **{m.display_name}** — {s.consistency.current_streak}d"
-                for m, s in streak_leaders
-            ]
+            streak_lines = [f"🔥 **{m.display_name}** — {s.consistency.current_streak}d" for m, s in streak_leaders]
             embed.add_field(name="🔥 Streak Leaders", value="\n".join(streak_lines), inline=True)
 
-        # ── At-risk / inactive ────────────────────────────────────────────────
+        # Inactive
         if inactive_ids:
             inactive = [m for m in staff if m.id in inactive_ids]
             embed.add_field(
-                name   = f"⚠️ Inactive 7d+ ({len(inactive_ids)})",
-                value  = "  ".join(m.mention for m in inactive[:6])
-                       + (f"\n…+{len(inactive_ids) - 6} more" if len(inactive_ids) > 6 else ""),
-                inline = False,
+                name=f"⚠️ Inactive 7d+ ({len(inactive_ids)})",
+                value="  ".join(m.mention for m in inactive[:6]) + (f"\n…+{len(inactive_ids) - 6} more" if len(inactive_ids) > 6 else ""),
+                inline=False,
             )
 
         embed.set_footer(text=f"Auto-refreshes every {self.config.get_setting('dashboard_update_interval', 3600)//60} min  ·  /staffstats for individual profiles")
         return embed
 
-    def _is_question_message(self, content: str) -> bool:
-        """
-        Decide whether a non-staff message looks like a genuine help request.
-
-        BUG FIX: original used bare `"?" in content` which fires on any sentence
-        ending with a question mark, including:
-          • formatting like "option1?option2?"
-          • single-character messages like "?"
-          • rhetorical or sarcastic "really?" responses
-        We now require the message to be at least 5 chars long AND either match
-        the QUESTION_RE pattern OR contain a known help-intent keyword.
-        """
-        if len(content) < 5:
-            return False
-        lower = content.lower()
-        has_kw = any(kw in lower for kw in QUESTION_KEYWORDS)
-        has_q  = bool(QUESTION_RE.search(content))
-        return has_kw or has_q
-
-
-    async def _try_track_disboard_bump(self, message: discord.Message) -> None:
-            """Credit the staff member who triggered a successful Disboard bump."""
-            DISBOARD_ID = 302050872383242240
-            if message.author.id != DISBOARD_ID:
-                return
-
-            is_bump = False
-            for embed in message.embeds:
-                text = " ".join(filter(None, [embed.title, embed.description])).lower()
-                if "bump done" in text:
-                    is_bump = True
-                    break
-
-            if not is_bump:
-                return
-
-            bumper = None
-            if message.interaction_metadata:
-                bumper = message.interaction_metadata.user
-
-            if bumper is None and message.reference:
-                try:
-                    ref = await message.channel.fetch_message(message.reference.message_id)
-                    if ref.interaction_metadata:
-                        bumper = ref.interaction_metadata.user
-                except discord.HTTPException:
-                    pass
-
-            if bumper is None:
-                logger.warning("BumpTracker: bump detected but could not identify bumper.")
-                return
-
-            await self.db.insert_bump(
-                Bump(
-                    staff_id=bumper.id,
-                    timestamp=message.created_at,
-                    bump_type="disboard",
-                )
-            )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(StaffAnalytics(bot))

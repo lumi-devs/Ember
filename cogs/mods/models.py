@@ -57,7 +57,7 @@ class Interaction:
     user_id: int
     channel_id: int
     message_id: int
-    interaction_type: str   # reply | mention | proximity
+    interaction_type: str
     timestamp: datetime
 
     def to_dict(self) -> Dict[str, Any]:
@@ -99,7 +99,7 @@ class ModerationAction:
     timestamp: datetime
     reason: Optional[str] = None
     session_id: Optional[str] = None
-    severity: float = 1.0   # from MODERATION_SEVERITY
+    severity: float = 1.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -115,6 +115,7 @@ class VCSession:
     channel_id: int
     join_time: datetime
     leave_time: Optional[datetime]
+    peak_occupancy: int = 1   # max people in VC during this session
 
     def duration(self) -> float:
         if not self.leave_time:
@@ -127,6 +128,7 @@ class VCSession:
             "join_time": self.join_time.isoformat(),
             "leave_time": self.leave_time.isoformat() if self.leave_time else None,
             "duration_minutes": self.duration(),
+            "peak_occupancy": self.peak_occupancy,
         }
 
 
@@ -189,13 +191,28 @@ class HelpEvent:
         }
 
 
-# ─── New metric models ────────────────────────────────────────────────────────
+@dataclass
+class PingResponseEvent:
+    """Staff responded to a @Moderator/@Staff ping within PING_RESPONSE_WINDOW."""
+    staff_id: int
+    channel_id: int
+    message_id: int
+    response_seconds: float
+    pinger_id: int
+    timestamp: datetime
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "staff_id": self.staff_id, "channel_id": self.channel_id,
+            "message_id": self.message_id, "response_seconds": self.response_seconds,
+            "pinger_id": self.pinger_id, "timestamp": self.timestamp.isoformat(),
+        }
+
 
 @dataclass
 class ReactionEvent:
-    """Staff added an emoji reaction to a community message."""
     staff_id: int
-    user_id: int       # message author
+    user_id: int
     channel_id: int
     message_id: int
     emoji: str
@@ -211,11 +228,10 @@ class ReactionEvent:
 
 @dataclass
 class ThreadEvent:
-    """Staff created or participated in a thread."""
     staff_id: int
     thread_id: int
     channel_id: int
-    event_type: str   # created | participated
+    event_type: str
     timestamp: datetime
 
     def to_dict(self) -> Dict[str, Any]:
@@ -228,7 +244,6 @@ class ThreadEvent:
 
 @dataclass
 class ResponseTime:
-    """How quickly staff replied to a user question."""
     staff_id: int
     user_id: int
     channel_id: int
@@ -246,12 +261,11 @@ class ResponseTime:
 
 @dataclass
 class QualityEvent:
-    """A message with meaningful quality signals (code, links, structured text)."""
     staff_id: int
     message_id: int
     channel_id: int
-    quality_score: float          # sum of QUALITY_SIGNALS matched
-    signals: List[str]            # which signals fired
+    quality_score: float
+    signals: List[str]
     word_count: int
     timestamp: datetime
 
@@ -266,9 +280,8 @@ class QualityEvent:
 
 @dataclass
 class FirstResponseEvent:
-    """Staff was the FIRST person to respond to a question in a channel within FIRST_RESPONSE_WINDOW."""
     staff_id: int
-    user_id: int       # the person who asked
+    user_id: int
     channel_id: int
     message_id: int
     response_seconds: float
@@ -291,12 +304,14 @@ class EngagementEvent:
       "dead_chat_revival"   — staff posted in a silent channel and got a reply
       "conversation_starter"— staff initiated a discussion (non-reply) in a general channel
       "new_member_greeting" — staff sent a social welcome to a brand-new member
+      "new_member_chat"     — staff talked WITH a new member (interaction)
+      "ping_response"       — staff responded to a @staff/@mod ping quickly
     """
     staff_id:   int
     channel_id: int
     message_id: int
     event_type: str
-    user_id:    Optional[int]   # target user for greeting events; None otherwise
+    user_id:    Optional[int]
     timestamp:  datetime
 
     def to_dict(self) -> Dict[str, Any]:
@@ -309,7 +324,6 @@ class EngagementEvent:
 
 @dataclass
 class ReactionReceived:
-    """A community member reacted to a staff member's message."""
     staff_id:   int
     reactor_id: int
     channel_id: int
@@ -327,7 +341,6 @@ class ReactionReceived:
 
 @dataclass
 class StaffNote:
-    """Admin-written note on a staff member."""
     id: Optional[int]
     staff_id: int
     author_id: int
@@ -358,6 +371,9 @@ class ConsistencyStats:
     off_peak_activity: int = 0
     hourly_spread_score: float = 0.0
 
+    # Weekly consistency: list of 7 bools (Mon-Sun) for last 4 weeks
+    weekly_active_days: List[int] = field(default_factory=list)
+
     @property
     def consistency_score(self) -> float:
         from .constants import SCORE_WEIGHTS
@@ -368,6 +384,13 @@ class ConsistencyStats:
         score += self.off_peak_activity   * SCORE_WEIGHTS["off_peak_coverage"]
         score += self.longest_streak      * SCORE_WEIGHTS["streak_bonus"]
         return round(score, 2)
+
+    @property
+    def weekly_consistency_score(self) -> float:
+        """0-100: what % of the last 28 days were active."""
+        if not self.weekly_active_days:
+            return 0.0
+        return round(sum(1 for d in self.weekly_active_days if d) / len(self.weekly_active_days) * 100, 1)
 
     @property
     def active_hours_count(self) -> int:
@@ -394,7 +417,7 @@ class StaffStats:
     unique_members_helped:  int   = 0
     vc_hours:               float = 0.0
     moderation_actions:     int   = 0
-    moderation_severity_sum:float = 0.0   # weighted severity total
+    moderation_severity_sum:float = 0.0
     reports_filed:          int   = 0
     bumps_performed:        int   = 0
     role_pings:             int   = 0
@@ -408,20 +431,32 @@ class StaffStats:
     threads_created:        int   = 0
     new_members_helped:     int   = 0
     fast_responses:         int   = 0
-    first_responses:        int   = 0     # first staff to respond
-    quality_events:         int   = 0     # messages with quality signals
-    avg_quality_score:      float = 0.0   # avg quality signal score
+    first_responses:        int   = 0
+    quality_events:         int   = 0
+    avg_quality_score:      float = 0.0
     avg_message_words:      float = 0.0
     avg_response_seconds:   float = 0.0
-    off_peak_messages:      int   = 0     # messages sent during off-peak
+    off_peak_messages:      int   = 0
     # ── Community-building ──────────────────────────────────────────────────
-    new_member_chats: int = 0
-    dead_chat_revivals:     int   = 0     # revived a dead channel, got a reply
-    conversation_starters:  int   = 0     # started discussions in general channels
-    new_member_greetings:   int   = 0     # social welcomes (distinct from help)
-    reactions_received:     int   = 0     # community reactions on staff messages
-    percentile_rank:        Optional[float] = None   # e.g. 0.92 = top 8%
-    rank_position:          Optional[int]   = None   # e.g. 3 (out of N)
+    new_member_chats:       int   = 0
+    dead_chat_revivals:     int   = 0
+    conversation_starters:  int   = 0
+    new_member_greetings:   int   = 0
+    reactions_received:     int   = 0
+    # ── New metrics ──────────────────────────────────────────────────────────
+    unique_talked_with:     int   = 0    # unique non-staff people talked TO (interactions)
+    ping_responses:         int   = 0    # responded to @staff pings quickly
+    vc_people_bonus:        float = 0.0  # total VC people-bonus accumulated
+    unique_newbies_chatted: int   = 0    # unique new members talked with
+    vc_people_sessions:     int   = 0    # VC sessions where others were present
+    # ── Mod breakdown ────────────────────────────────────────────────────────
+    mod_action_breakdown:   Dict[str, int] = field(default_factory=dict)   # e.g. {"warn":5,"ban":2}
+    # ── Trend / drop-off ────────────────────────────────────────────────────
+    weekly_score_avg:       float = 0.0   # 4-week rolling average score
+    this_week_score:        float = 0.0   # score just for current 7 days
+    # ── Meta ────────────────────────────────────────────────────────────────
+    percentile_rank:        Optional[float] = None
+    rank_position:          Optional[int]   = None
     total_staff:            Optional[int]   = None
     consistency:            Optional[ConsistencyStats] = None
     _weights:               Optional[Dict[str, float]] = field(default=None, repr=False)
@@ -444,6 +479,7 @@ class StaffStats:
             + self.moderation_severity_sum* self._w("moderation_severity")
             + self.reports_filed          * self._w("reports")
             + self.vc_hours               * self._w("vc_hours")
+            + self.vc_people_bonus        * self._w("vc_people_bonus")
             + self.conversation_sessions  * self._w("conversation_sessions")
             + self.bumps_performed        * self._w("server_bumps")
             + self.reactions_given        * self._w("reactions_given")
@@ -451,13 +487,15 @@ class StaffStats:
             + self.new_members_helped     * self._w("new_member_helped")
             + self.fast_responses         * self._w("fast_response")
             + self.first_responses        * self._w("first_response")
+            + self.ping_responses         * self._w("ping_response")
+            + self.unique_talked_with     * self._w("unique_talked_with")
             + word_bonus
             + quality_bonus
-            # Community-building
             + self.dead_chat_revivals     * self._w("dead_chat_revival")
             + self.conversation_starters  * self._w("conversation_starter")
             + self.new_member_greetings   * self._w("new_member_greeting")
             + self.reactions_received     * self._w("reactions_received")
+            + self.new_member_chats       * self._w("newbie_chat")
         )
         if self.consistency:
             base += self.consistency.consistency_score
@@ -469,10 +507,8 @@ class StaffStats:
 
     @property
     def quality_score_display(self) -> str:
-        """Human-readable quality rating 0–10."""
         if self.avg_quality_score == 0 and self.quality_events == 0:
             return "N/A"
-        # Normalize: quality events / total messages as a proxy
         if self.total_messages == 0:
             return "N/A"
         rate = min(self.quality_events / self.total_messages, 1.0)
@@ -503,11 +539,15 @@ class StaffStats:
             "threads_created":      self.threads_created,
             "reactions_given":      self.reactions_given,
             "current_streak":       streak,
-            "off_peak_messages": self.consistency.off_peak_activity if self.consistency else 0,
+            "off_peak_messages":    self.consistency.off_peak_activity if self.consistency else 0,
             "conversation_starters":self.conversation_starters,
             "new_member_greetings": self.new_member_greetings,
             "dead_chat_revivals":   self.dead_chat_revivals,
             "reactions_received":   self.reactions_received,
+            "unique_talked_with":   self.unique_talked_with,
+            "ping_responses":       self.ping_responses,
+            "vc_people_sessions":   self.vc_people_sessions,
+            "unique_newbies_chatted":self.unique_newbies_chatted,
         }
         for key, info in ACHIEVEMENT_THRESHOLDS.items():
             val = metric_map.get(info["metric"], 0)
@@ -519,24 +559,16 @@ class StaffStats:
         return {
             "staff_id": self.staff_id,
             "unique_members_helped": self.unique_members_helped,
-            "vc_hours": self.vc_hours,
-            "moderation_actions": self.moderation_actions,
+            "vc_hours": self.vc_hours, "moderation_actions": self.moderation_actions,
             "moderation_severity_sum": self.moderation_severity_sum,
-            "reports_filed": self.reports_filed,
-            "bumps_performed": self.bumps_performed,
-            "role_pings": self.role_pings,
-            "conversation_sessions": self.conversation_sessions,
-            "help_events": self.help_events,
-            "proactive_help": self.proactive_help,
-            "total_messages": self.total_messages,
-            "active_days": self.active_days,
+            "reports_filed": self.reports_filed, "bumps_performed": self.bumps_performed,
+            "role_pings": self.role_pings, "conversation_sessions": self.conversation_sessions,
+            "help_events": self.help_events, "proactive_help": self.proactive_help,
+            "total_messages": self.total_messages, "active_days": self.active_days,
             "channels_participated": self.channels_participated,
-            "reactions_given": self.reactions_given,
-            "threads_created": self.threads_created,
-            "new_members_helped": self.new_members_helped,
-            "fast_responses": self.fast_responses,
-            "first_responses": self.first_responses,
-            "quality_events": self.quality_events,
+            "reactions_given": self.reactions_given, "threads_created": self.threads_created,
+            "new_members_helped": self.new_members_helped, "fast_responses": self.fast_responses,
+            "first_responses": self.first_responses, "quality_events": self.quality_events,
             "avg_quality_score": self.avg_quality_score,
             "avg_message_words": self.avg_message_words,
             "avg_response_seconds": self.avg_response_seconds,
@@ -545,6 +577,12 @@ class StaffStats:
             "conversation_starters": self.conversation_starters,
             "new_member_greetings": self.new_member_greetings,
             "reactions_received": self.reactions_received,
+            "unique_talked_with": self.unique_talked_with,
+            "ping_responses": self.ping_responses,
+            "vc_people_bonus": self.vc_people_bonus,
+            "unique_newbies_chatted": self.unique_newbies_chatted,
+            "vc_people_sessions": self.vc_people_sessions,
             "engagement_score": self.engagement_score,
             "rank_tier": self.rank_tier.value,
+            "mod_action_breakdown": self.mod_action_breakdown,
         }
