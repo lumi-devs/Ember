@@ -27,7 +27,6 @@ class ActivityRoles(commands.Cog):
     async def cog_load(self):
         """Called when the cog is loaded - performs initial cleanup"""
         # BUG FIX: wait until bot is fully ready so self.bot.guilds is populated
-        await self.bot.wait_until_ready()
         self.bot.loop.create_task(self.cleanup_activity_roles())
 
     # ── Cache invalidation ────────────────────────────────────────────────────
