@@ -13,7 +13,9 @@ class CutePing(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.start_time = time.time()
+        # Use bot.start_time if the main bot file sets it; otherwise fall back to
+        # cog load time (uptime would reset on cog reload in that case).
+        self.start_time = getattr(bot, "start_time", time.time())
         self.process = psutil.Process(os.getpid())
 
     def get_uptime(self) -> str:
@@ -164,7 +166,6 @@ class CutePing(commands.Cog):
 
         # Get system stats
         cpu_usage = self.process.cpu_percent(interval=0.5)
-        self.process.memory_percent()
         memory_mb = self.process.memory_info().rss / 1024 / 1024
 
         # Count guilds, users, channels

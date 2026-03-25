@@ -2,7 +2,6 @@ import discord
 from discord.ext import commands
 import asyncio
 from typing import Set, Dict, Optional
-from collections import defaultdict
 import time
 
 
@@ -20,10 +19,28 @@ class ActivityRoles(commands.Cog):
         self._guild_roles_cache: Dict[int, Dict[str, Optional[discord.Role]]] = {}
         self.cleanup_done: bool = False
 
+        # BUG FIX: these were class-level variables, meaning every instance shared
+        # the same dict/float. Moved into __init__ so each instance owns its own data.
+        self._role_count_cache: Dict[int, Dict[int, int]] = {}
+        self._last_count_update: float = 0
+
     async def cog_load(self):
         """Called when the cog is loaded - performs initial cleanup"""
-        # Don't block startup with cleanup
+        # BUG FIX: wait until bot is fully ready so self.bot.guilds is populated
+        await self.bot.wait_until_ready()
         self.bot.loop.create_task(self.cleanup_activity_roles())
+
+    # ── Cache invalidation ────────────────────────────────────────────────────
+
+    @commands.Cog.listener()
+    async def on_guild_role_update(self, before: discord.Role, after: discord.Role):
+        """BUG FIX: invalidate role cache when a role is edited (e.g. renamed/deleted)."""
+        self._guild_roles_cache.pop(after.guild.id, None)
+
+    @commands.Cog.listener()
+    async def on_guild_role_delete(self, role: discord.Role):
+        """BUG FIX: invalidate role cache when a role is deleted."""
+        self._guild_roles_cache.pop(role.guild.id, None)
 
     def get_guild_roles(
         self, guild: discord.Guild
@@ -176,10 +193,6 @@ class ActivityRoles(commands.Cog):
         except discord.HTTPException as e:
             print(f"❌ Failed to update roles for {after.display_name}: {e}")
 
-    # Cache for role member counts
-    _role_count_cache: Dict[int, Dict[int, int]] = defaultdict(dict)
-    _last_count_update: float = 0
-
     async def get_role_member_count(
         self, guild: discord.Guild, role: discord.Role
     ) -> int:
@@ -190,10 +203,11 @@ class ActivityRoles(commands.Cog):
         if (
             current_time - self._last_count_update > 300
             or guild.id not in self._role_count_cache
-            or role.id not in self._role_count_cache[guild.id]
+            or role.id not in self._role_count_cache.get(guild.id, {})
         ):
+            if guild.id not in self._role_count_cache:
+                self._role_count_cache[guild.id] = {}
 
-            # Count members with this role
             count = 0
             async for member in guild.fetch_members(limit=None):
                 if role in member.roles:

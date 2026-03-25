@@ -130,8 +130,12 @@ class LogManagerCog(commands.Cog):
                 # Log the trimming action
 
         except Exception as e:
-            self.original_print(f"[Log Manager] Error trimming log: {e}")
+            try:
+                sys.__stdout__.write(f"[Log Manager] Error trimming log: {e}\n")
+            except OSError:
+                pass
 
+    @staticmethod
     async def is_bot_owner(ctx: commands.Context) -> bool:
         """Check if user is bot owner."""
         return await ctx.bot.is_owner(ctx.author)
@@ -203,7 +207,10 @@ class LogManagerCog(commands.Cog):
 
         except Exception as e:
             await ctx.send(f"❌ Error reading logs: {e}")
-            self.original_print(f"[Log Manager] Error in get_logs: {e}")
+            try:
+                sys.__stdout__.write(f"[Log Manager] Error in get_logs: {e}\n")
+            except OSError:
+                pass
             traceback.print_exc()
 
     @commands.command(name="logstats", aliases=["loginfo"])
@@ -418,7 +425,7 @@ class LogManagerCog(commands.Cog):
 
                 await initial_msg.edit(content=f"```{tail_text}```")
 
-            # Now follow new entries for 60 seconds
+            # Now follow new entries for 60 seconds, batching updates per tick
             last_position = self.log_file.stat().st_size
 
             for i in range(60):  # 60 seconds
@@ -426,25 +433,18 @@ class LogManagerCog(commands.Cog):
 
                 current_size = self.log_file.stat().st_size
                 if current_size > last_position:
-                    # Read new content
+                    # Read new content since last position
                     with open(self.log_file, "r", encoding="utf-8") as f:
                         f.seek(last_position)
                         new_content = f.read()
-                        last_position = current_size
+                    last_position = current_size
 
                     if new_content.strip():
-                        # Update message with new content
-                        new_lines = new_content.strip().split("\n")
-                        for line in new_lines:
-                            if line.strip():
-                                # Send short updates
-                                if len(line) < 150:
-                                    await ctx.send(f"```{line}```", delete_after=10)
-                                else:
-                                    # Truncate very long lines
-                                    await ctx.send(
-                                        f"```{line[:197]}...```", delete_after=10
-                                    )
+                        # Batch ALL new lines into one message to avoid rate limits
+                        batched = new_content.strip()
+                        if len(batched) > 1900:
+                            batched = "..." + batched[-1897:]
+                        await ctx.send(f"```{batched}```", delete_after=30)
 
             await ctx.send("⏹️ Log tailing stopped (60 second limit).")
 

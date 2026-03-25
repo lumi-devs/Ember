@@ -88,12 +88,14 @@ class NicknameChanger(commands.Cog):
             
             # BLOCK HIGHER LEVEL
             elif target_level > executor_level:
+                # target_level is always 1/2/3 here; executor_level is 1 or 2
+                # (level 0 was already rejected above, so target > executor means
+                # executor is 1 or 2 and target is 2 or 3)
                 if target_level == 3:
                     return False, "❌ You can't change a **Moderator's** nickname."
                 elif target_level == 2:
                     return False, "❌ You can't change a **Helper's** nickname."
-                elif target_level == 1:
-                    return False, "❌ You can't change a **Chat Manager's** nickname."
+                # target_level == 1 with executor_level < 1 is impossible here
 
         # SECONDARY RULE: Check if target has dangerous permissions
         if self.has_dangerous_permissions(target):
@@ -114,6 +116,7 @@ class NicknameChanger(commands.Cog):
             pass  # Message already deleted or bot lacks permissions
 
     @commands.command(name="nick")
+    @commands.guild_only()
     async def change_nickname(
         self, ctx, member: discord.Member, *, new_nick: str = None
     ):

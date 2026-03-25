@@ -56,39 +56,21 @@ class VoiceRoleManager(commands.Cog):
                 except Exception as e:
                     print(f"❌ Error adding role: {e}")
 
-        # User left the target voice channel
+        # User left the target voice channel (covers both: disconnected entirely
+        # OR moved to a different channel — both have before.channel.id matching)
         elif before.channel and before.channel.id == self.voice_channel_id:
             # Remove role if they have it
             if target_role in member.roles:
                 try:
-                    await member.remove_roles(
-                        target_role, reason=f"Left {target_channel.name}"
+                    reason = (
+                        f"Moved from {target_channel.name}"
+                        if after.channel
+                        else f"Left {target_channel.name}"
                     )
+                    await member.remove_roles(target_role, reason=reason)
                     await self.log_action(
-                        f"❌ {member.display_name} left {target_channel.name} and lost {target_role.name} role"
-                    )
-                except discord.Forbidden:
-                    print(
-                        f"❌ Missing permissions to remove role from {member.display_name}"
-                    )
-                except Exception as e:
-                    print(f"❌ Error removing role: {e}")
-
-        # User moved from target channel to another channel
-        elif (
-            before.channel
-            and before.channel.id == self.voice_channel_id
-            and after.channel
-            and after.channel.id != self.voice_channel_id
-        ):
-            # Remove role if they have it
-            if target_role in member.roles:
-                try:
-                    await member.remove_roles(
-                        target_role, reason=f"Moved from {target_channel.name}"
-                    )
-                    await self.log_action(
-                        f"➡️ {member.display_name} moved from {target_channel.name} and lost {target_role.name} role"
+                        f"❌ {member.display_name} left/moved from {target_channel.name}"
+                        f" and lost {target_role.name} role"
                     )
                 except discord.Forbidden:
                     print(

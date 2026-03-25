@@ -303,7 +303,6 @@ SCORE_WEIGHTS: dict = {
 
 # ─── KPI Targets (per 30 days) — used for progress display ───────────────────
 KPI_TARGETS: dict = {
-    "help_events":          50,
     "moderation_actions":   20,
     "vc_hours":             10.0,
     "conversation_sessions":30,
@@ -335,9 +334,10 @@ RANK_TIERS: dict = {
 # ─── Achievement definitions ──────────────────────────────────────────────────
 # Each achievement has a decay_days field — if earned > decay_days ago it shows faded
 ACHIEVEMENT_THRESHOLDS: dict = {
-    "first_blood":      {"metric": "help_events",           "value": 1,    "emoji": "🩸",  "desc": "First help event",            "decay_days": None},
-    "helper":           {"metric": "help_events",           "value": 50,   "emoji": "🤝",  "desc": "50 help events",              "decay_days": 60},
-    "sensei":           {"metric": "help_events",           "value": 250,  "emoji": "🧑‍🏫", "desc": "250 help events",             "decay_days": 90},
+    # help_events removed (metric no longer produced) — replaced with real tracked metrics
+    "greeter":          {"metric": "new_member_greetings",  "value": 5,    "emoji": "👋",  "desc": "5 new members greeted",       "decay_days": None},
+    "helper":           {"metric": "new_member_greetings",  "value": 25,   "emoji": "🤝",  "desc": "25 new members greeted",      "decay_days": 60},
+    "sensei":           {"metric": "unique_talked_with",    "value": 50,   "emoji": "🧑‍🏫", "desc": "Talked with 50 unique people", "decay_days": 90},
     "guardian":         {"metric": "moderation_actions",    "value": 25,   "emoji": "🛡️",  "desc": "25 mod actions",              "decay_days": 60},
     "enforcer":         {"metric": "moderation_actions",    "value": 100,  "emoji": "⚖️",  "desc": "100 mod actions",             "decay_days": 90},
     "voice_of_reason":  {"metric": "vc_hours",              "value": 10.0, "emoji": "🎙️",  "desc": "10 VC hours",                 "decay_days": 60},
@@ -391,3 +391,24 @@ HEATMAP_CHARS  = ("░", "▒", "▓", "█")
 PROGRESS_CHARS = ("░", "▒", "▓", "█")
 MEDAL_EMOJIS   = ("🥇", "🥈", "🥉")
 LEADERBOARD_LIMIT = 15
+
+# ─── Rank-up notification guard ───────────────────────────────────────────────
+# Minimum pts ABOVE the tier threshold before a rank-up DM fires.
+# Prevents oscillation when a score sits right on the boundary.
+RANKUP_HYSTERESIS = 12   # must be this many pts above tier minimum
+
+# ─── Daily challenges ─────────────────────────────────────────────────────────
+# Each challenge has a unique key, display label, metric (maps to StaffStats attr
+# or special key), target count, and emoji.  Resets every UTC midnight.
+DAILY_CHALLENGES: list = [
+    {"key": "msgs_20",     "label": "Send 20 messages",          "metric": "total_messages",     "target": 20,  "emoji": "💬", "pts": 10},
+    {"key": "mod_1",       "label": "Take 1 mod action",         "metric": "moderation_actions", "target": 1,   "emoji": "🛡️", "pts": 15},
+    {"key": "vc_30",       "label": "30 min in VC",              "metric": "vc_hours",            "target": 0.5, "emoji": "🎙️", "pts": 12},
+    {"key": "unique_5",    "label": "Chat with 5 unique users",  "metric": "unique_talked_with",  "target": 5,   "emoji": "🫂", "pts": 10},
+    {"key": "react_5",     "label": "Give 5 reactions",          "metric": "reactions_given",     "target": 5,   "emoji": "😀", "pts": 5},
+    {"key": "first_resp",  "label": "Be first to respond once",  "metric": "first_responses",     "target": 1,   "emoji": "🚀", "pts": 15},
+    {"key": "greet_1",     "label": "Greet a new member",        "metric": "new_member_greetings","target": 1,   "emoji": "👋", "pts": 10},
+    {"key": "quality_3",   "label": "Send 3 quality messages",   "metric": "quality_events",      "target": 3,   "emoji": "✨", "pts": 12},
+    {"key": "streak_keep", "label": "Keep your streak alive",    "metric": "_active_today",       "target": 1,   "emoji": "🔥", "pts": 20},
+    {"key": "ping_resp",   "label": "Answer a @staff ping",      "metric": "ping_responses",      "target": 1,   "emoji": "📟", "pts": 15},
+]

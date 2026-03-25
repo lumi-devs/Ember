@@ -50,6 +50,9 @@ class SmartLoungeCog(commands.Cog):
         self.stats = self.load_stats()
         self.next_manage_time = 0
 
+        # Max errors kept in stats["errors"] to prevent unbounded growth
+        self._max_errors = 50
+
     def load_stats(self):
         """Load statistics from JSON file or create default."""
         default_stats = {
@@ -145,6 +148,12 @@ class SmartLoungeCog(commands.Cog):
         except Exception as e:
             self.logger.error(f"❌ Async save error: {e}")
 
+    def _record_error(self, msg: str):
+        """Append an error to stats and cap list to avoid unbounded growth."""
+        self.stats["errors"].append(msg)
+        if len(self.stats["errors"]) > self._max_errors:
+            self.stats["errors"] = self.stats["errors"][-self._max_errors:]
+
     @commands.Cog.listener()
     async def on_ready(self):
         self.logger.info(
@@ -153,9 +162,8 @@ class SmartLoungeCog(commands.Cog):
 
     def cog_unload(self):
         """Clean up when cog is unloaded."""
-        if self.manage_lounges_loop.is_running():
-            self.manage_lounges_loop.cancel()
-        # Save stats on unload
+        # No task loop to cancel — management is event-driven via on_voice_state_update.
+        # Save stats on unload.
         self.save_stats()
         self.logger.info("🛑 Smart Lounge System stopped. Stats saved.")
 
@@ -268,7 +276,7 @@ class SmartLoungeCog(commands.Cog):
 
         # 4. RUN LOGIC
         # Run the management function as a background task so it doesn't block the event loop
-        self.bot.loop.create_task(self._manage_lounges())
+        asyncio.ensure_future(self._manage_lounges())
 
     async def _manage_lounges(self):
         """Core lounge management logic."""
@@ -395,6 +403,9 @@ class SmartLoungeCog(commands.Cog):
         # --- PHASE 3: FIX NUMBERING GAPS & LIMITS ---
         await self.fix_numbering_gaps(lounges)
 
+        # Persist stats after every management cycle so data survives crashes
+        self.save_stats_async()
+
     async def fix_numbering_gaps(self, lounges):
         """Fix numbering gaps and enforce user limits."""
         fixed = False
@@ -510,13 +521,13 @@ class SmartLoungeCog(commands.Cog):
         total_users = sum(lounge["count"] for lounge in lounges)
         total_lounges = len(lounges)
         active_lounges = sum(1 for lounge in lounges if lounge["count"] > 0)
-        sum(1 for lounge in lounges if lounge["count"] == 0)
+        empty_lounges = sum(1 for lounge in lounges if lounge["count"] == 0)
         busy_lounges = sum(
             1 for lounge in lounges if lounge["count"] >= self.busy_threshold
         )
 
-        total_users / total_lounges if total_lounges > 0 else 0
-        (active_lounges / total_lounges * 100) if total_lounges > 0 else 0
+        avg_users = total_users / total_lounges if total_lounges > 0 else 0
+        active_pct = (active_lounges / total_lounges * 100) if total_lounges > 0 else 0
 
         # --- PREDICTIVE LOGIC FOR NEXT ACTION ---
         all_lounges_busy = all(
@@ -572,6 +583,9 @@ class SmartLoungeCog(commands.Cog):
             name="🔢 NUMERICAL STATS",
             value=(
                 f"**Total Lounges:** {total_lounges}\n"
+                f"**Active / Empty:** {active_lounges} / {empty_lounges}\n"
+                f"**Active %:** {active_pct:.1f}%\n"
+                f"**Avg Users/Lounge:** {avg_users:.1f}\n"
                 f"**Busy Lounges:** {busy_lounges} ({self.stats['busy_percentage']:.1f}%)\n"
                 f"**Total Users:** {total_users}\n"
             ),

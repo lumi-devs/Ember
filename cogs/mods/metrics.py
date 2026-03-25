@@ -613,31 +613,36 @@ class MetricsTracker:
         reason: Optional[str] = None,
     ) -> Optional[ModerationAction]:
         """
-        Record a moderation action.  Returns None if a duplicate was detected
-        (e.g. both slash-command completion AND mod-bot embed fired).
+        Record a moderation action. Dedup for 2 seconds only (to catch double fires).
         """
         dedup_key = (moderator_id, target_id, command.lower())
         now_ts = discord.utils.utcnow()
-
+        
+        # Only dedup within 2 seconds (not 120 seconds)
         if dedup_key in self.recent_mod_actions:
             age = (now_ts - self.recent_mod_actions[dedup_key]).total_seconds()
-            if age < _MOD_DEDUP_TTL:
-                logger.debug(
-                    "Mod action dedup: %s by %d on %d (age %.1fs)",
-                    command, moderator_id, target_id, age,
-                )
+            if age < 2.0:  # 2 second dedup window instead of 120 seconds
+                logger.debug("Mod action deduped: %s by %d on %d", command, moderator_id, target_id)
                 return None
+        
         self.recent_mod_actions[dedup_key] = now_ts
-
+        
+        # Clean old entries periodically
+        if len(self.recent_mod_actions) > 1000:
+            cutoff = now_ts - timedelta(seconds=10)
+            self.recent_mod_actions = {
+                k: v for k, v in self.recent_mod_actions.items() if v > cutoff
+            }
+        
         severity = MODERATION_SEVERITY.get(command.lower(), 1.0)
-        actions  = self.moderation_sessions.setdefault(moderator_id, [])
-        if actions and (timestamp - actions[-1]).total_seconds() <= 900:
+        actions = self.moderation_sessions.setdefault(moderator_id, [])
+        if actions and (timestamp - actions[-1]).total_seconds() <= MODERATION_SESSION_WINDOW:
             session_id = f"{moderator_id}_{actions[0].strftime('%Y%m%d%H%M')}"
         else:
             session_id = f"{moderator_id}_{timestamp.strftime('%Y%m%d%H%M')}"
             self.moderation_sessions[moderator_id] = []
         self.moderation_sessions[moderator_id].append(timestamp)
-
+        
         return ModerationAction(
             moderator_id=moderator_id, target_id=target_id,
             action_type=command, timestamp=timestamp,

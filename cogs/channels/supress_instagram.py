@@ -28,6 +28,10 @@ class NoInstaEmbed(commands.Cog):
         if message.author.bot or message.webhook_id is not None:
             return
 
+        # ignore DMs — block_channels only makes sense in guilds
+        if not message.guild:
+            return
+
         # only act if channel is in blocked set
         if message.channel.id not in self.block_channels:
             return
@@ -38,14 +42,16 @@ class NoInstaEmbed(commands.Cog):
         if self.is_instagram_url(content_to_check):
             # Protect: ensure bot has Manage Messages permission in that channel
             try:
-                # suppress_embeds is a coroutine on Message
+                # suppress=True sets the SUPPRESS_EMBEDS message flag
                 await message.edit(suppress=True)
             except discord.Forbidden:
-                # bot lacks permission
-                # optionally log or notify admins — we silently return
+                # bot lacks Manage Messages permission — silently return
                 return
-            except Exception:
-                # unexpected error - ignore to avoid crashing the bot
+            except discord.NotFound:
+                # message was deleted before we could suppress it
+                return
+            except discord.HTTPException:
+                # unexpected HTTP error — ignore to avoid crashing the bot
                 return
 
 

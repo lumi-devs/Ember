@@ -7,7 +7,7 @@ import re
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-from typing import Optional, List, Dict, Set
+from typing import Optional, List, Dict, Set, Tuple
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -36,10 +36,80 @@ from .constants import (
     QUESTION_RE, QUESTION_KEYWORDS, ACHIEVEMENT_DECAY_DAYS,
     PING_RESPONSE_WINDOW, STAFF_ROLE_PING_KEYWORDS,
     DISBOARD_BOT_ID, STAFF_DB_PATH,
+    RANKUP_HYSTERESIS, DAILY_CHALLENGES,
 )
 
 logger = logging.getLogger(__name__)
 _STAFF_CACHE_TTL = 300
+
+
+class ModApprovalView(discord.ui.View):
+    """Persistent view attached to a pending mod-action review embed.
+
+    Approve  → inserts the moderation action into the DB and credits the mod.
+    Reject   → marks the action rejected; no DB credit.
+    Only staff with manage_guild (or higher) may click.
+    """
+
+    def __init__(self, cog: "StaffAnalytics", pending_id: int, moderator_id: int, action_type: str, target_id: int):
+        super().__init__(timeout=None)   # persistent across restarts
+        self.cog          = cog
+        self.pending_id   = pending_id
+        self.moderator_id = moderator_id
+        self.action_type  = action_type
+        self.target_id    = target_id
+
+    async def _is_authorized(self, interaction: discord.Interaction) -> bool:
+        if not interaction.guild:
+            return False
+        member = interaction.guild.get_member(interaction.user.id)
+        return member is not None and member.guild_permissions.manage_guild
+
+    @discord.ui.button(label="✅ Approve", style=discord.ButtonStyle.success, custom_id="modapprove")
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._is_authorized(interaction):
+            await interaction.response.send_message("❌ Only senior staff can approve mod actions.", ephemeral=True)
+            return
+        row = await self.cog.db.approve_pending_mod_action(self.pending_id)
+        if not row:
+            await interaction.response.send_message("This action was already reviewed.", ephemeral=True)
+            return
+
+        # Now credit the mod
+        from .constants import MODERATION_SEVERITY
+        action = self.cog.metrics.track_moderation(
+            moderator_id=row["moderator_id"],
+            target_id=row["target_id"],
+            command=row["action_type"],
+            timestamp=datetime.fromisoformat(row["detected_at"]),
+            reason=row.get("reason"),
+        )
+        if action:
+            await self.cog.db.insert_moderation_action(action)
+
+        # Update the embed to show approved
+        embed = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
+        embed.color = discord.Color.green()
+        embed.set_footer(text=f"✅ Approved by {interaction.user.display_name} · {discord.utils.utcnow().strftime('%H:%M UTC')}")
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(embed=embed, view=self)
+        logger.info("Mod action #%d approved by %d", self.pending_id, interaction.user.id)
+
+    @discord.ui.button(label="❌ Reject", style=discord.ButtonStyle.danger, custom_id="modreject")
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._is_authorized(interaction):
+            await interaction.response.send_message("❌ Only senior staff can reject mod actions.", ephemeral=True)
+            return
+        await self.cog.db.reject_pending_mod_action(self.pending_id)
+
+        embed = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
+        embed.color = discord.Color.red()
+        embed.set_footer(text=f"❌ Rejected by {interaction.user.display_name} · {discord.utils.utcnow().strftime('%H:%M UTC')}")
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(embed=embed, view=self)
+        logger.info("Mod action #%d rejected by %d", self.pending_id, interaction.user.id)
 
 
 class StaffAnalytics(commands.Cog):
@@ -64,9 +134,12 @@ class StaffAnalytics(commands.Cog):
         self._last_known_streak: Dict[int, int] = {}
         self._dashboard_message_ids: Dict[int, int] = {}
         self._streak_warned_today: Dict[str, Set[int]] = defaultdict(set)
-
+        self._recent_prefix_commands: Dict[Tuple[int, int, str], datetime] = {}
         # Ping-to-action tracking: channel_id -> {role_id: (pinger_id, timestamp)}
         self._pending_staff_pings: Dict[int, Dict[int, tuple]] = defaultdict(dict)
+        # Rank-up guard: in-memory set of "staff_id:from:to:date" already DM'd this session.
+        # DB has the durable guard (has_notified_rankup); this avoids redundant DB hits.
+        self._rankup_sent_session: Set[str] = set()
 
     async def cog_load(self):
         await self.db.initialize()
@@ -147,6 +220,7 @@ class StaffAnalytics(commands.Cog):
         if not message.guild:
             return
 
+        # ── Bot messages ─────────────────────────────────────────────────────────
         if message.author.bot:
             await self._try_parse_mod_bot_embed(message)
             await self._try_track_disboard_bump(message)
@@ -155,7 +229,7 @@ class StaffAnalytics(commands.Cog):
         is_staff_member = self.is_staff(message.author)
         now = discord.utils.utcnow()
 
-        # ── Non-staff messages ─────────────────────────────────────────────
+        # ── Non-staff messages ─────────────────────────────────────────────────
         if not is_staff_member:
             content = message.content or ""
             if self._is_question_message(content):
@@ -175,24 +249,35 @@ class StaffAnalytics(commands.Cog):
                             message.author.id, now
                         )
 
+            # Track prefix moderation commands from non-staff? Usually staff issue these
+            # But if non-staff users are using mod commands, they might be testing or abusing
+            # We'll still track them but with a flag
+            if message.content.startswith(('!', 'w!', '.', '-')):
+                await self._try_parse_prefix_command(message, is_staff=False)
+
             self.metrics.record_any_message(message.channel.id, now)
             return
 
-        # ── Staff messages ─────────────────────────────────────────────────
+        # ── Staff messages ─────────────────────────────────────────────────────
         word_count = self.metrics.count_words(message.content)
-        staff_msg  = StaffMessage(
-            staff_id   = message.author.id,
-            channel_id = message.channel.id,
-            message_id = message.id,
-            timestamp  = now,
-            content    = message.content,
-            word_count = word_count,
+        staff_msg = StaffMessage(
+            staff_id=message.author.id,
+            channel_id=message.channel.id,
+            message_id=message.id,
+            timestamp=now,
+            content=message.content,
+            word_count=word_count,
         )
 
         await self.db.insert_staff_message(staff_msg)
         await self.db.update_consistency_stats(message.author.id, now)
         self.metrics.record_message_time(message.author.id, now)
         self.last_message_cache[message.channel.id][message.author.id] = now
+
+        # Check if this is a prefix moderation command from a staff member
+        # Track it immediately - don't wait for bot embed
+        if message.content.startswith(('!', 'w!', '.', '-')):
+            await self._try_parse_prefix_command(message, is_staff=True, staff_msg=staff_msg)
 
         # Response time
         rt = self.metrics.check_response_time(staff_msg, message.channel.id)
@@ -369,28 +454,26 @@ class StaffAnalytics(commands.Cog):
                 if option.get("name") == "reason":
                     reason = option.get("value")
             if target_id:
-                action = self.metrics.track_moderation(
-                    moderator_id=interaction.user.id, target_id=target_id,
-                    command=cmd, timestamp=discord.utils.utcnow(), reason=reason,
+                await self._queue_mod_for_review(
+                    guild=interaction.guild,
+                    moderator_id=interaction.user.id,
+                    target_id=target_id,
+                    action_type=cmd,
+                    reason=reason,
+                    channel_id=interaction.channel_id or 0,
+                    message_id=interaction.id,
+                    timestamp=discord.utils.utcnow(),
                 )
-                if action:
-                    await self.db.insert_moderation_action(action)
 
     async def _try_parse_mod_bot_embed(self, message: discord.Message) -> None:
         """
         Parse moderation embeds from Wick and similar bots.
-
-        Wick sends embeds like:
-          Title: "Warn result:" or "Ban result:" etc.
-          Fields: ":activity: Reason: meow"
-                  ":trustedAdmin: Moderator: @Rebiz..."
-                  ":whitelistUser: Warned: happy4356 [893147439484272650]"
-
-        We also handle generic success embeds from other mod bots.
+        Fixed to properly detect Warns, Bans, Kicks, Mutes, Timeouts.
         """
         if not message.embeds:
             return
 
+        # Map of action names
         ACTION_MAP = {
             "banned": "ban", "ban": "ban", "kicked": "kick", "kick": "kick",
             "warned": "warn", "warn": "warn", "warning": "warn",
@@ -401,111 +484,158 @@ class StaffAnalytics(commands.Cog):
             "unlocked": "unlock", "unlock": "unlock", "slowmode": "slowmode",
         }
 
-        SUCCESS_KEYWORDS = {
-            "successfully", "success", "has been", "was banned",
-            "was kicked", "was warned", "was muted", "action taken",
-            "result:",  # Wick-style "Warn result:"
-        }
-
         for embed in message.embeds:
-            raw_text = " ".join(filter(None, [
-                embed.title or "",
-                embed.description or "",
-                *(f.value for f in embed.fields),
-                embed.footer.text if embed.footer else "",
-            ]))
+            # Build raw text from all embed components
+            all_text_parts = []
+            if embed.title:
+                all_text_parts.append(embed.title)
+            if embed.description:
+                all_text_parts.append(embed.description)
+            for field in embed.fields:
+                all_text_parts.append(field.name)
+                all_text_parts.append(field.value)
+            raw_text = " ".join(all_text_parts)
             embed_lower = raw_text.lower()
 
-            if not any(kw in embed_lower for kw in SUCCESS_KEYWORDS):
+            # Check if this is a moderation result embed
+            has_mod = "moderator" in embed_lower or "mod" in embed_lower
+            has_result = "result:" in embed_lower or "success" in embed_lower
+            
+            # Wick-specific: check title for "Warn result:" etc.
+            wick_match = WICK_RESULT_RE.search(embed_lower) if embed.title else None
+            
+            if not (has_mod and has_result) and not wick_match:
                 continue
 
-            # Detect action type
-            cmd_match = MODERATION_COMMAND_RE.search(embed_lower)
-            if not cmd_match:
-                # Also check for Wick-style "Warn result:" in title
-                if embed.title:
-                    wick_match = WICK_RESULT_RE.search(embed.title.lower())
-                    if not wick_match:
-                        continue
-                    raw_action = wick_match.group(0).split()[0].lower()
-                    cmd = ACTION_MAP.get(raw_action + "ed") or ACTION_MAP.get(raw_action)
-                else:
-                    continue
-            else:
-                matched_word = cmd_match.group(0).lower()
-                cmd = ACTION_MAP.get(matched_word)
-                if not cmd:
-                    # Try stripping conjugation suffixes
-                    for suffix in ("ned", "ked", "ned", "ed", "ing", "d"):
-                        stem = matched_word.rstrip(suffix) if matched_word.endswith(suffix) else matched_word
-                        cmd = ACTION_MAP.get(stem)
-                        if cmd:
-                            break
+            # Detect command type
+            cmd = None
+            
+            # Method 1: Check title for Wick-style "Warn result:"
+            if embed.title and embed.title.lower() == "warn result:":
+                cmd = "warn"
+            elif embed.title and embed.title.lower() == "ban result:":
+                cmd = "ban"
+            elif embed.title and embed.title.lower() == "kick result:":
+                cmd = "kick"
+            elif embed.title and embed.title.lower() == "mute result:":
+                cmd = "mute"
+            elif embed.title and embed.title.lower() == "timeout result:":
+                cmd = "timeout"
+            
+            # Method 2: Check description for "Successful X"
+            if not cmd and embed.description:
+                desc_lower = embed.description.lower()
+                if "successful ban" in desc_lower:
+                    cmd = "ban"
+                elif "successful kick" in desc_lower:
+                    cmd = "kick"
+                elif "successful warn" in desc_lower:
+                    cmd = "warn"
+                elif "successful mute" in desc_lower:
+                    cmd = "mute"
+                elif "successful timeout" in desc_lower:
+                    cmd = "timeout"
+            
+            # Method 3: Check field names
+            if not cmd:
+                for field in embed.fields:
+                    field_lower = field.name.lower()
+                    if "warned" in field_lower:
+                        cmd = "warn"
+                    elif "banned" in field_lower:
+                        cmd = "ban"
+                    elif "kicked" in field_lower:
+                        cmd = "kick"
+                    elif "muted" in field_lower:
+                        cmd = "mute"
+                    elif "timed out" in field_lower:
+                        cmd = "timeout"
+                    if cmd:
+                        break
+            
             if not cmd:
                 continue
 
-            # Extract target ID — Wick puts it as "Name [ID]" or plain mention
+            # Extract target ID
             target_id = None
-
-            # Wick format: "Warned: happy4356 [893147439484272650]" or "Banned: @User [ID]"
+            
+            # Wick format: "Warned: Name [ID]" or "Banned: @User [ID]"
             bracket_match = re.search(r"\[(\d{17,20})\]", raw_text)
             if bracket_match:
                 target_id = int(bracket_match.group(1))
-            else:
+            
+            # Discord mention
+            if not target_id:
                 mention_match = re.search(r"<@!?(\d{17,20})>", raw_text)
                 if mention_match:
                     target_id = int(mention_match.group(1))
-                else:
-                    id_match = re.search(r"\b(\d{17,20})\b", raw_text)
-                    if id_match:
-                        target_id = int(id_match.group(1))
-
+            
+            # Plain ID in text
+            if not target_id:
+                id_match = re.search(r"\b(\d{17,20})\b", raw_text)
+                if id_match:
+                    target_id = int(id_match.group(1))
+            
             if not target_id:
                 continue
 
-            # Extract reason — Wick puts it as "Reason: <text>"
+            # Extract reason
             reason = None
-            reason_match = re.search(r"[Rr]eason[:\s]+(.+?)(?:\n|$|[A-Z][a-z]+:)", raw_text)
+            reason_match = re.search(r"[Rr]eason[:\s]+(.+?)(?:\n|$|\[)", raw_text)
             if reason_match:
-                reason = reason_match.group(1).strip()[:200] or None
+                reason = reason_match.group(1).strip()
+                # Remove emoji IDs and clean up
+                reason = re.sub(r'<:[a-zA-Z_]+:\d+>', '', reason)
+                reason = re.sub(r':[a-zA-Z_]+:', '', reason).strip()
+                reason = re.sub(r'\*\*', '', reason)
+                if reason.lower() in ["no reason.", "none", "no reason", "", "(none)"]:
+                    reason = None
 
-            # Extract moderator from Wick's "Moderator: @Name" field
+            # Extract moderator ID
             moderator_id = None
-
-            # Wick puts moderator in fields with a label
-            mod_field_match = re.search(r"[Mm]oderator[:\s]+<@!?(\d{17,20})>", raw_text)
-            if mod_field_match:
-                moderator_id = int(mod_field_match.group(1))
-
-            # Fallback: scan recent channel history for the triggering command
+            
+            # Wick puts moderator in fields or description
+            mod_match = re.search(r"[Mm]oderator[:\s]+<@!?(\d{17,20})>", raw_text)
+            if mod_match:
+                moderator_id = int(mod_match.group(1))
+            
+            # Fallback: search channel history for the command
             if not moderator_id:
                 try:
-                    async for prev in message.channel.history(limit=8, before=message):
+                    async for prev in message.channel.history(limit=15, before=message):
                         if prev.author.bot:
                             continue
                         if not self.is_staff(prev.author):
                             continue
+                        # Check if this message contains the command
+                        cmd_in_content = any(
+                            re.search(rf"\b{action}\b", prev.content.lower())
+                            for action in MODERATION_COMMANDS
+                        )
                         mentions_target = (
                             str(target_id) in prev.content
                             or f"<@{target_id}>" in prev.content
                             or f"<@!{target_id}>" in prev.content
                         )
-                        has_mod_keyword = bool(MODERATION_COMMAND_RE.search(prev.content.lower()))
-                        if mentions_target and has_mod_keyword:
+                        if mentions_target and cmd_in_content:
                             moderator_id = prev.author.id
+                            # Also try to extract reason from command message
                             if not reason:
-                                r_match = re.search(
-                                    rf"(?:<@!?{target_id}>|{target_id})\s+(.+)", prev.content
+                                reason_match = re.search(
+                                    rf"(?:<@!?{target_id}>|{target_id})\s+(.+)",
+                                    prev.content
                                 )
-                                if r_match:
-                                    reason = r_match.group(1).strip()[:200] or None
+                                if reason_match:
+                                    reason = reason_match.group(1).strip()[:200] or None
                             break
-                except discord.Forbidden:
+                except (discord.Forbidden, discord.HTTPException):
                     pass
 
             if not moderator_id:
+                logger.debug("Mod action embed: could not find moderator for %s on %s", cmd, target_id)
                 continue
 
+            # Queue for review instead of inserting directly
             action = self.metrics.track_moderation(
                 moderator_id=moderator_id,
                 target_id=target_id,
@@ -514,7 +644,17 @@ class StaffAnalytics(commands.Cog):
                 reason=reason,
             )
             if action:
-                await self.db.insert_moderation_action(action)
+                await self._queue_mod_for_review(
+                    guild=message.guild,
+                    moderator_id=moderator_id,
+                    target_id=target_id,
+                    action_type=cmd,
+                    reason=reason,
+                    channel_id=message.channel.id,
+                    message_id=message.id,
+                    timestamp=message.created_at.replace(tzinfo=None),
+                )
+                logger.info("Queued %s action for review: mod=%s target=%s", cmd, moderator_id, target_id)
             break
 
     @commands.Cog.listener()
@@ -665,6 +805,94 @@ class StaffAnalytics(commands.Cog):
         has_kw = any(kw in lower for kw in QUESTION_KEYWORDS)
         has_q  = bool(QUESTION_RE.search(content))
         return has_kw or has_q
+
+    async def _queue_mod_for_review(
+        self,
+        guild: discord.Guild,
+        moderator_id: int,
+        target_id: int,
+        action_type: str,
+        reason: Optional[str],
+        channel_id: int,
+        message_id: int,
+        timestamp,
+    ) -> None:
+        """Post a detected mod action to the mod_log channel for senior staff approval.
+
+        Until a senior mod clicks ✅ Approve the action is NOT credited to the moderator's
+        score, preventing gaming and ensuring quality control.
+        """
+        from .constants import MODERATION_SEVERITY
+        severity = MODERATION_SEVERITY.get(action_type, 1.0)
+
+        pending_id = await self.db.insert_pending_mod_action(
+            moderator_id=moderator_id,
+            target_id=target_id,
+            action_type=action_type,
+            reason=reason,
+            severity=severity,
+            guild_id=guild.id,
+            channel_id=channel_id,
+            message_id=message_id,
+        )
+
+        review_channel_id = self.config.get_channel_id("mod_log")
+        if not review_channel_id:
+            # No review channel configured — auto-approve immediately
+            row = await self.db.approve_pending_mod_action(pending_id)
+            if row:
+                from .constants import MODERATION_SEVERITY as _MS
+                action = self.metrics.track_moderation(
+                    moderator_id=moderator_id, target_id=target_id,
+                    command=action_type, timestamp=timestamp, reason=reason,
+                )
+                if action:
+                    await self.db.insert_moderation_action(action)
+            return
+
+        review_channel = guild.get_channel(review_channel_id)
+        if not review_channel:
+            return
+
+        moderator = await get_member_safe(guild, moderator_id)
+        mod_name  = moderator.mention if moderator else f"<@{moderator_id}>"
+        target    = await get_member_safe(guild, target_id)
+        tgt_name  = target.mention if target else f"<@{target_id}>"
+
+        action_emojis = {
+            "ban": "🔨", "kick": "👢", "warn": "⚠️", "mute": "🔇",
+            "timeout": "⏱️", "softban": "🧲", "strike": "📛",
+            "purge": "🗑️", "lock": "🔒", "unlock": "🔓", "slowmode": "🐌",
+        }
+        emoji = action_emojis.get(action_type, "🛡️")
+
+        embed = discord.Embed(
+            title=f"{emoji} Mod Action — Pending Review",
+            description=(
+                f"**Action:** `{action_type}`  ·  Severity **×{severity:.1f}**\n"
+                f"**Moderator:** {mod_name}\n"
+                f"**Target:** {tgt_name}\n"
+                f"**Reason:** {reason or '*No reason given*'}\n"
+                f"**Channel:** <#{channel_id}>"
+            ),
+            color=discord.Color.orange(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_footer(text=f"Pending ID #{pending_id}  ·  Senior staff: click below to review")
+
+        view = ModApprovalView(
+            cog=self,
+            pending_id=pending_id,
+            moderator_id=moderator_id,
+            action_type=action_type,
+            target_id=target_id,
+        )
+
+        try:
+            msg = await review_channel.send(embed=embed, view=view)
+            await self.db.set_pending_mod_review_msg(pending_id, msg.id)
+        except (discord.Forbidden, discord.HTTPException) as e:
+            logger.warning("Could not post mod review to mod_log: %s", e)
 
     # ─── /staffstats ─────────────────────────────────────────────────────────
 
@@ -1247,11 +1475,13 @@ class StaffAnalytics(commands.Cog):
             )
             scores = []
             for sid, s in cached_rows:
-                c = s.consistency
-                if not c:
-                    continue
                 member = interaction.guild.get_member(sid)
                 if not member:
+                    continue
+                # get_cached_staff_stats doesn't attach consistency — fetch separately
+                c = s.consistency or await self.db.get_consistency_stats(sid)
+                if not c:
+                    # Member has no consistency record yet (never sent a message)
                     continue
                 scores.append((member, c.consistency_score, c.current_streak,
                                c.longest_streak, c.off_peak_activity, c.weekly_consistency_score))
@@ -1307,7 +1537,6 @@ class StaffAnalytics(commands.Cog):
 
         streak = consistency.current_streak if consistency else 0
         metric_map = {
-            "help_events":           stats.help_events,
             "moderation_actions":    stats.moderation_actions,
             "vc_hours":              stats.vc_hours,
             "new_members_helped":    stats.new_members_helped,
@@ -1368,6 +1597,131 @@ class StaffAnalytics(commands.Cog):
             embed.add_field(name=f"🔒 In Progress ({len(locked_lines)})", value="\n".join(locked_lines[:10]), inline=False)
 
         embed.set_footer(text="✨ = earned recently  💤 = achievement decayed (inactive)  🔒 = not yet earned")
+        await interaction.followup.send(embed=embed)
+
+    # ─── /dailychallenges ─────────────────────────────────────────────────────
+
+    @app_commands.command(name="dailychallenges", description="View and track your daily staff challenges")
+    async def dailychallenges(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        if not self.is_staff(interaction.user):
+            await interaction.followup.send(
+                embed=create_error_embed("Not Staff", "You don't have a staff role."), ephemeral=True
+            )
+            return
+
+        today    = discord.utils.utcnow().date().isoformat()
+        staff_id = interaction.user.id
+
+        # Fetch today's stats (1-day window) to measure progress
+        weights  = await self.db.get_score_weights(interaction.guild.id)
+        stats    = await self.db.get_staff_stats(staff_id, days=1, weights=weights)
+        cons     = await self.db.get_consistency_stats(staff_id)
+        active_today = await self.db.was_active_today(staff_id)
+
+        # Build a metric map keyed the same way DAILY_CHALLENGES uses
+        metric_map = {
+            "total_messages":      stats.total_messages,
+            "moderation_actions":  stats.moderation_actions,
+            "vc_hours":            stats.vc_hours,
+            "unique_talked_with":  stats.unique_talked_with,
+            "reactions_given":     stats.reactions_given,
+            "first_responses":     stats.first_responses,
+            "new_member_greetings":stats.new_member_greetings,
+            "quality_events":      stats.quality_events,
+            "_active_today":       1 if active_today else 0,
+            "ping_responses":      stats.ping_responses,
+        }
+
+        completed_count = 0
+        total_pts_today = 0
+        challenge_lines = []
+
+        for ch in DAILY_CHALLENGES:
+            current = metric_map.get(ch["metric"], 0)
+            target  = ch["target"]
+            done    = current >= target
+            if done:
+                completed_count += 1
+                total_pts_today += ch["pts"]
+
+            # Persist progress
+            await self.db.upsert_daily_challenge_progress(
+                staff_id, today, ch["key"], float(current), done
+            )
+
+            bar_len = 8
+            filled  = min(int((current / target) * bar_len), bar_len) if target > 0 else bar_len
+            bar     = "█" * filled + "░" * (bar_len - filled)
+
+            if isinstance(target, float):
+                val_str = f"{current:.1f}/{target:.1f}"
+            else:
+                val_str = f"{int(current)}/{int(target)}"
+
+            status = "✅" if done else "🔲"
+            pts_tag = f"  `+{ch['pts']}pts`" if done else f"  `{ch['pts']}pts`"
+            challenge_lines.append(
+                f"{status} {ch['emoji']} **{ch['label']}**{pts_tag}\n"
+                f"  `{bar}` {val_str}"
+            )
+
+        tier_info = RANK_TIERS[stats.rank_tier.value]
+        embed = discord.Embed(
+            title=f"🎯 Daily Challenges — {interaction.user.display_name}",
+            description=(
+                f"**{completed_count}/{len(DAILY_CHALLENGES)}** completed today  ·  "
+                f"**+{total_pts_today} pts** earned\n"
+                f"Resets at midnight UTC 🕛"
+            ),
+            color=tier_info["colour"],
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_thumbnail(url=interaction.user.display_avatar.url)
+
+        # Split into two columns of 5
+        half = len(challenge_lines) // 2
+        embed.add_field(name="Challenges", value="\n".join(challenge_lines[:half]), inline=True)
+        embed.add_field(name="\u200b",     value="\n".join(challenge_lines[half:]), inline=True)
+        embed.set_footer(text="Progress measured from midnight UTC today")
+        await interaction.followup.send(embed=embed)
+
+    # ─── /modqueue ────────────────────────────────────────────────────────────
+
+    @app_commands.command(name="modqueue", description="View pending mod actions awaiting review")
+    @app_commands.default_permissions(manage_guild=True)
+    async def modqueue(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        pending = await self.db.get_pending_mod_actions(interaction.guild.id)
+        if not pending:
+            await interaction.followup.send(
+                embed=create_success_embed("Queue Empty", "No mod actions are pending review. ✅")
+            )
+            return
+
+        embed = discord.Embed(
+            title=f"🛡️ Mod Review Queue — {len(pending)} pending",
+            description="Use the buttons in the mod-log channel to approve or reject each action.",
+            color=EMBED_COLORS["warning"],
+            timestamp=discord.utils.utcnow(),
+        )
+
+        for row in pending[:10]:
+            mod    = await get_member_safe(interaction.guild, row["moderator_id"])
+            target = await get_member_safe(interaction.guild, row["target_id"])
+            mod_n  = mod.display_name    if mod    else f"<@{row['moderator_id']}>"
+            tgt_n  = target.display_name if target else f"<@{row['target_id']}>"
+            age    = discord.utils.utcnow() - datetime.fromisoformat(row["detected_at"])
+            ago    = f"{int(age.total_seconds() // 60)}m ago"
+            embed.add_field(
+                name=f"#{row['id']} · {row['action_type'].upper()} by {mod_n}",
+                value=f"Target: **{tgt_n}**  ·  Reason: {row['reason'] or '*none*'}  ·  {ago}",
+                inline=False,
+            )
+
+        if len(pending) > 10:
+            embed.set_footer(text=f"Showing 10 of {len(pending)} — check mod-log channel for full list")
         await interaction.followup.send(embed=embed)
 
     # ─── /staffoverview ──────────────────────────────────────────────────────
@@ -1942,8 +2296,19 @@ class StaffAnalytics(commands.Cog):
         prev_tier = self._last_known_rank.get(member.id)
         if prev_tier is not None and prev_tier != tier:
             tier_order = ["Bronze", "Silver", "Gold", "Platinum", "Diamond"]
-            if tier_order.index(tier) > tier_order.index(prev_tier):
-                await self._dm_rank_up(member, prev_tier, tier, stats)
+            is_upgrade = tier_order.index(tier) > tier_order.index(prev_tier)
+            if is_upgrade:
+                # Hysteresis guard: only fire if score is meaningfully above the new threshold.
+                # Prevents oscillation when score sits right on the boundary.
+                tier_min  = RANK_TIERS[tier]["min"]
+                above_min = stats.engagement_score - tier_min
+                session_key = f"{member.id}:{prev_tier}:{tier}:{today}"
+                if above_min >= RANKUP_HYSTERESIS and session_key not in self._rankup_sent_session:
+                    already_notified = await self.db.has_notified_rankup(member.id, prev_tier, tier)
+                    if not already_notified:
+                        self._rankup_sent_session.add(session_key)
+                        await self.db.mark_rankup_notified(member.id, prev_tier, tier)
+                        await self._dm_rank_up(member, prev_tier, tier, stats)
         self._last_known_rank[member.id] = tier
 
         if streak >= 3 and member.id not in self._streak_warned_today.get(today, set()):
@@ -2011,7 +2376,6 @@ class StaffAnalytics(commands.Cog):
             return
         streak = stats.consistency.current_streak if stats.consistency else 0
         metric_map = {
-            "help_events":           stats.help_events,
             "moderation_actions":    stats.moderation_actions,
             "vc_hours":              stats.vc_hours,
             "new_members_helped":    stats.new_members_helped,
@@ -2193,6 +2557,128 @@ class StaffAnalytics(commands.Cog):
         embed.set_footer(text=f"Auto-refreshes every {self.config.get_setting('dashboard_update_interval', 3600)//60} min  ·  /staffstats for individual profiles")
         return embed
 
-
+    async def _try_parse_prefix_command(self, message: discord.Message, is_staff: bool = False, staff_msg: Optional[StaffMessage] = None) -> None:
+        """
+        Parse prefix commands like !warn @user or w!warn @user
+        Also handles Wick-style w!command @user
+        """
+        if not message.guild:
+            return
+        
+        content = message.content.strip()
+        now = discord.utils.utcnow()
+        
+        # Dedup key for prefix commands to avoid double-tracking
+        dedup_key = None
+        
+        # Pattern 1: Standard prefix with mention
+        # Matches: !warn @user reason, w!warn @user reason, .warn @user, -warn @user
+        patterns = [
+            # w!warn @user reason
+            re.compile(r"^(?:w!|!|\.|-)(\w+)\s+<@!?(\d{17,20})>\s*(.*)$", re.IGNORECASE),
+            # w!warn 123456789 reason (ID without mention)
+            re.compile(r"^(?:w!|!|\.|-)(\w+)\s+(\d{17,20})\s*(.*)$", re.IGNORECASE),
+            # Wick-specific: w!warn <@user> reason
+            re.compile(r"^w!(\w+)\s+<@!?(\d{17,20})>\s*(.*)$", re.IGNORECASE),
+            # Some bots use w!command user (no @)
+            re.compile(r"^w!(\w+)\s+([a-zA-Z0-9_]{2,32})\s*(.*)$", re.IGNORECASE),
+        ]
+        
+        for pattern in patterns:
+            match = pattern.match(content)
+            if match:
+                cmd = match.group(1).lower()
+                
+                # Check if this is a moderation command
+                if cmd not in MODERATION_COMMANDS:
+                    continue
+                
+                # Extract target ID or username
+                target_id = None
+                target_name = None
+                
+                if len(match.groups()) >= 2:
+                    second_group = match.group(2)
+                    # Check if it's a numeric ID
+                    if second_group.isdigit():
+                        target_id = int(second_group)
+                    else:
+                        target_name = second_group
+                        # Try to find member by name
+                        member_obj = discord.utils.find(
+                            lambda m: m.name.lower() == target_name.lower() or 
+                                    m.display_name.lower() == target_name.lower(),
+                            message.guild.members
+                        )
+                        if member_obj:
+                            target_id = member_obj.id
+                
+                # Extract reason
+                reason = match.group(3).strip() if len(match.groups()) >= 3 else None
+                if reason == "":
+                    reason = None
+                
+                if not target_id:
+                    logger.debug(f"Could not find target for {cmd} command from {message.author.id}")
+                    return
+                
+                # Create dedup key
+                dedup_key = (message.author.id, target_id, cmd)
+                
+                # Check if we've tracked this recently (within last 5 seconds)
+                if hasattr(self, '_recent_prefix_commands'):
+                    if dedup_key in self._recent_prefix_commands:
+                        age = (now - self._recent_prefix_commands[dedup_key]).total_seconds()
+                        if age < 5.0:
+                            logger.debug(f"Prefix command deduped: {cmd} by {message.author.id} on {target_id}")
+                            return
+                
+                # Store in recent commands cache
+                if not hasattr(self, '_recent_prefix_commands'):
+                    self._recent_prefix_commands = {}
+                self._recent_prefix_commands[dedup_key] = now
+                
+                # Clean old entries
+                if len(self._recent_prefix_commands) > 1000:
+                    cutoff = now - timedelta(seconds=10)
+                    self._recent_prefix_commands = {
+                        k: v for k, v in self._recent_prefix_commands.items() if v > cutoff
+                    }
+                
+                # If this is a staff member, track immediately
+                # If not staff, still track but flag it (could be a test or abuse)
+                if is_staff:
+                    # Staff member issuing command — send to mod review channel
+                    await self._queue_mod_for_review(
+                        guild=message.guild,
+                        moderator_id=message.author.id,
+                        target_id=target_id,
+                        action_type=cmd,
+                        reason=reason,
+                        channel_id=message.channel.id,
+                        message_id=message.id,
+                        timestamp=message.created_at.replace(tzinfo=None),
+                    )
+                else:
+                    # Non-staff issuing mod command - suspicious, track in a separate log
+                    logger.warning(f"Non-staff user {message.author.id} attempted moderation command {cmd} on {target_id}")
+                    
+                    # Optionally alert staff channel
+                    alert_channel_id = self.config.get_channel_id("alert_channel")
+                    if alert_channel_id:
+                        alert_channel = message.guild.get_channel(alert_channel_id)
+                        if alert_channel:
+                            embed = create_warning_embed(
+                                "⚠️ Unauthorized Mod Command Attempt",
+                                f"**User:** {message.author.mention}\n"
+                                f"**Command:** `{cmd}`\n"
+                                f"**Target:** <@{target_id}>\n"
+                                f"**Reason:** {reason or 'No reason'}\n"
+                                f"**Channel:** {message.channel.mention}\n"
+                                f"[Jump to message]({message.jump_url})"
+                            )
+                            await alert_channel.send(embed=embed)
+                
+                break  # Only process first matching pattern
 async def setup(bot: commands.Bot):
     await bot.add_cog(StaffAnalytics(bot))

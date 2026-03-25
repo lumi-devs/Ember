@@ -4,11 +4,14 @@ from discord.ext import commands
 import asyncio
 import re
 
-DELETE_DELAY = 10  # 10 minutes
+DELETE_DELAY = 600  # 10 minutes (was accidentally 10 seconds)
 
-# Matches most "caught cat" message variants
+# Matches most "caught cat" message variants.
+# Note: "cought" is kept intentionally to match the bot's known typo output,
+# but "caught" is also included to catch corrected spellings.
+# <:\w+:\d+> is the correct Discord custom emoji format (was </rain:\d+> which never matched).
 CAUGHT_CAT_PATTERN = re.compile(
-    r"(cought.*cat|cat.*cought|fella.*cought|☔.*cats|</rain:\d+>)",
+    r"(c(?:aught|ought).*cat|cat.*c(?:aught|ought)|fella.*c(?:aught|ought)|☔.*cats|<:\w+:\d+>.*cat|cat.*<:\w+:\d+>)",
     re.IGNORECASE | re.DOTALL,
 )
 

@@ -530,7 +530,6 @@ class StaffStats:
         earned = []
         streak = self.consistency.current_streak if self.consistency else 0
         metric_map = {
-            "help_events":          self.help_events,
             "moderation_actions":   self.moderation_actions,
             "vc_hours":             self.vc_hours,
             "new_members_helped":   self.new_members_helped,

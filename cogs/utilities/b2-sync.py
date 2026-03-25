@@ -29,7 +29,7 @@ B2_ENDPOINT  = os.environ.get("B2_ENDPOINT")
 B2_BUCKET    = os.environ.get("B2_BUCKET")
 
 DATA_FOLDER         = Path("data")
-SYNC_INTERVAL_SECS  = 45      # live sync every 45s
+SYNC_INTERVAL_MINS  = 5     # live sync every 45s
 HOURLY_BACKUP_SECS  = 3600    # snapshot every hour
 BACKUP_RETAIN_DAYS  = 7       # delete snapshots older than 7 days
 
@@ -248,7 +248,7 @@ class B2Sync(commands.Cog):
 
     # ── Task loops ─────────────────────────────────────────────────────────────
 
-    @tasks.loop(seconds=SYNC_INTERVAL_SECS)
+    @tasks.loop(minutes=SYNC_INTERVAL_MINS)
     async def live_sync_loop(self):
         if self._ready:
             await self._live_sync_all()
@@ -416,7 +416,7 @@ class B2Sync(commands.Cog):
             title="📦 B2 Backup History",
             description=(
                 f"Retaining **{BACKUP_RETAIN_DAYS}** days · "
-                f"Snapshots every **1h** · Live sync every **{SYNC_INTERVAL_SECS}s**"
+                f"Snapshots every **1h** · Live sync every **{SYNC_INTERVAL_MINS}m**"
             ),
             color=discord.Color.orange(),
         )

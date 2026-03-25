@@ -252,6 +252,28 @@ class DatabaseManager:
                 notified_at TIMESTAMP NOT NULL,
                 PRIMARY KEY (staff_id, achievement)
             )""",
+            """CREATE TABLE IF NOT EXISTS pending_mod_actions (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                moderator_id   INTEGER NOT NULL,
+                target_id      INTEGER NOT NULL,
+                action_type    TEXT NOT NULL,
+                reason         TEXT,
+                severity       REAL DEFAULT 1.0,
+                detected_at    TIMESTAMP NOT NULL,
+                guild_id       INTEGER NOT NULL,
+                channel_id     INTEGER NOT NULL,
+                message_id     INTEGER NOT NULL,
+                review_msg_id  INTEGER,
+                status         TEXT NOT NULL DEFAULT 'pending'
+            )""",
+            """CREATE TABLE IF NOT EXISTS daily_challenge_progress (
+                staff_id    INTEGER NOT NULL,
+                challenge   TEXT    NOT NULL,
+                date        TEXT    NOT NULL,
+                value       REAL    NOT NULL DEFAULT 0,
+                completed   INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (staff_id, challenge, date)
+            )""",
         ]
         for sql in stmts:
             await self.pool.execute(sql)
@@ -309,6 +331,11 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_ee_ts      ON engagement_events(timestamp)",
             "CREATE INDEX IF NOT EXISTS idx_rr_staff   ON reactions_received(staff_id)",
             "CREATE INDEX IF NOT EXISTS idx_rr_ts      ON reactions_received(timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_ma_mod_ts ON moderation_actions(moderator_id, timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_pma_mod  ON pending_mod_actions(moderator_id)",
+            "CREATE INDEX IF NOT EXISTS idx_pma_stat ON pending_mod_actions(status)",
+            "CREATE INDEX IF NOT EXISTS idx_dcp_date ON daily_challenge_progress(date)",
+            "CREATE INDEX IF NOT EXISTS idx_dcp_staff ON daily_challenge_progress(staff_id, date)",
         ]
         for sql in indexes:
             await self.pool.execute(sql)
@@ -1667,6 +1694,103 @@ class DatabaseManager:
         if row and row["notified_at"]:
             return datetime.fromisoformat(row["notified_at"])
         return None
+
+    # ─── Rank-up notification guard ───────────────────────────────────────────
+
+    async def has_notified_rankup(self, staff_id: int, from_tier: str, to_tier: str) -> bool:
+        """True if we already DM'd this exact transition today (UTC)."""
+        today = discord.utils.utcnow().date().isoformat()
+        key   = f"rankup_{from_tier}_{to_tier}_{today}"
+        return await self.has_notified_achievement(staff_id, key)
+
+    async def mark_rankup_notified(self, staff_id: int, from_tier: str, to_tier: str):
+        today = discord.utils.utcnow().date().isoformat()
+        key   = f"rankup_{from_tier}_{to_tier}_{today}"
+        await self.mark_achievement_notified(staff_id, key)
+
+    # ─── Pending moderation actions ──────────────────────────────────────────
+
+    async def insert_pending_mod_action(
+        self,
+        moderator_id: int,
+        target_id: int,
+        action_type: str,
+        reason: Optional[str],
+        severity: float,
+        guild_id: int,
+        channel_id: int,
+        message_id: int,
+    ) -> int:
+        cursor = await self.pool.execute(
+            """INSERT INTO pending_mod_actions
+               (moderator_id, target_id, action_type, reason, severity,
+                detected_at, guild_id, channel_id, message_id, status)
+               VALUES (?,?,?,?,?,?,?,?,?,'pending')""",
+            (moderator_id, target_id, action_type, reason, severity,
+             discord.utils.utcnow().isoformat(), guild_id, channel_id, message_id),
+        )
+        await self.pool.commit()
+        return cursor.lastrowid
+
+    async def set_pending_mod_review_msg(self, pending_id: int, review_msg_id: int):
+        await self.pool.execute(
+            "UPDATE pending_mod_actions SET review_msg_id=? WHERE id=?",
+            (review_msg_id, pending_id),
+        )
+        await self.pool.commit()
+
+    async def approve_pending_mod_action(self, pending_id: int) -> Optional[Dict]:
+        row = await (await self.pool.execute(
+            "SELECT * FROM pending_mod_actions WHERE id=? AND status='pending'", (pending_id,)
+        )).fetchone()
+        if not row:
+            return None
+        await self.pool.execute(
+            "UPDATE pending_mod_actions SET status='approved' WHERE id=?", (pending_id,)
+        )
+        await self.pool.commit()
+        return dict(row)
+
+    async def reject_pending_mod_action(self, pending_id: int):
+        await self.pool.execute(
+            "UPDATE pending_mod_actions SET status='rejected' WHERE id=?", (pending_id,)
+        )
+        await self.pool.commit()
+
+    async def get_pending_mod_actions(self, guild_id: int) -> List[Dict]:
+        rows = await (await self.pool.execute(
+            "SELECT * FROM pending_mod_actions WHERE guild_id=? AND status='pending' ORDER BY detected_at DESC",
+            (guild_id,),
+        )).fetchall()
+        return [dict(r) for r in rows]
+
+    # ─── Daily challenges ─────────────────────────────────────────────────────
+
+    async def get_daily_challenge_progress(self, staff_id: int, date_str: str) -> Dict[str, Dict]:
+        rows = await (await self.pool.execute(
+            "SELECT challenge, value, completed FROM daily_challenge_progress WHERE staff_id=? AND date=?",
+            (staff_id, date_str),
+        )).fetchall()
+        return {r["challenge"]: {"value": r["value"], "completed": bool(r["completed"])} for r in rows}
+
+    async def upsert_daily_challenge_progress(
+        self, staff_id: int, date_str: str, challenge: str, value: float, completed: bool
+    ):
+        await self.pool.execute(
+            """INSERT INTO daily_challenge_progress (staff_id, challenge, date, value, completed)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(staff_id, challenge, date) DO UPDATE SET
+                 value=excluded.value, completed=excluded.completed""",
+            (staff_id, challenge, date_str, value, int(completed)),
+        )
+        await self.pool.commit()
+
+    async def get_daily_challenge_completions(self, staff_id: int, date_str: str) -> int:
+        row = await (await self.pool.execute(
+            "SELECT COUNT(*) as c FROM daily_challenge_progress WHERE staff_id=? AND date=? AND completed=1",
+            (staff_id, date_str),
+        )).fetchone()
+        return row["c"] or 0
 
     async def was_active_today(self, staff_id: int) -> bool:
         """Return True if the staff member has sent at least one message today (UTC)."""
