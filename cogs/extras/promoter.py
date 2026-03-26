@@ -614,7 +614,7 @@ class PromoterRole(commands.Cog):
             
             # Create the thumbnail component
             thumbnail_component = ui.Thumbnail(
-                url=avatar_url,
+                media=avatar_url,
                 description=f"{member.display_name}'s avatar"
             )
 
