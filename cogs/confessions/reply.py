@@ -27,11 +27,15 @@ HOURLY_REPORT_LIMIT   = int(os.getenv("HOURLY_REPORT_LIMIT", 5))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# HIERARCHY HELPER
+# PARENT REFERENCE HELPER
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def get_reply_hierarchy_path(reply_id: int) -> str:
-    """Return a dotted hierarchy string: "1", "1.2", "1.2.3" …"""
+async def get_parent_reference(reply_id: int) -> tuple[str, str | None]:
+    """
+    Return (reference_header, parent_quote).
+    reference_header: "🔗 In reply to Confession #42" or "🔗 In reply to Reply #8"
+    parent_quote: First 150 chars of parent confession/reply (or None)
+    """
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             cur = await db.execute(
@@ -40,28 +44,39 @@ async def get_reply_hierarchy_path(reply_id: int) -> str:
             )
             row = await cur.fetchone()
             if not row:
-                return "?"
+                return "🔗 In reply to unknown", None
+            
             confession_id, parent_reply_id = row
-
+            
+            # If replying to a confession directly
             if parent_reply_id is None:
                 cur = await db.execute(
-                    "SELECT COUNT(*) FROM replies "
-                    "WHERE confession_id=? AND parent_reply_id IS NULL AND id<=?",
-                    (confession_id, reply_id),
+                    "SELECT description FROM confessions WHERE id=?",
+                    (confession_id,),
                 )
-                pos = (await cur.fetchone())[0]
-                return str(pos)
-
-            parent_path = await get_reply_hierarchy_path(parent_reply_id)
-            cur = await db.execute(
-                "SELECT COUNT(*) FROM replies WHERE parent_reply_id=? AND id<=?",
-                (parent_reply_id, reply_id),
-            )
-            pos = (await cur.fetchone())[0]
-            return f"{parent_path}.{pos}"
+                conf_row = await cur.fetchone()
+                if conf_row:
+                    text = conf_row[0]
+                    quote = text[:150] + "…" if len(text) > 150 else text
+                    return f"🔗 In reply to Confession #{confession_id}", quote
+                return f"🔗 In reply to Confession #{confession_id}", None
+            
+            # If replying to another reply
+            else:
+                cur = await db.execute(
+                    "SELECT description FROM replies WHERE id=?",
+                    (parent_reply_id,),
+                )
+                reply_row = await cur.fetchone()
+                if reply_row:
+                    text = reply_row[0]
+                    quote = text[:150] + "…" if len(text) > 150 else text
+                    return f"🔗 In reply to Reply #{parent_reply_id}", quote
+                return f"🔗 In reply to Reply #{parent_reply_id}", None
+                
     except Exception as e:
-        print(f"[get_reply_hierarchy_path] Error: {e}")
-        return "?"
+        print(f"[get_parent_reference] Error: {e}")
+        return "🔗 In reply to unknown", None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -193,39 +208,46 @@ class ReplyLayoutView(ui.LayoutView):
     def __init__(
         self,
         reply_id: int,
-        hierarchy_path: str,
         confession_id: int,
         body: str,
         *,
         is_op: bool = False,
         image_url: str | None = None,
-        parent_path: str | None = None,
+        parent_reference: str | None = None,
+        parent_quote: str | None = None,
     ) -> None:
         super().__init__(timeout=None)
 
         accent = discord.Color.gold() if is_op else discord.Color.from_str("#AB766F")
 
-        if parent_path:
-            header = (
-                f"## ↩️ Reply #{hierarchy_path} "
-                f"(to #{parent_path}) — Confession #{confession_id}"
-            )
-        else:
-            header = f"## ↩️ Reply #{hierarchy_path} — Confession #{confession_id}"
-
-        footer = "-# 👑 OP" if is_op else f"-# Reply #{hierarchy_path}"
-
+        # Header shows parent reference
+        header_parts = [parent_reference or f"🔗 In reply to Confession #{confession_id}"]
+        
+        # If there's a parent quote, show it in a smaller format
         children: list = [
-            ui.TextDisplay(header),
+            ui.TextDisplay(f"## ↩️ Reply to Confession #{confession_id}"),
             ui.Separator(spacing=discord.SeparatorSpacing.small),
-            ui.TextDisplay(body or "*(empty)*"),
         ]
+        
+        if parent_quote:
+            children.append(
+                ui.TextDisplay(f"-# > {parent_quote}")
+            )
+            children.append(
+                ui.Separator(spacing=discord.SeparatorSpacing.small),
+            )
+        
+        children.append(
+            ui.TextDisplay(body or "*(empty)*"),
+        )
 
         if image_url:
             children.append(
                 ui.MediaGallery(discord.MediaGalleryItem(media=image_url))
             )
 
+        footer = "-# 👑 OP" if is_op else "-# Reply"
+        
         children.extend([
             ui.Separator(spacing=discord.SeparatorSpacing.small),
             ui.TextDisplay(footer),
@@ -246,7 +268,7 @@ class ReplyLayoutView(ui.LayoutView):
             row = await cur.fetchone()
 
         if not row:
-            return cls(reply_id, "?", 0, "(deleted)")
+            return cls(reply_id, 0, "(deleted)")
 
         confession_id, parent_reply_id, user_id, description, image_url = row
 
@@ -257,20 +279,16 @@ class ReplyLayoutView(ui.LayoutView):
             conf_row = await cur.fetchone()
         is_op = bool(conf_row and conf_row[0] == user_id)
 
-        hierarchy_path = await get_reply_hierarchy_path(reply_id)
-        parent_path = (
-            await get_reply_hierarchy_path(parent_reply_id)
-            if parent_reply_id else None
-        )
+        parent_ref, parent_quote = await get_parent_reference(reply_id)
 
         return cls(
             reply_id,
-            hierarchy_path=hierarchy_path,
             confession_id=confession_id,
             body=description or "",
             is_op=is_op,
             image_url=image_url,
-            parent_path=parent_path,
+            parent_reference=parent_ref,
+            parent_quote=parent_quote,
         )
 
 
@@ -698,18 +716,17 @@ class ReplyToReplyModal(_MediaMixin, ui.Modal, title="Reply to Reply"):
                 await db.commit()
                 reply_db_id = cur.lastrowid
 
-            hierarchy_path = await get_reply_hierarchy_path(reply_db_id)
-            parent_path    = await get_reply_hierarchy_path(self.parent_reply_id)
+            parent_ref, parent_quote = await get_parent_reference(reply_db_id)
 
             # Build V2 card
             view = ReplyLayoutView(
                 reply_db_id,
-                hierarchy_path=hierarchy_path,
                 confession_id=self.confession_id,
                 body=self.reply_text,
                 is_op=is_op,
                 image_url=image_url,
-                parent_path=parent_path,
+                parent_reference=parent_ref,
+                parent_quote=parent_quote,
             )
             self.bot.add_view(view)
 
@@ -728,7 +745,7 @@ class ReplyToReplyModal(_MediaMixin, ui.Modal, title="Reply to Reply"):
                 )
                 await db.commit()
 
-            await self._log_reply(reply_db_id, image_url, is_op, hierarchy_path, parent_path)
+            await self._log_reply(reply_db_id, image_url, is_op)
             asyncio.create_task(self._notify_replier(sent_msg, is_op))
 
             remaining = HOURLY_REPLY_LIMIT - (current_count + 1)
@@ -754,11 +771,11 @@ class ReplyToReplyModal(_MediaMixin, ui.Modal, title="Reply to Reply"):
         reply_db_id: int,
         image_url: str | None,
         is_op: bool,
-        hierarchy_path: str,
-        parent_path: str,
     ) -> None:
         color = discord.Color.gold() if is_op else discord.Color.from_str("#AB766F")
-        title = f"Reply-to-Reply — Confession #{self.confession_id}"
+        title = f"Reply — Confession #{self.confession_id}"
+
+        parent_ref, parent_quote = await get_parent_reference(reply_db_id)
 
         log_ch = self.bot.get_channel(LOG_CHANNEL_ID)
         if log_ch:
@@ -769,13 +786,13 @@ class ReplyToReplyModal(_MediaMixin, ui.Modal, title="Reply to Reply"):
                     color=color, timestamp=discord.utils.utcnow(),
                 )
                 embed.add_field(name="Replier",         value=f"{user.mention} ({user.id})",           inline=False)
-                embed.add_field(name="Reply Hierarchy", value=f"**#{hierarchy_path}** → #{parent_path}", inline=False)
+                embed.add_field(name="Parent",         value=parent_ref,                                inline=False)
                 embed.add_field(name="Reply DB ID",     value=str(reply_db_id),                        inline=True)
                 if image_url:
                     embed.set_image(url=image_url)
                 await log_ch.send(embed=embed)
             except Exception as e:
-                print(f"[ReplyToReplyModal] admin log error: {e}")
+                print(f"[ReplyModal] admin log error: {e}")
 
         mod_ch = (
             self.bot.get_channel(MOD_CONFESSION_LOGS_CHANNEL_ID)
@@ -788,13 +805,13 @@ class ReplyToReplyModal(_MediaMixin, ui.Modal, title="Reply to Reply"):
                     color=color, timestamp=discord.utils.utcnow(),
                 )
                 embed.add_field(name="Replier (hash)",  value=f"`{sha256_user_id(self.user_id)}`",     inline=False)
-                embed.add_field(name="Reply Hierarchy", value=f"**#{hierarchy_path}** → #{parent_path}", inline=False)
+                embed.add_field(name="Parent",         value=parent_ref,                                inline=False)
                 embed.add_field(name="Reply DB ID",     value=str(reply_db_id),                        inline=True)
                 if image_url:
                     embed.set_image(url=image_url)
                 await mod_ch.send(embed=embed)
             except Exception as e:
-                print(f"[ReplyToReplyModal] mod log error: {e}")
+                print(f"[ReplyModal] mod log error: {e}")
 
     async def _notify_replier(self, new_reply_msg: discord.Message, is_op: bool) -> None:
         """DM the author of the parent reply."""
