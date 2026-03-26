@@ -13,11 +13,14 @@ from pathlib import Path
 TENOR_REGEX = r"(https?:\/\/(www\.)?tenor\.com\/\S+)"
 DB_PATH = "data/confession.db"
 DB_BACKUP_PATH = "data/confession_backup.db"
-CONFESSION_CHANNEL_ID = int(os.getenv("CONFESSION_CHANNEL_ID"))  # Set this in your .env file
+CONFESSION_CHANNEL_ID = int(os.getenv("CONFESSION_CHANNEL_ID"))
 REPORT_CHANNEL_ID = int(os.getenv("REPORT_CHANNEL_ID"))
 MEDIA_CHANNEL_ID = int(os.getenv("MEDIA_CHANNEL_ID"))
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))       # Admin-only log — full user info (unanonymized)
-MOD_LOG_CHANNEL_ID = int(os.getenv("MOD_LOG_CHANNEL_ID"))                     # ⚠️ TODO: Set to your anonymized mod-log channel ID
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))
+MOD_CONFESSION_LOGS_CHANNEL_ID = int(os.getenv("MOD_CONFESSION_LOGS_CHANNEL_ID"))
+
+
+
 URL_REGEX = re.compile(r"https?://\S+")
 
 
@@ -31,11 +34,6 @@ def sha256_user_id(user_id: int) -> str:
 
 
 async def lookup_user_id_from_hash(hash_str: str) -> Optional[int]:
-    """
-    Reverse-lookup a user_id from its SHA-256 hash by iterating all known
-    user IDs in the database.  Fine for typical server sizes.
-    Returns None if no match is found.
-    """
     hash_str = hash_str.lower().strip()
     if len(hash_str) != 64:
         return None
@@ -68,13 +66,13 @@ def extract_url(text: str) -> Optional[str]:
 
 
 async def get_hourly_reply_count(user_id: int) -> int:
-    """Get the number of replies a user has made in the last hour."""
     try:
         async with aiosqlite.connect(DB_PATH) as db:
-            one_hour_ago = discord.utils.utcnow() - datetime.timedelta(hours=1)
+            # Get count of replies in the last hour
+            one_hour_ago = (datetime.datetime.now() - datetime.timedelta(hours=1)).isoformat()
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM replies WHERE user_id = ? AND timestamp >= ?",
-                (user_id, one_hour_ago.isoformat()),
+                (user_id, one_hour_ago)
             )
             return (await cursor.fetchone())[0]
     except Exception as e:
@@ -83,72 +81,64 @@ async def get_hourly_reply_count(user_id: int) -> int:
 
 
 async def can_user_reply(user_id: int, hourly_limit: int = 5) -> tuple[bool, str, int]:
-    """
-    Check if a user can make a reply based on hourly limit.
-
-    Returns: (can_reply: bool, reason: str, current_count: int)
-    """
     try:
         current_count = await get_hourly_reply_count(user_id)
-
+        remaining = hourly_limit - current_count
+        
         if current_count >= hourly_limit:
+            # Calculate when the oldest reply was made to show reset time
             try:
                 async with aiosqlite.connect(DB_PATH) as db:
-                    one_hour_ago = discord.utils.utcnow() - datetime.timedelta(hours=1)
                     cursor = await db.execute(
-                        "SELECT timestamp FROM replies WHERE user_id = ? AND timestamp >= ? "
-                        "ORDER BY timestamp ASC LIMIT 1",
-                        (user_id, one_hour_ago.isoformat()),
+                        "SELECT timestamp FROM replies WHERE user_id = ? ORDER BY timestamp ASC LIMIT 1",
+                        (user_id,)
                     )
                     result = await cursor.fetchone()
                     if result:
-                        # BUG FIX: was `datetime.fromisoformat` — module imported, not class
-                        oldest_time = datetime.datetime.fromisoformat(result[0])
-                        reset_in = (
-                            3600
-                            - (discord.utils.utcnow() - oldest_time).total_seconds()
-                        )
-                        minutes = int(reset_in // 60)
-                        seconds = int(reset_in % 60)
-                        return (
-                            False,
-                            f"❌ You've reached the hourly limit of {hourly_limit} replies. "
-                            f"You can reply again in {minutes}m {seconds}s.",
-                            current_count,
-                        )
+                        # Parse timestamp - it's stored as ISO string
+                        oldest_time = datetime.datetime.fromisoformat(result[0].replace('Z', '+00:00'))
+                        now = discord.utils.utcnow()
+                        reset_in = 3600 - (now - oldest_time).total_seconds()
+                        if reset_in > 0:
+                            minutes = int(reset_in // 60)
+                            seconds = int(reset_in % 60)
+                            return (
+                                False,
+                                f"❌ You've reached the hourly limit of {hourly_limit} replies.\n"
+                                f"⏰ You can reply again in {minutes}m {seconds}s.\n"
+                                f"📊 You've used {current_count}/{hourly_limit} replies this hour.",
+                                current_count,
+                            )
             except Exception as e:
                 print(f"Error calculating reset time: {e}")
-
             return (
                 False,
-                f"❌ You've reached the hourly limit of {hourly_limit} replies. "
-                "Please wait an hour before replying again.",
+                f"❌ You've reached the hourly limit of {hourly_limit} replies.\n"
+                f"⏰ Please wait an hour before replying again.\n"
+                f"📊 You've used {current_count}/{hourly_limit} replies this hour.",
                 current_count,
             )
-
-        return True, "", current_count
-
+        
+        # Show remaining count in success case for feedback
+        return True, f"✅ You have {remaining} repl{'y' if remaining == 1 else 'ies'} remaining this hour.", current_count
     except Exception as e:
         print(f"Error checking reply limit: {e}")
         return True, "", 0
 
 
 async def get_user_reply_stats(user_id: int) -> dict:
-    """Get detailed reply statistics for a user."""
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM replies WHERE user_id = ?", (user_id,)
             )
             total = (await cursor.fetchone())[0]
-
             one_hour_ago = discord.utils.utcnow() - datetime.timedelta(hours=1)
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM replies WHERE user_id = ? AND timestamp >= ?",
                 (user_id, one_hour_ago.isoformat()),
             )
             hourly = (await cursor.fetchone())[0]
-
             today_start = discord.utils.utcnow().replace(
                 hour=0, minute=0, second=0, microsecond=0
             )
@@ -157,12 +147,7 @@ async def get_user_reply_stats(user_id: int) -> dict:
                 (user_id, today_start.isoformat()),
             )
             daily = (await cursor.fetchone())[0]
-
-            return {
-                "total_replies": total,
-                "hourly_replies": hourly,
-                "daily_replies": daily,
-            }
+            return {"total_replies": total, "hourly_replies": hourly, "daily_replies": daily}
     except Exception as e:
         print(f"Error getting user reply stats: {e}")
         return {"total_replies": 0, "hourly_replies": 0, "daily_replies": 0}
@@ -171,7 +156,6 @@ async def get_user_reply_stats(user_id: int) -> dict:
 async def get_user_join_date(
     guild: discord.Guild, user_id: int
 ) -> Optional[datetime.datetime]:
-    """Get the date when a user joined the guild."""
     try:
         member = guild.get_member(user_id)
         if member and member.joined_at:
@@ -183,58 +167,53 @@ async def get_user_join_date(
 
 async def can_user_confess(
     guild: discord.Guild, user_id: int, daily_limit: int = 3
-) -> tuple[bool, str]:
-    """
-    Check if a user can make a confession based on:
-    - Must have been in server for at least 1 day
-    - Cannot exceed daily limit
-
-    Returns: (can_confess: bool, reason: str)
-    """
+) -> tuple[bool, str, int]:
+    # Check join date first
     join_date = await get_user_join_date(guild, user_id)
     if join_date:
         time_in_server = discord.utils.utcnow() - join_date
         if time_in_server.total_seconds() < 86400:
-            hours_left = 24 - (time_in_server.total_seconds() / 3600)
+            hours_left = int((86400 - time_in_server.total_seconds()) / 3600)
+            minutes_left = int(((86400 - time_in_server.total_seconds()) % 3600) / 60)
             return (
                 False,
-                f"⏳ You need to be in the server for at least 1 day before making confessions. "
-                f"Please wait {hours_left:.1f} more hours.",
+                f"⏳ You need to be in the server for at least **1 day** before making confessions.\n"
+                f"📅 Please wait **{hours_left}h {minutes_left}m** more.",
+                0  # Return 0 for current count when failing due to join date
             )
-
+    
     try:
         async with aiosqlite.connect(DB_PATH) as db:
-            today_start = discord.utils.utcnow().replace(
-                hour=0, minute=0, second=0, microsecond=0
-            )
-            cursor = await db.execute(
-                "SELECT COUNT(*) FROM confessions WHERE user_id = ? AND created_at >= ?",
-                (user_id, today_start.isoformat()),
-            )
-            count = (await cursor.fetchone())[0]
-
-            if count >= daily_limit:
+            current_count = await get_daily_confession_count(user_id)
+            remaining = daily_limit - current_count
+            
+            if current_count >= daily_limit:
                 return (
                     False,
-                    f"❌ You've reached the daily limit of {daily_limit} confessions. "
-                    "Please use replies to engage with existing confessions instead.",
+                    f"❌ You've reached the daily limit of **{daily_limit}** confessions.\n"
+                    f"📊 You've used {current_count}/{daily_limit} today.\n"
+                    f"💡 Use replies to engage with existing confessions instead!",
+                    current_count  # Return current count
                 )
+            
+            # Success case with remaining count info
+            return (
+                True,
+                f"✅ You have **{remaining}** confession{'s' if remaining != 1 else ''} remaining today.",
+                current_count  # Return current count
+            )
     except Exception as e:
         print(f"Error checking daily confession count: {e}")
-
-    return True, ""
+        return True, "", 0  # Return default values on error
 
 
 async def get_daily_confession_count(user_id: int) -> int:
-    """Get the number of confessions a user has made today."""
     try:
         async with aiosqlite.connect(DB_PATH) as db:
-            today_start = discord.utils.utcnow().replace(
-                hour=0, minute=0, second=0, microsecond=0
-            )
+            # Use date comparison to get today's count
             cursor = await db.execute(
-                "SELECT COUNT(*) FROM confessions WHERE user_id = ? AND created_at >= ?",
-                (user_id, today_start.isoformat()),
+                "SELECT COUNT(*) FROM confessions WHERE user_id = ? AND DATE(created_at) = DATE('now')",
+                (user_id,)
             )
             return (await cursor.fetchone())[0]
     except Exception as e:
@@ -243,14 +222,12 @@ async def get_daily_confession_count(user_id: int) -> int:
 
 
 async def get_user_stats(user_id: int) -> dict:
-    """Get comprehensive user statistics for confessions."""
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM confessions WHERE user_id = ?", (user_id,)
             )
             total = (await cursor.fetchone())[0]
-
             today_start = discord.utils.utcnow().replace(
                 hour=0, minute=0, second=0, microsecond=0
             )
@@ -259,12 +236,10 @@ async def get_user_stats(user_id: int) -> dict:
                 (user_id, today_start.isoformat()),
             )
             today = (await cursor.fetchone())[0]
-
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM replies WHERE user_id = ?", (user_id,)
             )
             replies = (await cursor.fetchone())[0]
-
             return {
                 "total_confessions": total,
                 "today_confessions": today,
@@ -276,30 +251,22 @@ async def get_user_stats(user_id: int) -> dict:
 
 
 def is_image_url(url: str) -> bool:
-    """Check if URL points to an image (strict check for common image formats)."""
     if not url:
         return False
-
     parsed = urlparse(url)
     path = parsed.path.lower()
-
     image_extensions = [
         ".png", ".jpg", ".jpeg", ".gif", ".webp",
         ".bmp", ".tiff", ".svg", ".jfif", ".pjpeg", ".pjp",
     ]
-
     for ext in image_extensions:
         if path.endswith(ext):
             return True
-
     if "cdn.discordapp.com" in parsed.netloc and "/attachments/" in path:
         last_segment = path.split("/")[-1]
-        image_patterns = ["png", "jpg", "jpeg", "gif", "webp",
-                          "PNG", "JPG", "JPEG", "GIF", "WEBP"]
-        for pattern in image_patterns:
+        for pattern in ["png", "jpg", "jpeg", "gif", "webp", "PNG", "JPG", "JPEG", "GIF", "WEBP"]:
             if pattern in last_segment:
                 return True
-
     query = parsed.query.lower()
     if "format=" in query or "type=" in query:
         for part in query.split("&"):
@@ -307,12 +274,10 @@ def is_image_url(url: str) -> bool:
                 value = part.split("=")[1] if "=" in part else ""
                 if any(t in value for t in ["jpg", "jpeg", "png", "gif", "webp"]):
                     return True
-
     return False
 
 
 async def backup_database():
-    """Create a backup of the database."""
     try:
         if os.path.exists(DB_PATH):
             import shutil
@@ -324,18 +289,14 @@ async def backup_database():
 
 
 async def init_db():
-    """Initialize database with proper error handling."""
     try:
         await backup_database()
-
         data_dir = Path("data")
         data_dir.mkdir(parents=True, exist_ok=True)
-
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("PRAGMA foreign_keys = ON")
             await db.execute("PRAGMA journal_mode = WAL")
-
-            # Confessions table
+            await db.execute("PRAGMA datetime_precision = '3'")
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS confessions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -348,8 +309,6 @@ async def init_db():
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-
-            # Replies table
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS replies (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -363,8 +322,6 @@ async def init_db():
                     FOREIGN KEY (confession_id) REFERENCES confessions (id) ON DELETE CASCADE
                 )
             """)
-
-            # Reports table
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS reports (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -375,8 +332,6 @@ async def init_db():
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-
-            # Bans table
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS confessban (
                     user_id INTEGER PRIMARY KEY,
@@ -384,26 +339,19 @@ async def init_db():
                     reason TEXT
                 )
             """)
-
-            # ── Migrations for existing databases ──────────────────────────
             cursor = await db.execute("PRAGMA table_info(replies)")
             reply_cols = {row[1] for row in await cursor.fetchall()}
-
             if "message_id" not in reply_cols:
                 await db.execute("ALTER TABLE replies ADD COLUMN message_id INTEGER")
                 print("✅ Migration: added 'message_id' to replies table")
-
             if "parent_reply_id" not in reply_cols:
                 await db.execute("ALTER TABLE replies ADD COLUMN parent_reply_id INTEGER")
                 print("✅ Migration: added 'parent_reply_id' to replies table")
-
             cursor = await db.execute("PRAGMA table_info(confessban)")
             ban_cols = {row[1] for row in await cursor.fetchall()}
             if "reason" not in ban_cols:
                 await db.execute("ALTER TABLE confessban ADD COLUMN reason TEXT")
                 print("✅ Migration: added 'reason' to confessban table")
-
-            # Indexes
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_confessions_user_id ON confessions(user_id)"
             )
@@ -416,7 +364,6 @@ async def init_db():
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_reports_target ON reports(target_type, target_id)"
             )
-
             await db.commit()
             print(f"Database initialized at {DB_PATH}")
     except Exception as e:
@@ -427,15 +374,12 @@ async def init_db():
 async def process_media(
     bot, content: str, attachments: List[discord.Attachment], media_channel_id: int
 ) -> Optional[str]:
-    """Process and upload media to the media channel."""
     try:
         media_channel = bot.get_channel(media_channel_id)
         if not media_channel:
             print(f"Media channel {media_channel_id} not found")
             return None
-
         image_url = None
-
         if attachments:
             for attachment in attachments:
                 if attachment.content_type and attachment.content_type.startswith("image/"):
@@ -444,12 +388,10 @@ async def process_media(
                         file = discord.File(io.BytesIO(file_bytes), filename=attachment.filename)
                         msg = await media_channel.send(file=file)
                         image_url = msg.attachments[0].url
-                        print(f"Uploaded attachment: {attachment.filename} -> {image_url}")
                         break
                     except Exception as e:
                         print(f"Error uploading attachment {attachment.filename}: {e}")
                         continue
-
         if not image_url and content:
             url = extract_url(content)
             if url and is_image_url(url):
@@ -478,9 +420,7 @@ async def process_media(
                     print(f"Error downloading/uploading image from URL: {e}")
                     import traceback
                     traceback.print_exc()
-
         return image_url
-
     except Exception as e:
         print(f"Error in process_media: {e}")
         import traceback
@@ -489,7 +429,6 @@ async def process_media(
 
 
 async def get_confession_by_id(confession_id: int):
-    """Safely get confession by ID."""
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute(
@@ -502,7 +441,6 @@ async def get_confession_by_id(confession_id: int):
 
 
 async def is_user_banned(user_id: int) -> bool:
-    """Check if user is banned."""
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute(
@@ -515,7 +453,6 @@ async def is_user_banned(user_id: int) -> bool:
 
 
 async def get_user_confessions(user_id: int):
-    """Get all confessions by a user."""
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute(
@@ -529,7 +466,6 @@ async def get_user_confessions(user_id: int):
 
 
 async def get_confession_replies(confession_id: int):
-    """Get all replies for a confession."""
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute(
@@ -543,7 +479,6 @@ async def get_confession_replies(confession_id: int):
 
 
 async def ban_user(user_id: int, reason: str = None):
-    """Ban a user from submitting confessions."""
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
@@ -558,7 +493,6 @@ async def ban_user(user_id: int, reason: str = None):
 
 
 async def unban_user(user_id: int):
-    """Unban a user from submitting confessions."""
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("DELETE FROM confessban WHERE user_id = ?", (user_id,))
@@ -569,10 +503,7 @@ async def unban_user(user_id: int):
         return False
 
 
-# Add after other limit functions (around line 134)
-
 async def get_hourly_report_count(user_id: int) -> int:
-    """Get the number of reports a user has made in the last hour."""
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             one_hour_ago = discord.utils.utcnow() - datetime.timedelta(hours=1)
@@ -589,14 +520,10 @@ async def get_hourly_report_count(user_id: int) -> int:
 async def can_user_report(user_id: int, hourly_limit: int = 5) -> tuple[bool, str, int]:
     try:
         current_count = await get_hourly_report_count(user_id)
-        
-        # DEBUG - remove after testing
         print(f"[REPORT LIMIT] User {user_id}: {current_count}/{hourly_limit} reports in last hour")
-        
         if current_count >= hourly_limit:
             try:
                 async with aiosqlite.connect(DB_PATH) as db:
-                    # Make sure we're using proper UTC time
                     one_hour_ago = discord.utils.utcnow() - datetime.timedelta(hours=1)
                     cursor = await db.execute(
                         "SELECT timestamp FROM reports WHERE reporter_id = ? AND timestamp >= ? "
@@ -605,8 +532,9 @@ async def can_user_report(user_id: int, hourly_limit: int = 5) -> tuple[bool, st
                     )
                     result = await cursor.fetchone()
                     if result:
-                        # Ensure proper datetime parsing
-                        oldest_time = datetime.datetime.fromisoformat(result[0].replace('Z', '+00:00'))
+                        oldest_time = datetime.datetime.fromisoformat(
+                            result[0].replace("Z", "+00:00")
+                        )
                         reset_in = 3600 - (discord.utils.utcnow() - oldest_time).total_seconds()
                         if reset_in > 0:
                             minutes = int(reset_in // 60)
@@ -619,16 +547,18 @@ async def can_user_report(user_id: int, hourly_limit: int = 5) -> tuple[bool, st
                             )
             except Exception as e:
                 print(f"Error calculating report reset time: {e}")
-            
             return (
                 False,
                 f"❌ You've reached the hourly report limit of {hourly_limit}. "
                 "Please wait an hour before reporting again.",
                 current_count,
             )
-        
         return True, "", current_count
-        
     except Exception as e:
         print(f"Error checking report limit: {e}")
         return True, "", 0
+
+
+# ── Required so the bot loader doesn't error when helpers is listed as an extension ──
+async def setup(bot) -> None:
+    pass

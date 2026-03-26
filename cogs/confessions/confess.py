@@ -1,681 +1,81 @@
-import ast
-import os
+# cogs/confessions/confess.py  —  Components V2 (discord.py master / ≥ 2.7)
+from __future__ import annotations
 
+import ast
+import io
+import os
+import asyncio
+import traceback
+
+import aiosqlite
 import discord
 from discord import ui, app_commands
 from discord.ext import commands
-from datetime import datetime
-import asyncio
-import aiosqlite
-import aiohttp
-import io
 
 from .helpers import (
     DB_PATH,
-    extract_url,
     init_db,
     is_user_banned,
     get_confession_by_id,
     can_user_confess,
     sha256_user_id,
     LOG_CHANNEL_ID,
-    MOD_LOG_CHANNEL_ID,
+    MOD_CONFESSION_LOGS_CHANNEL_ID,
 )
-from .reply import ReplyModal, ReplyMessageView
+from .reply import ReplyModal, ReplyLayoutView
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CONFIG
+# ──────────────────────────────────────────────────────────────────────────────
 
 DAILY_CONFESSION_LIMIT = int(os.getenv("DAILY_CONFESSION_LIMIT", 3))
-
-# ==============================
-# CONFIGURATION
-# ==============================
-
-CONFESSION_CHANNEL_ID = int(os.getenv("CONFESSION_CHANNEL_ID"))
-REPORT_CHANNEL_ID = int(os.getenv("REPORT_CHANNEL_ID"))
-MEDIA_CHANNEL_ID = int(os.getenv("MEDIA_CHANNEL_ID"))
-HOURLY_REPORT_LIMIT = int(os.getenv("HOURLY_REPORT_LIMIT", 5))
-ALLOWED_ROLE_IDS_STR = os.environ.get("ALLOWED_ROLE_IDS", "[]")
+CONFESSION_CHANNEL_ID  = int(os.getenv("CONFESSION_CHANNEL_ID"))
+REPORT_CHANNEL_ID      = int(os.getenv("REPORT_CHANNEL_ID"))
+MEDIA_CHANNEL_ID       = int(os.getenv("MEDIA_CHANNEL_ID"))
+HOURLY_REPORT_LIMIT    = int(os.getenv("HOURLY_REPORT_LIMIT", 5))
+ALLOWED_ROLE_IDS_STR   = os.environ.get("ALLOWED_ROLE_IDS", "[]")
 
 try:
     ALLOWED_ROLE_IDS = ast.literal_eval(ALLOWED_ROLE_IDS_STR)
 except (SyntaxError, ValueError):
-    ALLOWED_ROLE_IDS = [int(role_id.strip()) for role_id in ALLOWED_ROLE_IDS_STR.strip("[]").split(",") if role_id.strip()]
+    ALLOWED_ROLE_IDS = [
+        int(r.strip())
+        for r in ALLOWED_ROLE_IDS_STR.strip("[]").split(",")
+        if r.strip()
+    ]
 
-class ConfessionModal(ui.Modal, title="Submit a Confession"):
-    title_input = ui.TextInput(
-        label="Title",
-        max_length=100,
-        required=False,
-        placeholder="Optional title for your confession",
-    )
-    description_input = ui.TextInput(
-        label="Description",
-        style=discord.TextStyle.paragraph,
-        max_length=1000,
-        placeholder="Share your thoughts...",
-        required=True,
-    )
 
-    def __init__(self, bot):
-        super().__init__()
-        self.bot = bot
-        self.user_id = None
-        self.last_confession_button = None
+# ──────────────────────────────────────────────────────────────────────────────
+# PERSISTENT BUTTONS
+# ──────────────────────────────────────────────────────────────────────────────
 
-    async def on_submit(self, interaction: discord.Interaction):
-        self.user_id = interaction.user.id
+class PersistentConfessButton(ui.Button):
+    def __init__(self) -> None:
+        super().__init__(
+            label="Make a Confession",
+            style=discord.ButtonStyle.primary,
+            custom_id="persistent_confess_button",
+        )
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
-
-        if await is_user_banned(self.user_id):
-            # Get the message to delete
-            msg = await interaction.followup.send(
-                "❌ You are banned from submitting confessions.", ephemeral=True, wait=True
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not any(role.id in ALLOWED_ROLE_IDS for role in interaction.user.roles):
+            return await interaction.response.send_message(
+                "❌ You need at least LVL 5 to make confessions.", ephemeral=True
             )
-            # Delete after 8 seconds
-            await asyncio.sleep(8)
-            try:
-                await msg.delete()
-            except discord.NotFound:
-                pass
-            return
-
-        can_confess, reason = await can_user_confess(
-            interaction.guild, self.user_id, DAILY_CONFESSION_LIMIT
+        if await is_user_banned(interaction.user.id):
+            return await interaction.response.send_message(
+                "❌ You are banned from making confessions.", ephemeral=True
+            )
+        # Fix: Unpack 3 values instead of 2
+        can_confess, reason, _ = await can_user_confess(
+            interaction.guild, interaction.user.id, DAILY_CONFESSION_LIMIT
         )
         if not can_confess:
-            msg = await interaction.followup.send(reason, ephemeral=True, wait=True)
-            await asyncio.sleep(8)
-            try:
-                await msg.delete()
-            except discord.NotFound:
-                pass
-            return
+            return await interaction.response.send_message(reason, ephemeral=True)
+        await interaction.response.send_modal(ConfessionModal(interaction.client))
 
-        channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
-        if not channel:
-            msg = await interaction.followup.send(
-                "❌ Confession channel not found.", ephemeral=True, wait=True
-            )
-            await asyncio.sleep(8)
-            try:
-                await msg.delete()
-            except discord.NotFound:
-                pass
-            return
-
-        try:
-            async with aiosqlite.connect(DB_PATH) as db:
-                cursor = await db.execute("SELECT MAX(id) FROM confessions")
-                result = await cursor.fetchone()
-                prev_confession_id = result[0] if result[0] else None
-
-            async with aiosqlite.connect(DB_PATH) as db:
-                cursor = await db.execute(
-                    "INSERT INTO confessions (user_id, title, description) VALUES (?, ?, ?)",
-                    (self.user_id, self.title_input.value, self.description_input.value),
-                )
-                await db.commit()
-                confession_id = cursor.lastrowid
-
-            embed = discord.Embed(
-                title=f"💌 {self.title_input.value or f'Confession #{confession_id}'}",
-                description=self.description_input.value,
-                color=discord.Color.purple(),
-                timestamp=discord.utils.utcnow(),
-            )
-            embed.set_footer(text=f"Confession #{confession_id}")
-
-            msg = await channel.send(embed=embed)
-
-            thread_name = f"Confession #{confession_id}"
-            try:
-                thread = await msg.create_thread(name=thread_name, auto_archive_duration=60)
-            except discord.HTTPException as e:
-                print(f"Error creating thread: {e}")
-                thread = None
-
-            async with aiosqlite.connect(DB_PATH) as db:
-                await db.execute(
-                    "UPDATE confessions SET message_id=? WHERE id=?",
-                    (msg.id, confession_id),
-                )
-                await db.commit()
-
-            # Send media prompt and track for deletion
-            media_prompt = await interaction.followup.send(
-                "✅ Confession submitted! You have **1 minute** to reply with an image URL or "
-                "attachment. Send `skip` to continue without media.\n\n"
-                f"📝 Your confession ID: #{confession_id}",
-                ephemeral=True,
-                wait=True
-            )
-            
-            # Schedule deletion after 60 seconds
-            asyncio.create_task(self.delete_after_delay(media_prompt, 60))
-
-            image_url = await self.wait_for_media(interaction, confession_id, msg)
-
-            if image_url:
-                embed.set_image(url=image_url)
-                async with aiosqlite.connect(DB_PATH) as db:
-                    await db.execute(
-                        "UPDATE confessions SET image_url=? WHERE id=?",
-                        (image_url, confession_id),
-                    )
-                    await db.commit()
-
-            if prev_confession_id:
-                await self.remove_prev_confess_button(prev_confession_id)
-
-            final_view = PersistentConfessionView(confession_id, show_confess_button=True)
-            await msg.edit(embed=embed, view=final_view)
-
-            await self.log_confession(confession_id, image_url)
-
-            if thread:
-                thread_msg = f"A discussion thread has been created: {thread.mention}"
-            else:
-                thread_msg = "Note: Could not create discussion thread."
-
-            # Send final success message and delete after 30 seconds
-            final_msg = await interaction.followup.send(
-                f"✅ Confession #{confession_id} is now public! {thread_msg}",
-                ephemeral=True,
-                wait=True
-            )
-            asyncio.create_task(self.delete_after_delay(final_msg, 30))
-
-        except Exception as e:
-            print(f"Error submitting confession: {e}")
-            import traceback
-            traceback.print_exc()
-            error_msg = await interaction.followup.send(
-                "❌ An error occurred while submitting your confession.", ephemeral=True, wait=True
-            )
-            asyncio.create_task(self.delete_after_delay(error_msg, 8))
-
-    async def delete_after_delay(self, message, delay: int):
-        """Helper method to delete a message after a delay."""
-        await asyncio.sleep(delay)
-        try:
-            await message.delete()
-        except discord.NotFound:
-            pass
-        except discord.HTTPException as e:
-            print(f"Failed to delete message: {e}")
-
-    async def remove_prev_confess_button(self, confession_id):
-        """Remove confess button from previous confession."""
-        try:
-            async with aiosqlite.connect(DB_PATH) as db:
-                cursor = await db.execute(
-                    "SELECT message_id FROM confessions WHERE id=?", (confession_id,)
-                )
-                result = await cursor.fetchone()
-                if not result:
-                    return
-                message_id = result[0]
-                channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
-                if not channel or not message_id:
-                    return
-                try:
-                    msg = await channel.fetch_message(message_id)
-                    new_view = PersistentConfessionView(confession_id, show_confess_button=False)
-                    await msg.edit(view=new_view)
-                except discord.NotFound:
-                    print(f"Previous confession message {message_id} not found")
-                except discord.HTTPException as e:
-                    print(f"Error updating previous confession: {e}")
-        except Exception as e:
-            print(f"Error removing previous confess button: {e}")
-
-    async def wait_for_media(self, interaction, confession_id, confession_msg):
-        """Wait for media response with proper timeout handling."""
-
-        def check(m):
-            return (
-                m.author.id == self.user_id and m.channel.id == interaction.channel.id
-            )
-
-        try:
-            # Send waiting message and schedule deletion
-            waiting_msg = await interaction.followup.send(
-                "⏳ Waiting for media... You have 60 seconds.", ephemeral=True, wait=True
-            )
-            asyncio.create_task(self.delete_after_delay(waiting_msg, 5))
-
-            msg_received = await self.bot.wait_for("message", timeout=60.0, check=check)
-
-            content_lower = msg_received.content.lower().strip()
-            if content_lower == "skip":
-                try:
-                    await msg_received.delete()
-                except Exception:
-                    pass
-                skip_msg = await interaction.followup.send("✅ Skipped media upload.", ephemeral=True, wait=True)
-                asyncio.create_task(self.delete_after_delay(skip_msg, 5))
-                
-                final_view = PersistentConfessionView(confession_id, show_confess_button=True)
-                await confession_msg.edit(view=final_view)
-                thread = confession_msg.thread
-                thread_msg = (
-                    f"A discussion thread has been created: {thread.mention}"
-                    if thread else "Note: Could not create discussion thread."
-                )
-                final_msg = await interaction.followup.send(
-                    f"✅ Confession #{confession_id} is now public! {thread_msg}", ephemeral=True, wait=True
-                )
-                asyncio.create_task(self.delete_after_delay(final_msg, 30))
-                return None
-
-            has_attachments = len(msg_received.attachments) > 0
-            has_valid_url = False
-            if msg_received.content and msg_received.content.strip():
-                url = extract_url(msg_received.content)
-                if url:
-                    url_lower = url.lower()
-                    image_extensions = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"]
-                    if any(url_lower.endswith(ext) for ext in image_extensions):
-                        has_valid_url = True
-                    elif "media.discordapp.net" in url_lower or "cdn.discordapp.com" in url_lower:
-                        has_valid_url = True
-
-            if not has_attachments and not has_valid_url:
-                try:
-                    await msg_received.delete()
-                except Exception:
-                    pass
-
-                error_msg = "❌ No valid media found in your message.\n\n"
-                if msg_received.content and extract_url(msg_received.content):
-                    error_msg += (
-                        "⚠️ The URL you provided doesn't appear to be an image link.\n"
-                        "Please use direct image links (ending with .png/.jpg/.gif/.webp)\n\n"
-                    )
-                else:
-                    error_msg += (
-                        "**Valid options are:**\n"
-                        "• Upload an image file (drag & drop)\n"
-                        "• Send a direct image URL\n"
-                        "• Type `skip` to continue without media\n\n"
-                    )
-                error_msg += "Continuing without media."
-                
-                error_response = await interaction.followup.send(error_msg, ephemeral=True, wait=True)
-                asyncio.create_task(self.delete_after_delay(error_response, 10))
-
-                final_view = PersistentConfessionView(confession_id, show_confess_button=True)
-                await confession_msg.edit(view=final_view)
-                thread = confession_msg.thread
-                thread_msg = (
-                    f"A discussion thread has been created: {thread.mention}"
-                    if thread else "Note: Could not create discussion thread."
-                )
-                final_msg = await interaction.followup.send(
-                    f"✅ Confession #{confession_id} is now public! {thread_msg}", ephemeral=True, wait=True
-                )
-                asyncio.create_task(self.delete_after_delay(final_msg, 30))
-                return None
-
-            success, result = await self.download_and_reupload_media(
-                msg_received.content, msg_received.attachments, confession_id
-            )
-
-            try:
-                await msg_received.delete()
-            except discord.Forbidden:
-                print(f"No permission to delete message from {msg_received.author}")
-            except discord.NotFound:
-                print("Message already deleted")
-            except Exception as e:
-                print(f"Error deleting message: {e}")
-
-            if success:
-                embed = confession_msg.embeds[0] if confession_msg.embeds else None
-                if embed:
-                    embed.set_image(url=result)
-                    async with aiosqlite.connect(DB_PATH) as db:
-                        await db.execute(
-                            "UPDATE confessions SET image_url=? WHERE id=?",
-                            (result, confession_id),
-                        )
-                        await db.commit()
-
-                media_msg = await interaction.followup.send("✅ Media added to confession!", ephemeral=True, wait=True)
-                asyncio.create_task(self.delete_after_delay(media_msg, 5))
-
-                final_view = PersistentConfessionView(confession_id, show_confess_button=True)
-                await confession_msg.edit(embed=embed, view=final_view)
-
-                thread = confession_msg.thread
-                thread_msg = (
-                    f"A discussion thread has been created: {thread.mention}"
-                    if thread else "Note: Could not create discussion thread."
-                )
-                final_msg = await interaction.followup.send(
-                    f"✅ Confession #{confession_id} is now public! {thread_msg}", ephemeral=True, wait=True
-                )
-                asyncio.create_task(self.delete_after_delay(final_msg, 30))
-                return result
-            else:
-                error_msg = result if isinstance(result, str) else "Unknown error occurred"
-                error_response = await interaction.followup.send(
-                    f"❌ Failed to process media: {error_msg}\nContinuing without media.",
-                    ephemeral=True, wait=True
-                )
-                asyncio.create_task(self.delete_after_delay(error_response, 10))
-                
-                await self.add_fallback_buttons(confession_msg, confession_id, error_msg)
-                thread = confession_msg.thread
-                thread_msg = (
-                    f"A discussion thread has been created: {thread.mention}"
-                    if thread else "Note: Could not create discussion thread."
-                )
-                final_msg = await interaction.followup.send(
-                    f"✅ Confession #{confession_id} is now public! {thread_msg}", ephemeral=True, wait=True
-                )
-                asyncio.create_task(self.delete_after_delay(final_msg, 30))
-                return None
-
-        except asyncio.TimeoutError:
-            timeout_msg = await interaction.followup.send(
-                "⏰ Media upload timed out. Continuing without media.", ephemeral=True, wait=True
-            )
-            asyncio.create_task(self.delete_after_delay(timeout_msg, 5))
-            
-            final_view = PersistentConfessionView(confession_id, show_confess_button=True)
-            await confession_msg.edit(view=final_view)
-            thread = confession_msg.thread
-            thread_msg = (
-                f"A discussion thread has been created: {thread.mention}"
-                if thread else "Note: Could not create discussion thread."
-            )
-            final_msg = await interaction.followup.send(
-                f"✅ Confession #{confession_id} is now public! {thread_msg}", ephemeral=True, wait=True
-            )
-            asyncio.create_task(self.delete_after_delay(final_msg, 30))
-            return None
-        except Exception as e:
-            print(f"Error in wait_for_media: {e}")
-            import traceback
-            traceback.print_exc()
-            error_msg = await interaction.followup.send(
-                "❌ An error occurred while processing media.", ephemeral=True, wait=True
-            )
-            asyncio.create_task(self.delete_after_delay(error_msg, 8))
-            
-            final_view = PersistentConfessionView(confession_id, show_confess_button=True)
-            await confession_msg.edit(view=final_view)
-            thread = confession_msg.thread
-            thread_msg = (
-                f"A discussion thread has been created: {thread.mention}"
-                if thread else "Note: Could not create discussion thread."
-            )
-            final_msg = await interaction.followup.send(
-                f"✅ Confession #{confession_id} is now public! {thread_msg}", ephemeral=True, wait=True
-            )
-            asyncio.create_task(self.delete_after_delay(final_msg, 30))
-            return None
-
-    async def download_and_reupload_media(self, content, attachments, confession_id):
-        """Download media and re-upload to media channel, then return new URL."""
-        try:
-            print(f"[DEBUG] Starting media processing for confession #{confession_id}")
-
-            media_url = None
-            filename = None
-
-            if attachments and len(attachments) > 0:
-                attachment = attachments[0]
-                media_url = attachment.url
-                filename = attachment.filename
-                print(f"[DEBUG] Found attachment: {filename}, URL: {media_url}")
-            elif content and content.strip():
-                media_url = extract_url(content)
-                if media_url:
-                    filename = media_url.split("/")[-1].split("?")[0]
-                    if "." not in filename:
-                        if "tenor.com" in media_url or "giphy.com" in media_url:
-                            filename = f"gif_{confession_id}.gif"
-                        else:
-                            filename = f"image_{confession_id}.jpg"
-                    print(f"[DEBUG] Found URL: {media_url}, filename: {filename}")
-
-            if not media_url:
-                print("[DEBUG] No media URL found")
-                return False, "No media found in message"
-
-            print(f"[DEBUG] Downloading media from: {media_url}")
-            async with aiohttp.ClientSession() as session:
-                try:
-                    headers = {
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                    }
-                    async with session.get(media_url, headers=headers, timeout=30) as response:
-                        if response.status != 200:
-                            return False, f"Failed to download media: HTTP {response.status}"
-                        file_data = await response.read()
-                        print(f"[DEBUG] Downloaded {len(file_data)} bytes")
-                        if not filename:
-                            content_type = response.headers.get("Content-Type", "")
-                            ext_map = {
-                                "image/jpeg": ".jpg", "image/jpg": ".jpg",
-                                "image/png": ".png", "image/gif": ".gif",
-                                "image/webp": ".webp",
-                            }
-                            filename = f"image_{confession_id}" + ext_map.get(content_type, ".jpg")
-                except aiohttp.ClientError as e:
-                    return False, f"Failed to download media: {str(e)}"
-                except asyncio.TimeoutError:
-                    return False, "Download timeout"
-                except Exception as e:
-                    return False, f"Error downloading: {str(e)}"
-
-            if not file_data or len(file_data) == 0:
-                return False, "No media data received"
-
-            media_channel = self.bot.get_channel(MEDIA_CHANNEL_ID)
-            if not media_channel:
-                return False, "Media channel not found"
-
-            file = discord.File(io.BytesIO(file_data), filename=filename)
-            try:
-                media_msg = await media_channel.send(
-                    f"**Media for confession #{confession_id}**", file=file
-                )
-                await asyncio.sleep(2)
-
-                final_url = None
-                if media_msg.attachments and len(media_msg.attachments) > 0:
-                    final_url = media_msg.attachments[0].url
-                elif media_msg.embeds and len(media_msg.embeds) > 0:
-                    for embed in media_msg.embeds:
-                        if embed.image:
-                            final_url = embed.image.url
-                            break
-                        elif embed.thumbnail:
-                            final_url = embed.thumbnail.url
-                            break
-
-                if not final_url:
-                    return False, "Could not get URL from uploaded media"
-                return True, final_url
-
-            except discord.HTTPException as e:
-                return False, f"Failed to upload to media channel: {str(e)}"
-            except Exception as e:
-                return False, f"Error during upload: {str(e)}"
-
-        except Exception as e:
-            print(f"[DEBUG] Error in download_and_reupload_media: {e}")
-            import traceback
-            traceback.print_exc()
-            return False, f"Error: {str(e)}"
-
-    async def add_fallback_buttons(self, confession_msg, confession_id, error_msg):
-        """Add fallback buttons to confession when media processing fails."""
-        try:
-            try:
-                await confession_msg.channel.fetch_message(confession_msg.id)
-            except discord.NotFound:
-                return
-
-            fallback_view = FallbackMediaView(confession_id, error_msg)
-            embed = confession_msg.embeds[0] if confession_msg.embeds else None
-            await confession_msg.edit(embed=embed, view=fallback_view)
-
-            final_view = PersistentConfessionView(confession_id, show_confess_button=False)
-            for item in fallback_view.children:
-                final_view.add_item(item)
-            await confession_msg.edit(view=final_view)
-
-        except discord.HTTPException as e:
-            print(f"HTTP error adding fallback buttons: {e}")
-            try:
-                simple_view = ui.View(timeout=None)
-                simple_view.add_item(RetryMediaButton(confession_id, error_msg))
-                simple_view.add_item(ManualUploadButton(confession_id))
-                await confession_msg.edit(view=simple_view)
-            except Exception as e2:
-                print(f"Failed to add simple fallback buttons: {e2}")
-        except Exception as e:
-            print(f"Error adding fallback buttons: {e}")
-            import traceback
-            traceback.print_exc()
-
-    async def log_confession(self, confession_id, image_url):
-        """Log confession to admin log (full IDs) and mod log (anonymized)."""
-        try:
-            async with aiosqlite.connect(DB_PATH) as db:
-                cursor = await db.execute(
-                    "SELECT user_id, title, description FROM confessions WHERE id=?",
-                    (confession_id,),
-                )
-                confession = await cursor.fetchone()
-                if not confession:
-                    return
-                user_id, title, description = confession
-        except Exception as e:
-            print(f"Error fetching confession for log: {e}")
-            return
-
-        # ── Admin log (full user info) ─────────────────────────────────────
-        log_channel = self.bot.get_channel(LOG_CHANNEL_ID)
-        if log_channel:
-            try:
-                user = await self.bot.fetch_user(user_id)
-                log_embed = discord.Embed(
-                    title=f"Confession #{confession_id}",
-                    description=description,
-                    color=discord.Color.purple(),
-                    timestamp=discord.utils.utcnow(),
-                )
-                log_embed.add_field(
-                    name="User", value=f"{user.mention} ({user.id})", inline=False
-                )
-                if title:
-                    log_embed.add_field(name="Title", value=title, inline=False)
-                if image_url:
-                    log_embed.set_image(url=image_url)
-                await log_channel.send(embed=log_embed)
-            except Exception as e:
-                print(f"Error logging confession (admin): {e}")
-
-        # ── Mod log (anonymized) ───────────────────────────────────────────
-        mod_log_channel = self.bot.get_channel(MOD_LOG_CHANNEL_ID) if MOD_LOG_CHANNEL_ID else None
-        if mod_log_channel:
-            try:
-                user_hash = sha256_user_id(user_id)
-                mod_embed = discord.Embed(
-                    title=f"Confession #{confession_id}",
-                    description=description,
-                    color=discord.Color.purple(),
-                    timestamp=discord.utils.utcnow(),
-                )
-                mod_embed.add_field(
-                    name="User (hash)", value=f"`{user_hash}`", inline=False
-                )
-                if title:
-                    mod_embed.add_field(name="Title", value=title, inline=False)
-                if image_url:
-                    mod_embed.set_image(url=image_url)
-                await mod_log_channel.send(embed=mod_embed)
-            except Exception as e:
-                print(f"Error logging confession (mod): {e}")
-
-
-# ==============================
-# FALLBACK MEDIA VIEW
-# ==============================
-class FallbackMediaView(ui.View):
-    def __init__(self, confession_id, error_msg):
-        super().__init__(timeout=None)
-        self.confession_id = confession_id
-        self.error_msg = error_msg
-        self.add_item(RetryMediaButton(confession_id, error_msg))
-        self.add_item(ManualUploadButton(confession_id))
-
-
-class RetryMediaButton(ui.Button):
-    def __init__(self, confession_id, error_msg):
-        super().__init__(
-            label="Retry Media",
-            style=discord.ButtonStyle.secondary,
-            custom_id=f"retry_media_{confession_id}",
-        )
-        self.confession_id = confession_id
-        self.error_msg = error_msg
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
-            f"❌ Media processing failed: {self.error_msg}\n\n"
-            "Please try again with:\n"
-            "• **Direct image URL** (must end with .png/.jpg/.gif/.webp)\n"
-            "• **Discord attachment** (drag & drop)\n"
-            "• Use the 'Manual Upload' button below",
-            ephemeral=True,
-        )
-
-
-class ManualUploadButton(ui.Button):
-    def __init__(self, confession_id):
-        super().__init__(
-            label="Manual Upload",
-            style=discord.ButtonStyle.primary,
-            custom_id=f"manual_upload_{confession_id}",
-        )
-        self.confession_id = confession_id
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
-            "📤 **Manual Media Upload Instructions:**\n\n"
-            "1. Go to our media channel: <#1424139009931743382>\n"
-            "2. Upload your image there\n"
-            "3. Copy the image URL\n"
-            "4. Click 'Retry Media' and paste the URL\n\n"
-            "The bot will fetch the image from our media channel.",
-            ephemeral=True,
-        )
-
-
-# ==============================
-# PERSISTENT CONFESSION VIEW (Buttons)
-# ==============================
-class PersistentConfessionView(ui.View):
-    def __init__(self, confession_id, show_confess_button=False):
-        super().__init__(timeout=None)
-        self.confession_id = confession_id
-        if show_confess_button:
-            self.add_item(PersistentConfessButton())
-        self.add_item(PersistentReplyButton(confession_id))
-        self.add_item(PersistentReportButton(confession_id))
-
-
-# ==============================
-# PERSISTENT BUTTONS
-# ==============================
 class PersistentReplyButton(ui.Button):
-    def __init__(self, confession_id):
+    def __init__(self, confession_id: int) -> None:
         super().__init__(
             label="Reply",
             style=discord.ButtonStyle.secondary,
@@ -683,20 +83,20 @@ class PersistentReplyButton(ui.Button):
         )
         self.confession_id = confession_id
 
-    async def callback(self, interaction: discord.Interaction):
-        bot = interaction.client
+    async def callback(self, interaction: discord.Interaction) -> None:
         confession = await get_confession_by_id(self.confession_id)
         if not confession:
             return await interaction.response.send_message(
                 "❌ Confession not found.", ephemeral=True
             )
         message_id, author_id = confession[5], confession[1]
-        modal = ReplyModal(bot, self.confession_id, message_id, author_id)
-        await interaction.response.send_modal(modal)
+        await interaction.response.send_modal(
+            ReplyModal(interaction.client, self.confession_id, message_id, author_id)
+        )
 
 
 class PersistentReportButton(ui.Button):
-    def __init__(self, confession_id):
+    def __init__(self, confession_id: int) -> None:
         super().__init__(
             label="Report",
             style=discord.ButtonStyle.danger,
@@ -704,160 +104,442 @@ class PersistentReportButton(ui.Button):
         )
         self.confession_id = confession_id
 
-    async def callback(self, interaction: discord.Interaction):
-        bot = interaction.client
+    async def callback(self, interaction: discord.Interaction) -> None:
         from .helpers import can_user_report
-        can_report, reason, current_count = await can_user_report(
-            interaction.user.id, HOURLY_REPORT_LIMIT
-        )
+        can_report, reason, _ = await can_user_report(interaction.user.id, HOURLY_REPORT_LIMIT)
         if not can_report:
             return await interaction.response.send_message(reason, ephemeral=True)
         try:
             async with aiosqlite.connect(DB_PATH) as db:
-                cursor = await db.execute(
+                cur = await db.execute(
                     "SELECT user_id, title, description, image_url FROM confessions WHERE id=?",
                     (self.confession_id,),
                 )
-                confession = await cursor.fetchone()
-                if not confession:
+                row = await cur.fetchone()
+                if not row:
                     return await interaction.response.send_message(
                         "❌ Confession not found.", ephemeral=True
                     )
-                author_id, title, description, image_url = confession
-
+                author_id, title, description, image_url = row
                 await db.execute(
                     "INSERT INTO reports (target_type, target_id, reporter_id) VALUES (?, ?, ?)",
                     ("confession", self.confession_id, interaction.user.id),
                 )
                 await db.commit()
-
-                cursor = await db.execute(
+                cur = await db.execute(
                     "SELECT 1 FROM confessban WHERE user_id=?", (author_id,)
                 )
-                banned = await cursor.fetchone()
+                banned = await cur.fetchone()
 
             embed = discord.Embed(
                 title=f"🚨 Confession Report #{self.confession_id}",
                 color=discord.Color.red(),
                 timestamp=discord.utils.utcnow(),
             )
-            embed.add_field(name="Confession ID", value=str(self.confession_id), inline=False)
-            embed.add_field(name="Author ID", value=sha256_user_id(author_id), inline=False)
-            embed.add_field(
-                name="Reported by",
-                value=f"{interaction.user} ({interaction.user.id})",
-                inline=False,
-            )
-            embed.add_field(name="Banned?", value="Yes" if banned else "No", inline=False)
-            embed.add_field(name="Title", value=title or "No title", inline=False)
-            embed.add_field(name="Content", value=description or "No content", inline=False)
+            embed.add_field(name="Confession ID", value=str(self.confession_id),                       inline=False)
+            embed.add_field(name="Author ID",     value=sha256_user_id(author_id),                    inline=False)
+            embed.add_field(name="Reported by",   value=f"{interaction.user} ({interaction.user.id})", inline=False)
+            embed.add_field(name="Banned?",       value="Yes" if banned else "No",                    inline=False)
+            embed.add_field(name="Title",         value=title or "No title",                          inline=False)
+            embed.add_field(name="Content",       value=description or "No content",                  inline=False)
             if image_url:
                 embed.set_image(url=image_url)
 
-            mod_channel = bot.get_channel(REPORT_CHANNEL_ID)
-            if mod_channel:
-                await mod_channel.send(embed=embed)
-
+            mod_ch = interaction.client.get_channel(REPORT_CHANNEL_ID)
+            if mod_ch:
+                await mod_ch.send(embed=embed)
             await interaction.response.send_message("✅ Report submitted.", ephemeral=True)
-
         except Exception as e:
-            print(f"Error reporting confession: {e}")
-            await interaction.response.send_message(
-                "❌ An error occurred while reporting.", ephemeral=True
-            )
+            print(f"[PersistentReportButton] {e}")
+            await interaction.response.send_message("❌ An error occurred.", ephemeral=True)
 
 
-class PersistentConfessButton(ui.Button):
-    def __init__(self):
-        super().__init__(
-            label="Make a Confession",
-            style=discord.ButtonStyle.primary,
-            custom_id="persistent_confess_button",
+# ──────────────────────────────────────────────────────────────────────────────
+# ACTION ROW
+# ──────────────────────────────────────────────────────────────────────────────
+
+class ConfessionActionRow(ui.ActionRow):
+    def __init__(self, confession_id: int, *, show_confess: bool = False) -> None:
+        super().__init__()
+        if show_confess:
+            self.add_item(PersistentConfessButton())
+        self.add_item(PersistentReplyButton(confession_id))
+        self.add_item(PersistentReportButton(confession_id))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CONFESSION LAYOUT VIEW
+# ──────────────────────────────────────────────────────────────────────────────
+
+class ConfessionLayoutView(ui.LayoutView):
+    def __init__(
+        self,
+        confession_id: int,
+        title: str,
+        body: str,
+        *,
+        show_confess_button: bool = False,
+        image_url: str | None = None,
+    ) -> None:
+        super().__init__(timeout=None)
+
+        display_title = (
+            title.strip() if title and title.strip()
+            else f"Confession #{confession_id}"
         )
 
-    async def callback(self, interaction: discord.Interaction):
-        if not any(role.id in ALLOWED_ROLE_IDS for role in interaction.user.roles):
-            return await interaction.response.send_message(
-                "❌ You do not have at least LVL 5 required to make confessions.",
-                ephemeral=True,
+        children: list = [
+            ui.TextDisplay(f"## 💌 {display_title}"),
+            ui.Separator(spacing=discord.SeparatorSpacing.small),
+            ui.TextDisplay(body or "*(empty)*"),
+        ]
+
+        if image_url:
+            children.append(
+                ui.MediaGallery(discord.MediaGalleryItem(media=image_url))
             )
-        if await is_user_banned(interaction.user.id):
-            return await interaction.response.send_message(
-                "❌ You are banned from making confessions.", ephemeral=True
+
+        children.extend([
+            ui.Separator(spacing=discord.SeparatorSpacing.small),
+            ui.TextDisplay(f"-# Confession #{confession_id}"),
+            ConfessionActionRow(confession_id, show_confess=show_confess_button),
+        ])
+
+        self.add_item(ui.Container(*children, accent_color=discord.Color.from_str("#131313")))
+
+
+async def build_confession_layout_view(
+    confession_id: int,
+    show_confess_button: bool = False,
+) -> ConfessionLayoutView:
+    """Reconstruct a ConfessionLayoutView from the DB (edits, restarts)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT title, description, image_url FROM confessions WHERE id=?",
+            (confession_id,),
+        )
+        row = await cur.fetchone()
+
+    title, body, image_url = row if row else (None, "(deleted)", None)
+    return ConfessionLayoutView(
+        confession_id,
+        title=title or "",
+        body=body or "",
+        show_confess_button=show_confess_button,
+        image_url=image_url,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CONFESSION MODAL
+# ──────────────────────────────────────────────────────────────────────────────
+
+class ConfessionModal(ui.Modal, title="Submit a Confession"):
+    def __init__(self, bot: discord.Client) -> None:
+        super().__init__()
+        self.bot = bot
+        self.user_id: int | None = None
+        
+        # Add components with labels (V2 modal pattern)
+        self.title_input = ui.TextInput(
+            label="Title (optional)",
+            max_length=100,
+            required=False,
+            placeholder="Give your confession a title…",
+        )
+        self.add_item(self.title_input)
+        
+        self.description_input = ui.TextInput(
+            label="Confession",
+            style=discord.TextStyle.paragraph,
+            max_length=1000,
+            placeholder="Share your thoughts…",
+            required=True,
+        )
+        self.add_item(self.description_input)
+        
+        self.image_upload = ui.FileUpload(required=False)
+        # Add label for file upload (required for V2 modals)
+        self.add_item(ui.Label(
+            text="Attach an image (optional)",
+            component=self.image_upload
+        ))
+
+    @staticmethod
+    async def _delete_after(msg: discord.WebhookMessage, delay: int) -> None:
+        await asyncio.sleep(delay)
+        try:
+            await msg.delete()
+        except (discord.NotFound, discord.HTTPException):
+            pass
+
+    async def _reupload(
+        self, attachment: discord.Attachment, label: str
+    ) -> tuple[bool, str]:
+        """Download a FileUpload attachment and re-host it in the media channel."""
+        media_ch = self.bot.get_channel(MEDIA_CHANNEL_ID)
+        if not media_ch:
+            return False, "Media channel not found"
+        try:
+            data = await attachment.read()
+            if not data:
+                return False, "Empty attachment"
+            file = discord.File(io.BytesIO(data), filename=attachment.filename)
+            msg  = await media_ch.send(label, file=file)
+            await asyncio.sleep(1)      # let Discord finalize the CDN URL
+            url  = msg.attachments[0].url if msg.attachments else None
+            return (True, url) if url else (False, "CDN URL unavailable")
+        except Exception as e:
+            return False, str(e)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        self.user_id = interaction.user.id
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        if await is_user_banned(self.user_id):
+            msg = await interaction.followup.send(
+                "❌ You are banned from submitting confessions.", ephemeral=True, wait=True
             )
-        can_confess, reason = await can_user_confess(
-            interaction.guild, interaction.user.id, DAILY_CONFESSION_LIMIT
+            asyncio.create_task(self._delete_after(msg, 8))
+            return
+
+        can_confess, reason, current_count = await can_user_confess(
+            interaction.guild, self.user_id, DAILY_CONFESSION_LIMIT
         )
         if not can_confess:
-            return await interaction.response.send_message(reason, ephemeral=True)
-        bot = interaction.client
-        modal = ConfessionModal(bot)
-        await interaction.response.send_modal(modal)
+            msg = await interaction.followup.send(reason, ephemeral=True, wait=True)
+            asyncio.create_task(self._delete_after(msg, 8))
+            return
+
+        channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
+        if not channel:
+            msg = await interaction.followup.send(
+                "❌ Confession channel not found.", ephemeral=True, wait=True
+            )
+            asyncio.create_task(self._delete_after(msg, 8))
+            return
+
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                cur = await db.execute("SELECT MAX(id) FROM confessions")
+                prev_id = (await cur.fetchone())[0]
+
+            async with aiosqlite.connect(DB_PATH) as db:
+                cur = await db.execute(
+                    "INSERT INTO confessions (user_id, title, description) VALUES (?, ?, ?)",
+                    (self.user_id, self.title_input.value, self.description_input.value),
+                )
+                await db.commit()
+                confession_id = cur.lastrowid
+
+            # Process optional image upload
+            image_url: str | None = None
+            attachment: discord.Attachment | None = self.image_upload.values[0] if self.image_upload.values else None
+            if attachment is not None:
+                proc = await interaction.followup.send(
+                    "⏳ Processing image…", ephemeral=True, wait=True
+                )
+                success, result = await self._reupload(
+                    attachment, f"**Media for confession #{confession_id}**"
+                )
+                try:
+                    await proc.delete()
+                except Exception:
+                    pass
+
+                if success:
+                    image_url = result
+                    async with aiosqlite.connect(DB_PATH) as db:
+                        await db.execute(
+                            "UPDATE confessions SET image_url=? WHERE id=?",
+                            (image_url, confession_id),
+                        )
+                        await db.commit()
+                else:
+                    warn = await interaction.followup.send(
+                        f"⚠️ Image upload failed ({result}). Continuing without media.",
+                        ephemeral=True, wait=True,
+                    )
+                    asyncio.create_task(self._delete_after(warn, 10))
+
+            # Strip confess button from the previous confession card
+            if prev_id:
+                asyncio.create_task(self._strip_prev_confess_button(prev_id))
+
+            # Build and send the LayoutView card
+            view = ConfessionLayoutView(
+                confession_id,
+                title=self.title_input.value,
+                body=self.description_input.value,
+                show_confess_button=True,
+                image_url=image_url,
+            )
+            sent = await channel.send(view=view)
+
+            thread: discord.Thread | None = None
+            try:
+                thread = await sent.create_thread(
+                    name=f"Confession #{confession_id}", auto_archive_duration=60
+                )
+            except discord.HTTPException as e:
+                print(f"[Confessions] Thread error: {e}")
+
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute(
+                    "UPDATE confessions SET message_id=? WHERE id=?",
+                    (sent.id, confession_id),
+                )
+                await db.commit()
+
+            # Register view for persistence across restarts
+            self.bot.add_view(view)
+
+            await self._log_confession(confession_id, image_url)
+
+            thread_ref = thread.mention if thread else "*(thread creation failed)*"
+            ok = await interaction.followup.send(
+                f"✅ Confession **#{confession_id}** is live! {thread_ref}",
+                ephemeral=True, wait=True,
+            )
+            asyncio.create_task(self._delete_after(ok, 30))
+
+        except Exception:
+            traceback.print_exc()
+            err = await interaction.followup.send(
+                "❌ An error occurred while submitting your confession.",
+                ephemeral=True, wait=True,
+            )
+            asyncio.create_task(self._delete_after(err, 8))
+
+    async def _strip_prev_confess_button(self, confession_id: int) -> None:
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                cur = await db.execute(
+                    "SELECT message_id FROM confessions WHERE id=?", (confession_id,)
+                )
+                row = await cur.fetchone()
+            if not row or not row[0]:
+                return
+            channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
+            if not channel:
+                return
+            msg  = await channel.fetch_message(row[0])
+            view = await build_confession_layout_view(confession_id, show_confess_button=False)
+            await msg.edit(view=view)
+        except discord.NotFound:
+            pass
+        except Exception as e:
+            print(f"[Confessions] _strip_prev_confess_button error: {e}")
+
+    async def _log_confession(self, confession_id: int, image_url: str | None) -> None:
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                cur = await db.execute(
+                    "SELECT user_id, title, description FROM confessions WHERE id=?",
+                    (confession_id,),
+                )
+                row = await cur.fetchone()
+            if not row:
+                return
+            user_id, title, description = row
+        except Exception as e:
+            print(f"[Confessions] log fetch error: {e}")
+            return
+
+        log_ch = self.bot.get_channel(LOG_CHANNEL_ID)
+        if log_ch:
+            try:
+                user  = await self.bot.fetch_user(user_id)
+                embed = discord.Embed(
+                    title=f"Confession #{confession_id}", description=description,
+                    color=discord.Color.purple(), timestamp=discord.utils.utcnow(),
+                )
+                embed.add_field(name="User", value=f"{user.mention} ({user.id})", inline=False)
+                if title:
+                    embed.add_field(name="Title", value=title, inline=False)
+                if image_url:
+                    embed.set_image(url=image_url)
+                await log_ch.send(embed=embed)
+            except Exception as e:
+                print(f"[Confessions] admin log error: {e}")
+
+        mod_ch = (
+            self.bot.get_channel(MOD_CONFESSION_LOGS_CHANNEL_ID)
+            if MOD_CONFESSION_LOGS_CHANNEL_ID else None
+        )
+        if mod_ch:
+            try:
+                embed = discord.Embed(
+                    title=f"Confession #{confession_id}", description=description,
+                    color=discord.Color.purple(), timestamp=discord.utils.utcnow(),
+                )
+                embed.add_field(name="User (hash)", value=f"`{sha256_user_id(user_id)}`", inline=False)
+                if title:
+                    embed.add_field(name="Title", value=title, inline=False)
+                if image_url:
+                    embed.set_image(url=image_url)
+                await mod_ch.send(embed=embed)
+            except Exception as e:
+                print(f"[Confessions] mod log error: {e}")
 
 
-# ==============================
-# MAIN COG
-# ==============================
+# ──────────────────────────────────────────────────────────────────────────────
+# COG
+# ──────────────────────────────────────────────────────────────────────────────
+
 class Confessions(commands.Cog):
-    def __init__(self, bot):
+    def __init__(self, bot: discord.Client) -> None:
         self.bot = bot
         self.initialized = False
-        self.bot.loop.create_task(self.initialize())
+        self.bot.loop.create_task(self._initialize())
 
-    async def initialize(self):
-        """Initialize database and load persistent views."""
+    async def _initialize(self) -> None:
         try:
             await init_db()
-            await self.load_persistent_views()
+            await self._load_persistent_views()
             self.initialized = True
-            print("[Confessions] ✅ System initialized successfully.")
+            print("[Confessions] ✅ Initialized.")
         except Exception as e:
-            print(f"[Confessions] ❌ Initialization failed: {e}")
+            print(f"[Confessions] ❌ Init failed: {e}")
 
-    async def load_persistent_views(self):
-        """Load all persistent views (confessions + replies) on startup."""
+    async def _load_persistent_views(self) -> None:
         await self.bot.wait_until_ready()
         try:
             async with aiosqlite.connect(DB_PATH) as db:
-                # ── Confession views ───────────────────────────────────────
-                cursor = await db.execute("SELECT MAX(id) FROM confessions")
-                result = await cursor.fetchone()
-                latest_confession_id = result[0] if result[0] else None
+                cur = await db.execute("SELECT MAX(id) FROM confessions")
+                latest_id = (await cur.fetchone())[0]
 
                 async with db.execute(
-                    "SELECT id, message_id FROM confessions WHERE message_id IS NOT NULL"
-                ) as cursor:
-                    async for confession_id, message_id in cursor:
+                    "SELECT id FROM confessions WHERE message_id IS NOT NULL"
+                ) as cur:
+                    async for (cid,) in cur:
                         try:
-                            show_confess_button = confession_id == latest_confession_id
-                            view = PersistentConfessionView(
-                                confession_id, show_confess_button=show_confess_button
+                            view = await build_confession_layout_view(
+                                cid, show_confess_button=(cid == latest_id)
                             )
                             self.bot.add_view(view)
                         except Exception as e:
-                            print(f"Error loading view for confession {confession_id}: {e}")
+                            print(f"[Confessions] View load error #{cid}: {e}")
 
-                # ── Reply views ────────────────────────────────────────────
                 async with db.execute(
                     "SELECT id FROM replies WHERE message_id IS NOT NULL"
-                ) as cursor:
-                    async for (reply_id,) in cursor:
+                ) as cur:
+                    async for (rid,) in cur:
                         try:
-                            view = ReplyMessageView(reply_id)
+                            view = await ReplyLayoutView.from_db(rid)
                             self.bot.add_view(view)
                         except Exception as e:
-                            print(f"Error loading view for reply {reply_id}: {e}")
+                            print(f"[Confessions] Reply view load error #{rid}: {e}")
 
             print("[Confessions] ✅ Persistent views loaded.")
         except Exception as e:
-            print(f"[Confessions] ❌ Error loading views: {e}")
+            print(f"[Confessions] ❌ View load error: {e}")
 
     @app_commands.command(name="confess", description="Submit an anonymous confession")
-    async def confess_command(self, interaction: discord.Interaction):
+    async def confess_command(self, interaction: discord.Interaction) -> None:
         if not self.initialized:
             return await interaction.response.send_message(
-                "❌ Confession system is initializing, please try again in a moment.",
-                ephemeral=True,
+                "❌ Still initializing — try again in a moment.", ephemeral=True
             )
         if await is_user_banned(interaction.user.id):
             return await interaction.response.send_message(
@@ -865,86 +547,69 @@ class Confessions(commands.Cog):
             )
         if interaction.channel.id != CONFESSION_CHANNEL_ID:
             return await interaction.response.send_message(
-                f"❌ Please use this command in <#{CONFESSION_CHANNEL_ID}>.",
-                ephemeral=True,
+                f"❌ Use this command in <#{CONFESSION_CHANNEL_ID}>.", ephemeral=True
             )
         if not any(role.id in ALLOWED_ROLE_IDS for role in interaction.user.roles):
             return await interaction.response.send_message(
-                "❌ You do not have at least LVL 5 required to make confessions.",
-                ephemeral=True,
+                "❌ You need at least LVL 5 to make confessions.", ephemeral=True
             )
-        can_confess, reason = await can_user_confess(
+        # Fix: Unpack 3 values instead of 2
+        can_confess, reason, _ = await can_user_confess(
             interaction.guild, interaction.user.id, DAILY_CONFESSION_LIMIT
         )
         if not can_confess:
             return await interaction.response.send_message(reason, ephemeral=True)
-
-        modal = ConfessionModal(self.bot)
-        await interaction.response.send_modal(modal)
+        await interaction.response.send_modal(ConfessionModal(self.bot))
 
     @app_commands.command(
         name="confess_delete",
-        description="Delete a confession by ID and renumber all subsequent confessions",
+        description="Delete a confession by ID and renumber all subsequent ones",
     )
     @app_commands.describe(
-        confession_id="The ID of the confession to delete",
+        confession_id="ID of the confession to delete",
         reason="Reason for deletion (optional)",
     )
     @app_commands.default_permissions(manage_messages=True)
     async def confess_delete(
-        self, interaction: discord.Interaction, confession_id: int, reason: str = None
-    ):
+        self,
+        interaction: discord.Interaction,
+        confession_id: int,
+        reason: str | None = None,
+    ) -> None:
         if not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message(
-                "❌ You need `Manage Server` permission to use this command.",
-                ephemeral=True,
+                "❌ You need `Manage Server` permission.", ephemeral=True
             )
-
         await interaction.response.defer(ephemeral=True)
+        channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
 
         try:
             async with aiosqlite.connect(DB_PATH) as db:
-                cursor = await db.execute(
-                    "SELECT message_id, user_id, title, description FROM confessions WHERE id = ?",
-                    (confession_id,),
-                )
-                confession = await cursor.fetchone()
-
-                if not confession:
-                    return await interaction.followup.send(
-                        f"❌ Confession #{confession_id} not found in database.",
-                        ephemeral=True,
+                await db.execute("BEGIN")
+                try:
+                    cur = await db.execute(
+                        "SELECT id, user_id, title, description, message_id "
+                        "FROM confessions WHERE id=?",
+                        (confession_id,),
                     )
+                    target = await cur.fetchone()
+                    if not target:
+                        await db.execute("ROLLBACK")
+                        return await interaction.followup.send(
+                            f"❌ Confession #{confession_id} not found.", ephemeral=True
+                        )
+                    _, author_id, title, description, message_id = target
 
-                message_id, author_id, title, description = confession
+                    cur = await db.execute("SELECT MAX(id) FROM confessions")
+                    max_id = (await cur.fetchone())[0]
 
-                try:
-                    author = await self.bot.fetch_user(author_id)
-                except Exception:
-                    author = None
+                    try:
+                        author = await self.bot.fetch_user(author_id)
+                    except Exception:
+                        author = None
 
-                cursor = await db.execute("SELECT MAX(id) FROM confessions")
-                max_id = (await cursor.fetchone())[0]
-
-                cursor = await db.execute(
-                    "SELECT id, message_id FROM confessions WHERE id > ? ORDER BY id",
-                    (confession_id,),
-                )
-                confessions_to_update = await cursor.fetchall()
-
-                cursor = await db.execute(
-                    "SELECT COUNT(*) FROM replies WHERE confession_id = ?",
-                    (confession_id,),
-                )
-                reply_count = (await cursor.fetchone())[0]
-
-                await db.execute("BEGIN TRANSACTION")
-
-                try:
-                    channel = self.bot.get_channel(CONFESSION_CHANNEL_ID)
-                    message_deleted = False
-                    thread_deleted = False
-
+                    # Delete Discord message + thread
+                    message_deleted = thread_deleted = False
                     if channel and message_id:
                         try:
                             msg = await channel.fetch_message(message_id)
@@ -957,88 +622,66 @@ class Confessions(commands.Cog):
                             await msg.delete()
                             message_deleted = True
                         except discord.NotFound:
-                            print(f"[Confession Delete] Message for confession #{confession_id} not found")
-                        except discord.Forbidden:
-                            print(f"[Confession Delete] No permission to delete message for confession #{confession_id}")
+                            message_deleted = True
                         except Exception as e:
-                            print(f"[Confession Delete] Error deleting message: {e}")
+                            print(f"[confess_delete] Delete error: {e}")
 
-                    await db.execute(
-                        "DELETE FROM replies WHERE confession_id = ?", (confession_id,)
+                    # Delete replies
+                    cur = await db.execute(
+                        "SELECT COUNT(*) FROM replies WHERE confession_id=?", (confession_id,)
                     )
+                    reply_count = (await cur.fetchone())[0]
                     await db.execute(
-                        "DELETE FROM reports WHERE target_type = 'confession' AND target_id = ?",
+                        "DELETE FROM replies WHERE confession_id=?", (confession_id,)
+                    )
+                    await db.execute("DELETE FROM confessions WHERE id=?", (confession_id,))
+
+                    # Renumber subsequent confessions and rebuild their V2 cards
+                    cur = await db.execute(
+                        "SELECT id, message_id FROM confessions WHERE id > ? ORDER BY id ASC",
                         (confession_id,),
                     )
-                    await db.execute(
-                        "DELETE FROM confessions WHERE id = ?", (confession_id,)
-                    )
-
+                    rows = await cur.fetchall()
                     update_count = 0
-                    for old_id, old_message_id in confessions_to_update:
+                    for old_id, msg_id in rows:
                         new_id = old_id - 1
                         await db.execute(
-                            "UPDATE confessions SET id = ? WHERE id = ?", (new_id, old_id)
+                            "UPDATE confessions SET id=? WHERE id=?", (new_id, old_id)
                         )
                         await db.execute(
-                            "UPDATE replies SET confession_id = ? WHERE confession_id = ?",
+                            "UPDATE replies SET confession_id=? WHERE confession_id=?",
                             (new_id, old_id),
                         )
-                        await db.execute(
-                            "UPDATE reports SET target_id = ? WHERE target_type = 'confession' AND target_id = ?",
-                            (new_id, old_id),
-                        )
-
-                        if channel and old_message_id:
+                        if channel and msg_id:
                             try:
-                                msg = await channel.fetch_message(old_message_id)
-                                if msg and msg.embeds:
-                                    embed = msg.embeds[0]
-                                    if embed.title and f"#{old_id}" in embed.title:
-                                        embed.title = embed.title.replace(f"#{old_id}", f"#{new_id}")
-                                    if (
-                                        embed.footer
-                                        and embed.footer.text
-                                        and f"#{old_id}" in embed.footer.text
-                                    ):
-                                        embed.set_footer(
-                                            text=embed.footer.text.replace(f"#{old_id}", f"#{new_id}")
-                                        )
-                                    new_max_id = max_id - 1
-                                    is_latest = new_id == new_max_id
-                                    view = PersistentConfessionView(new_id, show_confess_button=is_latest)
-                                    await msg.edit(embed=embed, view=view)
+                                old_msg  = await channel.fetch_message(msg_id)
+                                new_view = await build_confession_layout_view(new_id)
+                                await old_msg.edit(view=new_view)
                             except discord.NotFound:
                                 pass
                             except Exception as e:
-                                print(f"[Confession Delete] Error updating message for #{old_id}: {e}")
+                                print(f"[confess_delete] Renumber edit error #{old_id}: {e}")
                         update_count += 1
 
-                    # If we deleted the latest, make the previous one show the confess button
+                    # Restore confess button on the new latest confession
                     if confession_id == max_id:
-                        cursor = await db.execute(
-                            "SELECT id, message_id FROM confessions WHERE id = ?",
+                        cur = await db.execute(
+                            "SELECT id, message_id FROM confessions WHERE id=?",
                             (confession_id - 1,),
                         )
-                        prev_confession = await cursor.fetchone()
-                        if prev_confession:
-                            prev_id, prev_message_id = prev_confession
-                            if channel and prev_message_id:
-                                try:
-                                    msg = await channel.fetch_message(prev_message_id)
-                                    if msg and msg.embeds:
-                                        embed = msg.embeds[0]
-                                        view = PersistentConfessionView(
-                                            prev_id, show_confess_button=True
-                                        )
-                                        await msg.edit(view=view)
-                                except discord.NotFound:
-                                    pass
-                                except Exception as e:
-                                    print(f"[Confession Delete] Error updating previous confession: {e}")
+                        prev = await cur.fetchone()
+                        if prev and channel and prev[1]:
+                            try:
+                                prev_msg  = await channel.fetch_message(prev[1])
+                                prev_view = await build_confession_layout_view(
+                                    prev[0], show_confess_button=True
+                                )
+                                await prev_msg.edit(view=prev_view)
+                            except (discord.NotFound, Exception):
+                                pass
 
                     await db.execute(
-                        "UPDATE sqlite_sequence SET seq = ? WHERE name = 'confessions'",
+                        "UPDATE sqlite_sequence SET seq=? WHERE name='confessions'",
                         (max_id - 1,),
                     )
                     await db.commit()
@@ -1049,150 +692,128 @@ class Confessions(commands.Cog):
                         try:
                             dm_embed = discord.Embed(
                                 title="🗑️ Your Confession Was Deleted",
-                                description=f"Your confession (ID: #{confession_id}) has been removed by a moderator.",
+                                description=f"Your confession **#{confession_id}** was removed by a moderator.",
                                 color=discord.Color.red(),
                                 timestamp=discord.utils.utcnow(),
                             )
                             if title:
-                                dm_embed.add_field(name="Title", value=title, inline=False)
+                                dm_embed.add_field(name="Title",   value=title,  inline=False)
                             if description:
-                                short_desc = description[:200] + "..." if len(description) > 200 else description
-                                dm_embed.add_field(name="Content", value=short_desc, inline=False)
+                                short = description[:200] + ("…" if len(description) > 200 else "")
+                                dm_embed.add_field(name="Content", value=short,  inline=False)
                             dm_embed.add_field(
                                 name="Reason",
                                 value=reason or "No specific reason provided.",
                                 inline=False,
                             )
-                            dm_embed.set_footer(text=f"Confession #{confession_id}")
                             await author.send(embed=dm_embed)
                             dm_sent = True
-                        except discord.Forbidden:
+                        except (discord.Forbidden, Exception):
                             pass
-                        except Exception as e:
-                            print(f"[Confession Delete] Error DMing user: {e}")
 
-                    embed = discord.Embed(
+                    # Result summary embed
+                    result = discord.Embed(
                         title="✅ Confession Deleted & Renumbered",
                         color=discord.Color.red(),
                         timestamp=discord.utils.utcnow(),
                     )
-                    embed.add_field(name="Deleted ID", value=str(confession_id), inline=True)
-                    embed.add_field(name="Replies Deleted", value=str(reply_count), inline=True)
-                    embed.add_field(
+                    result.add_field(name="Deleted ID",      value=str(confession_id), inline=True)
+                    result.add_field(name="Replies Deleted", value=str(reply_count),   inline=True)
+                    result.add_field(
                         name="Renumbered",
-                        value=f"✅ {update_count} confession{'s' if update_count != 1 else ''} renumbered",
+                        value=f"✅ {update_count} confession{'s' if update_count != 1 else ''}",
                         inline=True,
                     )
-
                     status = [
-                        "✅ Database entry removed and renumbered",
-                        "✅ Message deleted" if message_deleted else "❌ Message not found or couldn't be deleted",
+                        "✅ Database entry removed",
+                        "✅ Message deleted" if message_deleted else "❌ Message not found",
                     ]
                     if thread_deleted:
                         status.append("✅ Thread deleted")
                     status.append(
-                        "✅ Author notified via DM"
-                        if dm_sent
-                        else ("❌ Could not DM author (DMs disabled)" if author else "❌ Could not fetch author")
+                        "✅ Author notified" if dm_sent
+                        else ("❌ DMs disabled" if author else "❌ Could not fetch author")
                     )
-                    embed.add_field(name="Status", value="\n".join(status), inline=False)
-
+                    result.add_field(name="Status", value="\n".join(status), inline=False)
                     if title:
-                        embed.add_field(name="Title", value=title, inline=False)
+                        result.add_field(name="Title",   value=title,  inline=False)
                     if description:
-                        short_desc = description[:200] + "..." if len(description) > 200 else description
-                        embed.add_field(name="Content", value=short_desc, inline=False)
+                        short = description[:200] + ("…" if len(description) > 200 else "")
+                        result.add_field(name="Content", value=short,  inline=False)
                     if reason:
-                        embed.add_field(name="Reason", value=reason, inline=False)
+                        result.add_field(name="Reason",  value=reason, inline=False)
+                    result.set_footer(text=f"Deleted by {interaction.user.display_name}")
+                    await interaction.followup.send(embed=result, ephemeral=True)
 
-                    embed.set_footer(text=f"Deleted by {interaction.user.display_name}")
-                    await interaction.followup.send(embed=embed, ephemeral=True)
-
-                    await self.log_confession_deletion(
+                    await self._log_deletion(
                         interaction, confession_id, author_id,
                         reply_count, update_count, dm_sent, reason,
                     )
 
-                except Exception as e:
+                except Exception:
                     await db.execute("ROLLBACK")
-                    raise e
+                    raise
 
         except Exception as e:
-            print(f"[Confession Delete] Error: {e}")
-            import traceback
             traceback.print_exc()
             await interaction.followup.send(
-                f"❌ An error occurred while deleting confession #{confession_id}: {str(e)}",
-                ephemeral=True,
+                f"❌ Error deleting confession #{confession_id}: {e}", ephemeral=True
             )
 
-    async def log_confession_deletion(
+    async def _log_deletion(
         self,
-        interaction,
-        confession_id,
-        author_id,
-        reply_count,
-        renumber_count,
-        dm_sent,
-        reason,
-    ):
-        """Log confession deletion to admin log and mod log."""
-        # ── Admin log ──────────────────────────────────────────────────────
-        log_channel = self.bot.get_channel(LOG_CHANNEL_ID)
-        if log_channel:
+        interaction: discord.Interaction,
+        confession_id: int,
+        author_id: int,
+        reply_count: int,
+        renumber_count: int,
+        dm_sent: bool,
+        reason: str | None,
+    ) -> None:
+        def _base_embed() -> discord.Embed:
+            return discord.Embed(
+                title="🗑️ Confession Deleted & Renumbered",
+                color=discord.Color.orange(),
+                timestamp=discord.utils.utcnow(),
+            )
+
+        log_ch = self.bot.get_channel(LOG_CHANNEL_ID)
+        if log_ch:
             try:
-                embed = discord.Embed(
-                    title="🗑️ Confession Deleted & Renumbered",
-                    color=discord.Color.orange(),
-                    timestamp=discord.utils.utcnow(),
-                )
-                embed.add_field(name="Deleted ID", value=str(confession_id), inline=True)
-                embed.add_field(name="Author", value=f"<@{author_id}>", inline=True)
-                embed.add_field(name="Replies Deleted", value=str(reply_count), inline=True)
-                embed.add_field(name="Renumbered", value=str(renumber_count), inline=True)
-                embed.add_field(
-                    name="Author Notified", value="✅ Yes" if dm_sent else "❌ No", inline=True
-                )
-                embed.add_field(
-                    name="Deleted by",
-                    value=f"{interaction.user.mention} ({interaction.user.id})",
-                    inline=False,
-                )
+                e = _base_embed()
+                e.add_field(name="Deleted ID",      value=str(confession_id),  inline=True)
+                e.add_field(name="Author",          value=f"<@{author_id}>",   inline=True)
+                e.add_field(name="Replies Deleted", value=str(reply_count),    inline=True)
+                e.add_field(name="Renumbered",      value=str(renumber_count), inline=True)
+                e.add_field(name="DM sent",         value="✅" if dm_sent else "❌", inline=True)
+                e.add_field(name="Deleted by",
+                            value=f"{interaction.user.mention} ({interaction.user.id})",
+                            inline=False)
                 if reason:
-                    embed.add_field(name="Reason", value=reason, inline=False)
-                await log_channel.send(embed=embed)
-            except Exception as e:
-                print(f"Error logging confession deletion (admin): {e}")
+                    e.add_field(name="Reason", value=reason, inline=False)
+                await log_ch.send(embed=e)
+            except Exception as ex:
+                print(f"[confess_delete] Admin log error: {ex}")
 
-        # ── Mod log (anonymized) ───────────────────────────────────────────
-        mod_log_channel = self.bot.get_channel(MOD_LOG_CHANNEL_ID) if MOD_LOG_CHANNEL_ID else None
-        if mod_log_channel:
+        mod_ch = (
+            self.bot.get_channel(MOD_CONFESSION_LOGS_CHANNEL_ID)
+            if MOD_CONFESSION_LOGS_CHANNEL_ID else None
+        )
+        if mod_ch:
             try:
-                author_hash = sha256_user_id(author_id)
-                mod_embed = discord.Embed(
-                    title="🗑️ Confession Deleted & Renumbered",
-                    color=discord.Color.orange(),
-                    timestamp=discord.utils.utcnow(),
-                )
-                mod_embed.add_field(name="Deleted ID", value=str(confession_id), inline=True)
-                mod_embed.add_field(
-                    name="Author (hash)", value=f"`{author_hash}`", inline=True
-                )
-                mod_embed.add_field(name="Replies Deleted", value=str(reply_count), inline=True)
-                mod_embed.add_field(name="Renumbered", value=str(renumber_count), inline=True)
-                mod_embed.add_field(
-                    name="Author Notified", value="✅ Yes" if dm_sent else "❌ No", inline=True
-                )
-                # Anonymize the deleter too for the mod log
-                mod_embed.add_field(
-                    name="Deleted by", value=f"`{interaction.user.mention}`", inline=False
-                )
+                e = _base_embed()
+                e.add_field(name="Deleted ID",      value=str(confession_id),               inline=True)
+                e.add_field(name="Author (hash)",   value=f"`{sha256_user_id(author_id)}`",  inline=True)
+                e.add_field(name="Replies Deleted", value=str(reply_count),                  inline=True)
+                e.add_field(name="Renumbered",      value=str(renumber_count),               inline=True)
+                e.add_field(name="DM sent",         value="✅" if dm_sent else "❌",          inline=True)
+                e.add_field(name="Deleted by",      value=interaction.user.mention,           inline=False)
                 if reason:
-                    mod_embed.add_field(name="Reason", value=reason, inline=False)
-                await mod_log_channel.send(embed=mod_embed)
-            except Exception as e:
-                print(f"Error logging confession deletion (mod): {e}")
+                    e.add_field(name="Reason", value=reason, inline=False)
+                await mod_ch.send(embed=e)
+            except Exception as ex:
+                print(f"[confess_delete] Mod log error: {ex}")
 
 
-async def setup(bot):
+async def setup(bot: discord.Client) -> None:
     await bot.add_cog(Confessions(bot))
