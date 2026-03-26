@@ -470,16 +470,17 @@ class ReplyModal(_MediaMixin, ui.Modal, title="Anonymous Reply"):
                 await db.commit()
                 reply_db_id = cur.lastrowid
 
-            hierarchy_path = await get_reply_hierarchy_path(reply_db_id)
+            parent_ref, parent_quote = await get_parent_reference(reply_db_id)
 
             # Build V2 card and send
             view = ReplyLayoutView(
                 reply_db_id,
-                hierarchy_path=hierarchy_path,
                 confession_id=self.confession_id,
                 body=self.reply_text,
                 is_op=is_op,
                 image_url=image_url,
+                parent_reference=parent_ref,
+                parent_quote=parent_quote,
             )
             self.bot.add_view(view)
             sent_msg = await thread.send(view=view)
@@ -516,7 +517,7 @@ class ReplyModal(_MediaMixin, ui.Modal, title="Anonymous Reply"):
             asyncio.create_task(self._delete_after(err, 8))
 
     async def _log_reply(self, reply_db_id: int, image_url: str | None, is_op: bool) -> None:
-        hierarchy_path = await get_reply_hierarchy_path(reply_db_id)
+        parent_ref, parent_quote = await get_parent_reference(reply_db_id)
         color = discord.Color.gold() if is_op else discord.Color.green()
 
         log_ch = self.bot.get_channel(LOG_CHANNEL_ID)
@@ -524,11 +525,12 @@ class ReplyModal(_MediaMixin, ui.Modal, title="Anonymous Reply"):
             try:
                 user  = await self.bot.fetch_user(self.user_id)
                 embed = discord.Embed(
-                    title=f"Reply #{hierarchy_path} — Confession #{self.confession_id}",
+                    title=f"Reply — Confession #{self.confession_id}",
                     description=self.reply_text, color=color,
                     timestamp=discord.utils.utcnow(),
                 )
                 embed.add_field(name="Replier",     value=f"{user.mention} ({user.id})", inline=False)
+                embed.add_field(name="Parent",      value=parent_ref,                     inline=False)
                 embed.add_field(name="Reply DB ID", value=str(reply_db_id),              inline=True)
                 if image_url:
                     embed.set_image(url=image_url)
@@ -543,11 +545,12 @@ class ReplyModal(_MediaMixin, ui.Modal, title="Anonymous Reply"):
         if mod_ch:
             try:
                 embed = discord.Embed(
-                    title=f"Reply #{hierarchy_path} — Confession #{self.confession_id}",
+                    title=f"Reply — Confession #{self.confession_id}",
                     description=self.reply_text, color=color,
                     timestamp=discord.utils.utcnow(),
                 )
                 embed.add_field(name="Replier (hash)", value=f"`{sha256_user_id(self.user_id)}`", inline=False)
+                embed.add_field(name="Parent",         value=parent_ref,                          inline=False)
                 embed.add_field(name="Reply DB ID",    value=str(reply_db_id),                    inline=True)
                 if image_url:
                     embed.set_image(url=image_url)
