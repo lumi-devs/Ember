@@ -19,43 +19,7 @@ logger = logging.getLogger(__name__)
 # PERSISTENT BUTTONS
 # ──────────────────────────────────────────────────────────────────────────────
 
-class PromoterInfoButton(ui.Button):
-    def __init__(self) -> None:
-        super().__init__(
-            label="How to Promote",
-            style=discord.ButtonStyle.primary,
-            custom_id="promoter_info_button",
-        )
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        # Create V2 layout view for info
-        children: list = [
-            ui.TextDisplay("## 🌟 How to Get the Promoter Role"),
-            ui.Separator(spacing=discord.SeparatorSpacing.small),
-            ui.TextDisplay(
-                "Get the **Promoter** role by helping us grow!\n\n"
-                "**Ways to promote:**\n"
-                "Either of these works:\n"
-                "1️⃣ Set your **Primary Guild Tag** to `Raही`\n"
-                "2️⃣ Put one of these in your custom status:\n"
-                "   • `.gg/aakhristation`\n"
-                "   • `discord.gg/aakhristation`\n"
-                "   • `aakhristation`\n\n"
-                "✨ **Perks:**\n"
-                "• Special role and recognition\n"
-                "• Community appreciation"
-            ),
-            ui.Separator(spacing=discord.SeparatorSpacing.small),
-            ui.TextDisplay(f"-# Requested by {interaction.user.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"),
-        ]
-        
-        view = ui.LayoutView()
-        view.add_item(ui.Container(*children, accent_color=discord.Color.gold()))
-        
-        await interaction.response.send_message(view=view, ephemeral=True)
-
-
-class PromoterInfoButton(ui.Button):
+PromoterInfoButtonclass PromoterInfoButton(ui.Button):
     def __init__(self) -> None:
         super().__init__(
             label="How to Promote",
@@ -66,7 +30,7 @@ class PromoterInfoButton(ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         # Create thumbnail
         thumbnail_component = ui.Thumbnail(
-            url="https://cdn.discordapp.com/emojis/1390067566503788625.png",  # Your emoji/image URL
+            media="https://cdn.discordapp.com/emojis/1390067566503788625.png",  # Your emoji/image URL
             description="Promoter role info"
         )
         
@@ -85,18 +49,16 @@ class PromoterInfoButton(ui.Button):
             "• Community appreciation"
         )
         
-        # Build children
-        children: list = [
-            ui.TextDisplay("## 🌟 How to Get the Promoter Role"),
-            ui.Separator(spacing=discord.SeparatorSpacing.small),
-            ui.TextDisplay(text_content),
-            ui.Separator(spacing=discord.SeparatorSpacing.small),
-            ui.TextDisplay(f"-# Requested by {interaction.user.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"),
-        ]
+        # Combine all text into one TextDisplay
+        combined_text = (
+            "## 🌟 How to Get the Promoter Role\n\n"
+            f"{text_content}\n\n"
+            f"-# Requested by {interaction.user.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
         
         # Create section with thumbnail
         section = ui.Section(
-            *children,
+            ui.TextDisplay(combined_text),
             accessory=thumbnail_component
         )
         
@@ -199,11 +161,11 @@ class DebugButton(ui.Button):
         
         # Create thumbnail with member's avatar
         thumbnail_component = ui.Thumbnail(
-            url=member.display_avatar.url,
+            media=member.display_avatar.url,
             description=f"{member.display_name}'s avatar"
         )
         
-        # Build status lines
+        # Build status lines as a single string
         status_lines = [
             f"**🆔 ID:** {member.id}",
             f"**🌐 Status:** {str(member.status).title()}",
@@ -216,18 +178,16 @@ class DebugButton(ui.Button):
             f"**💾 Cached Status:** {cog._status_cache.get(cog._cache_key(member), '—')}",
         ]
         
-        # Build children
-        children: list = [
-            ui.TextDisplay(f"## 🐛 Debug — {member.display_name}"),
-            ui.Separator(spacing=discord.SeparatorSpacing.small),
-            ui.TextDisplay("\n".join(status_lines)),
-            ui.Separator(spacing=discord.SeparatorSpacing.small),
-            ui.TextDisplay(f"-# Debugged by {interaction.user.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"),
-        ]
+        # Combine all text into one TextDisplay
+        combined_text = (
+            f"## 🐛 Debug — {member.display_name}\n\n"
+            f"{'\n'.join(status_lines)}\n\n"
+            f"-# Debugged by {interaction.user.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
         
         # Create section with thumbnail
         section = ui.Section(
-            *children,
+            ui.TextDisplay(combined_text),
             accessory=thumbnail_component
         )
         
@@ -235,7 +195,6 @@ class DebugButton(ui.Button):
         view.add_item(ui.Container(section, accent_color=discord.Color.orange()))
         
         await interaction.response.send_message(view=view, ephemeral=True)
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ACTION ROW
@@ -625,27 +584,28 @@ class PromoterRole(commands.Cog):
                     f"**YOU JUST RECEIVED SOME PERKS!!!**"
                 )
                 
-                # Build children for the main container
-                children: list = [
-                    ui.TextDisplay("## 🐟 THANK YOU!!!!"),
-                    ui.Separator(spacing=discord.SeparatorSpacing.small),
-                ]
+                # Build the main content - combine all text into fewer components
+                main_content = []
                 
+                # Title
+                main_content.append("## 🐟 THANK YOU!!!!")
+                
+                # Promotion source if exists
                 if content and content != "No promotion detected":
-                    children.extend([
-                        ui.TextDisplay(f"**Promotion Source:**\n```{content}```"),
-                        ui.Separator(spacing=discord.SeparatorSpacing.small),
-                    ])
+                    main_content.append(f"**Promotion Source:**\n```{content}```")
                 
-                children.extend([
-                    ui.TextDisplay(text_content),
-                    ui.Separator(spacing=discord.SeparatorSpacing.small),
-                    ui.TextDisplay(f"-# {member.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"),
-                ])
+                # Main message
+                main_content.append(text_content)
                 
-                # Create section with thumbnail accessory
+                # Footer with timestamp
+                main_content.append(f"-# {member.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                # Combine into a single TextDisplay with separators
+                combined_text = "\n\n".join(main_content)
+                
+                # Create section with the combined text and thumbnail
                 section = ui.Section(
-                    *children,
+                    ui.TextDisplay(combined_text),
                     accessory=thumbnail_component
                 )
                 
@@ -656,27 +616,28 @@ class PromoterRole(commands.Cog):
                 # Removed promotion view
                 text_content = f"**{member.mention}** stopped promoting us :broken_heart:"
                 
-                # Build children for the main container
-                children: list = [
-                    ui.TextDisplay("## 🐟 GOODBYE :("),
-                    ui.Separator(spacing=discord.SeparatorSpacing.small),
-                ]
+                # Build the main content
+                main_content = []
                 
+                # Title
+                main_content.append("## 🐟 GOODBYE :(")
+                
+                # Promotion source if exists
                 if content and content != "No promotion detected":
-                    children.extend([
-                        ui.TextDisplay(f"**Previous Promotion Source:**\n```{content}```"),
-                        ui.Separator(spacing=discord.SeparatorSpacing.small),
-                    ])
+                    main_content.append(f"**Previous Promotion Source:**\n```{content}```")
                 
-                children.extend([
-                    ui.TextDisplay(text_content),
-                    ui.Separator(spacing=discord.SeparatorSpacing.small),
-                    ui.TextDisplay(f"-# {member.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"),
-                ])
+                # Main message
+                main_content.append(text_content)
                 
-                # Create section with thumbnail accessory
+                # Footer with timestamp
+                main_content.append(f"-# {member.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                # Combine into a single TextDisplay with separators
+                combined_text = "\n\n".join(main_content)
+                
+                # Create section with the combined text and thumbnail
                 section = ui.Section(
-                    *children,
+                    ui.TextDisplay(combined_text),
                     accessory=thumbnail_component
                 )
                 
