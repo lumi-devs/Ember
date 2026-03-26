@@ -343,7 +343,6 @@ class PromoterRole(commands.Cog):
 
     async def _load_persistent_views(self) -> None:
         """Load persistent views for the system."""
-        await self.bot.wait_until_ready()
         try:
             # Create and register the main view
             view = PromoterLayoutView()
