@@ -1,56 +1,367 @@
+# cogs/promoter/promoter.py  —  Components V2 with prefix commands
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
 from datetime import datetime
-from functools import partial
+from typing import Optional
 
 import aiosqlite
 import discord
+from discord import ui
 from discord.ext import commands, tasks
 
 logger = logging.getLogger(__name__)
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# PERSISTENT BUTTONS
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PromoterInfoButton(ui.Button):
+    def __init__(self) -> None:
+        super().__init__(
+            label="How to Promote",
+            style=discord.ButtonStyle.primary,
+            custom_id="promoter_info_button",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        # Create V2 layout view for info
+        children: list = [
+            ui.TextDisplay("## 🌟 How to Get the Promoter Role"),
+            ui.Separator(spacing=discord.SeparatorSpacing.small),
+            ui.TextDisplay(
+                "Get the **Promoter** role by helping us grow!\n\n"
+                "**Ways to promote:**\n"
+                "Either of these works:\n"
+                "1️⃣ Set your **Primary Guild Tag** to `Raही`\n"
+                "2️⃣ Put one of these in your custom status:\n"
+                "   • `.gg/aakhristation`\n"
+                "   • `discord.gg/aakhristation`\n"
+                "   • `aakhristation`\n\n"
+                "✨ **Perks:**\n"
+                "• Special role and recognition\n"
+                "• Community appreciation"
+            ),
+            ui.Separator(spacing=discord.SeparatorSpacing.small),
+            ui.TextDisplay(f"-# Requested by {interaction.user.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"),
+        ]
+        
+        view = ui.LayoutView()
+        view.add_item(ui.Container(*children, accent_color=discord.Color.gold()))
+        
+        await interaction.response.send_message(view=view, ephemeral=True)
+
+
+class PromoterInfoButton(ui.Button):
+    def __init__(self) -> None:
+        super().__init__(
+            label="How to Promote",
+            style=discord.ButtonStyle.primary,
+            custom_id="promoter_info_button",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        # Create thumbnail
+        thumbnail_component = ui.Thumbnail(
+            url="https://cdn.discordapp.com/emojis/1390067566503788625.png",  # Your emoji/image URL
+            description="Promoter role info"
+        )
+        
+        # Create text content
+        text_content = (
+            "Get the **Promoter** role by helping us grow!\n\n"
+            "**Ways to promote:**\n"
+            "Either of these works:\n"
+            "1️⃣ Set your **Primary Guild Tag** to `Raही`\n"
+            "2️⃣ Put one of these in your custom status:\n"
+            "   • `.gg/aakhristation`\n"
+            "   • `discord.gg/aakhristation`\n"
+            "   • `aakhristation`\n\n"
+            "✨ **Perks:**\n"
+            "• Special role and recognition\n"
+            "• Community appreciation"
+        )
+        
+        # Build children
+        children: list = [
+            ui.TextDisplay("## 🌟 How to Get the Promoter Role"),
+            ui.Separator(spacing=discord.SeparatorSpacing.small),
+            ui.TextDisplay(text_content),
+            ui.Separator(spacing=discord.SeparatorSpacing.small),
+            ui.TextDisplay(f"-# Requested by {interaction.user.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"),
+        ]
+        
+        # Create section with thumbnail
+        section = ui.Section(
+            text=children,
+            thumbnail_accessory=thumbnail_component
+        )
+        
+        view = ui.LayoutView()
+        view.add_item(ui.Container(section, accent_color=discord.Color.gold()))
+        
+        await interaction.response.send_message(view=view, ephemeral=True)
+
+
+class ForceCheckButton(ui.Button):
+    def __init__(self, target_id: Optional[int] = None) -> None:
+        super().__init__(
+            label="Force Check All" if not target_id else "Force Check",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"promoter_force_check_{target_id if target_id else 'all'}",
+        )
+        self.target_id = target_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not interaction.user.guild_permissions.manage_roles:
+            view = ui.LayoutView()
+            view.add_item(ui.Container(
+                ui.TextDisplay("## ❌ Permission Denied"),
+                ui.TextDisplay("You need `Manage Roles` permission."),
+                accent_color=discord.Color.red()
+            ))
+            return await interaction.response.send_message(view=view, ephemeral=True)
+        
+        await interaction.response.defer(ephemeral=True)
+        cog = interaction.client.get_cog("PromoterRole")
+        
+        if not cog:
+            return await interaction.followup.send(
+                "❌ System not available.", ephemeral=True
+            )
+        
+        if self.target_id:
+            member = interaction.guild.get_member(self.target_id)
+            if member:
+                await cog.instant_member_check(member, "Manual force check (button)")
+                await interaction.followup.send(f"✅ Checked {member.mention}", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ Member not found.", ephemeral=True)
+        else:
+            msg = await interaction.followup.send("⚡ Checking all members...", ephemeral=True)
+            checked = 0
+            for member in interaction.guild.members:
+                if not member.bot:
+                    await cog.instant_member_check(member, "Manual bulk check (button)")
+                    checked += 1
+                    await asyncio.sleep(0.3)
+            await msg.edit(content=f"✅ Checked {checked} members")
+
+
+class DebugButton(ui.Button):
+    def __init__(self, member_id: int) -> None:
+        super().__init__(
+            label="Debug",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"promoter_debug_{member_id}",
+        )
+        self.member_id = member_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not interaction.user.guild_permissions.manage_roles:
+            view = ui.LayoutView()
+            view.add_item(ui.Container(
+                ui.TextDisplay("## ❌ Permission Denied"),
+                ui.TextDisplay("You need `Manage Roles` permission."),
+                accent_color=discord.Color.red()
+            ))
+            return await interaction.response.send_message(view=view, ephemeral=True)
+        
+        cog = interaction.client.get_cog("PromoterRole")
+        if not cog:
+            view = ui.LayoutView()
+            view.add_item(ui.Container(
+                ui.TextDisplay("## ❌ System Not Available"),
+                accent_color=discord.Color.red()
+            ))
+            return await interaction.response.send_message(view=view, ephemeral=True)
+        
+        member = interaction.guild.get_member(self.member_id)
+        if not member:
+            view = ui.LayoutView()
+            view.add_item(ui.Container(
+                ui.TextDisplay("## ❌ Member Not Found"),
+                accent_color=discord.Color.red()
+            ))
+            return await interaction.response.send_message(view=view, ephemeral=True)
+        
+        pg = getattr(member, "primary_guild", None)
+        tag_value = str(pg.tag) if pg and getattr(pg, "tag", None) else "None"
+        guild_id = pg.id if pg else "None"
+
+        has_primary_tag = cog._has_primary_guild_tag(member)
+        has_promotion = await cog._has_promotion_content(member)
+        role = interaction.guild.get_role(cog.promoter_role_id)
+        has_role = role in member.roles if role else False
+        
+        # Create thumbnail with member's avatar
+        thumbnail_component = ui.Thumbnail(
+            url=member.display_avatar.url,
+            description=f"{member.display_name}'s avatar"
+        )
+        
+        # Build status lines
+        status_lines = [
+            f"**🆔 ID:** {member.id}",
+            f"**🌐 Status:** {str(member.status).title()}",
+            f"**🎯 Primary Tag:** {'✅' if has_primary_tag else '❌'}",
+            f"**🏷️ Tag Value:** {tag_value}",
+            f"**🏛️ Guild ID:** {guild_id}",
+            f"**🎯 Target Guild:** {cog.target_guild_id}",
+            f"**📢 Promoting:** {'✅' if has_promotion else '❌'}",
+            f"**🎪 Has Role:** {'✅' if has_role else '❌'}",
+            f"**💾 Cached Status:** {cog._status_cache.get(cog._cache_key(member), '—')}",
+        ]
+        
+        # Build children
+        children: list = [
+            ui.TextDisplay(f"## 🐛 Debug — {member.display_name}"),
+            ui.Separator(spacing=discord.SeparatorSpacing.small),
+            ui.TextDisplay("\n".join(status_lines)),
+            ui.Separator(spacing=discord.SeparatorSpacing.small),
+            ui.TextDisplay(f"-# Debugged by {interaction.user.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"),
+        ]
+        
+        # Create section with thumbnail
+        section = ui.Section(
+            text=children,
+            thumbnail_accessory=thumbnail_component
+        )
+        
+        view = ui.LayoutView()
+        view.add_item(ui.Container(section, accent_color=discord.Color.orange()))
+        
+        await interaction.response.send_message(view=view, ephemeral=True)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ACTION ROW
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PromoterActionRow(ui.ActionRow):
+    def __init__(self, member_id: Optional[int] = None) -> None:
+        super().__init__()
+        self.add_item(PromoterInfoButton())
+        self.add_item(PromoterStatsButton())
+        if member_id:
+            self.add_item(DebugButton(member_id))
+
+
+class PromoterAdminRow(ui.ActionRow):
+    def __init__(self, member_id: Optional[int] = None) -> None:
+        super().__init__()
+        self.add_item(ForceCheckButton(member_id))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PROMOTER LAYOUT VIEW
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PromoterLayoutView(ui.LayoutView):
+    def __init__(
+        self,
+        member_id: Optional[int] = None,
+        show_admin: bool = False,
+    ) -> None:
+        super().__init__(timeout=None)
+        
+        children: list = [
+            ui.TextDisplay("## 🎯 Promoter System"),
+            ui.Separator(spacing=discord.SeparatorSpacing.small),
+            ui.TextDisplay(
+                "Get the **Promoter** role by helping us grow!\n\n"
+                "**Ways to promote:**\n"
+                "• Set your **Primary Guild Tag** to `Raही`\n"
+                "• Add one of these to your custom status:\n"
+                "  - `.gg/aakhristation`\n"
+                "  - `discord.gg/aakhristation`\n"
+                "  - `aakhristation`\n\n"
+                "✨ **Perks:**\n"
+                "• Special role and recognition\n"
+                "• Community appreciation"
+            ),
+            ui.Separator(spacing=discord.SeparatorSpacing.small),
+            ui.TextDisplay("-# Click the buttons below for more info"),
+        ]
+        
+        self.add_item(ui.Container(*children, accent_color=discord.Color.gold()))
+        self.add_item(PromoterActionRow(member_id))
+        
+        if show_admin:
+            self.add_item(PromoterAdminRow(member_id))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# COG
+# ──────────────────────────────────────────────────────────────────────────────
+
 class PromoterRole(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db_path = "promoter_role.db"
+        self.db_path = "data/promoter_role.db"
 
         # Server-specific settings
-        self.promoter_role_id     = 1440636027923333182
-        self.your_server_invites  = [
+        self.promoter_role_id = 1440636027923333182
+        self.your_server_invites = [
             ".gg/aakhristation",
             "discord.gg/aakhristation",
             "aakhristation",
         ]
-        self.server_tag      = "Raही"
-        self.log_channel_id  = 1443119503285293098
+        self.server_tag = "Raही"
+        self.log_channel_id = 1443119503285293098
         self.target_guild_id = int(os.environ.get("GUILD_ID", "0"))
 
-        # BUG 3 FIX: cap the cache so it doesn't grow without bound.
-        # Stores guild_id-user_id -> status string.
+        # Cache with size limit
         self._status_cache: dict[str, str] = {}
         self._STATUS_CACHE_MAX = 5000
 
         self._db_ready = False
+        self._initialized = False
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     async def cog_load(self):
-        """Called once when the cog is loaded — safe replacement for on_ready init."""
+        """Initialize the cog when loaded."""
         await self._init_db()
         self._db_ready = True
-        # BUG 4 FIX: start here (after bot is ready) instead of on_ready, with guard.
+        self._initialized = True
+        
+        # Start background tasks
         if not self.fallback_check.is_running():
             self.fallback_check.start()
+        
+        # Register persistent views
+        await self._load_persistent_views()
+        
         logger.info("PromoterRole cog loaded")
 
     async def cog_unload(self):
         self.fallback_check.cancel()
 
+    async def _load_persistent_views(self) -> None:
+        """Load persistent views for the system."""
+        await self.bot.wait_until_ready()
+        try:
+            # Create and register the main view
+            view = PromoterLayoutView()
+            self.bot.add_view(view)
+            
+            logger.info("[PromoterRole] ✅ Persistent views loaded.")
+        except Exception as e:
+            logger.error(f"[PromoterRole] ❌ View load error: {e}")
+
     # ── Database ──────────────────────────────────────────────────────────────
 
     async def _init_db(self):
+        """Initialize the database with proper schema."""
+        from pathlib import Path
+        
+        data_dir = Path("data")
+        data_dir.mkdir(parents=True, exist_ok=True)
+        
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS promoter_logs (
@@ -64,18 +375,28 @@ class PromoterRole(commands.Cog):
                     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS promoter_views (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    member_id   INTEGER,
+                    message_id  INTEGER UNIQUE,
+                    active      BOOLEAN DEFAULT 1,
+                    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             await db.commit()
+            logger.info(f"Database initialized at {self.db_path}")
 
     async def _log_promotion_action(
         self,
-        guild_id:    int,
-        member_id:   int,
+        guild_id: int,
+        member_id: int,
         member_name: str,
-        action:      str,
-        reason:      str,
-        content:     str = "",
+        action: str,
+        reason: str,
+        content: str = "",
     ):
-        """BUG 2 FIX: fully async DB write."""
+        """Log promotion actions to database."""
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute(
@@ -145,14 +466,14 @@ class PromoterRole(commands.Cog):
     def _update_status_cache(self, member: discord.Member) -> tuple[str, str]:
         """
         Update cache and return (old_value, new_value).
-        BUG 3 FIX: evicts oldest entries when over the size limit.
+        Evicts oldest entries when over the size limit.
         """
-        key      = self._cache_key(member)
-        new_val  = self._get_status_content(member)
-        old_val  = self._status_cache.get(key, "")
+        key = self._cache_key(member)
+        new_val = self._get_status_content(member)
+        old_val = self._status_cache.get(key, "")
 
         if len(self._status_cache) >= self._STATUS_CACHE_MAX and key not in self._status_cache:
-            # Evict ~10 % of oldest entries (insertion-ordered dict)
+            # Evict ~10% of oldest entries
             evict_count = self._STATUS_CACHE_MAX // 10
             for old_key in list(self._status_cache.keys())[:evict_count]:
                 del self._status_cache[old_key]
@@ -169,8 +490,8 @@ class PromoterRole(commands.Cog):
             if not role:
                 return
 
-            has_promotion  = await self._has_promotion_content(member)
-            currently_has  = role in member.roles
+            has_promotion = await self._has_promotion_content(member)
+            currently_has = role in member.roles
 
             if has_promotion and not currently_has:
                 promo_content = self._build_promotion_source_string(member)
@@ -182,7 +503,6 @@ class PromoterRole(commands.Cog):
                 await self._send_promotion_log(member, "assigned", promo_content)
 
             elif not has_promotion and currently_has:
-                # BUG 5 FIX: use cached status as "what they had" before removal.
                 cached_prev = self._status_cache.get(self._cache_key(member), "")
                 prev_content = cached_prev if cached_prev else "Status/tag removed"
                 await member.remove_roles(role, reason=f"Promotion removed: {reason}")
@@ -199,8 +519,6 @@ class PromoterRole(commands.Cog):
 
     # ── Event listeners ───────────────────────────────────────────────────────
 
-    # BUG 1 FIX: on_ready removed. Startup now happens in cog_load (called once,
-    # not re-fired on reconnects). on_ready is kept only for the log line.
     @commands.Cog.listener()
     async def on_ready(self):
         logger.info(
@@ -231,13 +549,9 @@ class PromoterRole(commands.Cog):
 
     @commands.Cog.listener()
     async def on_guild_update(self, before: discord.Guild, after: discord.Guild):
-        """
-        Recheck all members when the guild's clan tag changes.
-        BUG 10 FIX: runs the bulk check as a background task so the listener
-        returns immediately, and spaces role operations to avoid rate limits.
-        """
+        """Recheck all members when the guild's clan tag changes."""
         before_tag = getattr(before, "tag", None)
-        after_tag  = getattr(after,  "tag", None)
+        after_tag = getattr(after, "tag", None)
         if before_tag == after_tag:
             return
 
@@ -249,11 +563,12 @@ class PromoterRole(commands.Cog):
 
     # ── Background task ───────────────────────────────────────────────────────
 
-    # BUG 9 FIX: 5-minute interval instead of 30 seconds to avoid hammering
-    # Discord's rate limits on large servers.
-    @tasks.loop(minutes=1)
+    @tasks.loop(minutes=5)
     async def fallback_check(self):
         """Periodic sanity check — repairs any members whose role is out of sync."""
+        if not self._initialized:
+            return
+            
         for guild in self.bot.guilds:
             role = guild.get_role(self.promoter_role_id)
             if not role:
@@ -261,17 +576,14 @@ class PromoterRole(commands.Cog):
             for member in guild.members:
                 if member.bot:
                     continue
-                # Fast pre-filter: only call the heavier async check when the
-                # cheap tag check disagrees with the current role state.
-                has_tag  = self._has_primary_guild_tag(member)
+                has_tag = self._has_primary_guild_tag(member)
                 has_role = role in member.roles
                 if has_tag != has_role:
                     full = await self._has_promotion_content(member)
                     if full != has_role:
                         await self.instant_member_check(member, "5m fallback")
-                        await asyncio.sleep(0.5)  # breathe between role operations
+                        await asyncio.sleep(0.5)
 
-    # BUG 4 FIX: wait_until_ready guard on the loop.
     @fallback_check.before_loop
     async def before_fallback_check(self):
         await self.bot.wait_until_ready()
@@ -286,104 +598,211 @@ class PromoterRole(commands.Cog):
                 await self.instant_member_check(member, reason)
                 await asyncio.sleep(0.3)
 
-    # ── Logging embed ─────────────────────────────────────────────────────────
+    # ── Promotion Log (V2 Components) ─────────────────────────────────────────
 
     async def _send_promotion_log(
         self, member: discord.Member, action_type: str, content: str = ""
     ):
-        # BUG 8 FIX: log errors rather than silently swallowing them.
+        """Send promotion log using Components V2 with thumbnail."""
         try:
             channel = member.guild.get_channel(self.log_channel_id)
             if not channel:
                 logger.warning("Log channel %s not found", self.log_channel_id)
                 return
 
+            # Get member avatar URL for thumbnail
+            avatar_url = member.display_avatar.url
+            
+            # Create the thumbnail component
+            thumbnail_component = ui.Thumbnail(
+                url=avatar_url,
+                description=f"{member.display_name}'s avatar"
+            )
+
             if action_type == "assigned":
-                embed = discord.Embed(
-                    description=(
-                        f"**:fish_cake: THANK YOU!!!!**\n\n"
-                        f"**{member.mention}** is promoting our server! "
-                        f"<:ehm:1390067566503788625>\n\n"
-                        f"**__YOU JUST RECEIVED SOME PERKS!!!__**"
-                    ),
-                    color=0x00FF00,
-                    timestamp=datetime.now(),
+                # Create text content
+                text_content = (
+                    f"**{member.mention}** is promoting our server! <:ehm:1390067566503788625>\n\n"
+                    f"**YOU JUST RECEIVED SOME PERKS!!!**"
                 )
+                
+                # Build children for the main container
+                children: list = [
+                    ui.TextDisplay("## 🐟 THANK YOU!!!!"),
+                    ui.Separator(spacing=discord.SeparatorSpacing.small),
+                ]
+                
+                if content and content != "No promotion detected":
+                    children.extend([
+                        ui.TextDisplay(f"**Promotion Source:**\n```{content}```"),
+                        ui.Separator(spacing=discord.SeparatorSpacing.small),
+                    ])
+                
+                children.extend([
+                    ui.TextDisplay(text_content),
+                    ui.Separator(spacing=discord.SeparatorSpacing.small),
+                    ui.TextDisplay(f"-# {member.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"),
+                ])
+                
+                # Create section with thumbnail accessory
+                section = ui.Section(
+                    text=children,
+                    thumbnail_accessory=thumbnail_component
+                )
+                
+                view = ui.LayoutView()
+                view.add_item(ui.Container(section, accent_color=discord.Color.green()))
+                
             else:
-                embed = discord.Embed(
-                    description=(
-                        f"**:fish_cake: GOODBYE :(**\n\n"
-                        f"**{member.mention}** stopped promoting us :broken_heart:"
-                    ),
-                    color=0xFF9900,
-                    timestamp=datetime.now(),
+                # Removed promotion view
+                text_content = f"**{member.mention}** stopped promoting us :broken_heart:"
+                
+                # Build children for the main container
+                children: list = [
+                    ui.TextDisplay("## 🐟 GOODBYE :("),
+                    ui.Separator(spacing=discord.SeparatorSpacing.small),
+                ]
+                
+                if content and content != "No promotion detected":
+                    children.extend([
+                        ui.TextDisplay(f"**Previous Promotion Source:**\n```{content}```"),
+                        ui.Separator(spacing=discord.SeparatorSpacing.small),
+                    ])
+                
+                children.extend([
+                    ui.TextDisplay(text_content),
+                    ui.Separator(spacing=discord.SeparatorSpacing.small),
+                    ui.TextDisplay(f"-# {member.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"),
+                ])
+                
+                # Create section with thumbnail accessory
+                section = ui.Section(
+                    text=children,
+                    thumbnail_accessory=thumbnail_component
                 )
-
-            if content and content != "No promotion detected":
-                embed.add_field(name="Promotion Source", value=f"```{content}```", inline=False)
-            embed.set_thumbnail(url=member.display_avatar.url)
-            await channel.send(embed=embed)
-
+                
+                view = ui.LayoutView()
+                view.add_item(ui.Container(section, accent_color=discord.Color.orange()))
+            
+            # Send the V2 component with thumbnail
+            await channel.send(view=view)
+            
         except discord.Forbidden:
             logger.warning("No permission to send to log channel %s", self.log_channel_id)
         except Exception as e:
             logger.error("send_promotion_log error: %s", e)
 
-    # ── Commands ──────────────────────────────────────────────────────────────
+    # ── Prefix Commands ───────────────────────────────────────────────────────
+
+    @commands.command(name="promoter", aliases=["promo"])
+    async def promoter_command(self, ctx: commands.Context):
+        """Show the promoter system interface."""
+        if not self._initialized:
+            view = ui.LayoutView()
+            view.add_item(ui.Container(
+                ui.TextDisplay("## ❌ Still Initializing"),
+                ui.TextDisplay("Try again in a moment."),
+                accent_color=discord.Color.red()
+            ))
+            return await ctx.send(view=view)
+        
+        # Check if user has manage roles permission to show admin features
+        has_admin = ctx.author.guild_permissions.manage_roles
+        
+        # Create and send the view
+        view = PromoterLayoutView(
+            member_id=ctx.author.id if has_admin else None,
+            show_admin=has_admin,
+        )
+        
+        # Create V2 layout view for the promoter command
+        children: list = [
+            ui.TextDisplay("## 🌟 Promoter System"),
+            ui.Separator(spacing=discord.SeparatorSpacing.small),
+            ui.TextDisplay("Click the buttons below to interact with the promoter system!"),
+            ui.Separator(spacing=discord.SeparatorSpacing.small),
+            ui.TextDisplay(f"-# Requested by {ctx.author.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"),
+        ]
+        
+        main_view = ui.LayoutView()
+        main_view.add_item(ui.Container(*children, accent_color=discord.Color.gold()))
+        
+        await ctx.send(view=main_view)
+        await ctx.send(view=view)  # Send the interactive view with buttons
 
     @commands.command(name="pgtag")
-    async def pgtag(self, ctx, member: discord.Member = None):
+    async def pgtag_command(self, ctx: commands.Context, member: discord.Member = None):
         """Check a member's primary guild tag."""
         target = member or ctx.author
+        
         try:
             pg = getattr(target, "primary_guild", None)
             if pg is None:
-                return await ctx.reply("❌ This user has no primary guild set.")
+                view = ui.LayoutView()
+                view.add_item(ui.Container(
+                    ui.TextDisplay("## ❌ No Primary Guild"),
+                    ui.TextDisplay("This user has no primary guild set."),
+                    accent_color=discord.Color.red()
+                ))
+                return await ctx.send(view=view)
+            
             tag = getattr(pg, "tag", None)
             if tag is None:
-                return await ctx.reply("⚠️ Primary guild set but no tag.")
+                view = ui.LayoutView()
+                view.add_item(ui.Container(
+                    ui.TextDisplay("## ⚠️ No Tag"),
+                    ui.TextDisplay("Primary guild set but no tag."),
+                    accent_color=discord.Color.orange()
+                ))
+                return await ctx.send(view=view)
 
             would_promote = (str(tag) == str(self.server_tag) and pg.id == self.target_guild_id)
-            embed = discord.Embed(title="🏷️ Primary Guild Tag", color=0x7289DA)
-            embed.add_field(name="Member",          value=target.mention,          inline=True)
-            embed.add_field(name="Tag",             value=f"**{tag}**",             inline=True)
-            embed.add_field(name="Guild ID",        value=f"**{pg.id}**",          inline=True)
-            embed.add_field(name="Target Guild ID", value=f"**{self.target_guild_id}**", inline=True)
-            embed.add_field(
-                name="Promoter Status",
-                value="✅ Would Get Role" if would_promote else "❌ No Role",
-                inline=True,
-            )
-            await ctx.send(embed=embed)
+            
+            # Build status lines
+            info_lines = [
+                f"**Member:** {target.mention}",
+                f"**Tag:** **{tag}**",
+                f"**Guild ID:** **{pg.id}**",
+                f"**Target Guild ID:** **{self.target_guild_id}**",
+                f"**Promoter Status:** {'✅ Would Get Role' if would_promote else '❌ No Role'}",
+            ]
+            
+            # Create V2 layout view
+            children: list = [
+                ui.TextDisplay("## 🏷️ Primary Guild Tag"),
+                ui.Separator(spacing=discord.SeparatorSpacing.small),
+                ui.TextDisplay("\n".join(info_lines)),
+                ui.Separator(spacing=discord.SeparatorSpacing.small),
+                ui.TextDisplay(f"-# Checked by {ctx.author.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"),
+            ]
+            
+            view = ui.LayoutView()
+            view.add_item(ui.Container(*children, accent_color=discord.Color.blue()))
+            
+            await ctx.send(view=view)
         except Exception as e:
             logger.error("pgtag error: %s", e)
-            await ctx.reply(f"❌ Error: {e}")
-
-    @commands.command(name="promoter_stats")
-    @commands.has_permissions(manage_roles=True)
-    async def promoter_stats(self, ctx):
-        """Show promoter system statistics."""
-        role = ctx.guild.get_role(self.promoter_role_id)
-        total_promoters  = len([m for m in ctx.guild.members if role in m.roles and not m.bot]) if role else 0
-        members_with_tag = sum(1 for m in ctx.guild.members if not m.bot and self._has_primary_guild_tag(m))
-
-        embed = discord.Embed(title="🤖 Promoter System Stats", color=0x7289DA)
-        embed.add_field(name="👥 Promoters",       value=total_promoters,           inline=True)
-        embed.add_field(name="🏷️ Primary Tags",    value=members_with_tag,          inline=True)
-        embed.add_field(name="🔄 Check Interval",  value="5 minutes",               inline=True)
-        embed.add_field(name="🎯 Target Guild ID", value=self.target_guild_id,      inline=True)
-        embed.add_field(name="💾 Status Cache",    value=len(self._status_cache),   inline=True)
-        await ctx.send(embed=embed)
+            view = ui.LayoutView()
+            view.add_item(ui.Container(
+                ui.TextDisplay("## ❌ Error"),
+                ui.TextDisplay(f"Error: {e}"),
+                accent_color=discord.Color.red()
+            ))
+            await ctx.send(view=view)
 
     @commands.command(name="force_check")
     @commands.has_permissions(manage_roles=True)
-    async def force_check(self, ctx, target: discord.Member = None):
-        """Force an instant check on one or all members."""
-        # BUG 7 FIX: renamed loop variable from 'member' to 'guild_member'
-        # so it no longer shadows the 'target' parameter.
-        if target:
-            await self.instant_member_check(target, "Manual force check")
-            await ctx.send(f"✅ Checked {target.mention}")
+    async def force_check_command(self, ctx: commands.Context, member: discord.Member = None):
+        """Force check promotion status for a member."""
+        if member:
+            await self.instant_member_check(member, "Manual force check")
+            view = ui.LayoutView()
+            view.add_item(ui.Container(
+                ui.TextDisplay("## ✅ Check Complete"),
+                ui.TextDisplay(f"Checked {member.mention}"),
+                accent_color=discord.Color.green()
+            ))
+            await ctx.send(view=view)
         else:
             msg = await ctx.send("⚡ Checking all members...")
             checked = 0
@@ -391,34 +810,87 @@ class PromoterRole(commands.Cog):
                 if not guild_member.bot:
                     await self.instant_member_check(guild_member, "Manual bulk check")
                     checked += 1
-            await msg.edit(content=f"✅ Checked {checked} members")
+                    await asyncio.sleep(0.3)
+            
+            view = ui.LayoutView()
+            view.add_item(ui.Container(
+                ui.TextDisplay("## ✅ Bulk Check Complete"),
+                ui.TextDisplay(f"Checked {checked} members"),
+                accent_color=discord.Color.green()
+            ))
+            await msg.edit(content=None, view=view)
 
-    @commands.command(name="debug_promoter")
+    @commands.command(name="promoter_stats")
     @commands.has_permissions(manage_roles=True)
-    async def debug_promoter(self, ctx, member: discord.Member = None):
-        """Show full debug info for a member's promoter state."""
+    async def promoter_stats_command(self, ctx: commands.Context):
+        """Show promoter system statistics."""
+        role = ctx.guild.get_role(self.promoter_role_id)
+        total_promoters = len([m for m in ctx.guild.members if role in m.roles and not m.bot]) if role else 0
+        members_with_tag = sum(1 for m in ctx.guild.members if not m.bot and self._has_primary_guild_tag(m))
+        
+        # Create V2 layout view for stats
+        children: list = [
+            ui.TextDisplay("## 🤖 Promoter System Stats"),
+            ui.Separator(spacing=discord.SeparatorSpacing.small),
+            ui.TextDisplay(
+                f"**👥 Promoters:** {total_promoters}\n"
+                f"**🏷️ Primary Tags:** {members_with_tag}\n"
+                f"**🔄 Check Interval:** 5 minutes\n"
+                f"**🎯 Target Guild ID:** {self.target_guild_id}\n"
+                f"**💾 Status Cache:** {len(self._status_cache)}"
+            ),
+            ui.Separator(spacing=discord.SeparatorSpacing.small),
+            ui.TextDisplay(f"-# Requested by {ctx.author.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"),
+        ]
+        
+        view = ui.LayoutView()
+        view.add_item(ui.Container(*children, accent_color=discord.Color.blue()))
+        
+        await ctx.send(view=view)
+
+    @commands.command(name="debug_promoter", aliases=["dbgpromo"])
+    @commands.has_permissions(manage_roles=True)
+    async def debug_promoter_command(self, ctx: commands.Context, member: discord.Member = None):
+        """Show debug info for a member."""
         target = member or ctx.author
-        pg        = getattr(target, "primary_guild", None)
+        
+        pg = getattr(target, "primary_guild", None)
         tag_value = str(pg.tag) if pg and getattr(pg, "tag", None) else "None"
-        guild_id  = pg.id if pg else "None"  
+        guild_id = pg.id if pg else "None"
 
         has_primary_tag = self._has_primary_guild_tag(target)
-        has_promotion   = await self._has_promotion_content(target)
-        role            = ctx.guild.get_role(self.promoter_role_id)
-        has_role        = role in target.roles if role else False
-
-        embed = discord.Embed(title=f"🐛 Debug — {target.display_name}", color=0xFF9900)
-        embed.add_field(name="🆔 ID",             value=target.id,                              inline=True)
-        embed.add_field(name="🌐 Status",          value=str(target.status).title(),             inline=True)
-        embed.add_field(name="🎯 Primary Tag",     value="✅" if has_primary_tag else "❌",       inline=True)
-        embed.add_field(name="🏷️ Tag Value",      value=tag_value,                              inline=True)
-        embed.add_field(name="🏛️ Guild ID",       value=guild_id,                               inline=True)
-        embed.add_field(name="🎯 Target Guild",   value=self.target_guild_id,                   inline=True)
-        embed.add_field(name="📢 Promoting",       value="✅" if has_promotion else "❌",         inline=True)
-        embed.add_field(name="🎪 Has Role",        value="✅" if has_role else "❌",              inline=True)
-        embed.add_field(name="💾 Cached Status",   value=self._status_cache.get(self._cache_key(target), "—"), inline=True)
-        await ctx.send(embed=embed)
+        has_promotion = await self._has_promotion_content(target)
+        role = ctx.guild.get_role(self.promoter_role_id)
+        has_role = role in target.roles if role else False
+        
+        # Build status lines
+        status_lines = [
+            f"**🆔 ID:** {target.id}",
+            f"**🌐 Status:** {str(target.status).title()}",
+            f"**🎯 Primary Tag:** {'✅' if has_primary_tag else '❌'}",
+            f"**🏷️ Tag Value:** {tag_value}",
+            f"**🏛️ Guild ID:** {guild_id}",
+            f"**🎯 Target Guild:** {self.target_guild_id}",
+            f"**📢 Promoting:** {'✅' if has_promotion else '❌'}",
+            f"**🎪 Has Role:** {'✅' if has_role else '❌'}",
+            f"**💾 Cached Status:** {self._status_cache.get(self._cache_key(target), '—')}",
+        ]
+        
+        # Create V2 layout view for debug info
+        children: list = [
+            ui.TextDisplay(f"## 🐛 Debug — {target.display_name}"),
+            ui.Separator(spacing=discord.SeparatorSpacing.small),
+            ui.TextDisplay("\n".join(status_lines)),
+            ui.Separator(spacing=discord.SeparatorSpacing.small),
+            ui.TextDisplay(f"-# Debugged by {ctx.author.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"),
+        ]
+        
+        view = ui.LayoutView()
+        view.add_item(ui.Container(*children, accent_color=discord.Color.orange()))
+        
+        await ctx.send(view=view)
 
 
 async def setup(bot: commands.Bot):
+    """Setup function for the cog."""
     await bot.add_cog(PromoterRole(bot))
