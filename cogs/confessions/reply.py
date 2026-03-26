@@ -219,11 +219,8 @@ class ReplyLayoutView(ui.LayoutView):
         super().__init__(timeout=None)
 
         accent = discord.Color.gold() if is_op else discord.Color.from_str("#AB766F")
+        display_body = body if body and body.strip() else "*(empty)*"
 
-        # Header shows parent reference
-        header_parts = [parent_reference or f"🔗 In reply to Confession #{confession_id}"]
-        
-        # If there's a parent quote, show it in a smaller format
         children: list = [
             ui.TextDisplay(f"## ↩️ Reply to Confession #{confession_id}"),
             ui.Separator(spacing=discord.SeparatorSpacing.small),
@@ -238,7 +235,7 @@ class ReplyLayoutView(ui.LayoutView):
             )
         
         children.append(
-            ui.TextDisplay(body or "*(empty)*"),
+            ui.TextDisplay(display_body)
         )
 
         if image_url:
@@ -246,13 +243,14 @@ class ReplyLayoutView(ui.LayoutView):
                 ui.MediaGallery(discord.MediaGalleryItem(media=image_url))
             )
 
-        footer = "-# 👑 OP" if is_op else "-# Reply"
-        
         children.extend([
             ui.Separator(spacing=discord.SeparatorSpacing.small),
-            ui.TextDisplay(footer),
-            ReplyActionRow(reply_id),
         ])
+
+        if is_op:
+            children.append(ui.TextDisplay("-# 👑 OP"))
+        
+        children.append(ReplyActionRow(reply_id))
 
         self.add_item(ui.Container(*children, accent_color=accent))
 
