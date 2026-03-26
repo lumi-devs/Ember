@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # PERSISTENT BUTTONS
 # ──────────────────────────────────────────────────────────────────────────────
 
-PromoterInfoButtonclass PromoterInfoButton(ui.Button):
+class PromoterInfoButton(ui.Button):
     def __init__(self) -> None:
         super().__init__(
             label="How to Promote",
@@ -204,7 +204,6 @@ class PromoterActionRow(ui.ActionRow):
     def __init__(self, member_id: Optional[int] = None) -> None:
         super().__init__()
         self.add_item(PromoterInfoButton())
-        self.add_item(PromoterStatsButton())
         if member_id:
             self.add_item(DebugButton(member_id))
 
