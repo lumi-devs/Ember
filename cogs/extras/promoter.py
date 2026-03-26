@@ -179,11 +179,12 @@ class DebugButton(ui.Button):
         ]
         
         # Combine all text into one TextDisplay
-        combined_text = (
-            f"## 🐛 Debug — {member.display_name}\n\n"
-            f"{'\n'.join(status_lines)}\n\n"
+        parts = [
+            f"## 🐛 Debug — {member.display_name}",
+            "\n".join(status_lines),
             f"-# Debugged by {interaction.user.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
+        ]
+        combined_text = "\n\n".join(parts)
         
         # Create section with thumbnail
         section = ui.Section(
