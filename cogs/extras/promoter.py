@@ -588,17 +588,13 @@ class PromoterRole(commands.Cog):
                 main_content = []
                 
                 # Title
-                main_content.append("## 🐟 THANK YOU!!!!")
-                
-                # Promotion source if exists
-                if content and content != "No promotion detected":
-                    main_content.append(f"**Promotion Source:**\n```{content}```")
+                main_content.append("## :fish_cake: THANK YOU!!!!")
                 
                 # Main message
                 main_content.append(text_content)
                 
-                # Footer with timestamp
-                main_content.append(f"-# {member.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                if content and content != "No promotion detected":
+                    main_content.append(f"**Promotion Source:**\n```{content}```")
                 
                 # Combine into a single TextDisplay with separators
                 combined_text = "\n\n".join(main_content)
@@ -620,17 +616,14 @@ class PromoterRole(commands.Cog):
                 main_content = []
                 
                 # Title
-                main_content.append("## 🐟 GOODBYE :(")
-                
-                # Promotion source if exists
-                if content and content != "No promotion detected":
-                    main_content.append(f"**Previous Promotion Source:**\n```{content}```")
+                main_content.append("## :fish_cake: GOODBYE :(")
                 
                 # Main message
                 main_content.append(text_content)
                 
-                # Footer with timestamp
-                main_content.append(f"-# {member.display_name} • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                # Promotion source if exists
+                if content and content != "No promotion detected":
+                    main_content.append(f"**Previous Promotion Source:**\n```{content}```")
                 
                 # Combine into a single TextDisplay with separators
                 combined_text = "\n\n".join(main_content)
