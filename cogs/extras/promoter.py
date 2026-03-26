@@ -96,8 +96,8 @@ class PromoterInfoButton(ui.Button):
         
         # Create section with thumbnail
         section = ui.Section(
-            text=children,
-            thumbnail_accessory=thumbnail_component
+            children=children,
+            accessory=thumbnail_component
         )
         
         view = ui.LayoutView()
@@ -227,8 +227,8 @@ class DebugButton(ui.Button):
         
         # Create section with thumbnail
         section = ui.Section(
-            text=children,
-            thumbnail_accessory=thumbnail_component
+            children=children,
+            accessory=thumbnail_component
         )
         
         view = ui.LayoutView()
@@ -676,8 +676,8 @@ class PromoterRole(commands.Cog):
                 
                 # Create section with thumbnail accessory
                 section = ui.Section(
-                    text=children,
-                    thumbnail_accessory=thumbnail_component
+                    children=children,
+                    accessory=thumbnail_component
                 )
                 
                 view = ui.LayoutView()
