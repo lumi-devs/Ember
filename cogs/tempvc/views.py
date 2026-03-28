@@ -36,16 +36,18 @@ class ControlPanel(View):
         print(f"[TempVoice] View error: {error}")
 
     async def update_database(self, **kwargs):
-        """Update the voiceChannel table using voiceID as key."""
+        """Update the correct channel table using voiceID as key."""
         if not kwargs:
             return
-        # Use the appropriate database path based on context
         db_path = getattr(self, "db_path", DB_PATH)
+        # Determine table: gaming channels live in gamingVoiceChannel
+        is_gaming = getattr(self, "is_gaming", False)
+        table = "gamingVoiceChannel" if is_gaming else "voiceChannel"
         async with aiosqlite.connect(db_path) as db:
             set_clause = ", ".join([f"{key} = ?" for key in kwargs.keys()])
             values = list(kwargs.values()) + [self.channel_id]
             await db.execute(
-                f"UPDATE voiceChannel SET {set_clause} WHERE voiceID = ?", values
+                f"UPDATE {table} SET {set_clause} WHERE voiceID = ?", values
             )
             await db.commit()
 
@@ -215,9 +217,10 @@ class DeleteButton(Button):
             await confirm_interaction.response.defer(ephemeral=True)
             try:
                 db_path = GAMING_DB_PATH if self.is_gaming else DB_PATH
+                table = "gamingVoiceChannel" if self.is_gaming else "voiceChannel"
                 async with aiosqlite.connect(db_path) as db:
                     await db.execute(
-                        "DELETE FROM voiceChannel WHERE voiceID = ?", (channel.id,)
+                        f"DELETE FROM {table} WHERE voiceID = ?", (channel.id,)
                     )
                     await db.commit()
                 await channel.delete(reason="VC owner requested deletion")
@@ -317,7 +320,8 @@ class LockButton(Button):
 
         # Refresh the view with updated button states
         new_view = BasicControlsView(
-            view.cog, view.channel_id, view.owner_id, is_gaming=self.is_gaming
+            view.cog, view.channel_id, view.owner_id,
+            is_gaming=self.is_gaming, message_id=view.message_id
         )
         await interaction.edit_original_response(view=new_view)
         await interaction.followup.send(action_msg, ephemeral=True)
@@ -384,7 +388,8 @@ class HideButton(Button):
 
         # Refresh the view with updated button states
         new_view = BasicControlsView(
-            view.cog, view.channel_id, view.owner_id, is_gaming=self.is_gaming
+            view.cog, view.channel_id, view.owner_id,
+            is_gaming=self.is_gaming, message_id=view.message_id
         )
         await interaction.edit_original_response(view=new_view)
         await interaction.followup.send(action_msg, ephemeral=True)
@@ -848,10 +853,11 @@ class TransferButton(Button):
 
             try:
                 db_path = GAMING_DB_PATH if self.is_gaming else DB_PATH
+                table = "gamingVoiceChannel" if self.is_gaming else "voiceChannel"
                 # Update database
                 async with aiosqlite.connect(db_path) as db:
                     await db.execute(
-                        "UPDATE voiceChannel SET userID = ? WHERE voiceID = ?",
+                        f"UPDATE {table} SET userID = ? WHERE voiceID = ?",
                         (new_owner.id, channel.id),
                     )
                     await db.commit()
@@ -882,6 +888,7 @@ class TransferButton(Button):
                         view.channel_id,
                         new_owner.id,
                         is_gaming=self.is_gaming,
+                        message_id=view.message_id,
                     )
                     await interaction.edit_original_response(view=new_view)
                 except Exception:
@@ -956,10 +963,11 @@ class ClaimButton(Button):
             return
 
         db_path = GAMING_DB_PATH if self.is_gaming else DB_PATH
+        table = "gamingVoiceChannel" if self.is_gaming else "voiceChannel"
         async with aiosqlite.connect(db_path) as db:
             # Check if channel exists in database
             async with db.execute(
-                "SELECT userID FROM voiceChannel WHERE voiceID = ?", (channel.id,)
+                f"SELECT userID FROM {table} WHERE voiceID = ?", (channel.id,)
             ) as cursor:
                 data = await cursor.fetchone()
 
@@ -994,7 +1002,7 @@ class ClaimButton(Button):
                 try:
                     # First come, first serve: Update ownership immediately
                     await db.execute(
-                        "UPDATE voiceChannel SET userID = ? WHERE voiceID = ?",
+                        f"UPDATE {table} SET userID = ? WHERE voiceID = ?",
                         (interaction.user.id, channel.id),
                     )
                     await db.commit()
@@ -1025,26 +1033,26 @@ class ClaimButton(Button):
                         ephemeral=True,
                     )
 
-                    # Refresh the control panel for the new owner
+                    # Refresh the control panel for the new owner, preserving message_id
                     try:
-                        # Try to find and update the original control panel message
-                        async for message in channel.history(limit=10):
+                        async for msg in channel.history(limit=10):
                             if (
-                                message.author == interaction.guild.me
-                                and message.embeds
+                                msg.author == interaction.guild.me
+                                and msg.embeds
                             ):
                                 if (
-                                    "Control Panel" in message.embeds[0].title
+                                    "Control Panel" in msg.embeds[0].title
                                     or "Voice Channel Controls"
-                                    in message.embeds[0].title
+                                    in msg.embeds[0].title
                                 ):
                                     new_view = BasicControlsView(
                                         view.cog,
                                         view.channel_id,
                                         interaction.user.id,
                                         is_gaming=self.is_gaming,
+                                        message_id=msg.id,
                                     )
-                                    await message.edit(view=new_view)
+                                    await msg.edit(view=new_view)
                                     break
                     except Exception as e:
                         print(f"[TempVoice] Error refreshing control panel: {e}")
@@ -1053,7 +1061,7 @@ class ClaimButton(Button):
                     print(f"[TempVoice] Error during claim transfer: {e}")
                     # Rollback the database change
                     await db.execute(
-                        "UPDATE voiceChannel SET userID = ? WHERE voiceID = ?",
+                        f"UPDATE {table} SET userID = ? WHERE voiceID = ?",
                         (owner_id, channel.id),
                     )
                     await db.commit()

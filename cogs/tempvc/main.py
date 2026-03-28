@@ -511,12 +511,14 @@ class TempVoice(commands.Cog):
             # Create and store the view with persistent custom IDs
             view = BasicControlsView(self, channel.id, owner_id, is_gaming=False)
 
-            # Send the message with the view
-            await channel.send(embed=embed, view=view)
+            # Send the message with the view — capture the returned message object
+            message = await channel.send(embed=embed, view=view)
             await channel.send(embed=info_embed)
+
+            # Attach the message ID to the view so buttons can reference it
             view.message_id = message.id
 
-            # Store the message ID in the database for persistence
+            # Store the message ID in the database for persistence across restarts
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute(
                     "UPDATE voiceChannel SET panel_message_id = ? WHERE voiceID = ?",
@@ -524,7 +526,7 @@ class TempVoice(commands.Cog):
                 )
                 await db.commit()
 
-            # Important: Re-add the view with the specific message ID
+            # Register the view with the specific message ID so it survives restarts
             self.bot.add_view(view, message_id=message.id)
 
         except Exception as e:
