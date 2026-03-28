@@ -648,15 +648,49 @@ class Confessions(commands.Cog):
                         await db.execute(
                             "UPDATE confessions SET id=? WHERE id=?", (new_id, old_id)
                         )
+                        # Update reply references BEFORE rebuilding reply cards
+                        # so that ReplyLayoutView.from_db() reads the correct new confession_id
                         await db.execute(
                             "UPDATE replies SET confession_id=? WHERE confession_id=?",
                             (new_id, old_id),
                         )
+                        await db.commit()  # flush so from_db sees the updated rows
                         if channel and msg_id:
                             try:
                                 old_msg  = await channel.fetch_message(msg_id)
                                 new_view = await build_confession_layout_view(new_id)
                                 await old_msg.edit(view=new_view)
+
+                                # Rename the thread so it still matches the confession number
+                                if old_msg.thread:
+                                    try:
+                                        await old_msg.thread.edit(
+                                            name=f"Confession #{new_id}"
+                                        )
+                                    except Exception as te:
+                                        print(f"[confess_delete] Thread rename error #{old_id}→#{new_id}: {te}")
+
+                                    # Rebuild every reply card so they say
+                                    # "↩️ Reply to Confession #<new_id>" instead of the old number
+                                    try:
+                                        reply_cur = await db.execute(
+                                            "SELECT id, message_id FROM replies "
+                                            "WHERE confession_id=? AND message_id IS NOT NULL",
+                                            (new_id,),
+                                        )
+                                        reply_rows = await reply_cur.fetchall()
+                                        for reply_db_id, reply_msg_id in reply_rows:
+                                            try:
+                                                reply_msg = await old_msg.thread.fetch_message(reply_msg_id)
+                                                updated_reply_view = await ReplyLayoutView.from_db(reply_db_id)
+                                                await reply_msg.edit(view=updated_reply_view)
+                                            except discord.NotFound:
+                                                pass
+                                            except Exception as re:
+                                                print(f"[confess_delete] Reply card update error reply#{reply_db_id}: {re}")
+                                    except Exception as re:
+                                        print(f"[confess_delete] Reply fetch error for confession #{new_id}: {re}")
+
                             except discord.NotFound:
                                 pass
                             except Exception as e:
