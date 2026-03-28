@@ -6,15 +6,11 @@ import re
 
 DELETE_DELAY = 600  # 10 minutes (was accidentally 10 seconds)
 
-# Matches most "caught cat" message variants.
-# Note: "cought" is kept intentionally to match the bot's known typo output,
-# but "caught" is also included to catch corrected spellings.
-# <:\w+:\d+> is the correct Discord custom emoji format (was </rain:\d+> which never matched).
+# Matches most "caught cat" message variants
 CAUGHT_CAT_PATTERN = re.compile(
-    r"(c(?:aught|ought).*cat|cat.*c(?:aught|ought)|fella.*c(?:aught|ought)|☔.*cats|<:\w+:\d+>.*cat|cat.*<:\w+:\d+>)",
+    r"(cought.*cat|cat.*cought|fella.*cought|☔.*cats|</rain:\d+>)",
     re.IGNORECASE | re.DOTALL,
 )
-
 
 class AutoDelete(commands.Cog):
     def __init__(self, bot: commands.Bot):
