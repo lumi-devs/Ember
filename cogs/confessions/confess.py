@@ -696,23 +696,21 @@ class Confessions(commands.Cog):
                             except Exception as e:
                                 print(f"[confess_delete] Renumber edit error #{old_id}: {e}")
                         update_count += 1
-
-                    # Restore confess button on the new latest confession
-                    if confession_id == max_id:
-                        cur = await db.execute(
-                            "SELECT id, message_id FROM confessions WHERE id=?",
-                            (confession_id - 1,),
-                        )
-                        prev = await cur.fetchone()
-                        if prev and channel and prev[1]:
-                            try:
-                                prev_msg  = await channel.fetch_message(prev[1])
-                                prev_view = await build_confession_layout_view(
-                                    prev[0], show_confess_button=True
-                                )
-                                await prev_msg.edit(view=prev_view)
-                            except (discord.NotFound, Exception):
-                                pass
+                    new_last_id = max_id - 1
+                    cur = await db.execute(
+                        "SELECT id, message_id FROM confessions WHERE id=?",
+                        (new_last_id,),
+                    )
+                    prev = await cur.fetchone()
+                    if prev and channel and prev[1]:
+                        try:
+                            prev_msg  = await channel.fetch_message(prev[1])
+                            prev_view = await build_confession_layout_view(
+                                prev[0], show_confess_button=True
+                            )
+                            await prev_msg.edit(view=prev_view)
+                        except (discord.NotFound, Exception):
+                            pass
 
                     await db.execute(
                         "UPDATE sqlite_sequence SET seq=? WHERE name='confessions'",

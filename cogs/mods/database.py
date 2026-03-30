@@ -314,8 +314,6 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_bump_staff ON bumps(staff_id)",
             "CREATE INDEX IF NOT EXISTS idx_rp_staff   ON role_pings(staff_id)",
             "CREATE INDEX IF NOT EXISTS idx_he_helper  ON help_events(helper_id)",
-            # BUG FIX: help_events(timestamp) was missing — all date-range queries
-            # against help_events did full-table scans.
             "CREATE INDEX IF NOT EXISTS idx_he_ts      ON help_events(timestamp)",
             "CREATE INDEX IF NOT EXISTS idx_rx_staff   ON reactions(staff_id)",
             "CREATE INDEX IF NOT EXISTS idx_rx_ts      ON reactions(timestamp)",
