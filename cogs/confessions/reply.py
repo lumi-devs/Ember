@@ -57,7 +57,8 @@ async def get_parent_reference(reply_id: int) -> tuple[str, str | None]:
                 conf_row = await cur.fetchone()
                 if conf_row:
                     text = conf_row[0]
-                    quote = text[:150] + "…" if len(text) > 150 else text
+                    truncated = text[:150] + "…" if len(text) > 150 else text
+                    quote = "\n".join(f"> {line}" for line in truncated.splitlines())
                     return f"🔗 In reply to Confession #{confession_id}", quote
                 return f"🔗 In reply to Confession #{confession_id}", None
             
@@ -70,7 +71,8 @@ async def get_parent_reference(reply_id: int) -> tuple[str, str | None]:
                 reply_row = await cur.fetchone()
                 if reply_row:
                     text = reply_row[0]
-                    quote = text[:150] + "…" if len(text) > 150 else text
+                    truncated = text[:150] + "…" if len(text) > 150 else text
+                    quote = "\n".join(f"> {line}" for line in truncated.splitlines())
                     return f"🔗 In reply to Reply #{parent_reply_id}", quote
                 return f"🔗 In reply to Reply #{parent_reply_id}", None
                 
@@ -228,7 +230,7 @@ class ReplyLayoutView(ui.LayoutView):
         
         if parent_quote:
             children.append(
-                ui.TextDisplay(f"-# > {parent_quote}")
+                ui.TextDisplay(parent_quote)
             )
             children.append(
                 ui.Separator(spacing=discord.SeparatorSpacing.small),
