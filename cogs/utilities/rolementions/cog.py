@@ -8,7 +8,43 @@ from .tracker import RoleMentionTracker
 from .automod_manager import AutoModManager
 
 
-class RoleMentionCog(commands.Cog):  # ← Better name
+# ---------------------------------------------------------------------------
+# Custom converter — accepts a role mention, name, or raw ID.
+# For deleted roles (not in guild cache) it returns the raw int ID so
+# commands like `automod remove` can still work.
+# ---------------------------------------------------------------------------
+class RoleOrID(commands.Converter):
+    async def convert(self, ctx, argument: str):
+        # Strip mention syntax if present  e.g. <@&123456>
+        argument = argument.strip()
+        if argument.startswith("<@&") and argument.endswith(">"):
+            argument = argument[3:-1]
+
+        # Try the built-in Role converter first (handles name + mention + ID)
+        try:
+            return await commands.RoleConverter().convert(ctx, argument)
+        except commands.BadArgument:
+            pass
+
+        # Fall back to raw integer ID (covers deleted roles)
+        try:
+            return int(argument)
+        except ValueError:
+            raise commands.BadArgument(
+                f"Could not find role **{argument}**. "
+                f"Provide a role mention, role name, or role ID."
+            )
+
+
+def _role_display(role) -> str:
+    """Return a safe display string that never pings a role."""
+    if isinstance(role, discord.Role):
+        return f"**{role.name}** (`{role.id}`)"
+    # raw int ID (deleted role)
+    return f"Unknown Role (`{role}`)"
+
+
+class RoleMentionCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
@@ -42,14 +78,14 @@ class RoleMentionCog(commands.Cog):  # ← Better name
         guild_id = str(message.guild.id)
         stats = self.tracker.get_guild_stats(guild_id)
 
-        # Get list of unique roles mentioned today with their counts
+        # Build today's role summary (name + ID, no pings)
         unique_roles_info = []
         for role_id, count in stats["roles"].items():
             role_obj = message.guild.get_role(int(role_id))
             if role_obj:
-                unique_roles_info.append(f"{role_obj.mention} ({count})")
+                unique_roles_info.append(f"{role_obj.name} (`{role_id}`) ×{count}")
             else:
-                unique_roles_info.append(f"Deleted Role ({role_id}) ({count})")
+                unique_roles_info.append(f"Deleted Role (`{role_id}`) ×{count}")
 
         # Create detailed embed
         embed = discord.Embed(
@@ -58,20 +94,20 @@ class RoleMentionCog(commands.Cog):  # ← Better name
             timestamp=datetime.now(pytz.UTC),
         )
 
-        # Add author info
+        # Author info
         embed.set_author(
             name=f"{message.author.name} ({message.author.id})",
             icon_url=message.author.avatar.url if message.author.avatar else None,
         )
 
-        # Add message link
+        # Message link
         embed.add_field(
             name="Message Link",
             value=f"[Jump to Message]({message.jump_url})",
             inline=True,
         )
 
-        # Add message content preview
+        # Message content preview
         content_preview = (
             message.content[:200] + "..."
             if len(message.content) > 200
@@ -84,11 +120,14 @@ class RoleMentionCog(commands.Cog):  # ← Better name
             name="Message Content", value=f"```{content_preview}```", inline=False
         )
 
-        # Add mentioned roles section
+        # Mentioned roles — show name + ID, no live mention to avoid pinging
         roles_text = ""
         for role in mentioned_roles:
             role_count = self.tracker.get_role_count(guild_id, str(role.id))
-            roles_text += f"• {role.mention} - **{role_count}** mention{'s' if role_count != 1 else ''} today\n"
+            roles_text += (
+                f"• **{role.name}** (`{role.id}`) — "
+                f"**{role_count}** mention{'s' if role_count != 1 else ''} today\n"
+            )
 
         embed.add_field(
             name=f"Mentioned Roles ({len(mentioned_roles)})",
@@ -96,7 +135,7 @@ class RoleMentionCog(commands.Cog):  # ← Better name
             inline=False,
         )
 
-        # Add statistics
+        # Statistics
         stats_text = f"**Total Role Mentions:** {stats['total']}\n"
         stats_text += f"**Unique Roles Mentioned:** {stats['unique']}\n\n"
 
@@ -115,24 +154,30 @@ class RoleMentionCog(commands.Cog):  # ← Better name
 
         embed.add_field(name="📊 Today's Statistics", value=stats_text, inline=False)
 
-        # Add command info
+        # Command hints
         command_usage = ""
         if message.content.startswith("."):
             command_usage = f"**Command Detected:** `{message.content.split()[0]}`\n"
 
         embed.add_field(
             name="⚙️ Available Commands",
-            value=f"{command_usage}**`.rm stats [role]`** - Get role mention statistics\n"
-            f"**`.rm top [limit]`** - See most mentioned roles\n"
-            f"**`.rm reset`** - Reset counters (Admin only)\n"
-            f"**`.automod list`** - View active blocks",
+            value=(
+                f"{command_usage}"
+                f"**`.rm stats [role]`** - Get role mention statistics\n"
+                f"**`.rm top [limit]`** - See most mentioned roles\n"
+                f"**`.rm reset`** - Reset counters (Admin only)\n"
+                f"**`.automod list`** - View active blocks"
+            ),
             inline=True,
         )
 
         embed.set_footer(text="Logged at")
 
-        # Send the log message
-        await log_channel.send(content=f"{message.author.mention}", embed=embed)
+        # Send without pinging anyone — the author mention stays only in the embed
+        await log_channel.send(
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -156,7 +201,6 @@ class RoleMentionCog(commands.Cog):  # ← Better name
                 await self.automod.check_and_block_role(message, role)
 
             if has_new_mentions:
-                # Log the mention
                 await self.log_role_mentions(message, message.role_mentions)
 
     @commands.group(name="rolementions", aliases=["rm"], invoke_without_command=True)
@@ -196,7 +240,7 @@ class RoleMentionCog(commands.Cog):  # ← Better name
             name="Current Log Channel", value=f"<#{self.LOG_CHANNEL_ID}>", inline=True
         )
 
-        embed.set_footer(text="Requires 'Manage Server' permission")
+        embed.set_footer(text="Requires 'Manage Messages' permission")
         await ctx.send(embed=embed)
 
     @role_mentions_group.command(name="stats")
@@ -224,8 +268,10 @@ class RoleMentionCog(commands.Cog):  # ← Better name
             # Get all role stats
             embed = discord.Embed(
                 title="Role Mention Statistics",
-                description=f"**Total mentions today:** `{stats['total']}`\n"
-                f"**Unique roles mentioned:** `{stats['unique']}`",
+                description=(
+                    f"**Total mentions today:** `{stats['total']}`\n"
+                    f"**Unique roles mentioned:** `{stats['unique']}`"
+                ),
                 color=discord.Color.blue(),
             )
 
@@ -242,7 +288,10 @@ class RoleMentionCog(commands.Cog):  # ← Better name
 
             roles_list_text = ""
             for i, (role_name, count, role_id) in enumerate(roles_list[:15], 1):
-                roles_list_text += f"{i}. **{role_name}** - {count} mention{'s' if count != 1 else ''} (ID: `{role_id}`)\n"
+                roles_list_text += (
+                    f"{i}. **{role_name}** — {count} mention{'s' if count != 1 else ''} "
+                    f"(ID: `{role_id}`)\n"
+                )
 
             embed.add_field(
                 name="Roles Mentioned Today",
@@ -291,31 +340,26 @@ class RoleMentionCog(commands.Cog):  # ← Better name
             title=f"Top {limit} Most Mentioned Roles", color=discord.Color.gold()
         )
 
-        # Add each top role
         for i, (role_name, count, role_id, role_obj) in enumerate(top_roles, 1):
-            if role_obj:
-                role_display = role_obj.mention
-            else:
-                role_display = f"**{role_name}**"
-
             embed.add_field(
                 name=f"{i}. {role_name}",
-                value=f"{role_display}\n**{count}** mention{'s' if count != 1 else ''}\nID: `{role_id}`",
+                value=f"**{count}** mention{'s' if count != 1 else ''}\nID: `{role_id}`",
                 inline=False,
             )
 
         embed.add_field(
             name="📊 Summary",
-            value=f"**Total Mentions Today:** {stats['total']}\n"
-            f"**Unique Roles Mentioned:** {stats['unique']}",
+            value=(
+                f"**Total Mentions Today:** {stats['total']}\n"
+                f"**Unique Roles Mentioned:** {stats['unique']}"
+            ),
             inline=False,
         )
 
-        # List all unique roles if less than 10
         if stats["unique"] <= 10:
             all_roles_text = ""
-            for role_name, count, role_id, role_obj in roles_data:
-                all_roles_text += f"• {role_name} ({count})\n"
+            for role_name, count, role_id, _ in roles_data:
+                all_roles_text += f"• {role_name} ×{count}\n"
 
             embed.add_field(
                 name="All Roles Mentioned Today", value=all_roles_text, inline=False
@@ -328,7 +372,6 @@ class RoleMentionCog(commands.Cog):  # ← Better name
             )
 
         embed.set_footer(text="Resets daily at 4 AM IST")
-
         await ctx.send(embed=embed)
 
     @role_mentions_group.command(name="reset")
@@ -349,7 +392,7 @@ class RoleMentionCog(commands.Cog):  # ← Better name
             )
             embed.add_field(
                 name="Reset By",
-                value=f"{ctx.author.mention} ({ctx.author.id})",
+                value=f"{ctx.author.mention} (`{ctx.author.id}`)",
                 inline=True,
             )
             embed.set_footer(
@@ -358,6 +401,10 @@ class RoleMentionCog(commands.Cog):  # ← Better name
             await log_channel.send(embed=embed)
 
         await ctx.send("✅ Role mention counters have been reset for this server!")
+
+    # -----------------------------------------------------------------------
+    # Auto-mod commands
+    # -----------------------------------------------------------------------
 
     @commands.group(name="automod", aliases=["am"], invoke_without_command=True)
     @commands.has_permissions(manage_emojis=True)
@@ -369,18 +416,15 @@ class RoleMentionCog(commands.Cog):  # ← Better name
             color=discord.Color.blue(),
         )
 
-        # Format protected roles list
+        # Format protected roles list (name + ID, no pings)
         protected_list = ""
         for role_id, minutes in list(self.automod.PROTECTED_ROLES.items())[:5]:
-            if minutes >= 60:
-                duration_display = f"{minutes/60:.1f}h"
-            else:
-                duration_display = f"{minutes}m"
+            duration_display = f"{minutes/60:.1f}h" if minutes >= 60 else f"{minutes}m"
             role = ctx.guild.get_role(int(role_id))
             if role:
-                protected_list += f"• {role.mention} - {duration_display}\n"
+                protected_list += f"• **{role.name}** (`{role_id}`) — {duration_display}\n"
             else:
-                protected_list += f"• Unknown Role ({role_id}) - {duration_display}\n"
+                protected_list += f"• Unknown Role (`{role_id}`) — {duration_display}\n"
 
         if len(self.automod.PROTECTED_ROLES) > 5:
             protected_list += f"*...and {len(self.automod.PROTECTED_ROLES) - 5} more*"
@@ -393,9 +437,11 @@ class RoleMentionCog(commands.Cog):  # ← Better name
 
         embed.add_field(
             name="Current Status",
-            value=f"Currently Blocked: {len(self.automod.active_blocks)}\n"
-            f"Mention Limit: {self.automod.MENTION_LIMIT} per message\n"
-            f"Default Duration: {self.automod.DEFAULT_DURATION} minutes",
+            value=(
+                f"Currently Blocked: {len(self.automod.active_blocks)}\n"
+                f"Mention Limit: {self.automod.MENTION_LIMIT} per message\n"
+                f"Default Duration: {self.automod.DEFAULT_DURATION} minutes"
+            ),
             inline=False,
         )
 
@@ -407,16 +453,15 @@ class RoleMentionCog(commands.Cog):  # ← Better name
                 remaining = self.automod.get_remaining_time(expires)
                 duration_minutes = block_data.get("duration_minutes", 120)
                 role = ctx.guild.get_role(int(role_id))
-
-                if duration_minutes >= 60:
-                    duration_display = f"{duration_minutes/60:.1f}h"
-                else:
-                    duration_display = f"{duration_minutes}m"
-
-                if role:
-                    blocks_list += f"• {role.mention} - {duration_display} (remaining: {remaining})\n"
-                else:
-                    blocks_list += f"• Unknown Role ({role_id}) - {duration_display} (remaining: {remaining})\n"
+                role_name = role.name if role else block_data.get("role_name", "Unknown")
+                duration_display = (
+                    f"{duration_minutes/60:.1f}h"
+                    if duration_minutes >= 60
+                    else f"{duration_minutes}m"
+                )
+                blocks_list += (
+                    f"• **{role_name}** (`{role_id}`) — {duration_display} (remaining: {remaining})\n"
+                )
 
             if len(self.automod.active_blocks) > 5:
                 blocks_list += f"*...and {len(self.automod.active_blocks) - 5} more*"
@@ -429,9 +474,9 @@ class RoleMentionCog(commands.Cog):  # ← Better name
             name="Commands",
             value=(
                 "**`.automod list`** - List blocked roles\n"
-                "**`.automod remove <role>`** - Manually remove a role from protection\n"
-                "**`.automod allow <role>`** - Prematurely allow mentions of a role (alias for remove)\n"
-                "**`.automod add <role> [duration]`** - Manually add a role (duration in minutes or '2h')\n"
+                "**`.automod remove <role|ID>`** - Manually remove a role from protection\n"
+                "**`.automod allow <role|ID>`** - Alias for remove\n"
+                "**`.automod add <role|ID> [duration]`** - Manually add a role (e.g. `60` or `2h`)\n"
                 "**`.automod reload`** - Reload config from environment"
             ),
             inline=False,
@@ -454,20 +499,20 @@ class RoleMentionCog(commands.Cog):  # ← Better name
 
         for role_id, block_data in self.automod.active_blocks.items():
             role = ctx.guild.get_role(int(role_id))
-            role_mention = role.mention if role else f"Unknown Role ({role_id})"
+            role_name = role.name if role else block_data.get("role_name", "Unknown")
             expires = block_data["expires_at"]
             remaining = self.automod.get_remaining_time(expires)
             duration_minutes = block_data.get("duration_minutes", 120)
-
-            if duration_minutes >= 60:
-                duration_display = f"{duration_minutes/60:.1f} hours"
-            else:
-                duration_display = f"{duration_minutes} minutes"
+            duration_display = (
+                f"{duration_minutes/60:.1f} hours"
+                if duration_minutes >= 60
+                else f"{duration_minutes} minutes"
+            )
 
             embed.add_field(
-                name=f"Role: {block_data.get('role_name', 'Unknown')}",
+                name=f"🔒 {role_name}",
                 value=(
-                    f"**Role:** {role_mention}\n"
+                    f"**ID:** `{role_id}`\n"
                     f"**Duration:** {duration_display}\n"
                     f"**Remaining:** {remaining}\n"
                     f"**Expires:** <t:{int(expires.timestamp())}:R>\n"
@@ -480,115 +525,155 @@ class RoleMentionCog(commands.Cog):  # ← Better name
 
     @automod.command(name="add")
     @commands.has_permissions(manage_guild=True)
-    async def automod_add(self, ctx, role: discord.Role, duration: str = None):
-        """Manually add a role to protection
-        Duration can be in minutes (60) or hours (2h, 3h)
+    async def automod_add(self, ctx, role: RoleOrID, duration: str = None):
+        """Manually add a role to protection.
+        Accepts a role mention, name, or raw ID.
+        Duration: minutes (e.g. 60) or hours (e.g. 2h).
         """
-        if str(role.id) in self.automod.active_blocks:
-            await ctx.send(f"❌ Role {role.mention} is already blocked!")
+        role_id_str = str(role.id if isinstance(role, discord.Role) else role)
+
+        if role_id_str in self.automod.active_blocks:
+            role_name = role.name if isinstance(role, discord.Role) else role_id_str
+            embed = discord.Embed(
+                title="❌ Already Blocked",
+                description=f"**{role_name}** (`{role_id_str}`) is already protected.",
+                color=discord.Color.red(),
+            )
+            await ctx.send(embed=embed)
             return
 
         # Parse duration
         if duration:
             duration_str = duration.lower()
-            if duration_str.endswith("h"):
-                try:
+            try:
+                if duration_str.endswith("h"):
                     duration_minutes = int(duration_str[:-1]) * 60
-                except ValueError:
-                    await ctx.send(
-                        "❌ Invalid duration format! Use numbers like '60' for minutes or '2h' for hours."
-                    )
-                    return
-            else:
-                try:
+                elif duration_str.endswith("m"):
+                    duration_minutes = int(duration_str[:-1])
+                else:
                     duration_minutes = int(duration_str)
-                except ValueError:
-                    await ctx.send(
-                        "❌ Invalid duration format! Use numbers like '60' for minutes or '2h' for hours."
-                    )
-                    return
+            except ValueError:
+                await ctx.send(
+                    "❌ Invalid duration format! Use `60` for 60 minutes or `2h` for 2 hours."
+                )
+                return
         else:
             duration_minutes = self.automod.DEFAULT_DURATION
 
+        role_name = role.name if isinstance(role, discord.Role) else f"ID {role_id_str}"
+        expires_at = datetime.now(self.automod.ist) + timedelta(minutes=duration_minutes)
+
         block_data = {
             "guild_id": str(ctx.guild.id),
-            "role_id": str(role.id),
-            "role_name": role.name,
+            "role_id": role_id_str,
+            "role_name": role_name,
             "created_at": datetime.now(self.automod.ist),
-            "expires_at": datetime.now(self.automod.ist)
-            + timedelta(minutes=duration_minutes),
+            "expires_at": expires_at,
             "duration_minutes": duration_minutes,
             "trigger_message_id": None,
             "trigger_user_id": str(ctx.author.id),
             "manually_added": True,
         }
 
-        self.automod.active_blocks[str(role.id)] = block_data
+        self.automod.active_blocks[role_id_str] = block_data
         self.data_manager.save_automod_rules(self.automod.active_blocks)
 
-        # Update the main rule
+        # Update the AutoMod rule
         await self.automod.update_rule_keywords()
 
         # Log the manual addition
-        await self.automod.log_block_created(ctx.guild, role, duration_minutes)
+        if isinstance(role, discord.Role):
+            await self.automod.log_block_created(ctx.guild, role, duration_minutes)
 
-        # Format duration for message
-        if duration_minutes >= 60:
-            duration_display = f"{duration_minutes/60:.1f} hours"
-        else:
-            duration_display = f"{duration_minutes} minutes"
-
-        await ctx.send(
-            f"✅ Role {role.mention} has been added to protection for {duration_display}!"
+        # Confirmation embed (no role ping)
+        duration_display = (
+            f"{duration_minutes/60:.1f} hours"
+            if duration_minutes >= 60
+            else f"{duration_minutes} minutes"
         )
+        embed = discord.Embed(
+            title="✅ Role Protection Added",
+            color=discord.Color.green(),
+        )
+        embed.add_field(name="Role", value=f"**{role_name}** (`{role_id_str}`)", inline=True)
+        embed.add_field(name="Duration", value=duration_display, inline=True)
+        embed.add_field(name="Expires", value=f"<t:{int(expires_at.timestamp())}:R>", inline=True)
+        embed.set_footer(text=f"Added by {ctx.author}")
+        await ctx.send(embed=embed)
 
     @automod.command(name="remove")
     @commands.has_permissions(manage_guild=True)
-    async def automod_remove(self, ctx, role: discord.Role):
-        """Manually remove a role from protection"""
-        if str(role.id) not in self.automod.active_blocks:
-            await ctx.send(f"❌ Role {role.mention} is not currently blocked!")
+    async def automod_remove(self, ctx, role: RoleOrID):
+        """Manually remove a role from protection.
+        Accepts a role mention, name, or raw ID (useful for deleted roles).
+        """
+        role_id_str = str(role.id if isinstance(role, discord.Role) else role)
+
+        if role_id_str not in self.automod.active_blocks:
+            role_name = role.name if isinstance(role, discord.Role) else role_id_str
+            embed = discord.Embed(
+                title="❌ Not Blocked",
+                description=f"**{role_name}** (`{role_id_str}`) is not currently protected.",
+                color=discord.Color.red(),
+            )
+            await ctx.send(embed=embed)
             return
 
-        block_data = self.automod.active_blocks[str(role.id)]
-        del self.automod.active_blocks[str(role.id)]
+        block_data = self.automod.active_blocks.pop(role_id_str)
         self.data_manager.save_automod_rules(self.automod.active_blocks)
 
-        # Update the main rule
+        # Update the AutoMod rule
         await self.automod.update_rule_keywords()
 
-        # Log the manual removal
+        # Log to log channel
         log_channel = self.get_log_channel()
+        role_name = (
+            role.name
+            if isinstance(role, discord.Role)
+            else block_data.get("role_name", role_id_str)
+        )
+        remaining = self.automod.get_remaining_time(block_data["expires_at"])
+
         if log_channel:
-            embed = discord.Embed(
+            log_embed = discord.Embed(
                 title="🛠️ Role Protection Manually Removed",
-                description=f"Role was removed by {ctx.author.mention}",
+                description=f"Removed by {ctx.author.mention}",
                 color=discord.Color.purple(),
             )
-            embed.add_field(name="Role", value=role.mention, inline=True)
-            embed.add_field(
+            log_embed.add_field(
+                name="Role",
+                value=f"**{role_name}** (`{role_id_str}`)",
+                inline=True,
+            )
+            log_embed.add_field(
                 name="Originally Added",
                 value=f"<t:{int(block_data['created_at'].timestamp())}:R>",
                 inline=True,
             )
-            embed.add_field(
+            log_embed.add_field(
                 name="Removed Early",
-                value=f"Removed with {self.automod.get_remaining_time(block_data['expires_at'])} remaining",
+                value=f"{remaining} was remaining",
                 inline=True,
             )
-            await log_channel.send(embed=embed)
+            await log_channel.send(embed=log_embed)
 
-        # Format the remaining time for the response
-        remaining = self.automod.get_remaining_time(block_data["expires_at"])
-        await ctx.send(
-            f"✅ Role {role.mention} has been removed from protection early! (Had {remaining} remaining)"
+        # Confirmation embed (no role ping)
+        embed = discord.Embed(
+            title="✅ Role Protection Removed",
+            color=discord.Color.green(),
         )
+        embed.add_field(name="Role", value=f"**{role_name}** (`{role_id_str}`)", inline=True)
+        embed.add_field(name="Time Remaining (when removed)", value=remaining, inline=True)
+        embed.set_footer(text=f"Removed by {ctx.author}")
+        await ctx.send(embed=embed)
 
     @automod.command(name="allow")
     @commands.has_permissions(manage_guild=True)
-    async def automod_allow(self, ctx, role: discord.Role):
-        """Prematurely allow mentions of a role (alias for remove)"""
-        await self.automod_remove(ctx, role)
+    async def automod_allow(self, ctx, role: RoleOrID):
+        """Prematurely allow mentions of a role (alias for remove).
+        Accepts a role mention, name, or raw ID.
+        """
+        await ctx.invoke(self.automod_remove, role=role)
 
     @automod.command(name="reload")
     @commands.has_permissions(administrator=True)

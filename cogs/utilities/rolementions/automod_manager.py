@@ -165,9 +165,7 @@ class AutoModManager:
                         role_text = f"@{role.name}({remaining})"
 
                         # Check if adding this would exceed Discord's limit (~150 chars)
-                        if (
-                            total_chars + len(role_text) + 10 < 150
-                        ):  # Leave room for prefix
+                        if total_chars + len(role_text) + 10 < 150:
                             roles_text.append(role_text)
                             total_chars += len(role_text)
                         else:
@@ -275,58 +273,50 @@ class AutoModManager:
             print(f"[AutoMod] Error ensuring main rule exists: {e}")
 
     async def update_rule_keywords(self):
-        """Update the main rule's keyword list based on active blocks"""
+        """Update the main rule's keyword list based on active blocks.
+
+        Only uses the raw role mention format <@&role_id> as keywords.
+        Role names are intentionally NOT added — that would block any message
+        containing the role's name even without an actual mention.
+        """
         if not self.main_rule_id or not self.rule_guild_id:
             return
 
-        # Build keyword list from active blocks
-        new_keywords = []
         guild = self.bot.get_guild(int(self.rule_guild_id))
-
         if not guild:
             return
 
-        for role_id, block_data in self.active_blocks.items():
-            # Add the role mention as a keyword
+        # Build keyword list: only the actual Discord mention format
+        new_keywords = []
+        for role_id in self.active_blocks:
             role_mention = f"<@&{role_id}>"
             new_keywords.append(role_mention)
 
-            # Also add the role name for text-based detection
-            role = guild.get_role(int(role_id))
-            if role:
-                new_keywords.append(role.name.lower())
-
-        # If no active blocks, add a dummy keyword (AutoMod requires at least 1)
+        # AutoMod requires at least 1 keyword — use a placeholder when empty
         if not new_keywords:
             new_keywords = ["no_active_blocks_placeholder"]
 
-        # Remove duplicates
-        new_keywords = list(set(new_keywords))
-
-        # Check if keywords have changed
+        # Only call the API if something actually changed
         if set(new_keywords) != set(self.current_keywords):
             try:
-                guild = self.bot.get_guild(int(self.rule_guild_id))
-                if guild:
-                    rule = await guild.fetch_automod_rule(int(self.main_rule_id))
+                rule = await guild.fetch_automod_rule(int(self.main_rule_id))
 
-                    # Update the rule with new keywords
-                    await rule.edit(
-                        trigger=AutoModTrigger(
-                            type=AutoModRuleTriggerType.keyword,
-                            keyword_filter=new_keywords,
-                        )
+                await rule.edit(
+                    trigger=AutoModTrigger(
+                        type=AutoModRuleTriggerType.keyword,
+                        keyword_filter=new_keywords,
                     )
+                )
 
-                    self.current_keywords = new_keywords
-                    print(f"[AutoMod] Updated rule keywords: {len(new_keywords)} total")
+                self.current_keywords = new_keywords
+                print(f"[AutoMod] Updated rule keywords: {len(new_keywords)} total")
 
-                    # Also update the message for the new role
-                    await self.update_block_message(rule)
+                # Refresh the block message to match current state
+                await self.update_block_message(rule)
 
-                    # Log the update if there are active blocks
-                    if self.active_blocks:
-                        await self.log_rule_update(guild, new_keywords)
+                # Log the update if there are active blocks
+                if self.active_blocks:
+                    await self.log_rule_update(guild, new_keywords)
 
             except Exception as e:
                 print(f"[AutoMod] Error updating rule keywords: {e}")
@@ -344,23 +334,25 @@ class AutoModManager:
             if not rule:
                 rule = await guild.fetch_automod_rule(int(self.main_rule_id))
 
-            # Get current actions
-
-            # Create new custom message with updated times
             if len(self.active_blocks) == 1:
                 role_id, block_data = next(iter(self.active_blocks.items()))
                 role = guild.get_role(int(role_id))
                 if role:
                     remaining = self.get_remaining_time(block_data["expires_at"])
-                    custom_message = f"⚠️ **{role.name}** is protected for another {remaining}. Please do not mention this role."
+                    custom_message = (
+                        f"⚠️ @{role.name} is protected for another {remaining}. "
+                        f"Please do not mention this role."
+                    )
                 else:
                     custom_message = (
                         "This role is temporarily protected from mention spam."
                     )
             else:
-                custom_message = f"⚠️ **{len(self.active_blocks)} roles** are currently protected from mention spam. Please check back later."
+                custom_message = (
+                    f"⚠️ {len(self.active_blocks)} roles are currently protected "
+                    f"from mention spam. Please check back later."
+                )
 
-            # Update just the message
             await rule.edit(
                 actions=[
                     AutoModRuleAction(
@@ -428,8 +420,11 @@ class AutoModManager:
             timestamp=datetime.now(pytz.UTC),
         )
 
+        # Use role name + ID — NOT role.mention — to avoid pinging the role
         embed.add_field(
-            name="Protected Role", value=f"{role.mention} (`{role.name}`)", inline=True
+            name="Protected Role",
+            value=f"**{role.name}** (`{role.id}`)",
+            inline=True,
         )
 
         embed.add_field(name="Duration", value=duration_display, inline=True)
@@ -460,11 +455,8 @@ class AutoModManager:
         if not log_channel:
             return
 
-        role_mention = (
-            f"<@&{block_data['role_id']}>"
-            if "role_id" in block_data
-            else "Unknown Role"
-        )
+        role_id = block_data.get("role_id", "unknown")
+        role_name = block_data.get("role_name", "Unknown Role")
         duration_minutes = block_data.get("duration_minutes", 120)
 
         # Format duration nicely
@@ -480,7 +472,12 @@ class AutoModManager:
             timestamp=datetime.now(pytz.UTC),
         )
 
-        embed.add_field(name="Role", value=role_mention, inline=True)
+        # Use name + ID — NOT a raw mention — to avoid pinging the role
+        embed.add_field(
+            name="Role",
+            value=f"**{role_name}** (`{role_id}`)",
+            inline=True,
+        )
 
         embed.add_field(name="Duration", value=duration_display, inline=True)
 
@@ -492,7 +489,7 @@ class AutoModManager:
 
         embed.add_field(
             name="Remaining Protected Roles",
-            value=f"{len(self.active_blocks) - 1} role(s) still protected",
+            value=f"{max(0, len(self.active_blocks) - 1)} role(s) still protected",
             inline=True,
         )
 
@@ -519,13 +516,14 @@ class AutoModManager:
             inline=True,
         )
 
-        # List active roles
+        # List active roles by name + ID — NOT raw mentions
         if self.active_blocks:
             roles_list = ""
             for role_id, block_data in list(self.active_blocks.items())[:5]:
                 expires = block_data["expires_at"]
                 duration_minutes = block_data.get("duration_minutes", 120)
                 remaining = self.get_remaining_time(expires)
+                role_name = block_data.get("role_name", "Unknown")
 
                 if duration_minutes >= 60:
                     duration_display = f"{duration_minutes/60:.1f}h"
@@ -533,7 +531,7 @@ class AutoModManager:
                     duration_display = f"{duration_minutes}m"
 
                 roles_list += (
-                    f"• <@&{role_id}> - {duration_display} (remaining: {remaining})\n"
+                    f"• **{role_name}** (`{role_id}`) - {duration_display} (remaining: {remaining})\n"
                 )
 
             if len(self.active_blocks) > 5:
@@ -600,9 +598,3 @@ class AutoModManager:
 
         # Log the block
         await self.log_block_created(message.guild, role, duration_minutes)
-
-        # Format duration for message
-        if duration_minutes >= 60:
-            f"{duration_minutes/60:.1f} hours"
-        else:
-            pass

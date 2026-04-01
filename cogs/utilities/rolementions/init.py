@@ -1,4 +1,4 @@
-from .cog import RoleMentionCog  # ← Updated import
+from .cog import RoleMentionCog
 from discord.ext import commands
 
 
