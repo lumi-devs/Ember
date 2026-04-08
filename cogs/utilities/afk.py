@@ -16,7 +16,7 @@ AFK_REMOVED_COLOR = discord.Color.gold()
 AFK_MENTION_COLOR = discord.Color.from_rgb(255, 200, 0)
 NICK_PREFIX = "[AFK] "
 DB_PATH = "data/afk.db"
-
+AFK_MAX_REASON_LENGTH = 100  
 # Commands that should never auto-remove AFK
 _AFK_SAFE_COMMANDS = frozenset(("afk", "afklist", "afkstats", "afkclean"))
 
@@ -82,7 +82,8 @@ class FastAFK(commands.Cog):
         # FIX: guard against the race where two concurrent messages both see the
         # channel missing and each spawn a processor task
         self._message_queue_lock = asyncio.Lock()
-        self._message_limit_cooldown: float = 1.5
+        self._message_limit_cooldown: float = 5
+        
 
         # Performance tracking
         self.stats: Dict[str, int] = {
@@ -306,11 +307,12 @@ class FastAFK(commands.Cog):
                         continue
                     afk_entry = self._afk_cache.get(user.id)
                     if afk_entry:
+                        clean_reason = self._sanitize_reason(afk_entry.reason)
                         display_name = user.display_name.removeprefix(NICK_PREFIX)
                         embed = discord.Embed(
                             title=f"{display_name} is AFK 💤",
                             description=(
-                                f"**Reason:** {afk_entry.reason}\n"
+                                f"**Reason:** {clean_reason}\n"
                                 f"**AFK for:** {afk_entry.human_readable_duration}"
                             ),
                             color=AFK_MENTION_COLOR,
@@ -333,6 +335,7 @@ class FastAFK(commands.Cog):
 
         user = ctx.author
         existing = self._afk_cache.get(user.id)
+        reason = self._sanitize_reason(reason)
 
         if existing:
             if existing.reason == reason:
@@ -433,6 +436,29 @@ class FastAFK(commands.Cog):
         await ctx.reply(f"✅ Removed {removed} stale AFK entries.", mention_author=False)
 
     # ─── UTILITY METHODS ──────────────────────────────────────────
+
+
+    def _sanitize_reason(self, reason: str) -> str:
+        """Remove excessive whitespace and trim AFK reasons."""
+        if not reason:
+            return "AFK"
+        
+        # Split into lines, strip each line, remove empty lines
+        lines = [line.strip() for line in reason.split('\n')]
+        lines = [line for line in lines if line]  # Remove empty lines
+        
+        # Join with single space
+        cleaned = ' '.join(lines)
+        
+        # Collapse multiple spaces
+        import re
+        cleaned = re.sub(r'\s+', ' ', cleaned)
+        
+        # Trim to max length
+        if len(cleaned) > AFK_MAX_REASON_LENGTH:
+            cleaned = cleaned[:AFK_MAX_REASON_LENGTH - 3] + "..."
+        
+        return cleaned or "AFK"
 
     async def _queued_send(
         self,
