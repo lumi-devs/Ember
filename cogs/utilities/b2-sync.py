@@ -29,7 +29,7 @@ B2_ENDPOINT  = os.environ.get("B2_ENDPOINT")
 B2_BUCKET    = os.environ.get("B2_BUCKET")
 
 DATA_FOLDER         = Path("data")
-SYNC_INTERVAL_MINS  = 5     # live sync every 45s
+SYNC_INTERVAL_MINS  = 5     # live sync every 5m
 HOURLY_BACKUP_SECS  = 3600    # snapshot every hour
 BACKUP_RETAIN_DAYS  = 7       # delete snapshots older than 7 days
 
@@ -158,11 +158,31 @@ class B2Sync(commands.Cog):
     # ── Live mirror ────────────────────────────────────────────────────────────
 
     def _live_sync_all_sync(self):
-        """Push every local data/ file to live/ in B2."""
+        """Mirror data/ to live/ in B2 — upload current files and delete stale keys."""
         DATA_FOLDER.mkdir(exist_ok=True)
-        for file_path in self._local_files():
+
+        # Build the set of keys that *should* exist in live/
+        local_files   = self._local_files()
+        expected_keys = {
+            f"live/{f.relative_to(DATA_FOLDER).as_posix()}"
+            for f in local_files
+        }
+
+        # Upload all local files
+        for file_path in local_files:
             rel = file_path.relative_to(DATA_FOLDER).as_posix()
             self._upload_sync(file_path, f"live/{rel}")
+
+        # Delete any live/ keys that no longer have a local counterpart
+        remote_keys = set(self._list_prefix("live/"))
+        stale_keys  = remote_keys - expected_keys
+        if stale_keys:
+            batch = [{"Key": k} for k in stale_keys]
+            for i in range(0, len(batch), 1000):
+                self._s3.delete_objects(
+                    Bucket=B2_BUCKET, Delete={"Objects": batch[i:i+1000]}
+                )
+            logger.info(f"Live sync: removed {len(stale_keys)} stale key(s) from B2")
 
     async def _live_sync_all(self):
         await asyncio.to_thread(self._live_sync_all_sync)

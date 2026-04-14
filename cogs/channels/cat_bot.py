@@ -4,7 +4,7 @@ from discord.ext import commands
 import asyncio
 import re
 
-DELETE_DELAY = 600  # 10 minutes (was accidentally 10 seconds)
+DELETE_DELAY = 20  # 20 seconds
 
 # Matches most "caught cat" message variants
 CAUGHT_CAT_PATTERN = re.compile(
