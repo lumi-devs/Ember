@@ -208,6 +208,11 @@ class FastAFK(commands.Cog):
         if message.author.bot:
             return
 
+        if message.guild is None:
+            # AFK is a guild-only feature; DMs must not remove or trigger it
+            await self.bot.process_commands(message)
+            return
+
         self.stats["messages_processed"] += 1
 
         # Fast-path: nothing to do
