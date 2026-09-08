@@ -15,6 +15,8 @@ from .helpers import (
     can_user_reply,
     get_hourly_reply_count,
     sha256_user_id,
+    sanitize_confession_text,
+    ALLOWED_MENTIONS_NONE,
     LOG_CHANNEL_ID,
     MOD_CONFESSION_LOGS_CHANNEL_ID,
     REPORT_CHANNEL_ID,
@@ -56,7 +58,7 @@ async def get_parent_reference(reply_id: int) -> tuple[str, str | None]:
                 )
                 conf_row = await cur.fetchone()
                 if conf_row:
-                    text = conf_row[0]
+                    text = sanitize_confession_text(conf_row[0]) or conf_row[0]
                     truncated = text[:150] + "…" if len(text) > 150 else text
                     quote = "\n".join(f"> {line}" for line in truncated.splitlines())
                     return f"🔗 In reply to Confession #{confession_id}", quote
@@ -70,7 +72,7 @@ async def get_parent_reference(reply_id: int) -> tuple[str, str | None]:
                 )
                 reply_row = await cur.fetchone()
                 if reply_row:
-                    text = reply_row[0]
+                    text = sanitize_confession_text(reply_row[0]) or reply_row[0]
                     truncated = text[:150] + "…" if len(text) > 150 else text
                     quote = "\n".join(f"> {line}" for line in truncated.splitlines())
                     return f"🔗 In reply to Reply #{parent_reply_id}", quote
@@ -221,7 +223,7 @@ class ReplyLayoutView(ui.LayoutView):
         super().__init__(timeout=None)
 
         accent = discord.Color.gold() if is_op else discord.Color.from_str("#AB766F")
-        display_body = body if body and body.strip() else "*(empty)*"
+        display_body = sanitize_confession_text(body) if body and body.strip() else "*(empty)*"
 
         children: list = [
             ui.TextDisplay(f"## ↩️ Reply to Confession #{confession_id}"),
@@ -368,7 +370,7 @@ class ReplyModal(_MediaMixin, ui.Modal, title="Anonymous Reply"):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         self.user_id    = interaction.user.id
-        self.reply_text = self.reply_input.value
+        self.reply_text = sanitize_confession_text(self.reply_input.value)
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         can_reply, reason, current_count = await can_user_reply(
@@ -483,7 +485,7 @@ class ReplyModal(_MediaMixin, ui.Modal, title="Anonymous Reply"):
                 parent_quote=parent_quote,
             )
             self.bot.add_view(view)
-            sent_msg = await thread.send(view=view)
+            sent_msg = await thread.send(view=view, allowed_mentions=ALLOWED_MENTIONS_NONE)
 
             # Persist message_id
             async with aiosqlite.connect(DB_PATH) as db:
@@ -629,7 +631,7 @@ class ReplyToReplyModal(_MediaMixin, ui.Modal, title="Reply to Reply"):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         self.user_id    = interaction.user.id
-        self.reply_text = self.reply_input.value
+        self.reply_text = sanitize_confession_text(self.reply_input.value)
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         can_reply, reason, current_count = await can_user_reply(
@@ -734,7 +736,7 @@ class ReplyToReplyModal(_MediaMixin, ui.Modal, title="Reply to Reply"):
             self.bot.add_view(view)
 
             # Send with Discord's native reply reference when available
-            send_kwargs: dict = {"view": view}
+            send_kwargs: dict = {"view": view, "allowed_mentions": ALLOWED_MENTIONS_NONE}
             if parent_msg:
                 send_kwargs["reference"]      = parent_msg
                 send_kwargs["mention_author"] = False

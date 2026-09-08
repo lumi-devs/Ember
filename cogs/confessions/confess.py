@@ -19,6 +19,8 @@ from .helpers import (
     get_confession_by_id,
     can_user_confess,
     sha256_user_id,
+    sanitize_confession_text,
+    ALLOWED_MENTIONS_NONE,
     LOG_CHANNEL_ID,
     MOD_CONFESSION_LOGS_CHANNEL_ID,
 )
@@ -187,6 +189,8 @@ class ConfessionLayoutView(ui.LayoutView):
             title.strip() if title and title.strip()
             else f"Confession #{confession_id}"
         )
+        display_title = sanitize_confession_text(display_title) or display_title
+        body = sanitize_confession_text(body) or body
 
         children: list = [
             ui.TextDisplay(f"## 💌 {display_title}"),
@@ -327,7 +331,11 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             async with aiosqlite.connect(DB_PATH) as db:
                 cur = await db.execute(
                     "INSERT INTO confessions (user_id, title, description) VALUES (?, ?, ?)",
-                    (self.user_id, self.title_input.value, self.description_input.value),
+                    (
+                        self.user_id,
+                        sanitize_confession_text(self.title_input.value),
+                        sanitize_confession_text(self.description_input.value),
+                    ),
                 )
                 await db.commit()
                 confession_id = cur.lastrowid
@@ -374,7 +382,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 show_confess_button=True,
                 image_url=image_url,
             )
-            sent = await channel.send(view=view)
+            sent = await channel.send(view=view, allowed_mentions=ALLOWED_MENTIONS_NONE)
 
             thread: discord.Thread | None = None
             try:
@@ -425,7 +433,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 return
             msg  = await channel.fetch_message(row[0])
             view = await build_confession_layout_view(confession_id, show_confess_button=False)
-            await msg.edit(view=view)
+            await msg.edit(view=view, allowed_mentions=ALLOWED_MENTIONS_NONE)
         except discord.NotFound:
             pass
         except Exception as e:
@@ -659,7 +667,7 @@ class Confessions(commands.Cog):
                             try:
                                 old_msg  = await channel.fetch_message(msg_id)
                                 new_view = await build_confession_layout_view(new_id)
-                                await old_msg.edit(view=new_view)
+                                await old_msg.edit(view=new_view, allowed_mentions=ALLOWED_MENTIONS_NONE)
 
                                 # Rename the thread so it still matches the confession number
                                 if old_msg.thread:
@@ -683,7 +691,7 @@ class Confessions(commands.Cog):
                                             try:
                                                 reply_msg = await old_msg.thread.fetch_message(reply_msg_id)
                                                 updated_reply_view = await ReplyLayoutView.from_db(reply_db_id)
-                                                await reply_msg.edit(view=updated_reply_view)
+                                                await reply_msg.edit(view=updated_reply_view, allowed_mentions=ALLOWED_MENTIONS_NONE)
                                             except discord.NotFound:
                                                 pass
                                             except Exception as re:
@@ -708,7 +716,7 @@ class Confessions(commands.Cog):
                             prev_view = await build_confession_layout_view(
                                 prev[0], show_confess_button=True
                             )
-                            await prev_msg.edit(view=prev_view)
+                            await prev_msg.edit(view=prev_view, allowed_mentions=ALLOWED_MENTIONS_NONE)
                         except (discord.NotFound, Exception):
                             pass
 

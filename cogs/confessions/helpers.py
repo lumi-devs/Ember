@@ -23,6 +23,30 @@ MOD_CONFESSION_LOGS_CHANNEL_ID = int(os.getenv("MOD_CONFESSION_LOGS_CHANNEL_ID")
 
 URL_REGEX = re.compile(r"https?://\S+")
 
+# Block @everyone / @here even when typed with weird spacing/casing.
+EVERYONE_HERE_RE = re.compile(r"@\s*(everyone|here)\b", re.IGNORECASE)
+# Break raw mention syntax (<@123>, <@!123>, <@&123>, <#123>) so it
+# renders as plain text and never pings.
+RAW_MENTION_RE = re.compile(r"<(@!?|@&|#)(\d+)>")
+
+# Single shared policy: nothing in a confession/reply may ping.
+ALLOWED_MENTIONS_NONE = discord.AllowedMentions(
+    everyone=False, users=False, roles=False, replied_user=False
+)
+
+
+def sanitize_confession_text(text: str | None) -> str | None:
+    """Neutralize @everyone/@here and raw <@...>/<@&...>/<#...> mentions.
+
+    Inserts a zero-width space so Discord renders them as plain text:
+    no ping, no highlight. Returns input unchanged when falsy.
+    """
+    if not text:
+        return text
+    text = EVERYONE_HERE_RE.sub(lambda m: "@\u200b" + m.group(1).lower(), text)
+    text = RAW_MENTION_RE.sub(lambda m: f"<{m.group(1)}\u200b{m.group(2)}>", text)
+    return text
+
 
 # ==============================
 # SHA-256 ANONYMIZATION UTILS
