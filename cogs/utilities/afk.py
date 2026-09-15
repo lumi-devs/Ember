@@ -238,8 +238,6 @@ class FastAFK(commands.Cog):
                 resolved_prefixes = fallback
 
             if is_command:
-                # FIX: ALL commands (not just AFK-safe ones) skip AFK removal.
-                # Previously, non-AFK commands fell through and wiped the AFK status.
                 cmd_part = ""
                 for prefix in resolved_prefixes:
                     if message.content.startswith(prefix):
@@ -247,15 +245,20 @@ class FastAFK(commands.Cog):
                         cmd_part = rest.split()[0].lower() if rest else ""
                         break
 
-                if cmd_part not in _AFK_SAFE_COMMANDS:
-                    # Regular command – process it but do NOT remove AFK
+                if cmd_part in _AFK_SAFE_COMMANDS:
+                    # AFK-management command – never remove AFK
                     await self.bot.process_commands(message)
                     return
-                else:
-                    # AFK-management command – let it fall through to process_commands
-                    # at the bottom without removing AFK
+
+                # Check if this is an actual registered bot command
+                # If it's NOT a real command (e.g. .hi .lol .hello), fall
+                # through so AFK is removed — prevents people from abusing
+                # the prefix to bypass AFK removal.
+                if self.bot.get_command(cmd_part):
+                    # Real command (e.g. .ban, .kick) – keep AFK intact
                     await self.bot.process_commands(message)
                     return
+                # Fake "command" like .hi .lol – fall through to remove AFK
 
             # ── Remove AFK (non-command message) ──────────────────
             current_time = time.time()
