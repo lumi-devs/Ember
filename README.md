@@ -1,6 +1,6 @@
-# discord-data
+# Ember
 
-discord bot for The Aakhri Station. confessions, mod tools, temp vc,
+Ember is a discord bot for The Aakhri Station. confessions, mod tools, temp vc,
 automod, birthdays, booster roles, all that stuff in one place.
 
 ## setup
@@ -47,4 +47,4 @@ logs/                    bot.log (gitignored)
 
 ## license
 
-MIT, see [LICENSE](LICENSE).
+AGPL-3.0, see [LICENSE](LICENSE).
