@@ -31,6 +31,7 @@ cogs/utilities/          afk, dragme, b2 sync, game ping, automod, sticky roles.
 cogs/extras/             birthday, welcome, feedback, status...
 cogs/channels/           channel helpers
 helpers/                 downloaders, github + misc shared bits
+addons/                  ported Ember-extras plugins (bank, dashboard, duckdns...)
 .old/                    disabled cogs, kept around for reference
 data/                    sqlite dbs (gitignored, created on first run)
 logs/                    bot.log (gitignored)
