@@ -14,8 +14,8 @@ import wget
 DOWNLOADS_DIR = Path("downloads")
 DOWNLOADS_DIR.mkdir(exist_ok=True)
 
-IG_USER = "***IG_USER_REMOVED***"
-IG_PASS = "***IG_PASS_REMOVED***"
+IG_USER = os.environ.get("IG_USER", "")
+IG_PASS = os.environ.get("IG_PASS", "")
 SESSION_FILE = Path("ig_settings.json")
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
@@ -113,8 +113,8 @@ def download_instagram(
 # -------------------------------
 # Reddit Downloader
 # -------------------------------
-REDDIT_CLIENT_ID = "***REDDIT_ID_REMOVED***"
-REDDIT_CLIENT_SECRET = "***REDDIT_SECRET_REMOVED***"
+REDDIT_CLIENT_ID = os.environ.get("REDDIT_CLIENT_ID", "")
+REDDIT_CLIENT_SECRET = os.environ.get("REDDIT_CLIENT_SECRET", "")
 reddit = praw.Reddit(
     client_id=REDDIT_CLIENT_ID,
     client_secret=REDDIT_CLIENT_SECRET,

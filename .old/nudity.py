@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands, tasks
 import aiohttp
 import asyncio
+import os
 from datetime import datetime
 from typing import Optional, Dict
 import openai
@@ -21,8 +22,8 @@ class StrictImageModerator(commands.Cog):
         self.mod_log_channel_id = 1416357489925947452
 
         # Initialize OpenAI client if API key is provided
-        self.openai_api_key = "***OPENAI_KEY_REMOVED***"
-        if self.openai_api_key and self.openai_api_key != "YOUR_OPENAI_API_KEY":
+        self.openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+        if self.openai_api_key:
             self.openai_client = openai.OpenAI(api_key=self.openai_api_key)
             print("✅ OpenAI client initialized")
         else:
