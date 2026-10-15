@@ -1,0 +1,279 @@
+/* ── reset & base ─────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg-0: #111214;
+  --bg-1: #1e1f22;
+  --bg-2: #2b2d31;
+  --bg-3: #313338;
+  --bg-hover: #35373c;
+  --border: #3f4147;
+  --text-primary: #f2f3f5;
+  --text-secondary: #b5bac1;
+  --text-muted: #80848e;
+  --accent: #5865f2;
+  --accent-hover: #4752c4;
+  --success: #23a55a;
+  --danger: #f23f43;
+  --warning: #f0b232;
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --sidebar-w: 220px;
+  --topbar-h: 56px;
+  --transition: 120ms ease;
+}
+
+html { font-size: 15px; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg-0);
+  color: var(--text-primary);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; text-decoration: none; }
+img { display: block; border-radius: 50%; }
+
+/* ── buttons ──────────────────────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 10px 20px; border-radius: var(--radius);
+  font-size: 0.9rem; font-weight: 600; cursor: pointer;
+  border: none; transition: background var(--transition), opacity var(--transition);
+  white-space: nowrap;
+}
+.btn-discord {
+  background: var(--accent); color: #fff;
+}
+.btn-discord:hover { background: var(--accent-hover); }
+.btn-ghost {
+  background: transparent; color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.btn-ghost:hover { background: var(--bg-hover); color: var(--text-primary); }
+.btn-sm { padding: 6px 14px; font-size: 0.8rem; }
+
+/* ── topbar ───────────────────────────────────────────────── */
+.topbar {
+  position: fixed; top: 0; left: 0; right: 0;
+  height: var(--topbar-h);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 20px; z-index: 100;
+}
+.topbar-brand {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 1rem; font-weight: 700;
+}
+.topbar-user { display: flex; align-items: center; gap: 10px; }
+.back-link {
+  display: flex; align-items: center;
+  color: var(--text-muted); padding: 4px;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition), background var(--transition);
+}
+.back-link:hover { color: var(--text-primary); background: var(--bg-hover); }
+.guild-icon-sm { border-radius: 50%; }
+
+/* ── login page ───────────────────────────────────────────── */
+.login-root {
+  min-height: 100vh;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(ellipse at 60% 40%, #1a1b2e 0%, var(--bg-0) 70%);
+}
+.login-card {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 48px 40px;
+  text-align: center;
+  max-width: 380px; width: 100%;
+  box-shadow: 0 20px 60px rgba(0,0,0,.5);
+}
+.login-logo { display: flex; justify-content: center; margin-bottom: 20px; }
+.login-logo svg { filter: drop-shadow(0 4px 12px rgba(88,101,242,.4)); }
+.login-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 8px; }
+.login-sub { color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 28px; line-height: 1.5; }
+.login-error {
+  background: rgba(242,63,67,.15); border: 1px solid rgba(242,63,67,.3);
+  color: #ff6b6b; border-radius: var(--radius-sm);
+  padding: 8px 12px; font-size: 0.85rem; margin-bottom: 16px;
+}
+.login-footer { color: var(--text-muted); font-size: 0.78rem; margin-top: 20px; line-height: 1.5; }
+.login-card .btn-discord { width: 100%; justify-content: center; font-size: 0.95rem; }
+
+/* ── app layout ───────────────────────────────────────────── */
+.app-root { padding-top: var(--topbar-h); min-height: 100vh; }
+
+/* ── guilds page ──────────────────────────────────────────── */
+.guilds-main {
+  max-width: 900px; margin: 0 auto;
+  padding: 40px 24px;
+}
+.guilds-heading { font-size: 1.4rem; font-weight: 700; margin-bottom: 6px; }
+.guilds-sub { color: var(--text-secondary); margin-bottom: 28px; }
+.guilds-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+.guild-card {
+  background: var(--bg-1); border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 16px; display: flex; align-items: center; gap: 14px;
+  cursor: pointer; transition: background var(--transition), border-color var(--transition);
+}
+.guild-card:hover { background: var(--bg-2); border-color: var(--accent); }
+.guild-icon { width: 44px; height: 44px; border-radius: 50%; flex-shrink: 0; }
+.guild-icon-placeholder {
+  width: 44px; height: 44px; border-radius: 50%;
+  background: var(--accent); display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 1.1rem; flex-shrink: 0;
+}
+.guild-info { flex: 1; min-width: 0; }
+.guild-name { font-weight: 600; font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.guild-members { color: var(--text-muted); font-size: 0.78rem; margin-top: 2px; }
+.guild-arrow { color: var(--text-muted); flex-shrink: 0; }
+.skeleton-card {
+  height: 76px; background: var(--bg-2);
+  border-radius: var(--radius-lg);
+  animation: shimmer 1.4s infinite;
+}
+@keyframes shimmer {
+  0%,100% { opacity: .5; } 50% { opacity: 1; }
+}
+.error-msg, .empty-msg { color: var(--text-muted); padding: 20px 0; }
+
+/* ── dashboard layout ─────────────────────────────────────── */
+.dashboard-layout {
+  display: flex;
+  min-height: calc(100vh - var(--topbar-h));
+}
+
+/* sidebar */
+.sidebar {
+  width: var(--sidebar-w); flex-shrink: 0;
+  background: var(--bg-1);
+  border-right: 1px solid var(--border);
+  padding: 16px 8px;
+  position: sticky; top: var(--topbar-h);
+  height: calc(100vh - var(--topbar-h));
+  overflow-y: auto;
+}
+.sidebar-label {
+  font-size: 0.7rem; font-weight: 700; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--text-muted);
+  padding: 4px 10px 8px;
+}
+.sidebar-item {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; padding: 9px 10px; border-radius: var(--radius-sm);
+  background: none; border: none; color: var(--text-secondary);
+  font-size: 0.88rem; font-weight: 500; cursor: pointer;
+  text-align: left; transition: background var(--transition), color var(--transition);
+}
+.sidebar-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.sidebar-item.active {
+  background: rgba(88,101,242,.2);
+  color: #fff;
+}
+.sidebar-emoji { width: 20px; text-align: center; font-size: 1rem; flex-shrink: 0; }
+
+/* config main */
+.config-main {
+  flex: 1; padding: 36px 40px;
+  max-width: 720px;
+}
+.config-placeholder {
+  height: 100%; display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  color: var(--text-muted); gap: 12px; padding-top: 80px;
+  text-align: center; font-size: 0.9rem;
+}
+.config-header {
+  display: flex; align-items: flex-start; gap: 16px;
+  margin-bottom: 28px;
+}
+.config-emoji { font-size: 2rem; line-height: 1; }
+.config-title { font-size: 1.3rem; font-weight: 700; margin-bottom: 4px; }
+.config-desc { color: var(--text-secondary); font-size: 0.88rem; line-height: 1.5; }
+
+/* form fields */
+.config-form { display: flex; flex-direction: column; gap: 20px; }
+.field-group { display: flex; flex-direction: column; gap: 6px; }
+.field-label {
+  font-size: 0.85rem; font-weight: 600; color: var(--text-primary);
+}
+.required { color: var(--danger); margin-left: 3px; }
+.field-desc { font-size: 0.8rem; color: var(--text-muted); line-height: 1.4; }
+.field-input {
+  background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text-primary);
+  padding: 9px 12px; font-size: 0.9rem; font-family: inherit;
+  width: 100%; outline: none;
+  transition: border-color var(--transition);
+}
+.field-input:focus { border-color: var(--accent); }
+.field-textarea { resize: vertical; min-height: 80px; }
+.field-select { cursor: pointer; }
+.field-select option { background: var(--bg-2); }
+.no-fields { color: var(--text-muted); font-size: 0.88rem; padding: 12px 0; }
+
+/* toggle */
+.toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.toggle input { display: none; }
+.toggle-track {
+  width: 40px; height: 22px; border-radius: 11px;
+  background: var(--bg-3); border: 1px solid var(--border);
+  position: relative; transition: background var(--transition), border-color var(--transition);
+}
+.toggle input:checked + .toggle-track {
+  background: var(--accent); border-color: var(--accent);
+}
+.toggle-thumb {
+  position: absolute; top: 2px; left: 2px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform var(--transition), background var(--transition);
+}
+.toggle input:checked + .toggle-track .toggle-thumb {
+  transform: translateX(18px); background: #fff;
+}
+
+/* save status */
+.config-footer {
+  margin-top: 8px; font-size: 0.8rem;
+  min-height: 20px; transition: color var(--transition);
+}
+.config-footer.saved { color: var(--success); }
+.config-footer.pending { color: var(--text-muted); }
+.config-footer.error { color: var(--danger); }
+
+/* toast */
+.toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px);
+  background: var(--bg-3); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px 20px;
+  font-size: 0.88rem; font-weight: 500;
+  opacity: 0; transition: transform .25s ease, opacity .25s ease;
+  pointer-events: none; white-space: nowrap;
+}
+.toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+.toast-success { border-color: var(--success); color: var(--success); }
+.toast-error { border-color: var(--danger); color: #ff6b6b; }
+
+/* scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* responsive */
+@media (max-width: 640px) {
+  .sidebar { width: 180px; }
+  .config-main { padding: 24px 16px; }
+  .login-card { padding: 36px 24px; }
+}

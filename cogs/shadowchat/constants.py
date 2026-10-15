@@ -1,7 +1,9 @@
 """
 SHADOW CHAT - CONSTANTS
-Hardcoded configuration for single-guild operation.
+config comes from env, see .env.example.
 """
+
+import os
 
 # =========================DESGIN SHIT====================
 
@@ -19,15 +21,14 @@ MATCH_FOUND_THUMBNAIL = "https://cdn.discordapp.com/attachments/1393171149038293
 SHADOW_CHAT_QUEUE_IMAGE = "https://cdn.discordapp.com/attachments/1425245166247088290/1456924060658176144/From_KlickPin_CF_Pixel_Art_Loading_Screen_Animation_-_Ko-fi_Where_creators_get_support_from_fans_through_donations_membership...___Pixel_art_background_Pixel_animation_Pixel_artWill_Grayson.gif?ex=695a21c4&is=6958d044&hm=02cfa8fa39814822f4ba28962e974ca7e6ab54e57b34ff35d97e7c67a8a14708&"
 SHADOW_CHAT_QUEUE_COLOR = 0xF58D42
 
-# ==================== DISCORD IDs (HARDCODED) ====================
-# Replace these with your actual IDs
-AVATAR_UPLOAD_CHANNEL_ID = 1453780776238845982
-GUILD_ID = 1388612461703467128  # Your server ID
-ENTRY_CHANNEL_ID = 1453780737294860359  # #shadow-chat entry point
-PARENT_CHANNEL_ID = 1453780737294860359  # Channel where threads will be created
-MOD_LOG_CHANNEL_ID = 1453780904936734794  # For moderation alerts
-SHADOW_CATEGORY_ID = 1400589151413342213  # Optional: category for organization
-MOD_CHANNEL_ID = 1456635931707703521  # Mod-only channel for commands
+# ==================== DISCORD IDs ====================
+AVATAR_UPLOAD_CHANNEL_ID = int(os.environ.get("SHADOW_AVATAR_UPLOAD_CHANNEL_ID"))
+GUILD_ID = int(os.environ.get("GUILD_ID"))
+ENTRY_CHANNEL_ID = int(os.environ.get("SHADOW_ENTRY_CHANNEL_ID"))
+PARENT_CHANNEL_ID = int(os.environ.get("SHADOW_ENTRY_CHANNEL_ID"))
+MOD_LOG_CHANNEL_ID = int(os.environ.get("SHADOW_MOD_LOG_CHANNEL_ID"))
+SHADOW_CATEGORY_ID = int(os.environ.get("SHADOW_CATEGORY_ID"))
+MOD_CHANNEL_ID = int(os.environ.get("SHADOW_MOD_CHANNEL_ID"))
 
 # ==================== SESSION CONFIG ====================
 MAX_ACTIVE_SESSIONS = 6  # Maximum concurrent sessions in the guild
@@ -84,19 +85,5 @@ WEBHOOK_AVATAR_REVEALED = "{avatar_url}"
 
 
 WEBHOOK_URLS = [
-    "***WEBHOOK_REMOVED***",
-    "***WEBHOOK_REMOVED***",
-    "***WEBHOOK_REMOVED***",
-    "***WEBHOOK_REMOVED***",
-    "***WEBHOOK_REMOVED***",
-    "***WEBHOOK_REMOVED***",
-    "***WEBHOOK_REMOVED***",
-    "***WEBHOOK_REMOVED***",
-    "***WEBHOOK_REMOVED***",
-    "***WEBHOOK_REMOVED***",
-    "***WEBHOOK_REMOVED***",
-    "***WEBHOOK_REMOVED***",
-    "***WEBHOOK_REMOVED***",
-    "***WEBHOOK_REMOVED***",
-    "***WEBHOOK_REMOVED***",
+    u.strip() for u in os.environ.get("SHADOWCHAT_WEBHOOK_URLS", "").split(",") if u.strip()
 ]

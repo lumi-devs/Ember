@@ -16,8 +16,7 @@ class RoleMentionTracker(commands.Cog):
         # Load existing data or initialize
         self.role_mentions = self.load_data()
 
-        # HARDCODED LOG CHANNEL ID
-        self.LOG_CHANNEL_ID = 1447323258478133298
+        self.LOG_CHANNEL_ID = int(os.environ.get("OLD_ROLEMENTIONS_LOG_CHANNEL_ID"))
 
         # Start the daily reset task
         self.daily_reset.start()

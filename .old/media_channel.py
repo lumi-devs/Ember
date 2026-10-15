@@ -1,7 +1,10 @@
 import discord
 from discord.ext import commands
+import os
 
-WATCH_CHANNEL_IDS = [1393171137017413712]  # Replace with your channel ID
+WATCH_CHANNEL_IDS = [
+    int(x) for x in os.environ.get("MEDIA_WATCH_CHANNEL_IDS", "").split(",") if x.strip()
+]
 
 
 async def setup(bot: commands.Bot):

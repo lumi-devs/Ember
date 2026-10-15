@@ -1,14 +1,13 @@
 import discord
+import os
 from discord.ext import commands
 
 
 class VoiceRoleManager(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.voice_channel_id = (
-            1446175613382561895  # Set this to your specific voice channel ID
-        )
-        self.role_id = 1430254891833757796  # Set this to the role ID you want to assign
+        self.voice_channel_id = int(os.environ.get("STUDY_VOICE_CHANNEL_ID"))
+        self.role_id = int(os.environ.get("STUDY_ROLE_ID"))
         self.log_channel_id = None  # Optional: for logging
 
     @commands.Cog.listener()

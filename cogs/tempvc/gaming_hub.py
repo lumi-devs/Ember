@@ -3,6 +3,7 @@ import discord
 from discord.ext import commands, tasks
 import aiosqlite
 import asyncio
+import os
 import traceback
 from collections import deque
 import time
@@ -176,8 +177,7 @@ class GamingTempVoice(commands.Cog):
         self.GAMING_GENERATOR_ID = GAMING_GENERATOR_ID
         self.MAIN_GAMING_CHAT = MAIN_GAMING_CHAT
 
-        # Drag requests channel ID
-        self.DRAG_REQUESTS_CHANNEL_ID = 1418501302626816010
+        self.DRAG_REQUESTS_CHANNEL_ID = int(os.environ.get("DRAGME_CHANNEL_ID"))
 
     async def cog_load(self):
         print("[GamingTempVoice] Cog loaded with game role integration ✅")

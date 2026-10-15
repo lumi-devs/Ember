@@ -1,10 +1,8 @@
+import os
 from discord.ext import commands
 
 CHANNEL_IDS = [
-    1388612947344883732,
-    1400546651046809650,
-    1393171114158719047,
-    1399822388727648407,
+    int(x) for x in os.environ.get("WELCOME_CHANNEL_IDS", "").split(",") if x.strip()
 ]
 
 

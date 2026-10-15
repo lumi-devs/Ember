@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 from datetime import datetime, timedelta, timezone
+import os
 import re
 
 
@@ -26,12 +27,11 @@ def parse_duration(duration: str):
     return seconds
 
 
-# Define your role IDs here - REPLACE THESE WITH YOUR ACTUAL ROLE IDS
 ROLE_IDS = {
-    "MODERATOR": 1406324000736542911,  # Level 4 - Full permissions
-    "HELPER": 1410302930485121106,  # Level 3 - Can mute, kick, warn
-    "CHAT_MANAGER": 1408709182856630332,  # Level 2 - Can mute only
-    "TRIAL_STAFF": 1421211760727429311,  # Level 1 - Can mute (limited)
+    "MODERATOR": int(os.environ.get("MOD_ROLE_MODERATOR")),
+    "HELPER": int(os.environ.get("MOD_ROLE_HELPER")),
+    "CHAT_MANAGER": int(os.environ.get("MOD_ROLE_CHAT_MANAGER")),
+    "TRIAL_STAFF": int(os.environ.get("MOD_ROLE_TRIAL")),
 }
 
 

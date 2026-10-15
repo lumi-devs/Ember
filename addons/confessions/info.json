@@ -1,0 +1,16 @@
+{
+  "author": ["Rebiz"],
+  "name": "Confessions",
+  "install_msg": "Thank you for installing Confessions! Use `/confession set` to configure. For help, see the README.",
+  "short": "Anonymous confession system with threaded replies, reports, and mod tools.",
+  "description": "Anonymous confession system with threaded replies, reports, and moderation tools.",
+  "tags": [
+    "moderation",
+    "anonymous"
+  ],
+  "requirements": [],
+  "min_bot_version": "1.0.0",
+  "min_python_version": [3, 11, 0],
+  "max_python_version": [3, 14, 0],
+  "type": "cog"
+}

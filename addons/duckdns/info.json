@@ -1,0 +1,13 @@
+{
+  "author": ["Rebiz"],
+  "name": "DuckDNS",
+  "install_msg": "Set DUCKDNS_DOMAIN and DUCKDNS_TOKEN in your .env, then restart. No commands — updates on bot ready.",
+  "short": "Auto-updates a DuckDNS subdomain with the current IPv6 address on bot startup.",
+  "description": "Polls api6.ipify.org for the current IPv6 address and pushes an update to DuckDNS on bot ready. Useful for self-hosted bots behind a dynamic IPv6 prefix.",
+  "tags": ["infra", "dns", "self-hosted"],
+  "requirements": ["aiohttp"],
+  "min_bot_version": "1.0.0",
+  "min_python_version": [3, 11, 0],
+  "max_python_version": [3, 14, 0],
+  "type": "cog"
+}

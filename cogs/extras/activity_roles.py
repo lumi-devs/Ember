@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 import asyncio
+import os
 from typing import Set, Dict, Optional
 import time
 
@@ -9,9 +10,9 @@ class ActivityRoles(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.roles: Dict[str, int] = {
-            "Crunchyroll": 1418229568191467530,
-            "YouTube": 1418229577679114291,
-            "Spotify": 1418229573325426769,
+            "Crunchyroll": int(os.environ.get("ACTIVITY_ROLE_CRUNCHYROLL")),
+            "YouTube": int(os.environ.get("ACTIVITY_ROLE_YOUTUBE")),
+            "Spotify": int(os.environ.get("ACTIVITY_ROLE_SPOTIFY")),
         }
         self.INTERVAL_TIME_UPDATE = 10  # seconds
         self.processing: Set[int] = set()  # Prevent concurrent processing

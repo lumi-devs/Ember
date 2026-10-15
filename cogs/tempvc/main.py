@@ -4,6 +4,7 @@ import discord
 from discord.ext import commands, tasks
 import asyncio
 import aiosqlite
+import os
 import time
 from discord import app_commands
 import traceback
@@ -11,6 +12,8 @@ from collections import deque
 from .config import JOIN_CHANNELS, DB_PATH
 from .views import BasicControlsView
 import re
+
+DRAG_REQUESTS_CHANNEL_ID = int(os.environ.get("DRAGME_CHANNEL_ID"))
 
 
 class TempVoice(commands.Cog):
@@ -498,7 +501,7 @@ class TempVoice(commands.Cog):
                     "• 🔄 Transfer - Give ownership to someone in VC\n"
                     "• 🎯 Claim - Claim ownership when owner is gone\n\n"
                     "**📌 Need help dragging members?**\n"
-                    "Use <#1418501302626816010> for drag requests!"
+                    f"Use <#{DRAG_REQUESTS_CHANNEL_ID}> for drag requests!"
                 ),
                 color=discord.Color.orange(),
             )
@@ -594,7 +597,7 @@ class TempVoice(commands.Cog):
                 "• 🔄 Transfer - Give ownership to someone in VC\n"
                 "• 🎯 Claim - Claim ownership when owner is gone\n\n"
                 "**📌 Need help dragging members?**\n"
-                "Use <#1418501302626816010> for drag requests!"
+                f"Use <#{DRAG_REQUESTS_CHANNEL_ID}> for drag requests!"
             ),
             color=discord.Color.orange(),
         )

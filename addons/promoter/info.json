@@ -1,0 +1,13 @@
+{
+  "author": ["Rebiz"],
+  "name": "Promoter",
+  "install_msg": "Configure the promotion channel and bump interval via /config.",
+  "short": "Automated server bump promoter with configurable intervals and reward tracking.",
+  "description": "Posts periodic server promotion messages to a configured channel and tracks member bump contributions. Integrates with the Ember bank system to reward active promoters.",
+  "tags": ["community", "promotion", "server-growth"],
+  "requirements": [],
+  "min_bot_version": "1.0.0",
+  "min_python_version": [3, 11, 0],
+  "max_python_version": [3, 14, 0],
+  "type": "cog"
+}

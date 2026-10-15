@@ -18,8 +18,7 @@ class StrictImageModerator(commands.Cog):
         self.session = None  # Lazy init
         self.openai_client = None
 
-        # Your mod log channel ID
-        self.mod_log_channel_id = 1416357489925947452
+        self.mod_log_channel_id = int(os.environ.get("OLD_NUDITY_LOG_CHANNEL_ID"))
 
         # Initialize OpenAI client if API key is provided
         self.openai_api_key = os.environ.get("OPENAI_API_KEY", "")

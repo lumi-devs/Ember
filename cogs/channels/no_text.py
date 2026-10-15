@@ -1,9 +1,10 @@
 import discord
 import asyncio
+import os
 from discord.ext import commands
 
 WATCH_CHANNEL_IDS = [
-    1399658407178272798,  # confession
+    int(os.environ.get("CONFESSION_CHANNEL_ID")),
 ]
 
 

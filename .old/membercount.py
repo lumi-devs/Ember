@@ -1,15 +1,14 @@
 import discord
 from discord.ext import commands
 import asyncio
+import os
 from typing import Dict, Set
 import time
 
-# ✅ Replace with your actual channel IDs
-ALL_MEMBERS_CHANNEL_ID = 1393175609638912010
-NON_BOTS_CHANNEL_ID = 1393175726467055636
+ALL_MEMBERS_CHANNEL_ID = int(os.environ.get("MEMBERCOUNT_ALL_ID"))
+NON_BOTS_CHANNEL_ID = int(os.environ.get("MEMBERCOUNT_NONBOTS_ID"))
 
-# ✅ Replace with your specific guild ID
-TARGET_GUILD_ID = 1388612461703467128  # Replace with your actual guild ID
+TARGET_GUILD_ID = int(os.environ.get("GUILD_ID"))
 
 
 class MemberCount(commands.Cog):

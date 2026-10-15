@@ -1,0 +1,13 @@
+{
+  "author": ["Rebiz"],
+  "name": "ActivityRoles",
+  "install_msg": "Use /config to assign roles for Crunchyroll, YouTube, and Spotify presence detection.",
+  "short": "Auto-assigns roles when members are watching Crunchyroll, YouTube, or listening to Spotify.",
+  "description": "Monitors Discord Rich Presence activity and assigns configurable roles while a member is actively watching Crunchyroll or YouTube, or listening to Spotify. Roles are removed when the activity ends.",
+  "tags": ["roles", "activity", "anime", "community"],
+  "requirements": [],
+  "min_bot_version": "1.0.0",
+  "min_python_version": [3, 11, 0],
+  "max_python_version": [3, 14, 0],
+  "type": "cog"
+}

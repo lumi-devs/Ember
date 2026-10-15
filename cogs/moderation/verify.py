@@ -1,7 +1,8 @@
 import discord
 from discord.ext import commands
 import datetime
-import logging  # Added for better error handling
+import logging
+import os
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -11,10 +12,9 @@ class Verification(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-        # --- ⚙️ CONFIGURATION ---
-        self.STAFF_ROLE_ID = 1460679564916297819  # Madam Moderator Role ID
-        self.VERIFIED_ROLE_ID = 1460679593403879547  # The Verified Role ID
-        self.LOG_CHANNEL_ID = 1460688886870180025  # Where logs go
+        self.STAFF_ROLE_ID = int(os.environ.get("VERIFY_STAFF_ROLE_ID"))
+        self.VERIFIED_ROLE_ID = int(os.environ.get("VERIFIED_ROLE_ID"))
+        self.LOG_CHANNEL_ID = int(os.environ.get("VERIFY_LOG_CHANNEL_ID"))
 
     async def cog_check(self, ctx):
         """

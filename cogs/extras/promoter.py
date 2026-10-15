@@ -263,14 +263,14 @@ class PromoterRole(commands.Cog):
         self.db_path = "data/promoter_role.db"
 
         # Server-specific settings
-        self.promoter_role_id = 1440636027923333182
+        self.promoter_role_id = int(os.environ.get("PROMOTER_ROLE_ID"))
         self.your_server_invites = [
             ".gg/aakhristation",
             "discord.gg/aakhristation",
             "aakhristation",
         ]
         self.server_tag = "Raही"
-        self.log_channel_id = 1443119503285293098
+        self.log_channel_id = int(os.environ.get("PROMOTER_LOG_CHANNEL_ID"))
         self.target_guild_id = int(os.environ.get("GUILD_ID", "0"))
 
         # Cache with size limit

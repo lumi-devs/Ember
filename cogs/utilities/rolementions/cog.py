@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+import os
 import pytz
 from datetime import datetime, timedelta
 
@@ -48,8 +49,7 @@ class RoleMentionCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-        # HARDCODED LOG CHANNEL ID
-        self.LOG_CHANNEL_ID = 1447323258478133298
+        self.LOG_CHANNEL_ID = int(os.environ.get("ROLEMENTIONS_LOG_CHANNEL_ID"))
 
         # Initialize managers
         self.data_manager = DataManager()

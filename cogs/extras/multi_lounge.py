@@ -29,7 +29,7 @@ class SmartLoungeCog(commands.Cog):
             self.logger.addHandler(handler)
 
         # --- CONFIGURATION ---
-        self.base_lounge_id = 1393171112753631243  # Lounge 2 (Permanent Base)
+        self.base_lounge_id = int(os.environ.get("LOUNGE_BASE_CHANNEL_ID"))
         self.busy_threshold = 2  # How many users make a room "Busy"?
         self.lounge_name_fmt = "┊ 🔊﹕₊˚⌇lounge {} ꜝꜝ‹3"
 

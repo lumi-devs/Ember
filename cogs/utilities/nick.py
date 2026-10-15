@@ -1,15 +1,15 @@
 import discord
 from discord.ext import commands
 import asyncio
+import os
 
 
 class NicknameChanger(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # Replace these with your actual role IDs
-        self.MODERATOR_ROLE_ID = 1406324000736542911
-        self.HELPER_ROLE_ID = 1410302930485121106
-        self.CHAT_MANAGER_ROLE_ID = 1408709182856630332
+        self.MODERATOR_ROLE_ID = int(os.environ.get("MOD_ROLE_MODERATOR"))
+        self.HELPER_ROLE_ID = int(os.environ.get("MOD_ROLE_HELPER"))
+        self.CHAT_MANAGER_ROLE_ID = int(os.environ.get("MOD_ROLE_CHAT_MANAGER"))
 
         # Define dangerous permissions to check for
         self.DANGEROUS_PERMISSIONS = [

@@ -1,0 +1,17 @@
+{
+  "author": ["Rebiz"],
+  "name": "ShadowChat",
+  "install_msg": "Thank you for installing ShadowChat! Use `/shadowchat setup` to get started.",
+  "short": "Anonymous gender-matched relay chat roulette with DM conversations and reveal workflow.",
+  "description": "ShadowChat connects users for anonymous chat roulette with automatic gender matching, DM-based conversations, and a reveal system.",
+  "tags": [
+    "social",
+    "anonymous",
+    "chat"
+  ],
+  "requirements": [],
+  "min_bot_version": "1.0.0",
+  "min_python_version": [3, 11, 0],
+  "max_python_version": [3, 14, 0],
+  "type": "cog"
+}

@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+{% block title %}{{ guild_name }} — Ember Dashboard{% endblock %}
+{% block body %}
+<div class="app-root">
+  <header class="topbar">
+    <div class="topbar-brand">
+      <a href="/guilds" class="back-link">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      </a>
+      {% if guild_icon %}
+        <img src="{{ guild_icon }}" alt="" width="28" height="28" class="guild-icon-sm" />
+      {% endif %}
+      <span>{{ guild_name }}</span>
+    </div>
+    <div class="topbar-user">
+      <img id="user-avatar" src="{{ user.avatar }}" alt="" width="32" height="32" />
+      <a href="/logout" class="btn btn-ghost btn-sm">Sign out</a>
+    </div>
+  </header>
+
+  <div class="dashboard-layout">
+    <!-- Sidebar: feature list -->
+    <nav class="sidebar" id="sidebar">
+      <div class="sidebar-label">Features</div>
+      <div id="feature-nav"></div>
+    </nav>
+
+    <!-- Main: config form -->
+    <main class="config-main" id="config-main">
+      <div class="config-placeholder">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity=".3"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+        <p>Select a feature to configure</p>
+      </div>
+    </main>
+  </div>
+</div>
+
+<div id="toast" class="toast" aria-live="polite"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const GUILD_ID = '{{ guild_id }}';
+let _channels = null, _roles = null, _features = null;
+let _activeCog = null;
+let _saveTimer = null;
+
+// ── bootstrap ──────────────────────────────────────────────────────────────
+
+async function init() {
+  [_features, _channels, _roles] = await Promise.all([
+    apiFetch('/api/features'),
+    apiFetch(`/api/guilds/${GUILD_ID}/channels`),
+    apiFetch(`/api/guilds/${GUILD_ID}/roles`),
+  ]);
+  renderSidebar();
+  const hash = location.hash.slice(1);
+  if (hash && _features.find(f => f.cog_name === hash)) {
+    loadFeature(hash);
+  }
+}
+
+// ── sidebar ────────────────────────────────────────────────────────────────
+
+function renderSidebar() {
+  const nav = document.getElementById('feature-nav');
+  nav.innerHTML = _features.map(f => `
+    <button class="sidebar-item" data-cog="${f.cog_name}" onclick="loadFeature('${f.cog_name}')">
+      <span class="sidebar-emoji">${f.emoji}</span>
+      <span>${esc(f.display_name)}</span>
+    </button>
+  `).join('');
+}
+
+// ── feature config ─────────────────────────────────────────────────────────
+
+async function loadFeature(cogName) {
+  _activeCog = cogName;
+  location.hash = cogName;
+
+  // update active state
+  document.querySelectorAll('.sidebar-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.cog === cogName);
+  });
+
+  const feature = _features.find(f => f.cog_name === cogName);
+  const config = await apiFetch(`/api/guilds/${GUILD_ID}/config/${cogName}`);
+
+  const main = document.getElementById('config-main');
+  main.innerHTML = `
+    <div class="config-header">
+      <span class="config-emoji">${feature.emoji}</span>
+      <div>
+        <h2 class="config-title">${esc(feature.display_name)}</h2>
+        <p class="config-desc">${esc(feature.description)}</p>
+      </div>
+    </div>
+    <form class="config-form" id="config-form" onsubmit="return false">
+      ${feature.fields.map(f => renderField(f, config[f.key] ?? f.default)).join('')}
+      ${feature.fields.length === 0 ? '<p class="no-fields">This feature has no configurable fields.</p>' : ''}
+    </form>
+    <div class="config-footer" id="save-status"></div>
+  `;
+
+  // attach change listeners for auto-save
+  document.querySelectorAll('.config-form [data-key]').forEach(el => {
+    el.addEventListener('change', () => scheduleSave());
+    if (el.type !== 'checkbox') el.addEventListener('input', () => scheduleSave());
+  });
+}
+
+function renderField(field, value) {
+  const id = `field-${field.key}`;
+  const req = field.required ? '<span class="required">*</span>' : '';
+  const desc = field.description ? `<p class="field-desc">${esc(field.description)}</p>` : '';
+
+  let input = '';
+  switch (field.type) {
+    case 'BOOLEAN':
+      input = `<label class="toggle">
+        <input type="checkbox" id="${id}" data-key="${field.key}" ${value ? 'checked' : ''} />
+        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+      </label>`;
+      break;
+    case 'CHANNEL':
+      input = selectInput(id, field.key, _channels, value, 'ch', ch => ch.name, ch => `#${ch.name}`, field.placeholder);
+      break;
+    case 'ROLE':
+      input = selectInput(id, field.key, _roles, value, 'role', r => r.name, r => `@${r.name}`, field.placeholder);
+      break;
+    case 'INTEGER':
+      input = `<input class="field-input" type="number" id="${id}" data-key="${field.key}"
+        value="${esc(String(value ?? ''))}"
+        placeholder="${esc(field.placeholder || '')}"
+        ${field.min_value != null ? `min="${field.min_value}"` : ''}
+        ${field.max_value != null ? `max="${field.max_value}"` : ''} />`;
+      break;
+    default: // TEXT
+      if (field.max_length > 200) {
+        input = `<textarea class="field-input field-textarea" id="${id}" data-key="${field.key}"
+          placeholder="${esc(field.placeholder || '')}"
+          maxlength="${field.max_length}">${esc(String(value ?? ''))}</textarea>`;
+      } else {
+        input = `<input class="field-input" type="text" id="${id}" data-key="${field.key}"
+          value="${esc(String(value ?? ''))}"
+          placeholder="${esc(field.placeholder || '')}"
+          maxlength="${field.max_length}" />`;
+      }
+  }
+
+  return `
+    <div class="field-group">
+      <label class="field-label" for="${id}">${esc(field.label)}${req}</label>
+      ${desc}
+      ${input}
+    </div>
+  `;
+}
+
+function selectInput(id, key, items, currentValue, type, displayFn, prefixFn, placeholder) {
+  const currentId = String(currentValue ?? '');
+  const opts = items
+    .filter(i => type === 'ch'
+      ? ['text', 'forum', 'news'].includes(i.type?.toLowerCase?.() ?? '')
+      : true)
+    .map(i => `<option value="${i.id}" ${i.id === currentId ? 'selected' : ''}>${esc(prefixFn(i))}</option>`)
+    .join('');
+  return `<select class="field-input field-select" id="${id}" data-key="${key}">
+    <option value="">${placeholder || '— not set —'}</option>
+    ${opts}
+  </select>`;
+}
+
+// ── auto-save ──────────────────────────────────────────────────────────────
+
+function scheduleSave() {
+  clearTimeout(_saveTimer);
+  setStatus('Unsaved changes…', 'pending');
+  _saveTimer = setTimeout(saveConfig, 800);
+}
+
+async function saveConfig() {
+  if (!_activeCog) return;
+  const patch = {};
+  document.querySelectorAll('.config-form [data-key]').forEach(el => {
+    const key = el.dataset.key;
+    if (el.type === 'checkbox') patch[key] = el.checked;
+    else if (el.type === 'number') patch[key] = el.value === '' ? null : Number(el.value);
+    else patch[key] = el.value || null;
+  });
+  try {
+    await apiFetch(`/api/guilds/${GUILD_ID}/config/${_activeCog}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(patch),
+    });
+    setStatus('Saved', 'saved');
+    setTimeout(() => setStatus('', ''), 2000);
+  } catch (e) {
+    setStatus('Save failed — ' + e.message, 'error');
+  }
+}
+
+function setStatus(msg, state) {
+  const el = document.getElementById('save-status');
+  if (!el) return;
+  el.textContent = msg;
+  el.className = 'config-footer ' + state;
+}
+
+// ── utilities ──────────────────────────────────────────────────────────────
+
+async function apiFetch(url, opts = {}) {
+  const resp = await fetch(url, opts);
+  if (!resp.ok) {
+    if (resp.status === 401) { location.href = '/'; return; }
+    const text = await resp.text();
+    throw new Error(text || resp.statusText);
+  }
+  return resp.json();
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function showToast(msg, type = 'info') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = `toast toast-${type} show`;
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+init();
+</script>
+{% endblock %}

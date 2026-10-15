@@ -1,0 +1,13 @@
+{
+  "author": ["Rebiz"],
+  "name": "Backups",
+  "install_msg": "Configure Backblaze B2 credentials in your .env (B2_KEY_ID, B2_APPLICATION_KEY, B2_BUCKET_NAME), then restart.",
+  "short": "Automated database backups to Backblaze B2 with scheduled uploads and /backup commands.",
+  "description": "Schedules periodic compressed backups of the bot's data directory and uploads them to a Backblaze B2 bucket. Provides /backup run and /backup list slash commands for manual control and listing uploads.",
+  "tags": ["infra", "backup", "self-hosted"],
+  "requirements": ["b2sdk"],
+  "min_bot_version": "1.0.0",
+  "min_python_version": [3, 11, 0],
+  "max_python_version": [3, 14, 0],
+  "type": "cog"
+}

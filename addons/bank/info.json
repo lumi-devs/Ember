@@ -1,0 +1,13 @@
+{
+  "author": ["Rebiz"],
+  "name": "Bank",
+  "install_msg": "The bank slash commands are now available. Use /bank balance to get started. The core bank API (core/bank.py) must be present in your Ember installation.",
+  "short": "Virtual economy slash commands — balance, transfer, leaderboard, and admin controls.",
+  "description": "Exposes the Ember core bank API as slash commands. Provides /bank balance, /bank transfer, /bank leaderboard, and admin commands for managing currency names, max balances, and deposits/withdrawals. Requires core/bank.py in the base Ember install.",
+  "tags": ["economy", "bank", "currency"],
+  "requirements": [],
+  "min_bot_version": "1.0.0",
+  "min_python_version": [3, 11, 0],
+  "max_python_version": [3, 14, 0],
+  "type": "cog"
+}

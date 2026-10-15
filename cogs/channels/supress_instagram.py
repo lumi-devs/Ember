@@ -1,9 +1,12 @@
 # no_insta_embed.py
 import re
+import os
 import discord
 from discord.ext import commands
 
-BLOCK_CHANNELS = {1393171137017413712, 1393171121154560010}
+BLOCK_CHANNELS = {
+    int(x) for x in os.environ.get("INSTA_BLOCK_CHANNELS", "").split(",") if x.strip()
+}
 # -------------------------------------
 
 INSTAGRAM_RE = re.compile(
