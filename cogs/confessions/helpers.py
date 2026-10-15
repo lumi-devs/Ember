@@ -16,31 +16,25 @@ DB_BACKUP_PATH = "data/confession_backup.db"
 CONFESSION_CHANNEL_ID = int(os.getenv("CONFESSION_CHANNEL_ID"))
 REPORT_CHANNEL_ID = int(os.getenv("REPORT_CHANNEL_ID"))
 MEDIA_CHANNEL_ID = int(os.getenv("MEDIA_CHANNEL_ID"))
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))
 MOD_CONFESSION_LOGS_CHANNEL_ID = int(os.getenv("MOD_CONFESSION_LOGS_CHANNEL_ID"))
 
 
 
 URL_REGEX = re.compile(r"https?://\S+")
 
-# Block @everyone / @here even when typed with weird spacing/casing.
+# catch @everyone/@here even with weird spacing
 EVERYONE_HERE_RE = re.compile(r"@\s*(everyone|here)\b", re.IGNORECASE)
-# Break raw mention syntax (<@123>, <@!123>, <@&123>, <#123>) so it
-# renders as plain text and never pings.
+# raw <@123> / <@&123> / <#123> syntax, so it never pings
 RAW_MENTION_RE = re.compile(r"<(@!?|@&|#)(\d+)>")
 
-# Single shared policy: nothing in a confession/reply may ping.
+# nothing in a confession/reply may ping, ever
 ALLOWED_MENTIONS_NONE = discord.AllowedMentions(
     everyone=False, users=False, roles=False, replied_user=False
 )
 
 
 def sanitize_confession_text(text: str | None) -> str | None:
-    """Neutralize @everyone/@here and raw <@...>/<@&...>/<#...> mentions.
-
-    Inserts a zero-width space so Discord renders them as plain text:
-    no ping, no highlight. Returns input unchanged when falsy.
-    """
+    # stick a zero-width space in mentions so discord shows them as plain text
     if not text:
         return text
     text = EVERYONE_HERE_RE.sub(lambda m: "@\u200b" + m.group(1).lower(), text)
@@ -48,12 +42,9 @@ def sanitize_confession_text(text: str | None) -> str | None:
     return text
 
 
-# ==============================
-# SHA-256 ANONYMIZATION UTILS
-# ==============================
+# hashed ids so mods can correlate without seeing who it is
 
 def sha256_user_id(user_id: int) -> str:
-    """Generate a stable SHA-256 hex digest for a Discord user ID."""
     return hashlib.sha256(str(user_id).encode()).hexdigest()
 
 
@@ -79,12 +70,7 @@ async def lookup_user_id_from_hash(hash_str: str) -> Optional[int]:
         return None
 
 
-# ==============================
-# GENERAL HELPERS
-# ==============================
-
 def extract_url(text: str) -> Optional[str]:
-    """Extract the first URL from text if present."""
     match = URL_REGEX.search(text)
     return match.group(0) if match else None
 
@@ -92,7 +78,6 @@ def extract_url(text: str) -> Optional[str]:
 async def get_hourly_reply_count(user_id: int) -> int:
     try:
         async with aiosqlite.connect(DB_PATH) as db:
-            # Get count of replies in the last hour
             one_hour_ago = (datetime.datetime.now() - datetime.timedelta(hours=1)).isoformat()
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM replies WHERE user_id = ? AND timestamp >= ?",
@@ -108,9 +93,8 @@ async def can_user_reply(user_id: int, hourly_limit: int = 5) -> tuple[bool, str
     try:
         current_count = await get_hourly_reply_count(user_id)
         remaining = hourly_limit - current_count
-        
+
         if current_count >= hourly_limit:
-            # Calculate when the oldest reply was made to show reset time
             try:
                 async with aiosqlite.connect(DB_PATH) as db:
                     cursor = await db.execute(
@@ -119,7 +103,6 @@ async def can_user_reply(user_id: int, hourly_limit: int = 5) -> tuple[bool, str
                     )
                     result = await cursor.fetchone()
                     if result:
-                        # Parse timestamp - it's stored as ISO string
                         oldest_time = datetime.datetime.fromisoformat(result[0].replace('Z', '+00:00'))
                         now = discord.utils.utcnow()
                         reset_in = 3600 - (now - oldest_time).total_seconds()
@@ -142,8 +125,7 @@ async def can_user_reply(user_id: int, hourly_limit: int = 5) -> tuple[bool, str
                 f"📊 You've used {current_count}/{hourly_limit} replies this hour.",
                 current_count,
             )
-        
-        # Show remaining count in success case for feedback
+
         return True, f"✅ You have {remaining} repl{'y' if remaining == 1 else 'ies'} remaining this hour.", current_count
     except Exception as e:
         print(f"Error checking reply limit: {e}")
@@ -192,7 +174,6 @@ async def get_user_join_date(
 async def can_user_confess(
     guild: discord.Guild, user_id: int, daily_limit: int = 3
 ) -> tuple[bool, str, int]:
-    # Check join date first
     join_date = await get_user_join_date(guild, user_id)
     if join_date:
         time_in_server = discord.utils.utcnow() - join_date
@@ -203,38 +184,36 @@ async def can_user_confess(
                 False,
                 f"⏳ You need to be in the server for at least **1 day** before making confessions.\n"
                 f"📅 Please wait **{hours_left}h {minutes_left}m** more.",
-                0  # Return 0 for current count when failing due to join date
+                0
             )
-    
+
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             current_count = await get_daily_confession_count(user_id)
             remaining = daily_limit - current_count
-            
+
             if current_count >= daily_limit:
                 return (
                     False,
                     f"❌ You've reached the daily limit of **{daily_limit}** confessions.\n"
                     f"📊 You've used {current_count}/{daily_limit} today.\n"
                     f"💡 Use replies to engage with existing confessions instead!",
-                    current_count  # Return current count
+                    current_count
                 )
-            
-            # Success case with remaining count info
+
             return (
                 True,
                 f"✅ You have **{remaining}** confession{'s' if remaining != 1 else ''} remaining today.",
-                current_count  # Return current count
+                current_count
             )
     except Exception as e:
         print(f"Error checking daily confession count: {e}")
-        return True, "", 0  # Return default values on error
+        return True, "", 0
 
 
 async def get_daily_confession_count(user_id: int) -> int:
     try:
         async with aiosqlite.connect(DB_PATH) as db:
-            # Use date comparison to get today's count
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM confessions WHERE user_id = ? AND DATE(created_at) = DATE('now')",
                 (user_id,)
@@ -367,15 +346,15 @@ async def init_db():
             reply_cols = {row[1] for row in await cursor.fetchall()}
             if "message_id" not in reply_cols:
                 await db.execute("ALTER TABLE replies ADD COLUMN message_id INTEGER")
-                print("✅ Migration: added 'message_id' to replies table")
+                print("added message_id to replies table")
             if "parent_reply_id" not in reply_cols:
                 await db.execute("ALTER TABLE replies ADD COLUMN parent_reply_id INTEGER")
-                print("✅ Migration: added 'parent_reply_id' to replies table")
+                print("added parent_reply_id to replies table")
             cursor = await db.execute("PRAGMA table_info(confessban)")
             ban_cols = {row[1] for row in await cursor.fetchall()}
             if "reason" not in ban_cols:
                 await db.execute("ALTER TABLE confessban ADD COLUMN reason TEXT")
-                print("✅ Migration: added 'reason' to confessban table")
+                print("added reason to confessban table")
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_confessions_user_id ON confessions(user_id)"
             )
@@ -583,6 +562,6 @@ async def can_user_report(user_id: int, hourly_limit: int = 5) -> tuple[bool, st
         return True, "", 0
 
 
-# ── Required so the bot loader doesn't error when helpers is listed as an extension ──
+# so the bot loader doesn't error when helpers is listed as an extension
 async def setup(bot) -> None:
     pass

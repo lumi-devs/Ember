@@ -1,4 +1,3 @@
-# cogs/confessions/reply.py  —  Components V2 (discord.py master / ≥ 2.7)
 from __future__ import annotations
 
 import io
@@ -17,7 +16,6 @@ from .helpers import (
     sha256_user_id,
     sanitize_confession_text,
     ALLOWED_MENTIONS_NONE,
-    LOG_CHANNEL_ID,
     MOD_CONFESSION_LOGS_CHANNEL_ID,
     REPORT_CHANNEL_ID,
 )
@@ -28,16 +26,8 @@ HOURLY_REPLY_LIMIT    = int(os.getenv("HOURLY_REPLY_LIMIT", 8))
 HOURLY_REPORT_LIMIT   = int(os.getenv("HOURLY_REPORT_LIMIT", 5))
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# PARENT REFERENCE HELPER
-# ──────────────────────────────────────────────────────────────────────────────
-
 async def get_parent_reference(reply_id: int) -> tuple[str, str | None]:
-    """
-    Return (reference_header, parent_quote).
-    reference_header: "🔗 In reply to Confession #42" or "🔗 In reply to Reply #8"
-    parent_quote: First 150 chars of parent confession/reply (or None)
-    """
+    # figures out what a reply is replying to so we can show a quote
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             cur = await db.execute(
@@ -47,10 +37,9 @@ async def get_parent_reference(reply_id: int) -> tuple[str, str | None]:
             row = await cur.fetchone()
             if not row:
                 return "🔗 In reply to unknown", None
-            
+
             confession_id, parent_reply_id = row
-            
-            # If replying to a confession directly
+
             if parent_reply_id is None:
                 cur = await db.execute(
                     "SELECT description FROM confessions WHERE id=?",
@@ -63,8 +52,7 @@ async def get_parent_reference(reply_id: int) -> tuple[str, str | None]:
                     quote = "\n".join(f"> {line}" for line in truncated.splitlines())
                     return f"🔗 In reply to Confession #{confession_id}", quote
                 return f"🔗 In reply to Confession #{confession_id}", None
-            
-            # If replying to another reply
+
             else:
                 cur = await db.execute(
                     "SELECT description FROM replies WHERE id=?",
@@ -77,15 +65,11 @@ async def get_parent_reference(reply_id: int) -> tuple[str, str | None]:
                     quote = "\n".join(f"> {line}" for line in truncated.splitlines())
                     return f"🔗 In reply to Reply #{parent_reply_id}", quote
                 return f"🔗 In reply to Reply #{parent_reply_id}", None
-                
+
     except Exception as e:
         print(f"[get_parent_reference] Error: {e}")
         return "🔗 In reply to unknown", None
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# PERSISTENT REPLY BUTTONS
-# ──────────────────────────────────────────────────────────────────────────────
 
 class ReplyToReplyButton(ui.Button):
     def __init__(self, reply_id: int) -> None:
@@ -193,20 +177,12 @@ class ReportReplyButton(ui.Button):
             await interaction.response.send_message("❌ An error occurred.", ephemeral=True)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# REPLY ACTION ROW
-# ──────────────────────────────────────────────────────────────────────────────
-
 class ReplyActionRow(ui.ActionRow):
     def __init__(self, reply_id: int) -> None:
         super().__init__()
         self.add_item(ReplyToReplyButton(reply_id))
         self.add_item(ReportReplyButton(reply_id))
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# REPLY LAYOUT VIEW
-# ──────────────────────────────────────────────────────────────────────────────
 
 class ReplyLayoutView(ui.LayoutView):
     def __init__(
@@ -229,7 +205,7 @@ class ReplyLayoutView(ui.LayoutView):
             ui.TextDisplay(f"## ↩️ Reply to Confession #{confession_id}"),
             ui.Separator(spacing=discord.SeparatorSpacing.small),
         ]
-        
+
         if parent_quote:
             children.append(
                 ui.TextDisplay(parent_quote)
@@ -237,7 +213,7 @@ class ReplyLayoutView(ui.LayoutView):
             children.append(
                 ui.Separator(spacing=discord.SeparatorSpacing.small),
             )
-        
+
         children.append(
             ui.TextDisplay(display_body)
         )
@@ -253,14 +229,14 @@ class ReplyLayoutView(ui.LayoutView):
 
         if is_op:
             children.append(ui.TextDisplay("-# 👑 OP"))
-        
+
         children.append(ReplyActionRow(reply_id))
 
         self.add_item(ui.Container(*children, accent_color=accent))
 
     @classmethod
     async def from_db(cls, reply_id: int) -> "ReplyLayoutView":
-        """Reconstruct a ReplyLayoutView from the DB (bot restart persistence)."""
+        # rebuild a reply card after a restart
         async with aiosqlite.connect(DB_PATH) as db:
             cur = await db.execute(
                 "SELECT confession_id, parent_reply_id, user_id, description, image_url "
@@ -294,13 +270,7 @@ class ReplyLayoutView(ui.LayoutView):
         )
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SHARED MODAL MIXIN
-# ──────────────────────────────────────────────────────────────────────────────
-
 class _MediaMixin:
-    """Shared helpers for both ReplyModal and ReplyToReplyModal."""
-
     bot: discord.Client
     confession_id: int
 
@@ -315,7 +285,6 @@ class _MediaMixin:
     async def _reupload(
         self, attachment: discord.Attachment, label: str
     ) -> tuple[bool, str]:
-        """Re-host a FileUpload attachment via the media channel."""
         media_ch = self.bot.get_channel(MEDIA_CHANNEL_ID)
         if not media_ch:
             return False, "Media channel not found"
@@ -332,10 +301,6 @@ class _MediaMixin:
             return False, str(e)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# REPLY MODAL  (reply to a confession directly)
-# ──────────────────────────────────────────────────────────────────────────────
-
 class ReplyModal(_MediaMixin, ui.Modal, title="Anonymous Reply"):
     def __init__(
         self,
@@ -351,8 +316,7 @@ class ReplyModal(_MediaMixin, ui.Modal, title="Anonymous Reply"):
         self.confession_author_id  = confession_author_id
         self.user_id: int | None   = None
         self.reply_text: str | None = None
-        
-        # Add components with labels (V2 modal pattern)
+
         self.reply_input = ui.TextInput(
             label="Reply",
             style=discord.TextStyle.paragraph,
@@ -361,7 +325,7 @@ class ReplyModal(_MediaMixin, ui.Modal, title="Anonymous Reply"):
             required=True,
         )
         self.add_item(self.reply_input)
-        
+
         self.image_upload = ui.FileUpload(required=False)
         self.add_item(ui.Label(
             text="Attach an image (optional)",
@@ -381,11 +345,9 @@ class ReplyModal(_MediaMixin, ui.Modal, title="Anonymous Reply"):
             asyncio.create_task(self._delete_after(msg, 8))
             return
 
-        # Store remaining info to show after success
         remaining = HOURLY_REPLY_LIMIT - (current_count + 1)
         warning = f"\n⚠️ **{remaining}** repl{'y' if remaining == 1 else 'ies'} remaining this hour!" if remaining <= 2 else ""
 
-        # Process optional image upload
         image_url: str | None = None
         attachment: discord.Attachment | None = self.image_upload.values[0] if self.image_upload.values else None
         if attachment is not None:
@@ -441,7 +403,6 @@ class ReplyModal(_MediaMixin, ui.Modal, title="Anonymous Reply"):
                 asyncio.create_task(self._delete_after(err, 8))
                 return
 
-            # Ensure thread exists
             thread = conf_msg.thread
             if not thread:
                 for name in (
@@ -462,7 +423,6 @@ class ReplyModal(_MediaMixin, ui.Modal, title="Anonymous Reply"):
                     asyncio.create_task(self._delete_after(err, 8))
                     return
 
-            # Insert into DB
             async with aiosqlite.connect(DB_PATH) as db:
                 cur = await db.execute(
                     "INSERT INTO replies (confession_id, user_id, description, image_url) "
@@ -474,7 +434,6 @@ class ReplyModal(_MediaMixin, ui.Modal, title="Anonymous Reply"):
 
             parent_ref, parent_quote = await get_parent_reference(reply_db_id)
 
-            # Build V2 card and send
             view = ReplyLayoutView(
                 reply_db_id,
                 confession_id=self.confession_id,
@@ -487,7 +446,6 @@ class ReplyModal(_MediaMixin, ui.Modal, title="Anonymous Reply"):
             self.bot.add_view(view)
             sent_msg = await thread.send(view=view, allowed_mentions=ALLOWED_MENTIONS_NONE)
 
-            # Persist message_id
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute(
                     "UPDATE replies SET message_id=? WHERE id=?",
@@ -519,26 +477,9 @@ class ReplyModal(_MediaMixin, ui.Modal, title="Anonymous Reply"):
             asyncio.create_task(self._delete_after(err, 8))
 
     async def _log_reply(self, reply_db_id: int, image_url: str | None, is_op: bool) -> None:
+        # hashed replier only, same as confessions
         parent_ref, parent_quote = await get_parent_reference(reply_db_id)
         color = discord.Color.gold() if is_op else discord.Color.green()
-
-        log_ch = self.bot.get_channel(LOG_CHANNEL_ID)
-        if log_ch:
-            try:
-                user  = await self.bot.fetch_user(self.user_id)
-                embed = discord.Embed(
-                    title=f"Reply — Confession #{self.confession_id}",
-                    description=self.reply_text, color=color,
-                    timestamp=discord.utils.utcnow(),
-                )
-                embed.add_field(name="Replier",     value=f"{user.mention} ({user.id})", inline=False)
-                embed.add_field(name="Parent",      value=parent_ref,                     inline=False)
-                embed.add_field(name="Reply DB ID", value=str(reply_db_id),              inline=True)
-                if image_url:
-                    embed.set_image(url=image_url)
-                await log_ch.send(embed=embed)
-            except Exception as e:
-                print(f"[ReplyModal] admin log error: {e}")
 
         mod_ch = (
             self.bot.get_channel(MOD_CONFESSION_LOGS_CHANNEL_ID)
@@ -587,10 +528,6 @@ class ReplyModal(_MediaMixin, ui.Modal, title="Anonymous Reply"):
             pass
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# REPLY-TO-REPLY MODAL
-# ──────────────────────────────────────────────────────────────────────────────
-
 class ReplyToReplyModal(_MediaMixin, ui.Modal, title="Reply to Reply"):
     def __init__(
         self,
@@ -612,8 +549,7 @@ class ReplyToReplyModal(_MediaMixin, ui.Modal, title="Reply to Reply"):
         self.confession_message_id   = confession_message_id
         self.user_id: int | None     = None
         self.reply_text: str | None  = None
-        
-        # Add components with labels (V2 modal pattern)
+
         self.reply_input = ui.TextInput(
             label="Reply",
             style=discord.TextStyle.paragraph,
@@ -622,7 +558,7 @@ class ReplyToReplyModal(_MediaMixin, ui.Modal, title="Reply to Reply"):
             required=True,
         )
         self.add_item(self.reply_input)
-        
+
         self.image_upload = ui.FileUpload(required=False)
         self.add_item(ui.Label(
             text="Attach an image (optional)",
@@ -699,7 +635,6 @@ class ReplyToReplyModal(_MediaMixin, ui.Modal, title="Reply to Reply"):
                 asyncio.create_task(self._delete_after(err, 8))
                 return
 
-            # Discord native reply reference (visual threading in the thread)
             parent_msg: discord.Message | None = None
             if self.parent_reply_message_id:
                 try:
@@ -707,7 +642,6 @@ class ReplyToReplyModal(_MediaMixin, ui.Modal, title="Reply to Reply"):
                 except discord.NotFound:
                     pass
 
-            # Insert into DB
             async with aiosqlite.connect(DB_PATH) as db:
                 cur = await db.execute(
                     "INSERT INTO replies "
@@ -723,7 +657,6 @@ class ReplyToReplyModal(_MediaMixin, ui.Modal, title="Reply to Reply"):
 
             parent_ref, parent_quote = await get_parent_reference(reply_db_id)
 
-            # Build V2 card
             view = ReplyLayoutView(
                 reply_db_id,
                 confession_id=self.confession_id,
@@ -735,14 +668,12 @@ class ReplyToReplyModal(_MediaMixin, ui.Modal, title="Reply to Reply"):
             )
             self.bot.add_view(view)
 
-            # Send with Discord's native reply reference when available
             send_kwargs: dict = {"view": view, "allowed_mentions": ALLOWED_MENTIONS_NONE}
             if parent_msg:
                 send_kwargs["reference"]      = parent_msg
                 send_kwargs["mention_author"] = False
             sent_msg = await thread.send(**send_kwargs)
 
-            # Persist message_id
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute(
                     "UPDATE replies SET message_id=? WHERE id=?",
@@ -782,23 +713,6 @@ class ReplyToReplyModal(_MediaMixin, ui.Modal, title="Reply to Reply"):
 
         parent_ref, parent_quote = await get_parent_reference(reply_db_id)
 
-        log_ch = self.bot.get_channel(LOG_CHANNEL_ID)
-        if log_ch:
-            try:
-                user  = await self.bot.fetch_user(self.user_id)
-                embed = discord.Embed(
-                    title=title, description=self.reply_text,
-                    color=color, timestamp=discord.utils.utcnow(),
-                )
-                embed.add_field(name="Replier",         value=f"{user.mention} ({user.id})",           inline=False)
-                embed.add_field(name="Parent",         value=parent_ref,                                inline=False)
-                embed.add_field(name="Reply DB ID",     value=str(reply_db_id),                        inline=True)
-                if image_url:
-                    embed.set_image(url=image_url)
-                await log_ch.send(embed=embed)
-            except Exception as e:
-                print(f"[ReplyModal] admin log error: {e}")
-
         mod_ch = (
             self.bot.get_channel(MOD_CONFESSION_LOGS_CHANNEL_ID)
             if MOD_CONFESSION_LOGS_CHANNEL_ID else None
@@ -819,7 +733,6 @@ class ReplyToReplyModal(_MediaMixin, ui.Modal, title="Reply to Reply"):
                 print(f"[ReplyModal] mod log error: {e}")
 
     async def _notify_replier(self, new_reply_msg: discord.Message, is_op: bool) -> None:
-        """DM the author of the parent reply."""
         try:
             if self.parent_reply_author_id == self.user_id:
                 return

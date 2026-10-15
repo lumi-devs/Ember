@@ -9,7 +9,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ------------------ LOGGING ------------------
 LOG_FILE = Path("logs/bot.log")
 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
@@ -19,9 +18,8 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[logging.FileHandler(LOG_FILE, encoding="utf-8"), logging.StreamHandler()],
 )
-logger = logging.getLogger("BotLogger")
+logger = logging.getLogger("bot")
 
-# ------------------ DISCORD BOT ------------------
 intents = discord.Intents.all()
 intents.members = True
 bot = commands.Bot(command_prefix=".", intents=intents)
@@ -32,29 +30,25 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 @bot.event
 async def on_ready():
-    logger.info(f"✅ Logged in as {bot.user}")
+    logger.info(f"logged in as {bot.user}")
     try:
         synced = await bot.tree.sync()
-        logger.info(f"🔗 Synced {len(synced)} slash commands to guild {GUILD_ID}")
-        logger.info("📜 Registered app commands:")
+        logger.info(f"synced {len(synced)} slash commands")
         for cmd in bot.tree.walk_commands():
             logger.info(f"- {cmd.qualified_name}")
-
     except Exception as e:
-        logger.error(f"❌ Error syncing commands: {e}")
+        logger.error(f"error syncing commands: {e}")
 
 
 @bot.event
 async def on_resumed():
-    """Handle session resumption"""
-    logger.info("🔄 Session resumed")
+    logger.info("session resumed")
 
 
-# ------------------ LOAD COGS ------------------
 async def load_cogs():
     cogs_path = Path("cogs")
     if not cogs_path.exists():
-        logger.warning(f"⚠️ Cogs directory not found: {cogs_path}")
+        logger.warning(f"no cogs directory: {cogs_path}")
         return
 
     for py_file in cogs_path.rglob("*.py"):
@@ -63,31 +57,27 @@ async def load_cogs():
         module = ".".join(py_file.with_suffix("").parts)
         try:
             await bot.load_extension(module)
-            logger.info(f"✅ Loaded cog: {module}")
+            logger.info(f"loaded {module}")
         except Exception as e:
-            logger.error(f"❌ Failed to load {module}: {e}")
+            logger.error(f"failed to load {module}: {e}")
 
 
-# ------------------ MAIN ------------------
 async def main():
     async with bot:
         await load_cogs()
-
-        # Add a small delay before starting
         await asyncio.sleep(1)
-
         try:
             await bot.start(BOT_TOKEN)
         except KeyboardInterrupt:
-            logger.info("👋 Bot shutdown requested")
+            logger.info("shutdown requested")
         except Exception as e:
-            logger.error(f"💥 Fatal error: {e}")
+            logger.error(f"fatal error: {e}")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("👋 Bot shutdown requested")
+        logger.info("shutdown requested")
     except Exception as e:
-        logger.error(f"💥 Fatal error: {e}")
+        logger.error(f"fatal error: {e}")

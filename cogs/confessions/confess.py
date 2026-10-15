@@ -1,4 +1,3 @@
-# cogs/confessions/confess.py  —  Components V2 (discord.py master / ≥ 2.7)
 from __future__ import annotations
 
 import ast
@@ -21,14 +20,9 @@ from .helpers import (
     sha256_user_id,
     sanitize_confession_text,
     ALLOWED_MENTIONS_NONE,
-    LOG_CHANNEL_ID,
     MOD_CONFESSION_LOGS_CHANNEL_ID,
 )
 from .reply import ReplyModal, ReplyLayoutView
-
-# ──────────────────────────────────────────────────────────────────────────────
-# CONFIG
-# ──────────────────────────────────────────────────────────────────────────────
 
 DAILY_CONFESSION_LIMIT = int(os.getenv("DAILY_CONFESSION_LIMIT", 3))
 CONFESSION_CHANNEL_ID  = int(os.getenv("CONFESSION_CHANNEL_ID"))
@@ -47,10 +41,6 @@ except (SyntaxError, ValueError):
     ]
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# PERSISTENT BUTTONS
-# ──────────────────────────────────────────────────────────────────────────────
-
 class PersistentConfessButton(ui.Button):
     def __init__(self) -> None:
         super().__init__(
@@ -68,7 +58,6 @@ class PersistentConfessButton(ui.Button):
             return await interaction.response.send_message(
                 "❌ You are banned from making confessions.", ephemeral=True
             )
-        # Fix: Unpack 3 values instead of 2
         can_confess, reason, _ = await can_user_confess(
             interaction.guild, interaction.user.id, DAILY_CONFESSION_LIMIT
         )
@@ -133,6 +122,7 @@ class PersistentReportButton(ui.Button):
                 )
                 banned = await cur.fetchone()
 
+            # author stays anonymous here, only a hash goes to mods
             embed = discord.Embed(
                 title=f"🚨 Confession Report #{self.confession_id}",
                 color=discord.Color.red(),
@@ -156,10 +146,6 @@ class PersistentReportButton(ui.Button):
             await interaction.response.send_message("❌ An error occurred.", ephemeral=True)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# ACTION ROW
-# ──────────────────────────────────────────────────────────────────────────────
-
 class ConfessionActionRow(ui.ActionRow):
     def __init__(self, confession_id: int, *, show_confess: bool = False) -> None:
         super().__init__()
@@ -168,10 +154,6 @@ class ConfessionActionRow(ui.ActionRow):
         self.add_item(PersistentReplyButton(confession_id))
         self.add_item(PersistentReportButton(confession_id))
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# CONFESSION LAYOUT VIEW
-# ──────────────────────────────────────────────────────────────────────────────
 
 class ConfessionLayoutView(ui.LayoutView):
     def __init__(
@@ -216,7 +198,7 @@ async def build_confession_layout_view(
     confession_id: int,
     show_confess_button: bool = False,
 ) -> ConfessionLayoutView:
-    """Reconstruct a ConfessionLayoutView from the DB (edits, restarts)."""
+    # rebuild a card from the db (after edits / restarts)
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             "SELECT title, description, image_url FROM confessions WHERE id=?",
@@ -234,17 +216,12 @@ async def build_confession_layout_view(
     )
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# CONFESSION MODAL
-# ──────────────────────────────────────────────────────────────────────────────
-
 class ConfessionModal(ui.Modal, title="Submit a Confession"):
     def __init__(self, bot: discord.Client) -> None:
         super().__init__()
         self.bot = bot
         self.user_id: int | None = None
-        
-        # Add components with labels (V2 modal pattern)
+
         self.title_input = ui.TextInput(
             label="Title (optional)",
             max_length=100,
@@ -252,7 +229,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             placeholder="Give your confession a title…",
         )
         self.add_item(self.title_input)
-        
+
         self.description_input = ui.TextInput(
             label="Confession",
             style=discord.TextStyle.paragraph,
@@ -261,9 +238,8 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             required=True,
         )
         self.add_item(self.description_input)
-        
+
         self.image_upload = ui.FileUpload(required=False)
-        # Add label for file upload (required for V2 modals)
         self.add_item(ui.Label(
             text="Attach an image (optional)",
             component=self.image_upload
@@ -280,7 +256,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
     async def _reupload(
         self, attachment: discord.Attachment, label: str
     ) -> tuple[bool, str]:
-        """Download a FileUpload attachment and re-host it in the media channel."""
+        # re-host the upload in the media channel so the cdn url is stable
         media_ch = self.bot.get_channel(MEDIA_CHANNEL_ID)
         if not media_ch:
             return False, "Media channel not found"
@@ -290,7 +266,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 return False, "Empty attachment"
             file = discord.File(io.BytesIO(data), filename=attachment.filename)
             msg  = await media_ch.send(label, file=file)
-            await asyncio.sleep(1)      # let Discord finalize the CDN URL
+            await asyncio.sleep(1)
             url  = msg.attachments[0].url if msg.attachments else None
             return (True, url) if url else (False, "CDN URL unavailable")
         except Exception as e:
@@ -340,7 +316,6 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 await db.commit()
                 confession_id = cur.lastrowid
 
-            # Process optional image upload
             image_url: str | None = None
             attachment: discord.Attachment | None = self.image_upload.values[0] if self.image_upload.values else None
             if attachment is not None:
@@ -370,11 +345,10 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                     )
                     asyncio.create_task(self._delete_after(warn, 10))
 
-            # Strip confess button from the previous confession card
+            # only the latest card keeps the confess button
             if prev_id:
                 asyncio.create_task(self._strip_prev_confess_button(prev_id))
 
-            # Build and send the LayoutView card
             view = ConfessionLayoutView(
                 confession_id,
                 title=self.title_input.value,
@@ -399,7 +373,6 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 )
                 await db.commit()
 
-            # Register view for persistence across restarts
             self.bot.add_view(view)
 
             await self._log_confession(confession_id, image_url)
@@ -440,6 +413,7 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
             print(f"[Confessions] _strip_prev_confess_button error: {e}")
 
     async def _log_confession(self, confession_id: int, image_url: str | None) -> None:
+        # mod log only, author is just a hash. no raw user ids anywhere.
         try:
             async with aiosqlite.connect(DB_PATH) as db:
                 cur = await db.execute(
@@ -453,23 +427,6 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
         except Exception as e:
             print(f"[Confessions] log fetch error: {e}")
             return
-
-        log_ch = self.bot.get_channel(LOG_CHANNEL_ID)
-        if log_ch:
-            try:
-                user  = await self.bot.fetch_user(user_id)
-                embed = discord.Embed(
-                    title=f"Confession #{confession_id}", description=description,
-                    color=discord.Color.purple(), timestamp=discord.utils.utcnow(),
-                )
-                embed.add_field(name="User", value=f"{user.mention} ({user.id})", inline=False)
-                if title:
-                    embed.add_field(name="Title", value=title, inline=False)
-                if image_url:
-                    embed.set_image(url=image_url)
-                await log_ch.send(embed=embed)
-            except Exception as e:
-                print(f"[Confessions] admin log error: {e}")
 
         mod_ch = (
             self.bot.get_channel(MOD_CONFESSION_LOGS_CHANNEL_ID)
@@ -491,10 +448,6 @@ class ConfessionModal(ui.Modal, title="Submit a Confession"):
                 print(f"[Confessions] mod log error: {e}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# COG
-# ──────────────────────────────────────────────────────────────────────────────
-
 class Confessions(commands.Cog):
     def __init__(self, bot: discord.Client) -> None:
         self.bot = bot
@@ -506,9 +459,9 @@ class Confessions(commands.Cog):
             await init_db()
             await self._load_persistent_views()
             self.initialized = True
-            print("[Confessions] ✅ Initialized.")
+            print("[Confessions] ready")
         except Exception as e:
-            print(f"[Confessions] ❌ Init failed: {e}")
+            print(f"[Confessions] init failed: {e}")
 
     async def _load_persistent_views(self) -> None:
         await self.bot.wait_until_ready()
@@ -527,7 +480,7 @@ class Confessions(commands.Cog):
                             )
                             self.bot.add_view(view)
                         except Exception as e:
-                            print(f"[Confessions] View load error #{cid}: {e}")
+                            print(f"[Confessions] view load error #{cid}: {e}")
 
                 async with db.execute(
                     "SELECT id FROM replies WHERE message_id IS NOT NULL"
@@ -537,11 +490,11 @@ class Confessions(commands.Cog):
                             view = await ReplyLayoutView.from_db(rid)
                             self.bot.add_view(view)
                         except Exception as e:
-                            print(f"[Confessions] Reply view load error #{rid}: {e}")
+                            print(f"[Confessions] reply view load error #{rid}: {e}")
 
-            print("[Confessions] ✅ Persistent views loaded.")
+            print("[Confessions] persistent views loaded")
         except Exception as e:
-            print(f"[Confessions] ❌ View load error: {e}")
+            print(f"[Confessions] view load error: {e}")
 
     @app_commands.command(name="confess", description="Submit an anonymous confession")
     async def confess_command(self, interaction: discord.Interaction) -> None:
@@ -561,7 +514,6 @@ class Confessions(commands.Cog):
             return await interaction.response.send_message(
                 "❌ You need at least LVL 5 to make confessions.", ephemeral=True
             )
-        # Fix: Unpack 3 values instead of 2
         can_confess, reason, _ = await can_user_confess(
             interaction.guild, interaction.user.id, DAILY_CONFESSION_LIMIT
         )
@@ -616,7 +568,6 @@ class Confessions(commands.Cog):
                     except Exception:
                         author = None
 
-                    # Delete Discord message + thread
                     message_deleted = thread_deleted = False
                     if channel and message_id:
                         try:
@@ -632,9 +583,8 @@ class Confessions(commands.Cog):
                         except discord.NotFound:
                             message_deleted = True
                         except Exception as e:
-                            print(f"[confess_delete] Delete error: {e}")
+                            print(f"[confess_delete] delete error: {e}")
 
-                    # Delete replies
                     cur = await db.execute(
                         "SELECT COUNT(*) FROM replies WHERE confession_id=?", (confession_id,)
                     )
@@ -644,7 +594,7 @@ class Confessions(commands.Cog):
                     )
                     await db.execute("DELETE FROM confessions WHERE id=?", (confession_id,))
 
-                    # Renumber subsequent confessions and rebuild their V2 cards
+                    # shift every later confession down one and rebuild its card
                     cur = await db.execute(
                         "SELECT id, message_id FROM confessions WHERE id > ? ORDER BY id ASC",
                         (confession_id,),
@@ -656,30 +606,26 @@ class Confessions(commands.Cog):
                         await db.execute(
                             "UPDATE confessions SET id=? WHERE id=?", (new_id, old_id)
                         )
-                        # Update reply references BEFORE rebuilding reply cards
-                        # so that ReplyLayoutView.from_db() reads the correct new confession_id
+                        # replies have to move first so from_db reads the new id
                         await db.execute(
                             "UPDATE replies SET confession_id=? WHERE confession_id=?",
                             (new_id, old_id),
                         )
-                        await db.commit()  # flush so from_db sees the updated rows
+                        await db.commit()
                         if channel and msg_id:
                             try:
                                 old_msg  = await channel.fetch_message(msg_id)
                                 new_view = await build_confession_layout_view(new_id)
                                 await old_msg.edit(view=new_view, allowed_mentions=ALLOWED_MENTIONS_NONE)
 
-                                # Rename the thread so it still matches the confession number
                                 if old_msg.thread:
                                     try:
                                         await old_msg.thread.edit(
                                             name=f"Confession #{new_id}"
                                         )
                                     except Exception as te:
-                                        print(f"[confess_delete] Thread rename error #{old_id}→#{new_id}: {te}")
+                                        print(f"[confess_delete] thread rename error #{old_id}->{new_id}: {te}")
 
-                                    # Rebuild every reply card so they say
-                                    # "↩️ Reply to Confession #<new_id>" instead of the old number
                                     try:
                                         reply_cur = await db.execute(
                                             "SELECT id, message_id FROM replies "
@@ -695,14 +641,14 @@ class Confessions(commands.Cog):
                                             except discord.NotFound:
                                                 pass
                                             except Exception as re:
-                                                print(f"[confess_delete] Reply card update error reply#{reply_db_id}: {re}")
+                                                print(f"[confess_delete] reply card update error reply#{reply_db_id}: {re}")
                                     except Exception as re:
-                                        print(f"[confess_delete] Reply fetch error for confession #{new_id}: {re}")
+                                        print(f"[confess_delete] reply fetch error for confession #{new_id}: {re}")
 
                             except discord.NotFound:
                                 pass
                             except Exception as e:
-                                print(f"[confess_delete] Renumber edit error #{old_id}: {e}")
+                                print(f"[confess_delete] renumber edit error #{old_id}: {e}")
                         update_count += 1
                     new_last_id = max_id - 1
                     cur = await db.execute(
@@ -726,7 +672,6 @@ class Confessions(commands.Cog):
                     )
                     await db.commit()
 
-                    # DM the author
                     dm_sent = False
                     if author:
                         try:
@@ -751,7 +696,6 @@ class Confessions(commands.Cog):
                         except (discord.Forbidden, Exception):
                             pass
 
-                    # Result summary embed
                     result = discord.Embed(
                         title="✅ Confession Deleted & Renumbered",
                         color=discord.Color.red(),
@@ -810,38 +754,18 @@ class Confessions(commands.Cog):
         dm_sent: bool,
         reason: str | None,
     ) -> None:
-        def _base_embed() -> discord.Embed:
-            return discord.Embed(
-                title="🗑️ Confession Deleted & Renumbered",
-                color=discord.Color.orange(),
-                timestamp=discord.utils.utcnow(),
-            )
-
-        log_ch = self.bot.get_channel(LOG_CHANNEL_ID)
-        if log_ch:
-            try:
-                e = _base_embed()
-                e.add_field(name="Deleted ID",      value=str(confession_id),  inline=True)
-                e.add_field(name="Author",          value=f"<@{author_id}>",   inline=True)
-                e.add_field(name="Replies Deleted", value=str(reply_count),    inline=True)
-                e.add_field(name="Renumbered",      value=str(renumber_count), inline=True)
-                e.add_field(name="DM sent",         value="✅" if dm_sent else "❌", inline=True)
-                e.add_field(name="Deleted by",
-                            value=f"{interaction.user.mention} ({interaction.user.id})",
-                            inline=False)
-                if reason:
-                    e.add_field(name="Reason", value=reason, inline=False)
-                await log_ch.send(embed=e)
-            except Exception as ex:
-                print(f"[confess_delete] Admin log error: {ex}")
-
+        # same deal, hashed author only
         mod_ch = (
             self.bot.get_channel(MOD_CONFESSION_LOGS_CHANNEL_ID)
             if MOD_CONFESSION_LOGS_CHANNEL_ID else None
         )
         if mod_ch:
             try:
-                e = _base_embed()
+                e = discord.Embed(
+                    title="🗑️ Confession Deleted & Renumbered",
+                    color=discord.Color.orange(),
+                    timestamp=discord.utils.utcnow(),
+                )
                 e.add_field(name="Deleted ID",      value=str(confession_id),               inline=True)
                 e.add_field(name="Author (hash)",   value=f"`{sha256_user_id(author_id)}`",  inline=True)
                 e.add_field(name="Replies Deleted", value=str(reply_count),                  inline=True)
@@ -852,7 +776,7 @@ class Confessions(commands.Cog):
                     e.add_field(name="Reason", value=reason, inline=False)
                 await mod_ch.send(embed=e)
             except Exception as ex:
-                print(f"[confess_delete] Mod log error: {ex}")
+                print(f"[confess_delete] mod log error: {ex}")
 
 
 async def setup(bot: discord.Client) -> None:

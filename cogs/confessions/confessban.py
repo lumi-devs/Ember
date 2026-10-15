@@ -11,12 +11,10 @@ class ConfessBan(commands.Cog):
         self.bot = bot
 
     async def cog_load(self):
-        """Initialize database when cog loads (reliable alternative to on_ready)."""
         await self.init_db()
         print("ConfessBan cog loaded and database initialized")
 
     async def init_db(self):
-        """Ensure the confessban table has the correct schema."""
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS confessban (
@@ -34,32 +32,25 @@ class ConfessBan(commands.Cog):
     def has_permission(self, interaction: discord.Interaction) -> bool:
         return interaction.user.guild_permissions.administrator
 
-    # ──────────────────────────────────────────────────────────────────────
-    # HELPER: Resolve a target string → (user_id, discord.User | None)
-    # Accepts:  @mention, plain user ID, or 64-char SHA-256 hash
-    # ──────────────────────────────────────────────────────────────────────
+    # target can be a mention, a user id, or a hash from the mod log
     async def _resolve_target(
         self, interaction: discord.Interaction, target: str
     ) -> tuple[int | None, discord.User | None, str | None]:
-        """
-        Returns (user_id, user_object_or_None, error_message_or_None).
-        error_message is set when resolution fails.
-        """
         cleaned = target.strip().lstrip("<@!").rstrip(">")
 
-        # ── Numeric user ID or mention ────────────────────────────────────
+        # plain id or mention
         if cleaned.isdigit():
             uid = int(cleaned)
             try:
                 user = await self.bot.fetch_user(uid)
                 return uid, user, None
             except discord.NotFound:
-                # Still allow banning unknown users by ID (e.g. they left the server)
+                # they mightve left, still allow the ban
                 return uid, None, None
             except Exception as e:
                 return None, None, f"Could not fetch user: {e}"
 
-        # ── SHA-256 hash (64 lowercase hex chars) ─────────────────────────
+        # sha256 hash from the mod log
         if len(cleaned) == 64 and all(c in "0123456789abcdef" for c in cleaned.lower()):
             uid = await lookup_user_id_from_hash(cleaned.lower())
             if uid is None:
@@ -82,9 +73,6 @@ class ConfessBan(commands.Cog):
             "or the **SHA-256 hash** from the mod log.",
         )
 
-    # ──────────────────────────────────────────────────────────────────────
-    # /confessban
-    # ──────────────────────────────────────────────────────────────────────
     @app_commands.command(
         name="confessban",
         description="Ban or unban a user from submitting confessions",
@@ -123,7 +111,7 @@ class ConfessBan(commands.Cog):
                 "❌ Could not resolve target user.", ephemeral=True
             )
 
-        # Display name — use resolved user object if we have it, else fall back to ID
+        # show the mention if we could fetch them, else just the id
         user_display = f"{user.mention} ({user.id})" if user else f"User ID `{user_id}`"
 
         try:
@@ -144,7 +132,7 @@ class ConfessBan(commands.Cog):
                     embed.add_field(name="Banned by", value=interaction.user.mention, inline=False)
                     if reason:
                         embed.add_field(name="Reason", value=reason, inline=False)
-                    # Show SHA-256 so mods can look it up in the mod log
+                    # hash so mods can match it in the mod log
                     embed.add_field(
                         name="SHA-256 hash",
                         value=f"`{sha256_user_id(user_id)}`",
@@ -172,9 +160,6 @@ class ConfessBan(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
-    # ──────────────────────────────────────────────────────────────────────
-    # /confessban_list
-    # ──────────────────────────────────────────────────────────────────────
     @app_commands.command(name="confessban_list", description="List all banned users")
     async def confessban_list(self, interaction: discord.Interaction):
         if not self.has_permission(interaction):

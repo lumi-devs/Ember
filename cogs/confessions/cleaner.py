@@ -1,7 +1,3 @@
-# cogs/confessions/cleaner.py  —  Components V2
-#
-# any stray non-bot messages to keep the channel a clean feed of layout cards.
-
 import asyncio
 import os
 
@@ -21,7 +17,7 @@ class ConfessionCleaner(commands.Cog):
             return
         if message.channel.id != CONFESSION_CHANNEL_ID:
             return
-        # Never touch messages inside threads — reply cards live there
+        # threads hold the reply cards, leave those alone
         if isinstance(message.channel, discord.Thread):
             return
 
@@ -44,4 +40,3 @@ class ConfessionCleaner(commands.Cog):
 
 async def setup(bot: discord.Client) -> None:
     await bot.add_cog(ConfessionCleaner(bot))
-
