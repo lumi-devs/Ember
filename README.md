@@ -14,8 +14,8 @@ cp .env.example .env
 python main.py
 ```
 
-never commit `.env`. it's gitignored. check `.env.example` for the full
-list of vars. if you add a new key, add it there with an empty value too.
+check `.env.example` for the full list of vars. if you add a new key,
+add it there with an empty value too.
 
 ## layout
 
