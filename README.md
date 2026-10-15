@@ -14,25 +14,8 @@ cp .env.example .env
 python main.py
 ```
 
-never commit `.env`. it's gitignored. if you add a new key,
-add it to `.env.example` with an empty value too.
-
-all the secrets live in env vars now: `BOT_TOKEN`, `GITHUB_TOKEN`,
-`GROQ_API_KEY`, `OPENAI_API_KEY`, `HF_TOKEN`, `B2_APP_KEY`,
-`REDDIT_CLIENT_ID/SECRET`, `IG_USER/IG_PASS`. nothing hardcoded.
-
-## how confessions stay anonymous
-
-- confessions + replies store the real user id in sqlite (`data/confession.db`)
-  so limits, bans and threads work
-- mods only ever see a sha256 hash of the id in `MOD_CONFESSION_LOGS_CHANNEL_ID`
-- there is no channel that shows real user ids for confessions. that used
-  to exist (`LOG_CHANNEL_ID`) and it got removed on purpose, don't add it back
-- reports go to `REPORT_CHANNEL_ID` with the author shown as a hash.
-  the reporter is visible so abuse can be dealt with
-
-`/confessban` takes a mention, a user id, or one of those hashes.
-`/confess_delete` deletes + renumbers so ids don't have gaps.
+never commit `.env`. it's gitignored. check `.env.example` for the full
+list of vars. if you add a new key, add it there with an empty value too.
 
 ## layout
 
